@@ -499,12 +499,12 @@ async function main() {
     await home.webContents.executeJavaScript("window.dshDesktop.openSettingsWindow({page:'subscriptions',engine:'antigravity'})");
     await waitWindow("document.querySelector('#subscriptionsPage') && !document.querySelector('#subscriptionsPage').hidden");
     assert.equal(await engineSettings.webContents.executeJavaScript('typeof window.dshDesktop.antigravitySignOut'), 'function');
-    await engineSettings.webContents.executeJavaScript("document.querySelector('#googleAccountList [data-card-action=logout]').click()");
+    await engineSettings.webContents.executeJavaScript("document.querySelector('#googleAccountList [data-card-action=logout], #googleAccountActions:not([hidden]) #googleSignOut').click()");
     await waitWindow("document.querySelector('#subscriptionAccountDialog').open");
     assert.match(await engineSettings.webContents.executeJavaScript("document.querySelector('#subscriptionAccountDescription').textContent"), /shared with the official CLI/);
     await engineSettings.webContents.executeJavaScript("document.querySelector('#subscriptionAccountDialog [autofocus]').click()");
     assert.equal(googleCredentialClears.length, 0);
-    await engineSettings.webContents.executeJavaScript("document.querySelector('#googleAccountList [data-card-action=logout]').click()");
+    await engineSettings.webContents.executeJavaScript("document.querySelector('#googleAccountList [data-card-action=logout], #googleAccountActions:not([hidden]) #googleSignOut').click()");
     await waitWindow("document.querySelector('#subscriptionAccountDialog').open");
     await engineSettings.webContents.executeJavaScript("document.querySelector('#confirmSubscriptionAccount').click()");
     await waitWindow("document.querySelector('#status')?.textContent === 'Signed out of Google.'");
@@ -513,7 +513,8 @@ async function main() {
     assert.equal(signedOutGoogle.signedOut, true);
     assert.deepEqual(signedOutGoogle.models, []);
     assert.equal(signedOutGoogle.usage.latest, null);
-    assert.equal(await engineSettings.webContents.executeJavaScript("document.querySelector('#googleAccountList [data-card-action=logout]').disabled"), false);
+    assert.equal(await engineSettings.webContents.executeJavaScript("document.querySelectorAll('#googleAccountList .subscription-card').length"), 0);
+    assert.equal(await engineSettings.webContents.executeJavaScript("document.querySelector('#googleSignOut').disabled"), false);
     diag('PASS Antigravity sign-out: real sandboxed preload and IPC, no runtime/auth prerequisite, canceled confirmation and isolated credential cleanup');
     await home.webContents.executeJavaScript("window.dshDesktop.openSettingsWindow({page:'engines',engine:'antigravity'})");
     await waitWindow("document.querySelector('[data-field=instructions]')");

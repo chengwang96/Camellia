@@ -131,6 +131,9 @@ function createHarness(existingRoot, { respondToInterrupts = false, clearGoogleC
     return proc.sid;
   }
   function cleanup() {
+    // Imports can start a real router even when a test never saves routes.
+    // Stop it before deleting its profile so it cannot outlive the test.
+    const routerStopped = api.stopRouter();
     api.sharedConversations.pauseGoals();
     for (const session of api.claudeSessions.sessions.values()) session.kill();
     timers.clear();
@@ -139,6 +142,7 @@ function createHarness(existingRoot, { respondToInterrupts = false, clearGoogleC
     const resolved = path.resolve(root);
     if (path.dirname(resolved) !== path.resolve(os.tmpdir()) || !path.basename(resolved).startsWith('dsh-workspaces-')) throw new Error('Unsafe test cleanup path');
     removeTree(resolved);
+    return routerStopped;
   }
   return { root, userData, home, call, folder, configureApi, seedSession, finishTurn, processes, events, api, cleanup, dialogBehavior, app: electron.app };
 }

@@ -109,7 +109,7 @@ window.createEngineSettingsUI = ({ api, status, navigate }) => {
       panel.scrollIntoView({ block: 'start' });
       const target = focus === 'antigravity' ? panel.querySelector(googleAccount?.verification === 'verified'
         ? '[data-card-action="refresh"]:not(:disabled)' : '[data-card-action="verify"]:not(:disabled)')
-        || panel.querySelector('[data-card-action="login"]:not(:disabled)') || $('googleUseCredits') : $(focus + 'SignIn');
+        || panel.querySelector('[data-card-action="login"]:not(:disabled), #googleAccountActions:not([hidden]) button:not(:disabled)') || $('googleUseCredits') : $(focus + 'SignIn');
       if (!target.disabled) target.focus({ preventScroll: true });
     }
   }
@@ -120,8 +120,19 @@ window.createEngineSettingsUI = ({ api, status, navigate }) => {
       engine: options.containerId.startsWith('codex') ? 'codex' : options.containerId.startsWith('grok') ? 'grok' : 'kimi' });
   }
   function renderGoogleAccountList() {
+    // The default profile is also the CLI sign-in slot. Only a signed-in or
+    // previously verified account belongs in the card list.
+    const accounts = (googleAccount?.accounts || []).filter(account => account.signedIn || account.stale);
+    const signingOut = googleSigningOut || googleAccount?.signingOut;
+    const busy = accountBusy || googleAccount?.usage?.refreshing || signingOut;
+    $('googleAccountActions').hidden = accounts.length > 0;
+    $('googleSignIn').disabled = Boolean(busy);
+    $('googleVerify').disabled = Boolean(busy || !googleAccount?.installed);
+    $('googleSignOut').disabled = Boolean(signingOut);
+    // An open note editor must not retain a card after the account signs out.
+    if (!accounts.length) $('googleAccountList').replaceChildren();
     window.renderSubscriptionCards({ container: $('googleAccountList'),
-      state: googleAccount,
+      state: googleAccount && { ...googleAccount, accounts },
       engine: 'antigravity', manage: false,
       busy: accountBusy || googleAccount?.usage?.refreshing,
       signOutBusy: googleSigningOut || googleAccount?.signingOut,
@@ -268,6 +279,7 @@ window.createEngineSettingsUI = ({ api, status, navigate }) => {
     $('googleUseCredits').checked = preferences.useG1Credits === true;
     $('googleAccountStatus').textContent = googleSigningOut || googleAccount?.signingOut ? 'Signing out of Google…' : accountBusy ? 'Connecting to Google…' : googleAccount?.verification === 'pending' ? 'Waiting for external sign-in. Return here to verify.'
       : googleAccount?.verification === 'stale-error' ? t('The last model refresh failed. Showing the previous model list; refresh the account to update it.')
+      : googleAccount?.error ? googleAccount.error
       : googleAccount?.verification === 'unverified' || googleAccount?.verification === 'error' || !googleAccount?.installed
         ? t('Sign in or refresh an existing CLI sign-in. The required runtime is downloaded on demand.') : '';
     const rawQuotaError = googleAccount?.usage?.error || '';
@@ -591,6 +603,11 @@ window.createEngineSettingsUI = ({ api, status, navigate }) => {
   };
   api.onGrokAccount(account => { grokAccount = account; renderGrokAccount(); });
   api.onAntigravityAccount?.(account => { googleAccount = account; renderConnection(); });
+  $('googleSignIn').onclick = () => void googleAccountAction(() => api.antigravitySignIn(), 'Waiting for external sign-in. Return here to verify.');
+  $('googleVerify').onclick = () => void googleAccountAction(() => api.antigravityAccountRefresh());
+  $('googleSignOut').onclick = async () => {
+    if (await confirmSubscriptionAccountRemoval('default', googleAccount?.accounts?.[0], 'antigravity')) await googleSignOut();
+  };
   async function googleAccountAction(call, message = 'Account status updated.') {
     if (accountBusy || googleSigningOut || googleAccount?.signingOut || googleAccount?.usage?.refreshing) return;
     const version = ++googleActionVersion;

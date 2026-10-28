@@ -4,6 +4,14 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const { createHarness } = require('./claude-harness.cjs');
+const { pickPort } = require('../src/main/backend-process');
+
+async function isolateRouter(harness) {
+  const { normalizeConfig, writeConfig } = require('../src/api/api-router-config');
+  const port = await pickPort({ host: '127.0.0.1', port: 0 });
+  writeConfig(path.join(harness.home, '.dsh', 'ollama-proxy.json'), normalizeConfig({ port, providers: [] }));
+  return port;
+}
 
 test('plugin cache IPC schedules one offline restart and exposes the saved result in preferences', async () => {
   const h = createHarness();
@@ -57,6 +65,7 @@ test('the settings handlers export and re-import the selected profile categories
     assert.equal(preview.categories.conversations.files > 0, true);
     assert.equal(preview.file, packageFile);
     // The second call imports the selected categories.
+    const localPort = await isolateRouter(target);
     const imported = await target.call('data-import', { file: packageFile, scope: ['api', 'settings', 'conversations'] });
     assert.equal(imported.ok, true);
     assert.equal(imported.canceled, undefined);
@@ -66,7 +75,8 @@ test('the settings handlers export and re-import the selected profile categories
     assert.equal(fs.existsSync(config), true);
     const routes = JSON.parse(fs.readFileSync(config, 'utf8'));
     assert.equal(routes.providers[0].models[0].id, 'test-model');
-    assert.equal(routes.port, undefined, 'the source router port is not imported');
+    assert.equal(routes.port, localPort, 'the local router port is preserved');
+    assert.equal((await target.call('api-router-get-state')).running, true, imported.warning);
   } finally { source.cleanup(); target.cleanup(); }
 });
 
@@ -79,7 +89,7 @@ test('an API-only import applies the provider pool without replacing the running
     assert.equal((await source.call('data-export', { scope: ['api'] })).ok, true);
 
     const { loadConfig, writeConfig, normalizeConfig } = require('../src/api/api-router-config');
-    const localPort = 19444;
+    const localPort = await pickPort({ host: '127.0.0.1', port: 0 });
     writeConfig(path.join(target.home, '.dsh', 'ollama-proxy.json'), normalizeConfig({ port: localPort, providers: [{
       id: 'local', name: 'Local', baseUrl: 'http://127.0.0.1:19099/v1', protocol: 'openai',
       models: [{ id: 'local-model', upstream: 'local-model' }], keys: [{ id: 'local-key', key: 'local-secret' }],
@@ -327,6 +337,7 @@ test('API imports allow active responses and downloads, but keep benchmark route
     assert.match(refused.error, /Stop the benchmark before changing API routes/);
     assert.equal(fs.existsSync(path.join(target.home, '.dsh', 'ollama-proxy.json')), false);
     services.benchmarks.pending = null;
+    await isolateRouter(target);
     const imported = await target.call('data-import', { file, scope: ['api'] });
     assert.equal(imported.ok, true, imported.error);
     assert.equal(imported.apiRoutes, true);
@@ -483,6 +494,7 @@ test('export IPC accepts a selection and import preview offers only included cat
     assert.equal(unavailable.ok, false);
     assert.match(unavailable.error, /no data for the selected/);
     assert.equal(fs.existsSync(path.join(target.home, '.dsh/ollama-proxy.json')), false);
+    await isolateRouter(target);
     const imported = await target.call('data-import', { file: packageFile, scope: ['api'] });
     assert.equal(imported.ok, true);
   } finally { source.cleanup(); target.cleanup(); }

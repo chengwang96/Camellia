@@ -47,7 +47,7 @@ window.dshDesktop=new Proxy({}, {get:(_,method)=>method.startsWith('on')?fn=>{ac
    return mockGoogle;
  }
  if(method==='antigravitySignIn'){
-   mockGoogle.verification='pending'; mockGoogle.awaitingVerification=true;
+   mockGoogle.verification='pending'; mockGoogle.awaitingVerification=true; mockGoogle.error='';
    Object.assign(mockGoogle.accounts[0],{signedIn:false,stale:false,loginPending:true,error:''});
    accountListeners.onAntigravityAccount(mockGoogle);
    return {ok:true,opened:true};
@@ -59,6 +59,7 @@ window.dshDesktop=new Proxy({}, {get:(_,method)=>method.startsWith('on')?fn=>{ac
    mockGoogle.verification=window.failGoogleVerify?'error':'verified';
    mockGoogle.awaitingVerification=false;
    const error=window.failGoogleVerify?'Google sign-in has expired or is invalid. Sign in again and retry.':'';
+   mockGoogle.error=error;
    Object.assign(mockGoogle.accounts[0],{signedIn:!window.failGoogleVerify,stale:false,loginPending:false,error});
    accountListeners.onAntigravityAccount(mockGoogle);
    return error?{ok:false,error}:mockGoogle;
@@ -151,8 +152,7 @@ try:
         google=page.locator('#googleAccountList')
         expect(google.locator('.subscription-card')).to_have_count(1)
         expect(google.locator('.subscription-credits')).to_have_count(0)
-        expect(page.locator('#googleSignIn, #googleRefresh')).to_have_count(0)
-        expect(page.locator('#googleAccountPanel > .account-actions')).to_have_count(0)
+        expect(page.locator('#googleAccountActions')).to_be_hidden()
         expect(google.locator('.subscription-meter')).to_have_count(4)
         expect(google.locator('.subscription-meter strong')).to_have_text(['100%','99%','40%','0%'])
         expect(google.locator('[data-card-action]')).to_have_count(5)
@@ -199,17 +199,21 @@ try:
         page.evaluate('window.finishGoogleVerify(); window.holdGoogleVerify=false')
         expect(google.locator('.subscription-state')).to_have_text('Signed in')
         google.locator('[data-card-action=login]').click()
-        expect(google.locator('.subscription-state')).to_have_text('Waiting for sign-in')
-        expect(google.locator('[data-card-action=verify]')).to_be_enabled()
+        expect(google.locator('.subscription-card')).to_have_count(0)
+        expect(page.locator('#googleAccountActions')).to_be_visible()
+        expect(page.locator('#googleVerify')).to_be_enabled()
         expect(page.locator('#status')).to_have_text('Waiting for external sign-in. Return here to verify.')
         page.evaluate('window.failGoogleVerify=true')
-        google.locator('[data-card-action=verify]').click()
+        page.locator('#googleVerify').click()
         expect(page.locator('#status')).to_contain_text('Google sign-in has expired')
-        expect(google.locator('[data-card-action=login]')).to_be_enabled()
-        google.locator('[data-card-action=login]').click()
+        expect(page.locator('#googleAccountStatus')).to_contain_text('Google sign-in has expired')
+        expect(google.locator('.subscription-card')).to_have_count(0)
+        expect(page.locator('#googleSignIn')).to_be_enabled()
+        page.locator('#googleSignIn').click()
         page.evaluate('window.failGoogleVerify=false')
-        google.locator('[data-card-action=verify]').click()
+        page.locator('#googleVerify').click()
         expect(google.locator('.subscription-state')).to_have_text('Signed in')
+        expect(page.locator('#googleAccountActions')).to_be_hidden()
         expect(page.locator('#status')).to_have_text('Account status updated.')
         expect(google.locator('[data-card-action=switch], [data-card-action=wake]')).to_have_count(0)
         expect(google.locator('[data-card-action=logout]')).to_be_enabled()
@@ -272,6 +276,8 @@ try:
         google.locator('[data-card-action=refresh]').click()
         expect(notice).to_be_hidden()
         # Expiry and a background refresh never lock the priority sign-out.
+        google.locator('[data-card-action=edit]').click()
+        google.locator('input').fill('Unsaved note before sign-out')
         page.evaluate("""() => {
           window.googleSignOutPreview=structuredClone(mockGoogle);
           mockGoogle.verification='error';mockGoogle.error='Google sign-in has expired or is invalid. Sign in again and retry.';
@@ -294,9 +300,11 @@ try:
         expect(page.locator('#googleAccountStatus')).to_have_text('Signing out of Google…')
         page.evaluate('window.finishGoogleSignOut();window.holdGoogleSignOut=false')
         expect(page.locator('#status')).to_have_text('Signed out of Google.')
-        expect(google.locator('.subscription-state')).to_have_text('Not signed in')
+        expect(google.locator('.subscription-card')).to_have_count(0)
+        expect(page.locator('#googleAccountActions')).to_be_visible()
         expect(google.locator('.subscription-meter')).to_have_count(0)
-        expect(google.locator('[data-card-action=logout]')).to_be_enabled()
+        expect(page.locator('#googleSignIn')).to_be_enabled()
+        expect(page.locator('#googleSignOut')).to_be_enabled()
         # Both foreground checks can be preempted. Late replies cannot replace
         # the sign-out status or enable another authentication operation.
         for action,hold,finish in [('verify','holdGoogleVerify','finishGoogleVerify'),('refresh','holdGoogleQuota','finishGoogleQuota')]:
@@ -310,10 +318,10 @@ try:
             google_confirmation.locator('#confirmSubscriptionAccount').click()
             expect(page.locator('#status')).to_have_text('Signed out of Google.')
             page.evaluate('options=>{window[options.finish]();window[options.hold]=false}',{'finish':finish,'hold':hold})
-            expect(google.locator('.subscription-state')).to_have_text('Not signed in')
+            expect(google.locator('.subscription-card')).to_have_count(0)
             expect(page.locator('#status')).to_have_text('Signed out of Google.')
-            expect(google.locator('[data-card-action=verify]')).to_be_enabled()
-            expect(google.locator('[data-card-action=logout]')).to_be_enabled()
+            expect(page.locator('#googleVerify')).to_be_enabled()
+            expect(page.locator('#googleSignOut')).to_be_enabled()
         assert page.evaluate("calls.filter(c=>c.method==='antigravitySignOut').length")==3
         page.evaluate('mockGoogle=structuredClone(googleSignOutPreview);accountListeners.onAntigravityAccount(mockGoogle)')
         backup=cards.locator('[data-card-id="account-1"]')

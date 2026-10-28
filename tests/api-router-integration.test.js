@@ -30,6 +30,21 @@ test('a bind failure is visible and does not report a running router',async t=>{
   assert.equal(result.state.running,false); assert.match(result.state.error,/EADDRINUSE/);
   assert.throws(()=>h.api.resolveClaudeRoute({model:'kimi-k3'}),/EADDRINUSE/);
 });
+
+test('harness cleanup releases its router port without a separate stop call', async t => {
+  const h = createHarness();
+  const probe = http.createServer();
+  t.after(async () => { await h.api.stopRouter(); await new Promise(resolve => probe.close(resolve)); h.cleanup(); });
+  const port = await freePort();
+  const saved = await h.call('api-router-save-config', pool(port));
+  assert.equal(saved.state.running, true, saved.state.error);
+  await h.cleanup();
+  await new Promise((resolve, reject) => {
+    probe.once('error', reject);
+    probe.listen(port, '127.0.0.1', resolve);
+  });
+  assert.equal(probe.address().port, port);
+});
 test('DSH pool injection preserves sibling providers, permissions and the selected model',t=>{
   const h=createHarness(); t.after(()=>h.cleanup());
   const home=h.folder('home/.dsh'); const file=path.join(home,'settings.yaml');
