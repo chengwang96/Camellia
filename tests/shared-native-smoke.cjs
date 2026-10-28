@@ -20,7 +20,13 @@ const { ClaudeHistory } = require('../src/engines/claude-history');
 const { createCodex } = require('../src/engines/codex');
 const { createAntigravity } = require('../src/engines/antigravity');
 const { createDshChat } = require('../src/engines/dsh-session');
-const { createGrokChat } = require('../src/engines/grok-session');
+const { createGrokChat, GROK_STARTUP_TIMEOUT_MS } = require('../src/engines/grok-session');
+
+const CONCURRENT_STARTUP_TIMEOUT_MS = GROK_STARTUP_TIMEOUT_MS + 30000;
+// Held model requests must outlive the slowest native startup. Otherwise an
+// early request times out and cools down the fixture route before late arrivals.
+const FIXTURE_REQUEST_TIMEOUT_MS = CONCURRENT_STARTUP_TIMEOUT_MS + 30000;
+const SMOKE_TIMEOUT_MS = FIXTURE_REQUEST_TIMEOUT_MS * 2;
 
 async function main() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'camellia-shared-native-'));
@@ -59,7 +65,7 @@ async function main() {
   writeConfig(file, normalizeConfig({ port, providers: [{ id: 'fixture', name: 'Local fixture', type: 'custom',
     baseUrl: `http://127.0.0.1:${server.address().port}/v1`, protocol: 'openai', models: [{ id: 'fixture-model', upstream: 'fixture-upstream' }, { id: 'fixture-picked', upstream: 'fixture-picked-upstream' }], keys: [{ id: 'fixture-key', key: 'loopback-only' }] }] }));
   try {
-    router = startApiRouter({ configPath: file, timeoutMs: 30000 }); await router.ready;
+    router = startApiRouter({ configPath: file, timeoutMs: FIXTURE_REQUEST_TIMEOUT_MS }); await router.ready;
     route.baseUrl = `http://127.0.0.1:${port}`;
     route.authToken = 'proxy-managed';
     const loadConfig = () => config, saveConfig = patch => { config = { ...config, ...patch }; }, log = message => logs.push(message);
@@ -136,7 +142,7 @@ async function main() {
       manager.saveSettings(engine, { sessionId: c.id, model: letter === 'A' ? 'fixture-model' : 'fixture-picked' });
       return { engine, letter, marker, c, ...await manager.send(engine, { sessionId: c.id, prompt: 'Acknowledge ' + marker + ' only.' }) };
     })));
-    const until = Date.now() + 45000;
+    const until = Date.now() + CONCURRENT_STARTUP_TIMEOUT_MS;
     while (held.size < runs.length && Date.now() < until) await new Promise(resolve => setTimeout(resolve, 100));
     assert.equal(held.size, runs.length, 'all native sessions reach the model concurrently');
     for (const run of runs) {
@@ -182,5 +188,5 @@ async function main() {
     console.log('Fixture artifacts: ' + root);
   }
 }
-const watchdog = setTimeout(() => { console.error('Native smoke exceeded 150 seconds'); process.exit(1); }, 150000);
+const watchdog = setTimeout(() => { console.error(`Native smoke exceeded ${SMOKE_TIMEOUT_MS / 1000} seconds`); process.exit(1); }, SMOKE_TIMEOUT_MS);
 main().catch(error => { console.error(error); process.exitCode = 1; }).finally(() => clearTimeout(watchdog));
