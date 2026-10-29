@@ -47,9 +47,38 @@ class Bridge:
         self.preparation = None
         self.prepared_id = None
         self.preparation_closed = False
+        self.child_tasks = {}
+        self.child_specs = []
 
     def update(self, update):
         emit({"method": "session/update", "params": {"sessionId": self.session_id, "update": update}})
+
+    def child_step(self, step, terminal=False):
+        if not step.parent_trajectory_id or not step.trajectory_id:
+            return
+        task = self.child_tasks.get(step.trajectory_id)
+        if task is None:
+            spec = next((item for item in self.child_specs if not item.get("bound")
+                         and item["prompt"] and item["prompt"] in step.content), None)
+            if spec:
+                spec["bound"] = True
+            task = {"id": step.trajectory_id, "parentId": step.parent_trajectory_id,
+                    "turnId": step.trajectory_id, "status": "running", "canReply": False, "canStop": False,
+                    **({"toolCallId": spec["tool_id"], "slot": spec["slot"], "title": spec["title"], "goal": spec["prompt"]} if spec else {})}
+            self.child_tasks[step.trajectory_id] = task
+        if not terminal and step.source == types.StepSource.USER:
+            task.update(status="running", result="", turnId=step.id)
+        if step.content:
+            task["progress"] = step.content[-16000:]
+        if step.error and step.type != types.StepType.TOOL_CALL:
+            task.update(status="failed", result=step.error)
+        elif terminal and step.is_complete_response:
+            task.update(status="completed", result=step.content[-16000:])
+        self.update({"sessionUpdate": "camellia_subagent", "task": dict(task)})
+
+    def child_meta(self, tool):
+        owner = next((owner for owner in self.child_tasks if (tool.step_id or "").startswith(owner + ":")), None)
+        return {"_meta": {"camelliaSubagentId": owner}} if owner else {}
 
     async def approve(self, tool):
         if self.tool_free:
@@ -63,11 +92,13 @@ class Bridge:
             "toolCall": {"title": name, "rawInput": tool.args, "toolCallId": tool.id},
             "options": [{"optionId": "allow", "kind": "allow_once", "name": "Allow once"},
                         {"optionId": "deny", "kind": "reject_once", "name": "Deny"}],
+            **self.child_meta(tool),
         }})
         try:
             allowed = await future
             if not allowed:
                 self.update({"sessionUpdate": "tool_call_update", "toolCallId": tool.id or tool.step_id,
+                             **self.child_meta(tool),
                              "title": name, "status": "failed", "content": [{"type": "content",
                              "content": {"type": "text", "text": "Action denied"}}]})
             return allowed
@@ -106,14 +137,27 @@ class Bridge:
         async def before_tool(tool):
             name = tool.name.value if isinstance(tool.name, types.BuiltinTools) else tool.name
             self.update({"sessionUpdate": "tool_call", "toolCallId": tool.id or tool.step_id,
-                         "title": name, "rawInput": tool.args, "status": "in_progress"})
+                         "title": name, "rawInput": tool.args, "status": "in_progress", **self.child_meta(tool)})
+            if name == "start_subagent":
+                for slot, entry in enumerate(tool.args.get("Subagents", [])):
+                    self.child_specs.append({"tool_id": tool.id or tool.step_id, "slot": slot,
+                                             "title": entry.get("Role") or entry.get("TypeName"), "prompt": entry.get("Prompt", "")})
             return types.HookResult(allow=True)
+
+        @hooks._pre_step
+        async def before_step(step):
+            self.child_step(step)
+
+        @hooks._post_step
+        async def after_step(step):
+            self.child_step(step, terminal=True)
 
         @hooks.post_tool_call
         async def after_tool(tool):
             name = tool.name.value if isinstance(tool.name, types.BuiltinTools) else tool.name
             result = tool.error or tool.result
             self.update({"sessionUpdate": "tool_call_update", "toolCallId": tool.id or tool.step_id,
+                         **self.child_meta(tool),
                          "title": name, "status": "failed" if tool.error else "completed",
                          "content": [{"type": "content", "content": {"type": "text", "text":
                              json.dumps(result, ensure_ascii=False, default=str) if isinstance(result, (dict, list)) else str(result or "")}}]})
@@ -149,9 +193,9 @@ class Bridge:
             conversation_id=metadata.get("conversationId"), system_instructions=instructions or None,
             # SDK 0.1.16's OpenAI strategy does not forward config.policies.
             # Enforce through its public tool-decision hook instead.
-            policies=[], hooks=[before_tool, policy.enforce(policies), after_tool, tool_error, on_compaction], capabilities=capabilities,
+            policies=[], hooks=[before_tool, policy.enforce(policies), after_tool, tool_error, on_compaction, before_step, after_step], capabilities=capabilities,
             mcp_servers=servers, skills_paths=[] if self.tool_free else native.get("skillsPaths", []),
-            subagents=[] if self.tool_free else None,
+            subagents=[] if self.tool_free else [types.SubagentConfig(**entry) for entry in native["subagents"]] if "subagents" in native else None,
         )
         self.agent = Agent(config)
         await self.agent.__aenter__()

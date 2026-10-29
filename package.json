@@ -40,6 +40,7 @@
     "test:antigravity:subscription": "node tests/antigravity-subscription-smoke.cjs",
     "setup:codex": "node scripts/prepare-runtimes.cjs codex",
     "test:codex": "node tests/codex-smoke.cjs",
+    "test:subagents": "node tests/native-subagents-smoke.cjs",
     "test:tools": "node tests/tools-native-audit.cjs"
   },
   "devDependencies": {
@@ -177,6 +178,7 @@
       "src/engines/web-tools.js",
       "src/engines/antigravity/**",
       "src/engines/grok-session.js",
+      "src/engines/dsh-subagents.mjs",
       "src/engines/discussions/dsh-text-policy.mjs",
       "src/engines/goal-tools.js",
       "src/engines/task-tools.js",

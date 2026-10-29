@@ -87,3 +87,35 @@ with tempfile.TemporaryDirectory(prefix="discussion-sdk-prepare-") as home:
             raise AssertionError("Unverified preparation was accepted: " + corrupt)
 
 print("PASS: resumed preparation pins the main database with child trajectories; ambiguous or incomplete storage rejects")
+
+sdk.types.StepSource = SimpleNamespace(USER="USER")
+sdk.types.StepType = SimpleNamespace(TOOL_CALL="TOOL_CALL")
+bridge = Bridge({"home": "unused"})
+updates = []
+bridge.update = updates.append
+bridge.child_specs = [{"tool_id": "spawn", "slot": 0, "title": "Fixture Reader", "prompt": "Read fixture"}]
+step = SimpleNamespace(trajectory_id="child", parent_trajectory_id="root", id="child:0", source="USER",
+                       content="Read fixture", error="", is_complete_response=False)
+bridge.child_step(step)
+assert updates[-1]["task"]["slot"] == 0
+assert updates[-1]["task"]["status"] == "running"
+step.source = "MODEL"
+step.content = "Partial response"
+step.is_complete_response = True
+bridge.child_step(step)
+assert updates[-1]["task"]["status"] == "running", "A response start is not a terminal child result"
+step.content = "Final child answer"
+bridge.child_step(step, terminal=True)
+assert updates[-1]["task"]["status"] == "completed"
+assert updates[-1]["task"]["result"] == "Final child answer"
+assert bridge.child_meta(SimpleNamespace(step_id="child:3")) == {"_meta": {"camelliaSubagentId": "child"}}
+step.source = "USER"
+step.is_complete_response = False
+bridge.child_step(step)
+assert updates[-1]["task"]["status"] == "running", "A new native child turn clears its prior completed state"
+print("PASS: SDK child progress, terminal results, resume and approval attribution stay scoped to the native trajectory")
+step.source = "MODEL"
+step.type = "TOOL_CALL"
+step.error = "Recoverable tool failure"
+bridge.child_step(step, terminal=True)
+assert updates[-1]["task"]["status"] == "running", "A failed tool is not a failed child task"

@@ -48,6 +48,25 @@ function fixture(t, overrides = {}) {
     restart: () => { manager = new SharedConversations(args); return manager; } };
 }
 
+for (const engine of ['claude', 'dsh', 'kimi', 'grok', 'antigravity']) test(`${engine} native child identity merges persist once and preserve the initiating turn`, async t => {
+  const h = fixture(t), result = await h.manager.send(engine, { prompt: 'Delegate the fixture task' });
+  const active = h.manager.active.get(result.sessionId), conversation = h.manager.get(result.sessionId);
+  active.session.children = new Map([['tool:spawn', {}], ['native-child', {}]]);
+  const capture = (task, replacesIds) => h.manager.capture(engine, { type: 'gui:subagent', conversationId: result.sessionId,
+    runId: active.session.gen, task, ...(replacesIds ? { replacesIds } : {}) });
+  capture({ id: 'tool:spawn', title: 'Inspect source', status: 'running' });
+  capture({ id: 'native-child', title: 'Inspect source', status: 'running' });
+  assert.equal(h.manager.subagentView(result.sessionId).length, 2);
+  active.session.children.delete('native-child');
+  capture({ id: 'tool:spawn', status: 'completed', result: 'Native child answer' }, ['native-child']);
+  const tasks = h.manager.subagentView(result.sessionId);
+  assert.equal(tasks.length, 1); assert.equal(tasks[0].userSeq, active.userSeq);
+  assert.equal(tasks[0].result, 'Native child answer');
+  h.finish(engine);
+  assert.equal(h.manager.load(engine, conversation.id).subagents.length, 1);
+  assert.equal(h.restart().subagentView(conversation.id)[0].result, 'Native child answer');
+});
+
 test('changing web source refreshes session tools while preserving the conversation and checking turn tokens', async t => {
   let enabled = false;
   const bridges = [], calls = [];

@@ -244,6 +244,33 @@ test('native questions retain option IDs, typed answers, multiple selections and
   assert.throws(() => permissionReply({ unknownInteraction: {} }, true), /unsupported interaction/);
 });
 
+test('native child details, approvals and cancellation target that child without changing the parent', async () => {
+  const { bridge, turn, messages, calls } = fixture();
+  bridge.step(turn, { trajectoryId: 'child-trajectory', summary: 'Review parser' },
+    waiting({ plannerResponse: { response: 'Child progress' } }), 2, 'child');
+  const child = bridge.children.get('child');
+  assert.equal(child.title, 'Review parser'); assert.equal(child.status, 'waiting');
+  const permission = messages.find(message => message.method === 'session/request_permission');
+  assert.equal(permission.params._meta.camelliaSubagentId, 'child');
+  assert.equal(messages.some(message => message.params?.update?.sessionUpdate === 'tool_call_update'), false);
+  await bridge.handle('session/camellia_subagent_cancel', { sessionId: bridge.session.id, taskId: 'child', turnId: child.turnId });
+  assert.equal(calls.at(-1).method, 'CancelCascadeInvocation'); assert.equal(calls.at(-1).params.cascadeId, 'child');
+  assert.equal(turn.canceled, undefined);
+  await assert.rejects(bridge.handle('session/camellia_subagent_cancel', { sessionId: bridge.session.id, taskId: 'root', turnId: child.turnId }), /changed/);
+  await assert.rejects(bridge.handle('session/camellia_subagent_cancel', { sessionId: bridge.session.id, taskId: 'child', turnId: 'stale' }), /changed/);
+});
+
+test('confirmed native parent cancellation settles owned child cards instead of leaving them running', async () => {
+  const { bridge } = fixture(); bridge.address = 'http://loopback';
+  bridge.childUpdate('child', { status: 'running', canStop: true });
+  bridge.rpc = async method => method === 'GetAllCascadeTrajectories' ? { trajectorySummaries: {
+    root: { status: 'CASCADE_RUN_STATUS_IDLE' },
+    child: { status: 'CASCADE_RUN_STATUS_IDLE', trajectoryMetadata: { rootConversationId: 'root' } },
+  } } : {};
+  await bridge.cancel();
+  assert.equal(bridge.children.get('child').status, 'stopped'); assert.equal(bridge.children.get('child').canStop, false);
+});
+
 test('streaming text and per-turn usage do not duplicate repeated native polls', () => {
   const { bridge, turn, messages } = fixture();
   for (const response of ['Hi', 'Hi there', 'Hi there']) bridge.step(turn, { trajectoryId: 'trajectory' }, {

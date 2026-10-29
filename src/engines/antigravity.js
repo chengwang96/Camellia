@@ -37,7 +37,8 @@ function subscriptionSpawnSpec({ runtime, home, env, proxyUrl, model = '', effor
   // expansion only; it is not a tool or extension execution policy.
   if (typeof literalInput !== 'boolean') throw new Error('Unverified Antigravity CLI literal input');
   if (discussion && !literalInput) throw new Error('Antigravity discussions require literal input');
-  return { args: [path.join(__dirname, 'antigravity/cli-bridge.cjs').replace(/app\.asar([\\/])/, 'app.asar.unpacked$1')], modeEngine: 'antigravity', applyThinking: false, prepareTimeout: 65000, env: {
+  return { args: [path.join(__dirname, 'antigravity/cli-bridge.cjs').replace(/app\.asar([\\/])/, 'app.asar.unpacked$1')], modeEngine: 'antigravity',
+    nativeSubagentEvents: !discussion, nativeChildControl: !discussion, applyThinking: false, prepareTimeout: 65000, env: {
     ...subscriptionEnvironment(env, proxyUrl), CAMELLIA_ANTIGRAVITY_CLI: JSON.stringify({ exe: runtime.file, home, model, effort,
       ...(literalInput ? { literalInput: true } : {}), ...(discussion ? { discussion: true } : {}), ...(skipPermissions ? { skipPermissions: true } : {}) }),
   } };

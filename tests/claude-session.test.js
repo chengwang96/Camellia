@@ -42,6 +42,34 @@ test('Claude reports native background task progress and its actual terminal sta
   assert.equal(tasks[2].status, 'failed'); assert.equal(tasks[2].canStop, false);
 });
 
+test('Claude recovers missed task starts from the native background snapshot and retains real completion', t => {
+  const f = fixture(t);
+  f.session.emitLine(JSON.stringify({ type: 'system', subtype: 'background_tasks_changed', tasks: [
+    { task_id: 'child', task_type: 'local_agent', description: 'Audit source' },
+    { task_id: 'shell', task_type: 'local_bash', description: 'Run shell' },
+  ] }));
+  assert.equal(f.session.children.size, 1); assert.equal(f.session.children.get('child').status, 'running');
+  f.session.emitLine(JSON.stringify({ type: 'system', subtype: 'task_notification', task_id: 'child', status: 'completed', summary: 'Audit passed' }));
+  assert.equal(f.session.children.get('child').result, 'Audit passed');
+});
+
+test('Claude Agent calls remain visible without lifecycle starts and bind native IDs without duplicate cards', async t => {
+  const f = fixture(t);
+  const send = row => f.session.emitLine(JSON.stringify(row));
+  send({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 'agent-call', name: 'Agent', input: { description: 'Review files', prompt: 'Check imports', run_in_background: true } }] } });
+  send({ type: 'user', tool_use_result: { isAsync: true, agentId: 'native-child', status: 'async_launched' },
+    message: { content: [{ type: 'tool_result', tool_use_id: 'agent-call', content: 'Started in the background' }] } });
+  send({ type: 'system', subtype: 'task_progress', task_id: 'native-child', tool_use_id: 'agent-call', summary: 'Reading files' });
+  assert.equal(f.session.children.size, 1);
+  const task = [...f.session.children.values()][0];
+  assert.equal(task.goal, 'Check imports'); assert.equal(task.progress, 'Reading files'); assert.equal(task.status, 'running');
+  const stopping = f.session.controlChild(task.id, { operation: 'stop', expectedTurnId: task.turnId });
+  const request = f.writes.at(-1); assert.equal(request.request.task_id, 'native-child');
+  send({ type: 'control_response', response: { request_id: request.request_id, subtype: 'success' } }); await stopping;
+  send({ type: 'system', subtype: 'task_updated', task_id: 'native-child', patch: { status: 'killed' } });
+  assert.equal([...f.session.children.values()][0].status, 'stopped');
+});
+
 test('Claude routes child approvals and stop requests without interrupting the parent', async t => {
   const f = fixture(t); f.session.sendUserMessage('Parent work');
   f.session.emitLine(JSON.stringify({ type: 'system', subtype: 'task_started', task_id: 'child', task_type: 'local_agent', tool_use_id: 'spawn-tool', description: 'Inspect files' }));

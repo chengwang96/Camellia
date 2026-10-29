@@ -55,6 +55,63 @@ function grokSpawnSpec({ runtime, home, model, connection = 'api', route, contex
 }
 
 class GrokSession extends AcpSession {
+  emit(event) {
+    if (event.type === 'gui:subagent') for (const oldId of event.replacesIds || []) {
+      const id = event.task.id;
+      for (const [sessionId, childId] of this.childSessions || []) if (childId === oldId) this.childSessions.set(sessionId, id);
+      if (this.childText?.has(oldId)) {
+        if (!this.childText.has(id)) this.childText.set(id, this.childText.get(oldId));
+        this.childText.delete(oldId);
+      }
+    }
+    return super.emit(event);
+  }
+
+  receive(message) {
+    const params = message.params, update = params?.update;
+    if (message.method === '_x.ai/session_notification' && update?.sessionUpdate === 'subagent_spawned'
+        && (params.sessionId === this.sessionId || this.childSessions?.has(params.sessionId))) {
+      this.childSessions ||= new Map(); this.childText ||= new Map();
+      const task = this.subagents.attach(update.subagent_id, { title: update.description || update.subagent_type,
+        parentId: this.childSessions.get(params.sessionId) || this.sessionId, turnId: update.attempt_id,
+        status: 'running', canStop: false, canReply: false, progress: '', result: '', approvals: [] });
+      if (task) this.childSessions.set(update.child_session_id || update.subagent_id, task.id);
+      return;
+    }
+    const resolved = this.subagents.resolve(params?.sessionId);
+    const id = this.childSessions?.get(params?.sessionId) || (params?.sessionId !== this.sessionId && this.children.has(resolved) ? resolved : undefined);
+    if (id) {
+      this.childText ||= new Map();
+      if (message.method === 'session/request_permission') {
+        return super.receive({ ...message, params: { ...params, sessionId: this.sessionId,
+          _meta: { ...params._meta, camelliaSubagentId: id } } });
+      }
+      if (message.method === 'session/update') {
+        const task = this.children.get(id);
+        if (update?.sessionUpdate === 'agent_message_chunk' && update.content?.type === 'text') {
+          const value = ((this.childText.get(id) || '') + update.content.text).slice(-16000);
+          this.childText.set(id, value); this.subagents.update(id, { progress: value });
+        } else if (['tool_call', 'tool_call_update'].includes(update?.sessionUpdate)) {
+          const text = update.content?.map(part => part.content?.text || '').join('\n') || update.title || '';
+          if (text) this.subagents.update(id, { progress: text, history: [
+            ...(task.history || []), { type: update.sessionUpdate, text },
+          ] });
+        }
+        return;
+      }
+      if (message.method === '_x.ai/session_notification') {
+        if (update.sessionUpdate === 'response_started') {
+          this.childText.set(id, ''); this.subagents.update(id, { status: 'running' });
+        }
+        if (update.sessionUpdate === 'turn_completed') this.subagents.update(id, {
+          status: update.stop_reason === 'cancelled' ? 'stopped' : update.stop_reason === 'end_turn' ? 'completed' : 'failed',
+          result: this.childText.get(id) || '', canStop: false,
+        });
+        return;
+      }
+    }
+    return super.receive(message);
+  }
   async open() {
     await this.starting;
     const initResult = await this.request('initialize', { protocolVersion: 1, clientCapabilities: {}, clientInfo: { name: 'Camellia', version: '1.0.1' } }, GROK_STARTUP_TIMEOUT_MS);

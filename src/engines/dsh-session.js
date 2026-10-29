@@ -8,6 +8,8 @@ const { dshLaunchArgs } = require('./dsh-config');
 const { modelId } = require('../api/api-router-config');
 const { valid, nativeMode } = require('./permission-levels');
 const { levelsFor } = require('../shared/model-levels');
+const YAML = require('yaml');
+const { writeText } = require('../shared/json-store');
 // Match the pinned DSH provider default. 8K can truncate a reasoning-only reply
 // before the model emits code or a tool call, ending the native turn early.
 const DSH_MAX_OUTPUT_TOKENS = 32768;
@@ -35,7 +37,17 @@ function dshAcpSpec({ runtime, home, model, route, permissionMode, env, nativeCo
       api: 'anthropic-messages', baseURL: route.baseUrl, defaultContextWindow: 65536, defaultMaxTokens: DSH_MAX_OUTPUT_TOKENS,
       models: [{ id: model, reasoningEfforts: canThink ? reasoningEfforts : false }] } } },
   } });
+  const childEvents = /^(?:0\.[2-9]|[1-9]\.)/.test(String(runtime.version || ''));
+  if (childEvents) {
+    const file = path.join(home, 'camellia-subagents.patch.yml');
+    writeText(file, YAML.stringify([{ insert: [{ id: 'camellia-subagents',
+      name: path.join(__dirname, 'dsh-subagents.mjs').replace(/app\.asar([\\/])/, 'app.asar.unpacked$1'),
+      inject: ['agents', 'subagents'],
+    }] }]));
+    args.push('--patch', file);
+  }
   return { args, env: { ...env, DSH_HOME: home, DSH_API_ROUTER_KEY: 'proxy-managed' },
+    modeEngine: 'dsh', nativeSubagentEvents: childEvents,
     noModes: true, modelValue: JSON.stringify(['api-pool', model]), thinkingId: 'reasoning_effort', applyThinking: canThink };
 }
 function createDshChat({ dataDir, loadConfig, saveConfig, getRoute, getModels, getModelThinking = () => undefined, runtime, node, environment, onEvent, log, nativeConfig = () => ({}), nativeRevision = () => '' }) {

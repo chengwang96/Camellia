@@ -1462,7 +1462,8 @@ class SharedConversations {
         userSeq: parent?.userSeq ?? (a?.session === session ? a.userSeq : session.subagentUserSeq) });
       if (!task || !Number.isSafeInteger(task.userSeq)) return false;
       const previous = c.subagents;
-      c.subagents = [...(previous || []).filter(row => row.id !== task.id || row.engine !== engine), task].slice(-128);
+      const replaced = new Set(Array.isArray(event.replacesIds) ? event.replacesIds : []);
+      c.subagents = [...(previous || []).filter(row => row.engine !== engine || row.id !== task.id && !replaced.has(row.id)), task].slice(-128);
       try { this.save(c); }
       catch (error) { c.subagents = previous; this.log('Could not save subtask status: ' + error.message); return false; }
       this.onEvent({ type: 'gui:subagent', session_id: c.id, engine, tasks: this.subagentView(c.id) });

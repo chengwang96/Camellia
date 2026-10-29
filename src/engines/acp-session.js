@@ -7,6 +7,7 @@ const { StreamingSession } = require('./streaming-session');
 const { validSessionId } = require('./claude-history');
 const { failedToolResult } = require('../api/tool-results');
 const { nativeMode } = require('./permission-levels');
+const { NativeSubagents } = require('./native-subagents');
 
 // ACP stays at the process boundary. The renderer receives the same stream and
 // session events as the other harness, never upstream keys or CLI internals.
@@ -22,6 +23,13 @@ class AcpSession extends StreamingSession {
     this.permissions = new Map();
     this.tools = new Map();
     this.eventSeq = 0;
+    this.subagents = new NativeSubagents(spec.modeEngine || name.toLowerCase(), (task, replacesIds) => {
+      for (const request of this.permissions.values()) if (replacesIds?.includes(request.subagentId)) request.subagentId = task.id;
+      this.emit({ type: 'gui:subagent', task, ...(replacesIds ? { replacesIds } : {}) });
+    });
+    this.children = this.subagents.children;
+    if (spec.modeEngine === 'kimi' && spec.env?.KIMI_CODE_HOME)
+      this.childHistory = new (require('./kimi-subagents').KimiSubagents)(this, spec.env.KIMI_CODE_HOME);
   }
 
   start(waitFor) {
@@ -87,16 +95,26 @@ class AcpSession extends StreamingSession {
       // after `running` clears. Nothing else is admitted late.
       const lateDenial = this.running === false && !this.dead && !this.cancelled && !this.compaction
         && message.method === 'session/update' && message.params.update?.permissionBlocked === true;
-      if (message.method === 'session/update' && message.params.sessionId === this.sessionId && (this.running || lateDenial)) this.update(message.params.update);
+      const childUpdate = message.params?.update?.sessionUpdate === 'camellia_subagent'
+        && this.children.has(this.subagents.resolve(message.params.update.task?.id));
+      if (message.method === 'session/update' && message.params.sessionId === this.sessionId && (this.running || lateDenial || childUpdate)) this.update(message.params.update);
       else if (message.id !== undefined) {
-        if (message.method === 'session/request_permission' && message.params.sessionId === this.sessionId && this.running && !this.cancelled && !this.compaction) {
+        const child = message.params?._meta?.camelliaSubagentId && this.children.get(this.subagents.resolve(message.params._meta.camelliaSubagentId));
+        if (message.method === 'session/request_permission' && message.params.sessionId === this.sessionId
+            && (this.running || child && ['starting', 'running', 'waiting'].includes(child.status)) && !this.cancelled && !this.compaction) {
           const requestId = String(message.id);
           this.permissions.set(requestId, message);
           const tool = message.params.toolCall || {};
           const content = toolContent(tool.content);
-          this.emit({ type: 'gui:permission', requestId, toolName: tool.title || tool.kind || '',
+          const event = { type: 'gui:permission', requestId, toolName: tool.title || tool.kind || '',
             input: tool.rawInput || (content ? { command: content } : tool.locations?.length ? { paths: tool.locations.map(loc => loc.path).join('\n') } : {}),
-            options: message.params.options, ...(Array.isArray(message.params.questions) ? { questions: message.params.questions } : {}) });
+            options: message.params.options, ...(Array.isArray(message.params.questions) ? { questions: message.params.questions } : {}) };
+          const nativeId = message.params._meta?.camelliaSubagentId;
+          const child = nativeId && this.children.get(this.subagents.resolve(nativeId));
+          if (child) {
+            message.subagentId = child.id;
+            this.subagents.update(child.id, { status: 'waiting', approvals: [...(child.approvals || []), { ...event, subagentId: child.id }] });
+          } else this.emit(event);
         } else if (message.method === 'session/request_permission') {
           this.write({ id: message.id, result: { outcome: { outcome: 'cancelled' } } });
         } else this.write({ id: message.id, error: { code: -32601, message: 'Unsupported client method: ' + message.method } });
@@ -148,6 +166,7 @@ class AcpSession extends StreamingSession {
 
   sendUserMessage(prompt, attachments = []) {
     if (this.running || this.dead) return false;
+    this.subagents.begin();
     this.running = true;
     this.prompt = prompt;
     this.replayEvents = [];
@@ -164,6 +183,7 @@ class AcpSession extends StreamingSession {
   async run(prompt, attachments) {
     try {
       await (this.ready ||= this.open());
+      if (this.childHistory) await this.childHistory.begin().catch(error => this.log('Kimi subtasks: ' + error.message));
       if (this.usageMeter) await this.usageMeter.begin(this.sessionId, () => this.running && !this.dead && !this.cancelled);
       if (!this.running) return;
       if (this.dead) throw new Error(`${this.name} process stopped`);
@@ -181,6 +201,7 @@ class AcpSession extends StreamingSession {
         parts.push({ type: 'image', mimeType, data: fs.readFileSync(attachment.path).toString('base64') });
       }
       const response = await this.request('session/prompt', { sessionId: this.sessionId, prompt: parts }, 0);
+      if (this.childHistory) await this.childHistory.poll().catch(error => this.log('Kimi subtasks: ' + error.message));
       const stopped = this.cancelled || response.stopReason === 'cancelled';
       const failed = ['refusal', 'max_tokens', 'max_turn_requests'].includes(response.stopReason);
       this.finish({ subtype: stopped ? 'stopped' : failed ? response.stopReason : 'success', is_error: failed, ...(response.usage ? { usage: response.usage } : {}) });
@@ -239,6 +260,17 @@ class AcpSession extends StreamingSession {
 
   update(update) {
     const kind = update.sessionUpdate;
+    if (kind === 'camellia_subagent') {
+      if (!this.compaction && update.task) this.subagents.native(update.task.id, { ...update.task, canReply: false,
+        canStop: this.spec.nativeChildControl === true && update.task.canStop === true });
+      return;
+    }
+    const child = update._meta?.camelliaSubagentId && this.children.get(this.subagents.resolve(update._meta.camelliaSubagentId));
+    if (child && ['tool_call', 'tool_call_update'].includes(kind)) {
+      const detail = toolContent(update.content) || update.title || '';
+      this.subagents.update(child.id, { progress: detail, history: [...(child.history || []), { type: kind, text: detail }] });
+      return;
+    }
     if (kind === 'camellia_usage') { this.usageMeter?.antigravityStep(update.stepId, update.usage); return; }
     if (kind === 'available_commands_update') { this.availableCommands = update.availableCommands; return; }
     if (this.compaction) {
@@ -275,6 +307,7 @@ class AcpSession extends StreamingSession {
       tool.is_error = tool.status === 'failed' || (tool.status === 'completed' && failedToolResult(tool.name, tool.output || ''));
       if (tool.is_error) tool.status = 'failed';
       this.tools.set(tool.id, tool);
+      if (!this.spec.nativeSubagentEvents) this.subagents.observe(tool, update);
       this.emit({ ...tool });
     } else if (kind === 'config_option_update') this.emit({ type: 'gui:config', options: update.configOptions });
     else if (kind === 'plan') this.emit({ type: 'gui:plan', entries: update.entries });
@@ -289,8 +322,32 @@ class AcpSession extends StreamingSession {
     this.write({ id: request.id, result: { outcome: chosen ? { outcome: 'selected', optionId: chosen.optionId } : { outcome: 'cancelled' },
       ...(request.params.questions?.length ? { input: allow ? input || {} : {} } : {}) } });
     this.permissions.delete(requestId);
+    if (request.subagentId) {
+      const task = this.children.get(request.subagentId);
+      const approvals = (task?.approvals || []).filter(row => row.requestId !== requestId);
+      this.subagents.update(request.subagentId, { approvals, status: approvals.length ? 'waiting' : 'running' });
+    }
     this.replayEvents = this.replayEvents.filter(event => event.type !== 'gui:permission' || event.requestId !== requestId);
     return true;
+  }
+
+  async controlChild(id, { operation, approvalId, response, expectedTurnId }) {
+    const task = this.children.get(id);
+    if (!task || this.dead) throw new Error('This subtask is no longer connected');
+    if (operation === 'approve') {
+      if (this.permissions.get(approvalId)?.subagentId !== id || !this.answerPermission(approvalId, response.allow, response.input, undefined, response.optionId))
+        throw new Error('The subtask request changed');
+      return;
+    }
+    if (task.turnId !== expectedTurnId) throw new Error('The subtask changed; refresh before responding');
+    if (operation !== 'stop' || !task.canStop || !this.spec.nativeChildControl) throw new Error('This subtask does not support that action');
+    await this.request('session/camellia_subagent_cancel', { sessionId: this.sessionId, taskId: this.subagents.nativeId(id), turnId: expectedTurnId });
+  }
+
+  finish(result) {
+    const approvals = [...this.permissions].filter(([, request]) => request.subagentId);
+    super.finish(result);
+    if (!this.dead) for (const [id, request] of approvals) this.permissions.set(id, request);
   }
 
   interrupt() {
@@ -306,6 +363,8 @@ class AcpSession extends StreamingSession {
   close(error) {
     this.settleCompaction(error);
     this.dead = true;
+    this.subagents.disconnect();
+    this.childHistory?.stop();
     clearTimeout(this.cancelTimer);
     for (const pending of this.pending.values()) { clearTimeout(pending.timer); pending.reject(error); }
     this.pending.clear();

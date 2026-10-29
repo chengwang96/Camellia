@@ -2,6 +2,7 @@
 
 const { StringDecoder } = require('node:string_decoder');
 const { nativeMode } = require('./permission-levels');
+const { NativeSubagents, nativeStatus, contentText } = require('./native-subagents');
 
 // Owns one CLI process. Application state stays in main; the callbacks below
 // also make process failures and fragmented output testable without Electron.
@@ -23,8 +24,14 @@ class ClaudeSession {
     this.stderrDecoder = new StringDecoder('utf8');
     this.controlSeq = 0;
     this.permissions = new Map();
-    this.children = new Map();
+    this.subagents = new NativeSubagents('claude', (task, replacesIds) => {
+      for (const request of this.permissions.values()) if (replacesIds?.includes(request.subagentId)) request.subagentId = task.id;
+      for (const [key, id] of this.childTools || []) if (replacesIds?.includes(id)) this.childTools.set(key, task.id);
+      this.sendChannel({ type: 'gui:subagent', task, ...(replacesIds ? { replacesIds } : {}) });
+    });
+    this.children = this.subagents.children;
     this.childTools = new Map();
+    this.agentCalls = new Map();
     this.childControls = new Map();
   }
 
@@ -154,33 +161,59 @@ class ClaudeSession {
       else this.sendChannel({ type: 'gui:compaction', state: 'completed' });
     }
     if (this.compaction) return;
+    if (obj.type === 'system' && obj.subtype === 'background_tasks_changed') {
+      for (const task of obj.tasks || []) {
+        if (task.task_type && !/agent|workflow|teammate/.test(task.task_type)) continue;
+        this.subagents.native(task.task_id, { title: task.description, status: 'running', canReply: false, canStop: true,
+          ...(!this.children.has(this.subagents.resolve(task.task_id)) ? { turnId: 'child-start-' + ++this.controlSeq } : {}) });
+      }
+      return;
+    }
     if (obj.type === 'system' && ['task_started', 'task_progress', 'task_notification', 'task_updated'].includes(obj.subtype) && obj.task_id) {
-      if (obj.task_type && !['local_agent', 'remote_agent', 'local_workflow', 'in_process_teammate'].includes(obj.task_type)) return;
-      if (obj.subtype !== 'task_started' && !this.children.has(obj.task_id)) return;
-      if (obj.tool_use_id) this.childTools.set(obj.tool_use_id, obj.task_id);
+      if (obj.task_type && !/agent|workflow|teammate/.test(obj.task_type)) return;
+      const known = this.subagents.resolve(obj.task_id);
+      if (obj.subtype !== 'task_started' && !this.children.has(known) && !obj.subagent_type && !this.agentCalls.has(obj.tool_use_id)) return;
       const native = obj.patch || obj;
-      const status = ({ pending: 'starting', running: 'running', completed: 'completed', failed: 'failed', stopped: 'stopped' }[native.status]) || this.children.get(obj.task_id)?.status || 'running';
-      this.childUpdate(obj.task_id, {
+      const status = nativeStatus(native.status) || this.children.get(known)?.status || 'running';
+      const task = this.subagents.native(obj.task_id, { toolCallId: obj.tool_use_id,
         ...(obj.parent_task_id ? { parentId: obj.parent_task_id } : {}),
         ...(obj.subtype === 'task_started' ? { turnId: obj.run_id || 'child-start-' + ++this.controlSeq } : {}),
-        title: obj.description || undefined, goal: obj.subtype === 'task_started' ? obj.description : undefined,
+        title: obj.description || undefined, goal: obj.subtype === 'task_started' ? obj.prompt || obj.description : undefined,
         progress: obj.summary || obj.description || undefined,
         status, ...(status === 'completed' ? { result: obj.summary || undefined } : {}),
         canReply: false, canStop: ['starting', 'running', 'waiting'].includes(status),
-        history: [...(this.children.get(obj.task_id)?.history || []), { type: obj.subtype, text: obj.summary || obj.description || native.status || '' }],
+        history: [...(this.children.get(known)?.history || []), { type: obj.subtype, text: obj.summary || obj.description || native.status || '' }],
         ...(!['starting', 'running', 'waiting'].includes(status) ? { approvals: [] } : {}),
       });
+      if (task && obj.tool_use_id) this.childTools.set(obj.tool_use_id, task.id);
       return;
     }
     if (obj.parent_tool_use_id || obj.agent_id) {
-      const id = obj.agent_id || this.childTools.get(obj.parent_tool_use_id);
+      const id = this.subagents.resolve(obj.agent_id || this.childTools.get(obj.parent_tool_use_id));
       if (id && this.children.has(id)) {
         const text = obj.message?.content?.filter(block => block.type === 'text').map(block => block.text).join('\n') || obj.event?.delta?.text;
         if (text) this.childUpdate(id, { progress: text, history: [...(this.children.get(id).history || []), { type: obj.type, text }] });
       }
       return;
     }
+    this.observeAgentTools(obj);
     this.sendChannel(obj);
+  }
+
+  observeAgentTools(obj) {
+    if (!Array.isArray(obj.message?.content)) return;
+    for (const block of obj.message.content) {
+      if (obj.type === 'assistant' && block.type === 'tool_use' && ['Agent', 'Task'].includes(block.name)) {
+        const tool = { id: block.id, name: block.name, input: block.input, status: 'in_progress' };
+        this.agentCalls.set(block.id, tool);
+        this.subagents.observe(tool);
+        this.childTools.set(block.id, this.subagents.calls.get(block.id)?.ids[0]);
+      } else if (obj.type === 'user' && block.type === 'tool_result' && this.agentCalls.has(block.tool_use_id)) {
+        const tool = { ...this.agentCalls.get(block.tool_use_id), output: contentText(block.content),
+          status: block.is_error ? 'failed' : 'completed', is_error: block.is_error === true };
+        this.subagents.observe(tool, { rawOutput: obj.tool_use_result || block.tool_use_result });
+      }
+    }
   }
 
   onControlRequest(msg) {
@@ -190,7 +223,7 @@ class ClaudeSession {
       this.clearWatchdog();
       this.answer(msg.request_id, {});
     } else if (req.subtype === 'can_use_tool') {
-      const childId = typeof req.agent_id === 'string' ? req.agent_id : null;
+      const childId = typeof req.agent_id === 'string' ? this.subagents.resolve(req.agent_id) : null;
       if ((!childId && (!this.running || this.cancelled || this.compaction)) || this.dead) {
         this.answer(msg.request_id, { behavior: 'deny', message: 'This response was stopped or is no longer active.' });
         return;
@@ -254,6 +287,7 @@ class ClaudeSession {
 
   sendUserMessage(text, attachments = []) {
     if (this.dead || this.running) return false;
+    this.subagents.begin(); this.agentCalls.clear();
     const content = [{ type: 'text', text }];
     const { IMAGE_TYPES } = require('./discussions/assets');
     for (const file of attachments) if (file.isImage) {
@@ -304,9 +338,7 @@ class ClaudeSession {
   clearWatchdog() { this.clearTimer(this.watchdog); this.watchdog = null; }
 
   childUpdate(id, update) {
-    const task = require('../shared/subagents').mergeTask(this.children.get(id), { ...update, id }, { engine: 'claude' });
-    if (!task) return;
-    this.children.set(id, task); this.sendChannel({ type: 'gui:subagent', task });
+    return this.subagents.update(id, update);
   }
 
   async controlChild(id, { operation, approvalId, response, expectedTurnId }) {
@@ -322,7 +354,7 @@ class ClaudeSession {
     await new Promise((resolve, reject) => {
       const timer = this.setTimer(() => { this.childControls.delete(requestId); reject(new Error('The subtask stop was not confirmed')); }, 12000);
       timer?.unref?.(); this.childControls.set(requestId, { resolve, reject, timer });
-      if (!this.write({ type: 'control_request', request_id: requestId, request: { subtype: 'stop_task', task_id: id } })) {
+      if (!this.write({ type: 'control_request', request_id: requestId, request: { subtype: 'stop_task', task_id: this.subagents.nativeId(id) } })) {
         this.childControls.delete(requestId); this.clearTimer(timer); reject(new Error('Claude input channel is closed'));
       }
     });

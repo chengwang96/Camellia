@@ -187,8 +187,42 @@ def exercise_design(browser, theme, language, width, height):
     page.close()
 
 
+def exercise_all_harnesses(browser):
+    page = browser.new_page(viewport={'width': 1440, 'height': 900})
+    errors = []
+    page.on('pageerror', lambda error: errors.append(str(error)))
+    page.add_init_script(bridge)
+    page.goto((repo / 'src/renderer/chat/claude.html').as_uri() + '?harness=codex', wait_until='networkidle')
+    page.wait_for_function('uiReady')
+    page.locator('[data-sid="shared-fixture"]').click()
+    engines = ['claude', 'codex', 'dsh', 'kimi', 'grok', 'antigravity']
+    children = [{**task, 'id': 'same-native-id', 'engine': engine, 'title': engine + ' native task',
+                 'status': 'running', 'progress': 'Native progress ' + engine, 'approvals': [],
+                 'canStop': False, 'canReply': False} for engine in engines]
+    page.evaluate('tasks => deliverChild(tasks)', children)
+    expect(page.locator('.subtask-turn-card .work-task')).to_have_count(6)
+    page.locator('#workPanelToggle').click()
+    expect(page.locator('#workPanel .work-task')).to_have_count(6)
+    for engine in engines:
+        expect(page.locator('#workPanel .work-task').filter(has_text=engine + ' native task')).to_contain_text('Native progress ' + engine)
+    completed = [{**child, 'status': 'completed', 'result': 'Native answer ' + child['engine']} for child in children]
+    page.evaluate('tasks => deliverChild(tasks)', completed)
+    expect(page.locator('#workPanel .work-task[data-state="completed"]')).to_have_count(6)
+    expect(page.locator('.subtask-turn-card .work-task')).to_have_count(6)
+    page.locator('#workPanel .work-task').filter(has_text='claude native task').click()
+    expect(page.locator('.work-progress')).to_contain_text('Native answer claude')
+    expect(page.locator('#workPanelFooter')).to_be_hidden()
+    output = repo / 'dist/ui-preview'
+    output.mkdir(parents=True, exist_ok=True)
+    page.locator('.work-back').click()
+    page.screenshot(path=str(output / 'native-subagents-all.png'), animations='disabled')
+    assert not errors, errors
+    page.close()
+
+
 with sync_playwright() as p:
     browser = p.chromium.launch(headless=True)
+    exercise_all_harnesses(browser)
     for theme, width in [('light', 1440), ('dark', 960)]:
         page = browser.new_page(viewport={'width': width, 'height': 900}, color_scheme=theme)
         errors = []

@@ -101,8 +101,15 @@ class InteractiveCli {
   constructor(config, write) {
     this.config = config; this.write = write; this.mode = 'default'; this.requests = new Map();
     this.model = config.model || ''; this.csrf = randomUUID(); this.closed = false;
+    this.children = new Map();
+    this.stoppingChildren = new Set();
   }
   update(value) { this.write({ method: 'session/update', params: { sessionId: this.session.id, update: value } }); }
+  childUpdate(id, patch) {
+    const task = { ...this.children.get(id), id, parentId: this.session.conversationId, canReply: false, ...patch };
+    if (JSON.stringify(task) === JSON.stringify(this.children.get(id))) return;
+    this.children.set(id, task); this.update({ sessionUpdate: 'camellia_subagent', task });
+  }
   save() { fs.mkdirSync(path.dirname(this.file), { recursive: true }); fs.writeFileSync(this.file, JSON.stringify(this.session) + '\n'); }
   async rpc(method, body = {}, signal = AbortSignal.timeout(30000)) {
     if (!this.address || this.closed) throw new Error('Antigravity interactive connection is unavailable');
@@ -220,7 +227,8 @@ class InteractiveCli {
   async prompt(parts) {
     await this.cancelling;
     if (this.turn) throw new Error('A response is already running');
-    const turn = this.turn = { controller: new AbortController(), sent: new Map(), tools: new Map(), permissions: new Set(), usage: {}, canceled: false };
+    const turn = this.turn = { controller: new AbortController(), sent: new Map(), tools: new Map(), permissions: new Set(), usage: {}, canceled: false,
+      childResults: new Map(), childErrors: new Map() };
     try {
       await this.prepare();
       if (turn.canceled || this.closed) return { stopReason: 'cancelled' };
@@ -254,9 +262,16 @@ class InteractiveCli {
         const children = ownedTrajectories(all.trajectorySummaries, cascadeId).filter(([id, summary]) => id !== cascadeId
           && (!idle(summary.status) || summary.stepCount > (baseline.get(id) || 0)));
         for (const [childId, summary] of children) {
+          const previous = this.children.get(childId), turnId = offset + ':' + childId;
+          if (previous?.turnId !== turnId) this.stoppingChildren.delete(childId);
+          this.childUpdate(childId, { title: summary.summary || summary.title || this.children.get(childId)?.title || 'Subtask',
+            turnId, ...(previous?.turnId !== turnId ? { status: 'running', canStop: true, result: '', history: [] } : {}) });
           const start = baseline.get(childId) || 0;
           const child = await this.rpc('GetCascadeTrajectorySteps', { cascadeId: childId, stepOffset: start }, turn.controller.signal);
           for (const [index, step] of (child.steps || []).entries()) this.step(turn, summary, step, start + index, childId);
+          if (idle(summary.status)) this.childUpdate(childId, { status: /CANCELED/.test(summary.status) || this.stoppingChildren.has(childId) ? 'stopped'
+            : turn.childErrors.has(childId) ? 'failed' : 'completed', canStop: false,
+            result: turn.childErrors.get(childId) || turn.childResults.get(childId) || '' });
         }
         if (sawInput && idle(result.status) && children.every(([, summary]) => idle(summary.status))) {
           if (turn.error) throw new Error(turn.error);
@@ -279,10 +294,22 @@ class InteractiveCli {
     const id = key + ':' + index;
     const response = step.plannerResponse?.modifiedResponse || step.plannerResponse?.response || '';
     const old = turn.sent.get(id) || '';
+    const tool = step.metadata?.toolCall;
+    const child = cascadeId !== this.session.conversationId;
+    if (child) {
+      turn.childResults ||= new Map(); turn.childErrors ||= new Map();
+      const previous = this.children.get(cascadeId);
+      if (!previous) this.childUpdate(cascadeId, { title: trajectory.summary || trajectory.title || 'Subtask',
+        status: 'running', turnId: key, canStop: true, history: [] });
+      if (response && response !== turn.sent.get(id)) {
+        turn.childResults.set(cascadeId, response); turn.sent.set(id, response);
+        this.childUpdate(cascadeId, { progress: response });
+      }
+      if (step.errorMessage?.error || step.error && !tool) turn.childErrors.set(cascadeId, stepOutput(step));
+    }
     if (cascadeId === this.session.conversationId && response.startsWith(old) && response.length > old.length) {
       this.update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: response.slice(old.length) } }); turn.sent.set(id, response);
     }
-    const tool = step.metadata?.toolCall;
     if (cascadeId === this.session.conversationId && (step.errorMessage?.error || step.error && !tool))
       turn.error = stepOutput(step) || 'Antigravity response failed';
     if (tool || step.requestedInteraction) {
@@ -291,14 +318,24 @@ class InteractiveCli {
         status: /ERROR|CANCELED/.test(step.status) ? 'failed' : DONE.has(step.status) ? 'completed' : 'in_progress',
         rawInput: input, ...(output ? { content: [{ type: 'content', content: { type: 'text', text: typeof output === 'string' ? output : JSON.stringify(output) } }] } : {}) };
       const serialized = JSON.stringify(value);
-      if (turn.tools.get(id) !== serialized) { this.update(value); turn.tools.set(id, serialized); }
+      if (turn.tools.get(id) !== serialized) {
+        if (child) {
+          const task = this.children.get(cascadeId), detail = typeof output === 'string' ? output : JSON.stringify(output);
+          this.childUpdate(cascadeId, { progress: detail || value.title, history: [
+            ...(task.history || []), { type: 'tool_call_update', text: (value.title + '\n' + detail).slice(-1800) },
+          ].slice(-40) });
+        } else this.update(value);
+        turn.tools.set(id, serialized);
+      }
       if (step.status === 'CORTEX_STEP_STATUS_WAITING' && step.requestedInteraction && !turn.permissions.has(id)) {
         permissionReply(step.requestedInteraction, false); // Do not silently approve an unknown interaction.
         turn.permissions.add(id);
         const requestId = 'agy-permission-' + randomUUID();
         this.requests.set(requestId, { turn, cascadeId, trajectoryId: key, stepIndex: index, requested: step.requestedInteraction });
+        if (child) this.childUpdate(cascadeId, { status: 'waiting' });
         this.write({ id: requestId, method: 'session/request_permission', params: { sessionId: this.session.id,
           toolCall: { toolCallId: id, title: tool?.name || 'Antigravity approval', rawInput: input }, options: OPTIONS,
+          ...(child ? { _meta: { camelliaSubagentId: cascadeId } } : {}),
           ...(step.requestedInteraction.askQuestion ? { questions: questionFields(step.requestedInteraction) } : {}) } });
       }
     }
@@ -322,6 +359,7 @@ class InteractiveCli {
     try {
       await this.rpc('HandleCascadeUserInteraction', { cascadeId: request.cascadeId,
         interaction: { trajectoryId: request.trajectoryId, stepIndex: request.stepIndex, ...permissionReply(request.requested, allow, message.result?.input) } }, request.turn.controller.signal);
+      if (this.children.get(request.cascadeId)?.status === 'waiting') this.childUpdate(request.cascadeId, { status: 'running' });
     } catch (error) {
       // Stop may abort the automatic denial while it is in flight. That is an
       // expected cancellation, not a reason to destroy the reusable bridge.
@@ -341,7 +379,12 @@ class InteractiveCli {
         if (user) while (!this.closed && !this.processError) {
           const summaries = (await this.rpc('GetAllCascadeTrajectories', {}, signal)).trajectorySummaries;
           if (!summaries?.[cascadeId]) throw new Error('Antigravity native conversation disappeared while stopping');
-          if (ownedTrajectories(summaries, cascadeId).every(([, summary]) => idle(summary.status))) break;
+          if (ownedTrajectories(summaries, cascadeId).every(([, summary]) => idle(summary.status))) {
+            for (const [id] of ownedTrajectories(summaries, cascadeId)) {
+              if (['starting', 'running', 'waiting'].includes(this.children.get(id)?.status)) this.childUpdate(id, { status: 'stopped', canStop: false });
+            }
+            break;
+          }
           await delay(50, null, { signal });
         }
       } catch { if (user) await this.stop(); }
@@ -393,6 +436,14 @@ class InteractiveCli {
     }
     if (method === 'session/camellia_prepare') return this.prepare();
     if (method === 'session/prompt') return this.prompt(params.prompt);
+    if (method === 'session/camellia_subagent_cancel') {
+      const task = this.children.get(params.taskId);
+      if (!task?.canStop || task.turnId !== params.turnId || params.taskId === this.session.conversationId)
+        throw new Error('This subtask changed or is no longer running');
+      await this.rpc('CancelCascadeInvocation', { cascadeId: params.taskId, killBackgroundTasks: true });
+      this.stoppingChildren.add(params.taskId);
+      return {};
+    }
     if (method === 'session/cancel') { await (this.cancelling ||= this.cancel().finally(() => { this.cancelling = null; })); return {}; }
     if (method === 'session/close') { await this.stop(); return {}; }
     throw new Error('Unsupported ACP method: ' + method);
