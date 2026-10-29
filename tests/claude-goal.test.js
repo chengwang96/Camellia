@@ -267,13 +267,21 @@ test('recoverable blockers are retried, progress resets the streak, and persiste
   h.goal.resume(); assert.equal(h.goal.view().blockerStreak, 0);
 });
 
-test('pause and clear interrupt the owned response and cannot be undone by a late result', t => {
+test('pause interrupts the owned response while removal only stops automatic work', t => {
   const h = setup(t); h.goal.start({ objective: 'Finish' }); h.tick();
   h.goal.setPhase('paused'); assert.equal(h.interrupts(), 1);
   h.result({ result: '<goal:complete>' }); assert.equal(h.goal.view().phase, 'paused');
   h.goal.resume(); h.tick(); h.goal.clear();
-  assert.equal(h.interrupts(), 2);
+  assert.equal(h.interrupts(), 1);
+  assert.equal(h.session.running, true);
   h.result({ result: '<goal:blocked> Too late' });
+  assert.equal(h.goal.view(), null); assert.equal(h.timers.size, 0);
+});
+
+test('an explicit interrupting removal still stops its owned response', t => {
+  const h = setup(t); h.goal.start({ objective: 'Finish' }); h.tick();
+  assert.equal(h.goal.clear({ interrupt: true }).ok, true);
+  assert.equal(h.interrupts(), 1); assert.equal(h.session.running, false);
   assert.equal(h.goal.view(), null); assert.equal(h.timers.size, 0);
 });
 

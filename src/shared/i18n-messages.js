@@ -1378,6 +1378,7 @@
   "The goal has been marked complete. Automatic continuation has stopped.": "目标已标记为完成，自动推进已停止。",
   "Goal started. Working until complete or blocked…": "目标已开始，持续推进直到完成或遇到阻碍…",
   "Goal paused. Stopping the current response…": "目标已暂停，正在停止当前回复…",
+  "Goal removed. The conversation will continue.": "目标已移除，会话会继续。",
   "Goal resumed. Continuing automatically…": "目标已恢复，正在自动继续…",
   "{0} successful · Input {1} / Output {2} tokens · Failed {3}": "成功 {0} 次 · 输入 {1} / 输出 {2} Token · 失败 {3} 次",
   "Includes cache": "包含缓存",

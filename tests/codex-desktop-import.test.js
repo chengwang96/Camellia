@@ -125,6 +125,43 @@ test('desktop session listing is capped and reports truncation', t => {
   assert.equal(sessions.truncated, true);
 });
 
+test('large desktop prompts stay in SQLite during listing and targeted sync, including archived threads', async t => {
+  const { root, file, db } = stateFixture(t);
+  const rollout = writeRollout(root, 'large-title.jsonl', [responseItem('user', 'Original request')]);
+  const wrapper = 'Files mentioned: ' + 'x'.repeat(1024 * 1024) + '\n## My request:\nActual request';
+  addThread(db, { id: 'target', title: wrapper, first: wrapper, rollout });
+  addThread(db, { id: 'other', name: 'Other session', first: wrapper, rollout });
+  db.prepare('UPDATE threads SET preview = ?').run(wrapper);
+  const prepare = DatabaseSync.prototype.prepare, returned = [];
+  t.mock.method(DatabaseSync.prototype, 'prepare', function(sql) {
+    const statement = prepare.call(this, sql);
+    if (/SELECT t\.id,/.test(sql)) for (const method of ['all', 'get']) {
+      const run = statement[method];
+      statement[method] = function(...args) {
+        const result = run.apply(this, args);
+        for (const row of Array.isArray(result) ? result : result ? [result] : []) {
+          returned.push(row.id);
+          for (const column of ['name', 'title', 'first_user_message', 'preview'])
+            assert.ok(!row[column] || row[column].length <= 200, column + ' must be projected before entering JavaScript');
+        }
+        return result;
+      };
+    }
+    return statement;
+  });
+  assert.equal(listDesktopSessions(file).find(row => row.id === 'target').title, 'Actual request');
+  const shared = sharedFixture(root);
+  const imported = await importDesktopSessions(shared, file, ['target']);
+  const id = imported.imported[0].id;
+  returned.length = 0;
+  await syncDesktopSession(shared, file, id);
+  assert.deepEqual(returned, ['target']);
+  db.prepare('UPDATE threads SET archived = 1 WHERE id = ?').run('target');
+  returned.length = 0;
+  await syncDesktopSession(shared, file, id);
+  assert.deepEqual(returned, ['target']);
+});
+
 test('listing reads a live WAL without copying its locked shared-memory file', t => {
   const { root, file, db } = stateFixture(t);
   db.exec('PRAGMA journal_mode=WAL');

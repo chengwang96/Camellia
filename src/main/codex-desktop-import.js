@@ -81,6 +81,15 @@ function cleanTitle(text) {
 const sessionTitle = row => (cleanTitle(row.name) || cleanTitle(row.title)
   || cleanTitle(row.first_user_message) || cleanTitle(row.preview)).slice(0, 60);
 
+// These columns can contain entire prompts. Unwrap desktop request headers in
+// SQLite and return only enough text for the 60-character display title.
+const titleColumns = ['name', 'title', 'first_user_message', 'preview'].map(column => {
+  const value = `t.${column}`, marker = '## My request:';
+  return `substr(ltrim(CASE WHEN instr(${value}, '${marker}') > 0
+    THEN substr(${value}, instr(${value}, '${marker}') + ${marker.length}) ELSE ${value} END,
+    char(9) || char(10) || char(13) || ' '), 1, 200) AS ${column}`;
+}).join(', ');
+
 // Codex may compress a rollout without updating older index entries. Prefer
 // the indexed file, then try its compressed sibling without changing either.
 function rolloutInfo(file) {
@@ -142,7 +151,7 @@ function listDesktopSessions(stateFile, { excludeIds = new Set(), maxSessions = 
       where.push(`t.id NOT IN (${[...excludeIds].map(() => '?').join(',')})`);
       parameters.push(...excludeIds);
     }
-    const rows = db.prepare(`SELECT t.id, t.name, t.title, t.first_user_message, t.preview, t.cwd, t.source, t.rollout_path,
+    const rows = db.prepare(`SELECT t.id, ${titleColumns}, t.cwd, t.source, t.rollout_path,
         COALESCE(t.created_at_ms, t.created_at * 1000) AS createdAt, COALESCE(t.updated_at_ms, t.updated_at * 1000) AS updatedAt,
         p.id AS projectId, p.name AS projectName, r.path AS projectPath
       FROM threads t LEFT JOIN projects p ON p.id = t.project_id
@@ -338,9 +347,9 @@ async function syncDesktopConversation(shared, stateFile, conversationId, listed
   if (shared.busy(c.id)) throw new Error('Wait for this conversation to finish or stop it before syncing.');
   const rows = shared.rows(c);
   const seq = c.seq;
-  const session = listedSession || listDesktopSessions(stateFile).find(s => s.id === c.importThreadId)
+  const session = listedSession || listDesktopSessions(stateFile, { threadIds: [c.importThreadId] })[0]
     || withSnapshot(stateFile, db => {
-      const r = db.prepare(`SELECT t.id, t.name, t.title, t.first_user_message, t.preview, t.cwd, t.source, t.rollout_path,
+      const r = db.prepare(`SELECT t.id, ${titleColumns}, t.cwd, t.source, t.rollout_path,
           COALESCE(t.updated_at_ms, t.updated_at * 1000) AS updatedAt,
           p.id AS projectId, p.name AS projectName, r.path AS projectPath FROM threads t
           LEFT JOIN projects p ON p.id = t.project_id LEFT JOIN project_roots r ON r.project_id = t.project_id AND r.position = 0

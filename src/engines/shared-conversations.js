@@ -18,7 +18,7 @@ const { resolveArtifacts } = require('../main/turn-artifacts');
 const { ScheduledTasks, taskPrompt } = require('./scheduled-tasks');
 const { callConversationTool } = require('./conversation-control');
 const managedSubagents = require('./subagent-conversations');
-const { planCompaction } = require('./compaction-plan');
+const { planHistoryCompaction } = require('./compaction-plan');
 const { runSummaryPipeline, DEFAULT_MAX_REQUESTS, MAX_CACHED_SUMMARIES } = require('./compaction-summary');
 const { searchFiles, searchContents } = require('../main/file-search');
 const { buildHistoryIndex, searchHistory: matchHistory } = require('../main/conversation-index');
@@ -1011,15 +1011,13 @@ class SharedConversations {
     }
     return { ok: true, settings: this.settings(engine, c?.id) };
   }
-  context(c, engine, beforeSeq) {
+  contextSource(c, engine, beforeSeq) {
     const segment = c.segments[engine];
     const resetProfile = segment && !segment.isolated && ['codex', 'kimi', 'dsh'].includes(engine) && this.settings(engine, c.id).connection !== 'subscription';
-    if (segment?.compactFile && !segment.nativeId && !fs.existsSync(segment.compactFile))
-      return this.compactionContext(c, this.rows(c, { before: beforeSeq, mask: HISTORY_FLAGS.public }));
     const latest = this.historyStore.summary(c.id, beforeSeq);
-    if (latest && (!segment || resetProfile || (segment.cursor || 0) < latest.seq))
-      return fs.readFileSync(latest.file, 'utf8') + '\n\n' + this.formatContext(c,
-        this.rows(c, { after: latest.seq, before: beforeSeq, mask: HISTORY_FLAGS.public }));
+    if (segment?.compactFile && !segment.nativeId && !fs.existsSync(segment.compactFile)
+        || latest && (!segment || resetProfile || (segment.cursor || 0) < latest.seq))
+      return { files: latest ? [latest.file] : [], after: latest?.seq || 0, before: beforeSeq };
     // Prompt-cache-friendly order: a stable, shared preface (the compact file)
     // leads, so switching between models that share that prefix reuses it; the
     // model-specific parts follow, oldest first. The compact file only leads
@@ -1028,12 +1026,21 @@ class SharedConversations {
     // summary on every turn. A parked session that resumed from a bridge
     // likewise already covers the turns the bridge summarized, so only the rows
     // after the bridge are replayed.
-    const compacted = !resetProfile && segment?.compactFile && !segment.nativeId && fs.existsSync(segment.compactFile)
-      ? fs.readFileSync(segment.compactFile, 'utf8') + '\n\n' : '';
-    const bridge = !resetProfile && segment?.bridgeFile && fs.existsSync(segment.bridgeFile) ? fs.readFileSync(segment.bridgeFile, 'utf8') + '\n\n' : '';
+    const files = [];
+    if (!resetProfile && segment?.compactFile && !segment.nativeId && fs.existsSync(segment.compactFile)) files.push(segment.compactFile);
+    if (!resetProfile && segment?.bridgeFile && fs.existsSync(segment.bridgeFile)) files.push(segment.bridgeFile);
     const base = resetProfile ? 0 : segment?.bridgeToSeq ? Math.max(segment.cursor || 0, segment.bridgeToSeq) : segment?.cursor || 0;
-    const rows = this.rows(c, { after: base, before: beforeSeq, mask: HISTORY_FLAGS.public });
-    return compacted + bridge + this.formatContext(c, rows);
+    return { files, after: base, before: beforeSeq };
+  }
+  contextEstimate(c, engine, beforeSeq) {
+    const { files, ...range } = this.contextSource(c, engine, beforeSeq);
+    return this.historyStore.estimateRange(c.id, range)
+      + files.reduce((cost, file) => cost + contextTokens(fs.readFileSync(file, 'utf8')), 0);
+  }
+  context(c, engine, beforeSeq) {
+    const { files, ...range } = this.contextSource(c, engine, beforeSeq);
+    return files.map(file => fs.readFileSync(file, 'utf8') + '\n\n').join('')
+      + this.formatContext(c, this.rows(c, { ...range, mask: HISTORY_FLAGS.public }));
   }
   compactionContext(c, history = this.rows(c)) {
     const rows = history.filter(r => !r.internal);
@@ -1179,6 +1186,18 @@ class SharedConversations {
     if (!internal && !continuation && !promptFits(memory + String(promptSuffix ?? payload.prompt ?? ''),
       this.contextPressure(c, engine, settings).cap))
       throw new Error('The new message and attachments exceed the selected model\'s input budget. Split the message or attachments, or select a larger-context model. Nothing was sent.');
+    const compactBeforeSend = async trigger => {
+      if (facade) facade.running = true;
+      try { await this.compact(c.id, { automatic: true, allowGoal: Boolean(facade), controlStart,
+        destination: { engine, settings, pendingTokens, subscriptionSelection, subscriptionAttempts }, portable: true, trigger }); }
+      finally { if (facade) facade.running = false; }
+      const goal = this.goals.get(c.id);
+      // Removal preserves this reply; a goal that still exists but was stopped
+      // must not dispatch another request after compaction.
+      if (facade && goal?.goal && !goal.armed) throw new Error('Goal was stopped during compaction');
+      assertAvailable();
+    };
+    let bridgeSegment;
     if (!internal && !continuation && !edit) {
       this.repairSubscriptionBindings(c, engine);
       const key = this.bindingKey(engine, settings), parked = c.modelSessions?.[key];
@@ -1186,10 +1205,7 @@ class SharedConversations {
       // model intact when a new target needs a portable handoff from it.
       if (parked && Date.now() - (parked.lastUsedAt || 0) <= preferences(this.loadConfig()).sessionTtlMinutes * 60000) {
         const binding = this.switchBinding(c, engine, settings);
-        if (binding.restored && (binding.segment.cursor || 0) < c.seq) {
-          const bridged = this.rows(c, { after: binding.segment.cursor || 0, mask: HISTORY_FLAGS.public });
-          if (bridged.length) await this.bridgeContext(c, engine, binding.segment, bridged);
-        }
+        if (binding.restored && (binding.segment.cursor || 0) < c.seq) bridgeSegment = binding.segment;
       }
     }
     if (!internal && !continuation && !edit && c.seq) {
@@ -1198,16 +1214,12 @@ class SharedConversations {
         ...(subscriptionSelection ? { subscriptionSelection, selectedAccount: settings.subscriptionId } : {}) }));
       if (!nativeCompaction.eligible) {
         const context = this.contextPressure(c, engine, settings);
-        if (context.used + pendingTokens + contextTokens(goalPrefix) > context.cap * 0.85 && (!this.busy(c.id) || (facade || controlStart) && !this.active.has(c.id) && !this.switching.has(c.id))) {
-          if (facade) facade.running = true;
-          try { await this.compact(c.id, { automatic: true, allowGoal: Boolean(facade), controlStart,
-            destination: { engine, settings, pendingTokens, subscriptionSelection, subscriptionAttempts }, portable: true,
-            trigger: { reason: 'before-send', ...context, pendingTokens, nativeCompaction,
-              ...(subscriptionSelection ? { subscriptionSelection } : {}) } }); }
-          finally { if (facade) facade.running = false; }
-          if (facade && !this.goals.get(c.id)?.armed) throw new Error('Goal was stopped during compaction');
-          assertAvailable();
-        }
+        // Keep the previous native binding until a migration summary is saved:
+        // its larger source model may be needed to summarize for a short target.
+        if (context.used + pendingTokens + contextTokens(goalPrefix) > context.cap * 0.85
+            && (!this.busy(c.id) || (facade || controlStart) && !this.active.has(c.id) && !this.switching.has(c.id)))
+          await compactBeforeSend({ reason: 'before-send', ...context, pendingTokens, nativeCompaction,
+            ...(subscriptionSelection ? { subscriptionSelection } : {}) });
       }
     }
     if (!internal && !continuation && !edit) {
@@ -1241,10 +1253,7 @@ class SharedConversations {
     if (!ephemeral && !edit) {
       const binding = this.switchBinding(c, engine, settings);
       oldSegment = binding.segment || null;
-      if (binding.restored && oldSegment?.nativeId && (oldSegment.cursor || 0) < c.seq) {
-        const bridged = this.rows(c, { after: oldSegment.cursor || 0, mask: HISTORY_FLAGS.public });
-        if (bridged.length) await this.bridgeContext(c, engine, oldSegment, bridged);
-      }
+      if (binding.restored && oldSegment?.nativeId && (oldSegment.cursor || 0) < c.seq) bridgeSegment = oldSegment;
     }
     if (!ephemeral && !edit && oldSegment && !oldSegment.isolated && ['codex', 'kimi', 'dsh'].includes(engine) && settings.connection !== 'subscription') {
       // Earlier builds kept these API profiles in one shared directory. Start
@@ -1252,6 +1261,23 @@ class SharedConversations {
       (c.retiredSegments ||= []).push({ engine, ...oldSegment });
       delete c.segments[engine];
       this.save(c);
+    }
+    if (!internal && !continuation && !edit && c.seq) {
+      const nativeCompaction = this.nativeCompactionDecision(c, engine, settings);
+      const context = this.contextPressure(c, engine, settings), replayed = this.contextEstimate(c, engine);
+      const pending = pendingTokens + contextTokens(goalPrefix);
+      // Bindings and cursors are final now. Estimate the actual replay from the
+      // index before reading its bodies, including when native usage is small.
+      if (replayed + pending > context.cap * 0.85) {
+        if (this.busy(c.id) && !((facade || controlStart) && !this.active.has(c.id) && !this.switching.has(c.id)))
+          throw new Error('The conversation is too large to send. Stop the current work and compact it from the engine menu. Nothing was sent.');
+        await compactBeforeSend({ reason: 'before-send', ...context, replayed, pendingTokens, nativeCompaction,
+          ...(subscriptionSelection ? { subscriptionSelection } : {}) });
+      }
+    }
+    if (bridgeSegment && c.segments[engine] === bridgeSegment) {
+      const bridged = this.rows(c, { after: bridgeSegment.cursor || 0, mask: HISTORY_FLAGS.public });
+      if (bridged.length) await this.bridgeContext(c, engine, bridgeSegment, bridged);
     }
     const canEditNative = edit && engine === 'codex' && c.currentEngine === engine && oldSegment?.isolated
       && oldSegment.nativeId && (!segmentConnection || segmentConnection === settings.connection);
@@ -1292,7 +1318,8 @@ class SharedConversations {
     const editReplay = nativeEdit && checkpoint.replayFromSeq !== undefined
       ? edit.prior.filter(row => row.seq >= checkpoint.replayFromSeq) : [];
     let editContext = edit && ((nativeEdit ? this.formatContext(c, editReplay) : this.compactionContext(c, edit.prior)) + this.formatContext(c, [revisionNotice]));
-    let prompt = memory + (promptOverride ?? ((edit ? editContext : this.context(c, engine)) + String(promptSuffix ?? payload.prompt ?? '')));
+    let replayContext = promptOverride == null ? (edit ? editContext : this.context(c, engine)) : '';
+    let prompt = memory + (promptOverride ?? (replayContext + String(promptSuffix ?? payload.prompt ?? '')));
     const promptCap = this.contextPressure(c, engine, settings).cap;
     if (!internal && !continuation && !promptFits(prompt, promptCap)) {
       // Give automatic compaction one chance before refusing to send; a huge
@@ -1309,9 +1336,11 @@ class SharedConversations {
       assertAvailable();
       if (edit) {
         editContext = compactedEdit.summary + '\n\n' + this.formatContext(c, [revisionNotice]);
-        prompt = memory + editContext + String(payload.prompt || '');
+        replayContext = editContext;
+        prompt = memory + replayContext + String(payload.prompt || '');
       } else {
-        prompt = memory + this.context(c, engine) + String(promptSuffix ?? payload.prompt ?? '');
+        replayContext = this.context(c, engine);
+        prompt = memory + replayContext + String(promptSuffix ?? payload.prompt ?? '');
       }
       if (!promptFits(prompt, promptCap)) throw new Error('The conversation is still too large after automatic compaction. Compact it manually from the engine menu or start a new conversation. Nothing was sent.');
     }
@@ -1319,7 +1348,8 @@ class SharedConversations {
     // A failed title request can recover on a later send or revision.
     const needsTitle = !internal && !continuation && this.needsTitle(c)
       && (String(payload.displayText ?? payload.prompt ?? '').trim() || payload.attachments?.length);
-    const a = continuation || { c, engine, internal, ephemeral, scheduledTaskId, nativeEditEligible: Boolean(nativeEdit) || !edit && !this.context(c, engine), goalContinuation: Boolean(facade), goalUserPrompt, prompt: payload.prompt || '', promptSuffix, attachments: payload.attachments || [], events: [], permissions: new Map(), tools: new Set(), eventSeq: 0, text: '', assistant: [], startedAt: Date.now(),
+    const nativeEditEligible = !internal && (Boolean(nativeEdit) || !edit && !(promptOverride == null ? replayContext : this.contextEstimate(c, engine)));
+    const a = continuation || { c, engine, internal, ephemeral, scheduledTaskId, nativeEditEligible, goalContinuation: Boolean(facade), goalUserPrompt, prompt: payload.prompt || '', promptSuffix, attachments: payload.attachments || [], events: [], permissions: new Map(), tools: new Set(), eventSeq: 0, text: '', assistant: [], startedAt: Date.now(),
       nativeEditReplayFromSeq: checkpoint?.replayFromSeq,
       // Only evaluated if the native session turns out to be unavailable: the
       // stored transcript replaces whatever the missing native thread carried.
@@ -2343,21 +2373,28 @@ class SharedConversations {
     let preface = '# Compacted conversation context\n\nSome earlier context was omitted locally. The full transcript remains in Camellia; files and external actions were not rolled back. Ask for missing context when needed.\n\n';
     const render = rows => preface + this.formatContext(c, rows);
     const fits = rows => {
+      if (rows.reduce((size, row) => size + row.text.length, 0) > limit * 3) return false;
       const markdown = render(rows);
       return contextTokens(markdown) <= limit && !overInputChars(engine, markdown);
     };
     if (!fits([])) preface = 'Earlier context omitted.\n';
     if (!fits([])) preface = '';
-    const previous = sourceRows.findLast(row => row.role === 'notice' && row.file && fs.existsSync(row.file));
-    const candidates = sourceRows.filter(row => !previous || row.seq >= previous.seq).map(row => ({
-      seq: row.seq, role: row.role, engine: row.engine,
-      text: row === previous ? fs.readFileSync(row.file, 'utf8') : String(row.text || ''),
-    }));
-    let kept = [], index = candidates.length;
-    while (index > 0 && fits([candidates[index - 1], ...kept])) kept.unshift(candidates[--index]);
+    let previous;
+    for (const row of sourceRows({ reverse: true })) {
+      if (row.role === 'notice' && row.file && fs.existsSync(row.file)) { previous = row; break; }
+    }
+    let kept = [], count = 0, latestUser, last;
+    for (const row of sourceRows({ after: previous ? previous.seq - 1 : -Infinity })) {
+      const text = row.seq === previous?.seq ? fs.readFileSync(row.file, 'utf8') : String(row.text || '');
+      last = { seq: row.seq, role: row.role, engine: row.engine, text, originalText: text };
+      count++;
+      if (row.role === 'user') latestUser = last;
+      kept.push(last);
+      while (kept.length && !fits(kept)) kept.shift();
+    }
     const clipToFit = (row, base = []) => {
       const marker = '[Earlier part of this message omitted]\n';
-      let low = 0, high = row.text.length, best = null;
+      let low = 0, high = Math.min(row.text.length, Math.floor(limit * 3)), best = null;
       while (low <= high) {
         const length = Math.floor((low + high) / 2);
         const candidate = { ...row, text: length === row.text.length ? row.text : marker + (length ? row.text.slice(-length) : '') };
@@ -2366,11 +2403,10 @@ class SharedConversations {
       }
       return best;
     };
-    if (!kept.length && candidates.length) {
-      const clipped = clipToFit(candidates.at(-1));
+    if (!kept.length && last) {
+      const clipped = clipToFit(last);
       if (clipped) kept = [clipped];
     }
-    const latestUser = candidates.findLast(row => row.role === 'user');
     if (latestUser && !kept.some(row => row.seq === latestUser.seq)) {
       const userLimit = Math.min(1200, Math.max(64, Math.floor(limit * 0.25)));
       const shortUser = { ...latestUser, text: latestUser.text.length > userLimit
@@ -2388,8 +2424,8 @@ class SharedConversations {
       }
     }
     const retained = new Set(kept.map(row => row.seq));
-    return { markdown: render(kept), omittedRows: candidates.filter(row => !retained.has(row.seq)).length,
-      truncatedRows: kept.filter(row => row.text !== candidates.find(candidate => candidate.seq === row.seq)?.text).length };
+    return { markdown: render(kept), omittedRows: count - retained.size,
+      truncatedRows: kept.filter(row => row.text !== row.originalText).length };
   }
   async compact(id, { automatic = false, recovery, allowGoal = false, controlStart, history, trigger, portable = false, destination, manualFallback = false, localOnly = false } = {}) {
     if (this.controlStarts.has(id) && this.controlStarts.get(id) !== controlStart && !recovery) throw new Error('Child response is starting');
@@ -2407,11 +2443,21 @@ class SharedConversations {
     const startedAt = Date.now();
     // Read history and choose the route before allocating runtime state. An
     // unreadable history must not leave a busy slot or an orphan deadline.
-    let savedSourceRows;
-    const sourceRows = () => savedSourceRows ||= (history || this.rows(c)).filter(row => !row.internal && contextRow(row));
+    const manager = this;
+    function* sourceRows({ reverse = false, after = -Infinity } = {}) {
+      if (history) {
+        for (let i = reverse ? history.length - 1 : 0; reverse ? i >= 0 : i < history.length; i += reverse ? -1 : 1) {
+          const row = history[i];
+          if (!row.internal && contextRow(row) && row.seq > after) yield { ...row, historyIndex: i };
+        }
+        return;
+      }
+      for (const row of manager.historyRows(c, { after, reverse, mask: HISTORY_FLAGS.public, snapshot: true }))
+        if (contextRow(row)) yield row;
+    }
     // A native compaction needs its cursor, not a clone of the complete saved
-    // transcript. Materialize rows only if a portable summary is necessary.
-    let boundary = history ? sourceRows().at(-1)?.seq || 0 : 0;
+    // transcript. Read message bodies only if a portable summary is necessary.
+    let boundary = history ? history.findLast(row => !row.internal && contextRow(row))?.seq || 0 : 0;
     if (!history) for (const row of this.historyRows(c, { mask: HISTORY_FLAGS.public, reverse: true })) {
       if (contextRow(row)) { boundary = row.seq || 0; break; }
     }
@@ -2529,7 +2575,7 @@ class SharedConversations {
       const goalTokens = this.createGoalBridge ? contextTokens(this.toolInstructions()) + 64 : 0;
       const available = destination || recovery
         ? Math.floor(targetCap * 0.65) - pendingTokens - goalTokens - 512 : Infinity;
-      const fallback = this.manualFallbackContext(c, targetEngine, sourceRows(), targetSettings, available);
+      const fallback = this.manualFallbackContext(c, targetEngine, sourceRows, targetSettings, available);
       diagnostics.route = 'local-fallback';
       diagnostics.targetEngine = targetEngine;
       diagnostics.targetCap = targetCap;
@@ -2658,17 +2704,33 @@ class SharedConversations {
         inputCharLimit(targetEngine) ? Math.floor(inputCharLimit(targetEngine) * 0.8) : Infinity) : Infinity;
       if (maxSummaryChars < 512) throw new Error('The target context has no room for a summary and the new message. ' + recoveryAdvice);
       if (destination) budget = Math.min(budget, Math.floor(cap * 0.6));
-      let compacted = sourceRows().findLast(row => row.role === 'notice' && row.file && fs.existsSync(row.file));
+      let compacted = history ? null : this.historyStore.summary(c.id, Infinity, true);
+      if (history) for (const row of sourceRows({ reverse: true })) {
+        if (row.role === 'notice' && row.file && fs.existsSync(row.file)) { compacted = row; break; }
+      }
       // The committed index remains authoritative if a display notice could
       // not be appended after saving the portable binding.
       if (!history && segment?.compactFile && segment.cursor > (compacted?.seq || 0) && fs.existsSync(segment.compactFile))
         compacted = { file: segment.compactFile, seq: segment.cursor };
       const previous = compacted && fs.existsSync(compacted.file) ? fs.readFileSync(compacted.file, 'utf8') : '';
-      const plan = planCompaction(sourceRows().filter(row => row.seq > (compacted?.seq || 0)), budget);
-      if (destination && plan.recent.length) { plan.units.push(plan.recent); plan.recent = []; plan.recentChars = 0; }
-      const originalUnits = [...(previous ? [[{ role: 'notice', text: previous, sourceSeq: compacted.seq }]] : []), ...plan.units];
+      const plan = planHistoryCompaction(options => sourceRows({ ...options, after: compacted?.seq || 0 }), budget);
+      const recent = destination ? plan.recent : [];
+      if (destination) { plan.recent = []; plan.recentChars = 0; }
+      const prefix = previous ? [{ role: 'notice', text: previous, sourceSeq: compacted.seq }] : [];
+      const originalUnits = { *[Symbol.iterator]() {
+        const prefixChars = prefix.length ? JSON.stringify(prefix).length : 0;
+        diagnostics.inputChars = 2 + prefixChars;
+        if (prefix.length) yield prefix;
+        for (const unit of plan.units) {
+          diagnostics.inputChars = plan.inputChars + prefixChars + Number(prefix.length > 0);
+          yield unit;
+        }
+        if (recent.length) {
+          diagnostics.inputChars += JSON.stringify(recent).length + Number(diagnostics.inputChars > 2);
+          yield recent;
+        }
+      } };
       let summary = '';
-      diagnostics.inputChars = JSON.stringify(originalUnits).length;
       diagnostics.retainedChars = plan.recentChars;
       diagnostics.cap = cap;
       diagnostics.targetEngine = targetEngine;
@@ -2699,7 +2761,7 @@ class SharedConversations {
         diagnostics.fallbackModel = settings.model;
         summary = await withLimit(summarize());
       }
-      if (manualFallback && originalUnits.length && !String(summary).trim())
+      if (manualFallback && diagnostics.inputChars > 2 && !String(summary).trim())
         throw new Error('The summarizer returned an empty context.');
       const markdown = '# Compacted conversation context\n\nWorkspace: ' + c.cwd + '\n\n' + summary
         + (plan.recent.length ? '\n\n## Recent conversation (verbatim JSON data)\n\n' + this.formatContext(c, plan.recent) : '');
@@ -2772,9 +2834,19 @@ class SharedConversations {
     // execution environment in this outer scope; partial text is never replayed.
     const scope = createHash('sha256').update(JSON.stringify([2, c.cwd, engine, cacheSettings.model, cacheSettings.connection,
       cacheSettings.subscriptionId, this.contextRoute(engine, cacheSettings), diagnostics.transport])).digest('hex');
-    const legacyKey = saved && !saved.scope && Array.isArray(saved.cache)
-      ? createHash('sha256').update(JSON.stringify([c.cwd, engine, settings.model, settings.connection,
-        settings.subscriptionId, budget, boundary, maxSummaryChars, units])).digest('hex') : null;
+    let legacyKey = null;
+    if (saved && !saved.scope && Array.isArray(saved.cache)) {
+      const hash = createHash('sha256').update(JSON.stringify([c.cwd, engine, settings.model, settings.connection,
+        settings.subscriptionId, budget, boundary, maxSummaryChars]).slice(0, -1) + ',[');
+      let groupCount = 0;
+      for (const group of units) {
+        hash.update((groupCount++ ? ',' : '') + '[');
+        let rowCount = 0;
+        for (const row of group) hash.update((rowCount++ ? ',' : '') + JSON.stringify(row));
+        hash.update(']');
+      }
+      legacyKey = hash.update(']]').digest('hex');
+    }
     const entries = (saved?.scope === scope || legacyKey && saved.key === legacyKey) && Array.isArray(saved.cache) ? saved.cache : [];
     const cache = new Map(entries.filter(entry => Array.isArray(entry) && /^[a-f0-9]{64}$/.test(entry[0])
       && typeof entry[1] === 'string' && entry[1].length <= 12000).slice(-MAX_CACHED_SUMMARIES));
@@ -3094,7 +3166,7 @@ class SharedConversations {
         return result;
       }
       case 'goal-clear': {
-        const result = this.goalFor(payload.sessionId).clear();
+        const result = this.goalFor(payload.sessionId).clear({ interrupt: false });
         if (this.stopping.has(payload.sessionId)) await this.stopping.get(payload.sessionId);
         return result;
       }

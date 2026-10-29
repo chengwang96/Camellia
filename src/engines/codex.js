@@ -443,7 +443,7 @@ function createCodex({ dataDir, loadConfig, saveConfig, getRoute, getModels = ()
     'control-respond': payload => ({ ok: Boolean(sessions.legacy && !sessions.legacy.dead && sessions.legacy.answerPermission(payload.requestId, Boolean(payload.allow), payload.input, payload.message, payload.optionId)) }),
     'goal-get': () => ({ ok: true, goal: goal.view() }), 'goal-start': payload => goal.start(payload),
     'goal-pause': () => goal.setPhase('paused'), 'goal-resume': () => goal.resume(),
-    'goal-complete': () => goal.setPhase('complete'), 'goal-clear': () => goal.clear(),
+    'goal-complete': () => goal.setPhase('complete'), 'goal-clear': () => goal.clear({ interrupt: false }),
   };
   return { get session() { return sessions.legacy; },
     get active() { return Boolean(sessions.active || [...accountEntries.values()].some(entry => entry.client && !entry.client.dead)); },

@@ -174,7 +174,7 @@ class ClaudeGoal {
     return { ok: true, resumed: true, goal: this.view() };
   }
 
-  clear({ interrupt = true } = {}) {
+  clear({ interrupt = false } = {}) {
     const session = this.ownedSession();
     const previous = this.goal;
     this.goal = null;
@@ -184,7 +184,7 @@ class ClaudeGoal {
     this.cancelVerification();
     const saved = this.publish();
     if (!saved) { this.goal = previous; this.storageFailure(); }
-    if (interrupt || !saved) this.interrupt(session);
+    if (!saved || interrupt) this.interrupt(session);
     return { ok: saved, goal: this.view(), ...(!saved ? { error: this.storageError.message } : {}) };
   }
 

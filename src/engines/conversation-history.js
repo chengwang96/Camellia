@@ -338,8 +338,8 @@ class ConversationHistory {
     }
     return projected;
   }
-  *iterate(id, { after = -Infinity, before = Infinity, mask = 0, reverse = false } = {}) {
-    const value = this.ensure(id);
+  *iterate(id, { after = -Infinity, before = Infinity, mask = 0, reverse = false, snapshot = false } = {}) {
+    let value = this.ensure(id);
     // Deletion needs paths, not message text. Most conversations have no file
     // references at all, so their index records need not be visited either.
     // Revisions may leave hasFiles true; the effective records remain decisive.
@@ -355,26 +355,39 @@ class ConversationHistory {
       if (Number.isFinite(after)) low = boundary(after, true);
       if (Number.isFinite(before)) high = boundary(before, false);
     }
+    const generation = value.generation;
     let fd;
+    // Summary readers keep the original record range across awaits. Appending
+    // internal replies preserves the generation; edits and replacements do not.
+    const unchanged = () => snapshot ? this.ensure(id).generation === generation
+      : signature(fs.fstatSync(fd)) === value.source && signature(stat(this.file(id))) === value.source;
     const readSource = record => {
       if (fd === undefined) {
         fd = openSync(this.file(id), 'r');
-        if (signature(fs.fstatSync(fd)) !== value.source) throw new Error('Conversation history changed while reading');
+        if (!unchanged()) throw new Error('Conversation history changed while reading');
       }
       return readAt(fd, record.length, record.offset);
     };
     try {
       for (let i = reverse ? high - 1 : low; reverse ? i >= low : i < high; i += reverse ? -1 : 1) {
+        if (snapshot) {
+          value = this.ensure(id);
+          if (value.generation !== generation) throw new Error('Conversation history changed while reading');
+        }
         const record = this.record(value, i);
         if ((!mask || record.flags & mask) && (record.flags & FLAGS.sequence || after === -Infinity && before === Infinity)
-          && record.seq > after && record.seq < before) yield this.row(value, record, readSource);
+          && record.seq > after && record.seq < before) {
+          const row = this.row(value, record, readSource);
+          if (snapshot) Object.defineProperty(row, 'historyIndex', { value: i });
+          yield row;
+        }
       }
     } finally {
       if (fd !== undefined) {
-        let unchanged;
-        try { unchanged = signature(fs.fstatSync(fd)) === value.source && signature(stat(this.file(id))) === value.source; }
+        let valid;
+        try { valid = unchanged(); }
         finally { fs.closeSync(fd); }
-        if (!unchanged) throw new Error('Conversation history changed while reading');
+        if (!valid) throw new Error('Conversation history changed while reading');
       }
     }
   }
@@ -407,16 +420,27 @@ class ConversationHistory {
     }
     return null;
   }
+  estimateRange(id, { after = -Infinity, before = Infinity } = {}) {
+    const value = this.ensure(id);
+    if (value.ordered) {
+      const boundary = (seq, inclusive) => {
+        let left = 0, right = value.count;
+        while (left < right) { const mid = (left + right) >>> 1, n = this.record(value, mid).seq;
+          if (inclusive ? n <= seq : n < seq) left = mid + 1; else right = mid; }
+        return left;
+      };
+      const low = boundary(after, true), high = boundary(before, false);
+      const total = index => index ? this.record(value, index - 1).total : 0;
+      return Math.max(0, total(high) - total(low));
+    }
+    let cost = 0;
+    for (let i = 0; i < value.count; i++) { const row = this.record(value, i); if (row.seq > after && row.seq < before) cost += row.cost; }
+    return cost;
+  }
   estimate(id) {
     const value = this.ensure(id), summary = this.summary(id, Infinity, true);
     if (!summary) return value.total;
-    let remaining = 0;
-    if (value.ordered) {
-      let left = 0, right = value.count;
-      while (left < right) { const mid = (left + right) >>> 1;
-        if (this.record(value, mid).seq <= summary.seq) left = mid + 1; else right = mid; }
-      remaining = value.total - (left ? this.record(value, left - 1).total : 0);
-    } else for (let i = 0; i < value.count; i++) { const r = this.record(value, i); if (r.seq > summary.seq) remaining += r.cost; }
+    const remaining = this.estimateRange(id, { after: summary.seq });
     const source = stat(summary.file), key = id + ':summary:' + summary.file + ':' + signature(source);
     let cost = this.get(key);
     if (cost === undefined) { const text = fs.readFileSync(summary.file, 'utf8'); cost = tokens(text); this.put(key, cost, 256); }

@@ -1,7 +1,7 @@
 'use strict';
 
 const { createHash } = require('node:crypto');
-const { mapSummaryLimit, packSummaries, selectFragment, summaryLimit } = require('./compaction-plan');
+const { mapSummaryLimit, packSummaries, fragmentUnits, summaryLimit } = require('./compaction-plan');
 
 // Both transports use independent map/reduce summaries. Native engine sessions
 // run serially; the router can summarize independent fragments in parallel.
@@ -174,42 +174,55 @@ async function runSummaryPipeline({ units, previous = '', budget, request, onPro
     } catch (error) {
       if (!(error.overflow || error.emptySummary) || !onOverflow || depth >= maxShrinks) throw error;
       if (current >= sized) { shrinks++; current = onOverflow(error, current); }
-      const tasks = split([task.units], task.key, depth + 1);
+      const tasks = [...split([task.units], task.key, depth + 1)];
       progress('map', 0, tasks.length - 1);
       return pool(tasks, depth + 1);
     }
   };
 
   const pool = async (entries, depth) => {
-    const slots = new Array(entries.length);
+    const source = entries[Symbol.iterator](), initial = [], slots = [];
+    const planned = Array.isArray(entries);
+    for (let i = 0; i < Math.max(1, concurrency); i++) {
+      const next = source.next();
+      if (next.done) break;
+      initial.push(next.value);
+    }
+    if (!planned) progress('map', 0, initial.length);
     let cursor = 0;
-    const workers = Array.from({ length: Math.max(1, Math.min(concurrency, entries.length)) }, async () => {
-      while (cursor < entries.length) {
-        const index = cursor++;
-        slots[index] = await one(entries[index], depth);
+    const nextTask = () => {
+      const index = cursor++;
+      if (index < initial.length) {
+        const task = initial[index]; initial[index] = null;
+        return { index, task };
+      }
+      const next = source.next();
+      if (next.done) return null;
+      if (!planned) progress('map', 0, 1);
+      return { index, task: next.value };
+    };
+    const workers = Array.from({ length: initial.length }, async () => {
+      for (let next; (next = nextTask());) {
+        checkActive();
+        slots[next.index] = await one(next.task, depth);
       }
     }).map(worker => worker.catch(fail));
-    await Promise.all(workers);
+    try { await Promise.all(workers); }
+    finally { source.return?.(); }
     return slots.flat();
   };
 
-  const split = (source, key, depth) => {
+  function* split(source, key, depth) {
     if (depth > maxDepth) throw new Error('Compaction summary nesting is too deep. The original conversation is retained.');
-    const tasks = [];
-    let pending = source;
-    while (pending.length) {
-      const before = pending;
-      const { text, consumed, remaining } = selectFragment(before, current - mapInstruction(mapSummaryLimit(current)).length - FRAME_CHARS);
+    let index = 0;
+    for (const { text, consumed } of fragmentUnits(source, () => current - mapInstruction(mapSummaryLimit(current)).length - FRAME_CHARS)) {
       if (!text) throw new Error('Compaction could not split the history into fragments');
       // Only the records this fragment actually carries may be re-split later;
       // storing the whole `before` array would re-summarize records that belong
       // to the following tasks of this pass.
-      tasks.push({ key: [...key, tasks.length], text, units: consumed, sized: current });
-      if (!remaining.length) break;
-      pending = remaining;
+      yield { key: [...key, index++], text, units: consumed, sized: current };
     }
-    return tasks;
-  };
+  }
 
   const checkpoint = () => onCheckpoint([...partials.values()].sort((first, second) => byKey(first.key, second.key))
     .map(entry => entry.text).join('\n\n'));
@@ -222,7 +235,7 @@ async function runSummaryPipeline({ units, previous = '', budget, request, onPro
     for (const entry of entries) {
       if (entry.length + 96 <= inputLimit) normalized.push(entry);
       else {
-        const tasks = split([[{ role: 'notice', text: entry }]], [depth, normalized.length], 0);
+        const tasks = [...split([[{ role: 'notice', text: entry }]], [depth, normalized.length], 0)];
         progress('map', 0, tasks.length);
         const parts = await pool(tasks, 0);
         normalized.push(...parts.map(part => part.text));
@@ -265,7 +278,6 @@ async function runSummaryPipeline({ units, previous = '', budget, request, onPro
   };
 
   const tasks = split(units, [], 0);
-  progress('map', 0, tasks.length);
   const mapped = await pool(tasks, 0);
   const ordered = mapped.sort((first, second) => byKey(first.key, second.key)).map(entry => entry.text);
   const inputs = [...(previous ? [previous] : []), ...ordered];

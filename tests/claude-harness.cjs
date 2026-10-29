@@ -93,7 +93,10 @@ function createHarness(existingRoot, { respondToInterrupts = false, clearGoogleC
   const source = fs.readFileSync(path.join(__dirname, '..', 'src/main/main.js'), 'utf8');
   vm.runInNewContext(source + '\nmodule.exports = { subscriptionUsage, claudeSessionMeta, resolveClaudeSessionContext, claudeGoalDrive: () => goalDriver.drive(), syncOllamaBaseUrl, resolveClaudeRoute, claudeSpawnSpec, stopRouter: stopOllamaProxyHandle, getSession: () => claudeSessions.legacy, sharedConversations, claudeSessions, kimiSessions, codex, antigravity, dshChat, migrationServices: () => ({ runtimes: runtimes(), updates: runtimeUpdates(), libraries: benchmarkLibraries(), benchmarks: benchmarks(), appUpdates: appUpdates() }), setWindow: (w) => { mainWindow = w; }, setSettingsWindow: (w) => { settingsWindow = w; } };', sandbox, { filename: 'src/main/main.js' });
   const api = sandbox.module.exports;
-  api.setWindow({ isDestroyed: () => false, webContents: { send: (channel, data) => events.push({ channel, data }) } });
+  api.setWindow({ isDestroyed: () => false, setTitle() {}, webContents: {
+    getURL: () => require('node:url').pathToFileURL(path.join(__dirname, '..', 'src/renderer/chat/claude.html')).href,
+    send: (channel, data) => events.push({ channel, data }),
+  } });
   function call(channel, payload, event = null) {
     const handler = handlers.get('dsh:' + channel);
     if (!handler) throw new Error('Unknown IPC: ' + channel);

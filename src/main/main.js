@@ -2094,7 +2094,7 @@ if (!gotSingleInstanceLock) {
     'goal-pause': () => goalDriver.setPhase('paused'),
     'goal-resume': () => goalDriver.resume(),
     'goal-complete': () => goalDriver.setPhase('complete'),
-    'goal-clear': () => goalDriver.clear(),
+    'goal-clear': () => goalDriver.clear({ interrupt: false }),
   };
   for (const [name, handler] of Object.entries(claudeCommands)) ipcMain.handle('dsh:claude-' + name, (_event, payload) => {
     try {
@@ -2139,7 +2139,7 @@ if (!gotSingleInstanceLock) {
     'goal-get': () => ({ ok: true, goal: kimiGoalDriver.view() }),
     'goal-start': payload => kimiGoalDriver.start(payload),
     'goal-pause': () => kimiGoalDriver.setPhase('paused'), 'goal-resume': () => kimiGoalDriver.resume(),
-    'goal-complete': () => kimiGoalDriver.setPhase('complete'), 'goal-clear': () => kimiGoalDriver.clear(),
+    'goal-complete': () => kimiGoalDriver.setPhase('complete'), 'goal-clear': () => kimiGoalDriver.clear({ interrupt: false }),
     'account-state': payload => {
       if (payload?.id && !kimiAccount.list().some(account => account.id === payload.id)) throw new Error('Unknown Kimi account');
       return { ok: true, ...kimiAccount.state(payload?.id) };
@@ -2501,7 +2501,7 @@ if (!gotSingleInstanceLock) {
     const goal = { claude: goalDriver, kimi: kimiGoalDriver, codex: codex.goal, antigravity: antigravity.goal, shared: null }[source];
     if (goal?.goal?.sessionId === id) {
       if (goal.armed) throw new Error('Pause the goal before deleting its conversation');
-      goal.clear();
+      goal.clear({ interrupt: true });
     }
     if (source === 'shared') {
       if (sharedConversations.busy(id)) throw new Error('Stop this conversation before deleting it');

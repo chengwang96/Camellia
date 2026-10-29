@@ -4093,7 +4093,7 @@ test('pausing during verifier setup prevents dispatch and cleans up after setup 
   assert.equal(goal.view().verified, null);
 });
 
-test('pausing during engine setup cancels the pending goal before it can send; resume and clear work', async t => {
+test('pausing during engine setup cancels the pending goal; resume works and clear leaves the reply running', async t => {
   const f = fixture(t);
   let release;
   f.manager.prepare = () => new Promise(resolve => { release = resolve; });
@@ -4108,8 +4108,12 @@ test('pausing during engine setup cancels the pending goal before it can send; r
   await f.manager.command('codex', 'goal-resume', { sessionId: f.goal.goal.sessionId }); f.goal.drive();
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(f.sent.length, 1);
-  await f.manager.command('codex', 'goal-clear', { sessionId: f.goal.goal.sessionId });
-  assert.equal(f.manager.active.size, 0); assert.equal(f.goal.view(), null);
+  const sessionId = f.goal.goal.sessionId, running = f.sent[0].session;
+  await f.manager.command('codex', 'goal-clear', { sessionId });
+  assert.equal(f.goal.view(), null); assert.equal(running.running, true); assert.equal(f.manager.active.size, 1);
+  f.finish('codex', 'success', 'Finished the current reply');
+  await f.flush();
+  assert.equal(f.sent.length, 1); assert.equal(f.manager.busy(sessionId), false);
 });
 
 test('a late initialization error cannot recreate a goal that the user removed', async t => {
@@ -6393,6 +6397,43 @@ test('pausing a goal during pre-send compaction never sends the goal request', a
   assert.equal(f.manager.busy(sessionId), false);
 });
 
+test('removing a goal during pre-send compaction preserves the pending reply', async t => {
+  const f = fixture(t, { modelContextWindow: () => 20000 });
+  const { sessionId } = await f.manager.command('claude', 'goal-start', { objective: 'Finish the experiment' });
+  const goal = f.manager.goalFor(sessionId);
+  goal.cancelTimer();
+  f.manager.append(f.manager.get(sessionId), { role: 'tool', text: 'x'.repeat(52000) });
+  goal.drive(); await f.flush();
+  assert.equal(f.manager.active.get(sessionId)?.internal, true);
+  assert.equal((await f.manager.command('claude', 'goal-clear', { sessionId })).ok, true);
+  for (let i = 0; i < 20 && f.manager.active.get(sessionId)?.internal; i++) {
+    f.finish('claude', 'success', 'Summary: experiment in progress');
+    await f.flush();
+  }
+  const active = f.manager.active.get(sessionId);
+  assert.ok(active && !active.internal, 'removal must let the reply continue after compaction');
+  assert.match(f.sent.at(-1).prompt, /Summary: experiment/);
+  f.finish('claude', 'success', 'Finished the current reply'); await f.flush();
+  assert.equal(goal.view(), null);
+  assert.equal(goal.timer, null);
+  assert.equal(f.manager.busy(sessionId), false);
+});
+
+test('interrupting goal removal during pre-send compaction cancels the pending reply', async t => {
+  const f = fixture(t, { modelContextWindow: () => 20000 });
+  const { sessionId } = await f.manager.command('claude', 'goal-start', { objective: 'Finish' });
+  const goal = f.manager.goalFor(sessionId);
+  goal.cancelTimer();
+  f.manager.append(f.manager.get(sessionId), { role: 'tool', text: 'x'.repeat(52000) });
+  goal.drive(); await f.flush();
+  assert.equal(f.manager.active.get(sessionId)?.internal, true);
+  assert.equal(goal.clear({ interrupt: true }).ok, true);
+  await f.flush();
+  assert.equal(f.sent.length, 1);
+  assert.equal(goal.view(), null);
+  assert.equal(f.manager.busy(sessionId), false);
+});
+
 test('summary failure before a goal round blocks the goal and retains the original history', async t => {
   const f = fixture(t, { modelContextWindow: () => 20000 });
   const { sessionId } = await f.manager.command('claude', 'goal-start', { objective: 'Finish' });
@@ -7118,4 +7159,46 @@ test('a portable compaction leads the prompt once, then the native thread carrie
   const resumed = await manager.send('codex', { sessionId: conversation.id, prompt: 'Continue again' });
   assert.doesNotMatch(harness.sent.at(-1).prompt, /PORTABLE-SUMMARY-MARKER/);
   harness.finish('codex'); await resumed.done;
+});
+
+test('sending reuses its constructed context and auxiliary summaries never build the conversation context', async t => {
+  const h = fixture(t), manager = h.manager, c = manager.create('codex');
+  manager.append(c, { role: 'user', text: 'Earlier request' });
+  manager.append(c, { role: 'assistant', text: 'Earlier answer' });
+  const context = manager.context.bind(manager);
+  let builds = 0;
+  t.mock.method(manager, 'context', (...args) => { builds++; return context(...args); });
+  const turn = await manager.send('codex', { sessionId: c.id, prompt: 'Continue' });
+  assert.equal(builds, 1);
+  assert.match(h.sent.at(-1).prompt, /Earlier answer/);
+  h.finish('codex'); await turn.done;
+  builds = 0;
+  const summary = await manager.send('codex', { sessionId: c.id },
+    { internal: true, fresh: true, ephemeral: true, promptOverride: 'Summarize only this fragment' });
+  assert.equal(builds, 0);
+  assert.equal(h.sent.at(-1).prompt, 'Summarize only this fragment');
+  h.finish('codex'); await summary.done;
+});
+
+test('an oversized replay compacts from the index before materializing history even when native usage is low', async t => {
+  let summarizing = false;
+  const h = fixture(t, { summarize: { available: () => true, run: async () => {
+    summarizing = true; return { text: 'Preserved working context' };
+  } } });
+  const manager = h.manager, c = manager.create('codex');
+  c.engineSettings.codex = { model: 'fixture', connection: 'api', contextWindow: 6000 };
+  manager.append(c, { role: 'user', text: 'Original task' });
+  manager.append(c, { role: 'assistant', text: 'x'.repeat(40000) });
+  c.segments.codex = { nativeId: 'existing', isolated: true, cursor: 0,
+    contextUsage: { used: 20, model: 'fixture', connection: 'api', contextWindow: 6000 } };
+  const rows = manager.rows.bind(manager);
+  t.mock.method(manager, 'rows', (...args) => {
+    assert.ok(summarizing, 'history must not be materialized before the indexed replay check');
+    return rows(...args);
+  });
+  const turn = await manager.send('codex', { sessionId: c.id, prompt: 'Continue' });
+  assert.ok(summarizing);
+  assert.match(h.sent.at(-1).prompt, /Preserved working context/);
+  assert.equal(c.lastCompaction.triggerReason, 'before-send');
+  h.finish('codex'); await turn.done;
 });

@@ -197,6 +197,21 @@ test('a manual result cannot complete or adopt a pending goal conversation', asy
   assert.equal(goal.roundsStarted, 0);
 });
 
+test('removing an active goal leaves its CLI process running and stops automatic rounds', async t => {
+  const h = setup(t);
+  h.call('claude-goal-start', { objective: 'Finish' });
+  h.api.claudeGoalDrive();
+  const session = h.api.getSession(), process = h.processes.at(-1);
+  assert.equal(session.running, true);
+  assert.equal(h.call('claude-goal-clear').ok, true);
+  assert.equal(h.call('claude-goal-get').goal, null);
+  assert.equal(session.running, true); assert.equal(session.dead, false); assert.equal(process.killed, false);
+  assert.equal(process.messages.filter(message => message.type === 'control_request' &&
+    message.request?.subtype === 'interrupt').length, 0);
+  h.finishTurn();
+  assert.equal(h.processes.length, 1);
+});
+
 test('an unavailable goal workspace does not consume a round before a process starts', async t => {
   const h = setup(t), ws = workspace(h, 'Removed folder');
   h.call('claude-goal-start', { objective: 'Goal', workspaceId: ws.id });

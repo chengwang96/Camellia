@@ -17,7 +17,8 @@ const { normalizeConfig, writeConfig } = require('../src/api/api-router-config')
 const { frame } = require('../src/api/api-protocol');
 
 async function main() {
-  const runtime = createRuntimeManager({ root: path.resolve(__dirname, '..'), node: () => process.execPath }).locate('claude');
+  const appRoot = path.resolve(__dirname, '..');
+  const runtime = createRuntimeManager({ root: appRoot, installRoot: appRoot, node: () => process.execPath }).locate('claude');
   assert.ok(runtime, 'Install the Claude runtime before running this smoke test');
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'camellia-compact-native-'));
   const tooFewMessages = process.argv.includes('--too-few-messages');

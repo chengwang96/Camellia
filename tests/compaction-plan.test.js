@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { planCompaction, takeFragment, summaryLimit } = require('../src/engines/compaction-plan');
+const { planCompaction, planHistoryCompaction, takeFragment, summaryLimit } = require('../src/engines/compaction-plan');
 const { packSummaries, selectFragment } = require('../src/engines/compaction-plan');
 const { runSummaryPipeline } = require('../src/engines/compaction-summary');
 
@@ -29,6 +29,62 @@ test('packs complete tool interactions without splitting JSON or mutating the so
   assert.deepEqual(first.remaining, [units[1]]);
   assert.equal(first.splitRecords, 0);
   assert.equal(units.length, 2);
+});
+
+test('streamed planning retains the same complete recent interactions as array planning', () => {
+  const rows = [
+    { seq: 1, role: 'assistant', text: 'Earlier context' },
+    { seq: 2, role: 'user', text: 'Old task' }, { seq: 3, role: 'tool', text: 'x'.repeat(5000) },
+    { seq: 4, role: 'user', text: 'Recent task' }, { seq: 5, role: 'tool', text: 'Recent result' },
+    { seq: 6, role: 'user', text: 'Latest task' }, { seq: 7, role: 'assistant', text: 'Latest answer' },
+  ];
+  for (const budget of [500, 12000, 100000]) for (const start of [0, 2, 5]) {
+    const source = rows.slice(start);
+    const expected = planCompaction(source, budget);
+    const actual = planHistoryCompaction(({ reverse }) => reverse ? source.toReversed() : source, budget);
+    assert.deepEqual(actual.recent, expected.recent);
+    assert.equal(actual.recentChars, expected.recentChars);
+    assert.deepEqual([...actual.units].flat(), expected.units.flat());
+  }
+  const unordered = [{ seq: 10, role: 'user', text: 'Original request' }, { seq: 2, role: 'tool', text: 'Result' },
+    { seq: 3, role: 'user', text: 'Recent request' }, { seq: 4, role: 'assistant', text: 'Recent answer' }];
+  const plan = planHistoryCompaction(({ reverse }) => reverse ? unordered.toReversed() : unordered, 12000);
+  assert.deepEqual([...plan.units].flat().map(row => row.sourceSeq), [10, 2]);
+  assert.deepEqual(plan.recent.map(row => row.sourceSeq), [3, 4]);
+  const repeated = unordered.map((row, i) => ({ ...row, seq: i === 0 ? 3 : row.seq, historyIndex: i }));
+  const repeatedPlan = planHistoryCompaction(({ reverse }) => reverse ? repeated.toReversed() : repeated, 12000);
+  assert.deepEqual([...repeatedPlan.units].flat().map(row => row.text), ['Original request', 'Result']);
+  assert.deepEqual(repeatedPlan.recent.map(row => row.text), ['Recent request', 'Recent answer']);
+});
+
+test('long interactions are read on demand and every Unicode fragment is summarized exactly once', async () => {
+  const text = '中文😀\\\"\n'.repeat(700), count = 40, restored = new Map();
+  let read = 0, release;
+  const gate = new Promise(resolve => { release = resolve; });
+  function* rows({ reverse }) {
+    for (let i = reverse ? count : 1; reverse ? i > 0 : i <= count; i += reverse ? -1 : 1) {
+      read++;
+      yield { seq: i, role: i === 1 ? 'user' : 'tool', text };
+    }
+  }
+  const plan = planHistoryCompaction(rows, 6000);
+  const pending = runSummaryPipeline({ units: plan.units, budget: 6000, concurrency: 2,
+    request: async options => {
+      if (options.kind === 'reduce') return { text: 'Merged context' };
+      await gate;
+      for (const row of JSON.parse(options.user.slice(options.user.indexOf('\n') + 1)).history) {
+        const previous = restored.get(row.sourceSeq) || '';
+        assert.equal(row.fragment?.offset || 0, previous.length);
+        restored.set(row.sourceSeq, previous + row.text);
+      }
+      return { text: 'Fragment accepted' };
+    } });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.ok(read < count / 2, 'waiting requests must not retain the remaining source history');
+  release();
+  assert.equal((await pending).summary, 'Merged context');
+  assert.equal(restored.size, count);
+  assert.ok([...restored.values()].every(value => value === text));
 });
 
 test('oversized records become lossless JSON fragments with stable offsets and attachments', () => {

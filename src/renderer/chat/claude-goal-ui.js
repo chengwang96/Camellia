@@ -114,7 +114,7 @@ function createClaudeGoalUI({ $, context, canChangeContext, openHistorySession, 
     if (active()) items.push({ label: 'Pause goal', run: () => updateGoal(() => chatApi.goalPause({ sessionId: context.sessionId }), 'Goal paused. Stopping the current response…') });
     if (['paused', 'blocked'].includes(phase)) items.push({ label: 'Resume goal', run: resumeGoal });
     if (phase !== 'complete') items.push({ label: 'Mark complete', run: () => updateGoal(() => chatApi.goalComplete({ sessionId: context.sessionId }), 'Goal marked complete.') });
-    items.push({ label: 'Remove goal', run: () => updateGoal(() => chatApi.goalClear({ sessionId: context.sessionId }), 'Goal removed. Automatic work has stopped.') });
+    items.push({ label: 'Remove goal', run: () => updateGoal(() => chatApi.goalClear({ sessionId: context.sessionId }), 'Goal removed. The conversation will continue.') });
     openActionMenu(anchor, items);
   }
 

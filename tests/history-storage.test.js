@@ -206,6 +206,38 @@ test('compaction estimates retain the original rules and detect changed or remov
   assert.ok(Math.abs(h.history.estimate('sample') - wanted) < 1e-8);
 });
 
+test('replay range estimates use only the index and respect effective sequences and internal rows', t => {
+  const h = fixture(t);
+  const source = [{ seq: 1, role: 'user', text: 'Old task' }, { seq: 2, role: 'assistant', text: 'Discarded' },
+    { seq: 3, role: 'revision', replacesSeq: 1, text: 'Revised 中文😀' },
+    { seq: 4, role: 'assistant', text: 'Kept answer' }, { seq: 5, role: 'tool', internal: true, text: 'Hidden' },
+    { seq: 6, role: 'user', text: 'Next task' }];
+  h.seed(source); h.history.ensure('sample');
+  const parsed = h.history.metrics.parsedRows;
+  for (const after of [-Infinity, 3, 4, 6]) for (const before of [4, 6, Infinity]) {
+    const expected = logical(source).filter(row => row.seq > after && row.seq < before && !row.internal)
+      .reduce((cost, row) => cost + tokens(row.text) + 200 / 3, 0);
+    assert.ok(Math.abs(h.history.estimateRange('sample', { after, before }) - expected) < 1e-8);
+  }
+  assert.equal(h.history.metrics.parsedRows, parsed);
+});
+
+test('a summary snapshot survives internal appends after cache eviction and excludes the appended records', t => {
+  const h = fixture(t, { cacheBytes: 8192 });
+  h.seed([{ seq: 1, role: 'user', text: 'Original request' },
+    { seq: 4, role: 'tool', text: 'x'.repeat(20000) }, { seq: 3, role: 'assistant', text: 'Older out-of-order record' }]);
+  const source = h.history.iterate('sample', { mask: FLAGS.public, snapshot: true });
+  assert.equal(source.next().value.seq, 1);
+  h.history.forget('sample');
+  h.history.append('sample', { seq: 5, role: 'assistant', internal: true, text: 'Internal summary' });
+  assert.deepEqual([...source].map(row => row.seq), [4, 3]);
+  assert.equal(h.history.rows('sample').at(-1).seq, 5);
+  const invalid = h.history.iterate('sample', { snapshot: true });
+  invalid.next();
+  h.history.append('sample', { seq: 6, role: 'revision', replacesSeq: 1, text: 'Changed request' });
+  assert.throws(() => [...invalid], /changed while reading/);
+});
+
 test('external replacement, truncation and corrupt derived headers rebuild without stale rows', t => {
   const h = fixture(t); h.seed([{ seq: 1, role: 'user', text: 'old' }]); h.history.rows('sample');
   const file = path.join(h.root, 'sample.jsonl'), next = file + '.new';
