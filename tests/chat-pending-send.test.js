@@ -26,7 +26,7 @@ function fixture() {
     sendBtn: { classList: { toggle() {} } }, pendingConversationSends: new Map(),
     goalUI: { isActive: () => false, isDraft: () => false },
     sidebar: { render() {}, load() {} }, chat: { querySelector: () => null, querySelectorAll: () => [], appendChild() {} },
-    renderAttachments() {}, renderMessageQueue() {}, autoResize() {}, updateConversationControls() { state.updateSendEnabled(); },
+    renderAttachments() {}, renderMessageQueue() {}, drainMessageQueue() {}, autoResize() {}, updateConversationControls() { state.updateSendEnabled(); },
     maybeScroll() {},
     canChangeContext: () => !state.contextBusy(),
     draftKey: () => state.context.sessionId,
@@ -317,6 +317,95 @@ test('a waiting Goal accepts an immediate composer instruction', async () => {
   assert.equal(harness.requests[0].prompt, 'Continue');
   harness.replies[0].resolve({ ok: true, sessionId: 'conversation-a', runId: 2, userSeq: 3 });
   assert.equal(await pending, true);
+});
+
+test('queued instructions require a live run or an idle waiting Goal and respect send locks', () => {
+  const { state } = fixture();
+  assert.equal(state.canSteerQueuedMessage(), false);
+  state.goalUI = { isActive: () => true, isDraft: () => false, waitingId: () => 'goal-waiting' };
+  assert.equal(state.canSteerQueuedMessage(), true);
+  for (const lock of ['drainingQueue', 'sending', 'loadingSession', 'switchingEngine', 'editingMessage', 'conversationActivity', 'running']) {
+    state[lock] = true;
+    assert.equal(state.canSteerQueuedMessage(), false, lock);
+    state[lock] = false;
+  }
+  state.pendingConversationSends.set(state.context.sessionId, {});
+  assert.equal(state.canSteerQueuedMessage(), false);
+  state.pendingConversationSends.clear();
+  state.goalUI.waitingId = () => null;
+  assert.equal(state.canSteerQueuedMessage(), false);
+  state.running = true; state.currentRunId = 2;
+  assert.equal(state.canSteerQueuedMessage(), true);
+});
+
+test('a waiting Goal sends the selected queued instruction once and preserves the remaining queue and draft', async () => {
+  const harness = fixture(), { state } = harness;
+  state.goalUI = { isActive: () => true, isDraft: () => false, waitingId: () => 'goal-waiting' };
+  const first = { text: 'Keep waiting', attachments: [] };
+  const selected = { text: 'Inspect this output now', attachments: [{ path: 'D:/output.csv' }] };
+  state.messageQueue.push(first, selected);
+  state.input.value = 'Unsent draft';
+  state.attachments = [{ path: 'D:/draft.csv' }];
+  state.buildPrompt = (text, attachments) => text + '\n' + attachments.map(file => file.path).join('\n');
+  harness.settings.resolve({});
+  const pending = state.steerQueuedMessage(selected);
+  await state.steerQueuedMessage(selected);
+  await flush();
+  assert.equal(harness.requests.length, 1);
+  assert.equal(harness.requests[0].goalId, 'goal-waiting');
+  assert.equal(harness.requests[0].displayText, selected.text);
+  assert.equal(harness.requests[0].prompt, 'Inspect this output now\nD:/output.csv');
+  assert.equal(harness.requests[0].attachments[0].path, 'D:/output.csv');
+  harness.replies[0].resolve({ ok: true, sessionId: 'conversation-a', runId: 2, userSeq: 3 });
+  await pending;
+  assert.deepEqual(state.messageQueue, [first]);
+  assert.equal(harness.drafts.get('queue:conversation-a').length, 1);
+  assert.equal(state.input.value, 'Unsent draft');
+  assert.equal(state.attachments[0].path, 'D:/draft.csv');
+  assert.equal(state.drainingQueue, false);
+});
+
+test('a rejected waiting Goal instruction retains its queue entry and attachments', async () => {
+  const harness = fixture(), { state } = harness;
+  state.goalUI = { isActive: () => true, isDraft: () => false, waitingId: () => 'goal-waiting' };
+  const selected = { text: 'Inspect the output now', attachments: [{ path: 'D:/output.csv' }] };
+  state.messageQueue.push(selected);
+  harness.settings.resolve({});
+  const pending = state.steerQueuedMessage(selected);
+  await flush();
+  assert.equal(harness.requests.length, 1);
+  harness.replies[0].resolve({ ok: false, error: 'The goal changed before sending' });
+  await pending;
+  assert.deepEqual(state.messageQueue, [selected]);
+  assert.equal(state.messageQueuePaused, true);
+  assert.equal(state.input.value, 'Continue');
+  assert.equal(state.drainingQueue, false);
+});
+
+for (const accepted of [true, false]) test(`a waiting Goal queue handoff stays scoped across navigation (accepted=${accepted})`, async () => {
+  const harness = fixture(), { state } = harness;
+  state.goalUI = { isActive: () => true, isDraft: () => false, waitingId: () => 'goal-waiting' };
+  const selected = { text: 'Instruction for A', attachments: [] };
+  state.messageQueue.push(selected);
+  state.saveMessageQueue();
+  harness.settings.resolve({});
+  const pending = state.steerQueuedMessage(selected);
+  await flush();
+  assert.equal(harness.requests.length, 1);
+  harness.navigate('conversation-b');
+  state.drainingQueue = false;
+  state.restoreMessageQueue();
+  const other = { text: 'Queued for B', attachments: [] };
+  state.messageQueue.push(other);
+  state.input.value = 'Draft for B';
+  state.saveMessageQueue();
+  harness.replies[0].resolve({ ok: accepted, error: 'Instruction rejected', sessionId: 'conversation-a', runId: 2 });
+  await pending;
+  assert.equal(state.messageQueue.length, 1);
+  assert.equal(state.messageQueue[0], other);
+  assert.equal(state.input.value, 'Draft for B');
+  assert.equal(harness.drafts.get('queue:conversation-a').length, accepted ? 0 : 1);
+  assert.equal(state.drainingQueue, false);
 });
 
 test('an idle conversation sends its queued message with the current harness', async () => {

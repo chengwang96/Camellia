@@ -1193,7 +1193,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       steer.title = window.CamelliaI18n.t('Send instruction now');
       steer.setAttribute('aria-label', steer.title);
       steer.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M4 4h16M12 20V9m-5 5 5-5 5 5"/></svg>';
-      steer.disabled = !running || !currentRunId || sending || loadingSession || switchingEngine || Boolean(editingMessage) || Boolean(pendingConversationSend()) || drainingQueue;
+      steer.disabled = !canSteerQueuedMessage();
       steer.addEventListener('click', () => void steerQueuedMessage(message));
       const remove = document.createElement('button');
       remove.type = 'button'; remove.className = 'queue-remove'; remove.title = 'Remove from queue';
@@ -2870,8 +2870,33 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     renderMessageQueue();
   }
 
+  function canSteerQueuedMessage() {
+    return !drainingQueue && !sending && !loadingSession && !switchingEngine && !editingMessage && !pendingConversationSend()
+      && (running ? Boolean(currentRunId) : !conversationActivity && Boolean(goalUI.waitingId?.()));
+  }
+
   async function steerQueuedMessage(message) {
-    if (!messageQueue.includes(message) || !running || !currentRunId || drainingQueue || sending || loadingSession || switchingEngine || editingMessage || pendingConversationSend()) return;
+    if (!messageQueue.includes(message) || !canSteerQueuedMessage()) return;
+    if (!running) {
+      // Waiting Goals have no live run to steer. Send the selected entry through
+      // the Goal handoff, keeping its queue and draft tied to this conversation.
+      const queue = messageQueue, key = draftKey(), openSeq = sessionOpenSeq;
+      drainingQueue = true; updateSendEnabled();
+      try {
+        if (await send(message)) {
+          const index = queue.indexOf(message);
+          if (index !== -1) queue.splice(index, 1);
+          saveMessageQueue(key, queue);
+        }
+      } catch (error) {
+        if (openSeq === sessionOpenSeq) setStatus(error.message || 'Could not send the queued message');
+      } finally {
+        if (openSeq === sessionOpenSeq) {
+          drainingQueue = false; updateSendEnabled(); drainMessageQueue();
+        }
+      }
+      return;
+    }
     const text = message.text, atts = message.attachments.slice();
     if (goalUI.isDraft() || typeof findUI !== 'undefined' && findUI.isDraft()) { setStatus('Finish this command before sending instructions.'); return; }
     const sessionId = context.sessionId, runId = currentRunId, openSeq = sessionOpenSeq;

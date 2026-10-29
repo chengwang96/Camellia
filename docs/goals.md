@@ -48,10 +48,14 @@ Use `camellia_update_goal` with `status` (`complete`, `blocked` or `waiting`) an
 
 When an external operation is still running and no useful independent work remains, check once and report `status: "waiting"`, then end the turn. Camellia delays the next check by 1 minute. Consecutive waiting reports increase that delay to 2, 4, 8 and at most 15 minutes, even when logs or progress counters change. An optional `wait_seconds` (60 to 3600) sets a longer minimum delay when a completion time is known. Connections without Camellia tools can report `<goal:waiting> reason` on a standalone line and use the default backoff.
 
-Waiting keeps the goal active without accumulating blockers. The goal chip shows that it is waiting, and its menu shows the reason and next check time. Keep routine waiting updates brief; do not repeatedly ask the user whether to continue already-authorized monitoring. New immediate instructions bypass the wait. Productive work, errors, blockers, revisions and resumption reset the waiting streak. Pause, completion, removal and application shutdown cancel pending checks; reopening still requires manual resumption.
+Waiting keeps the goal active without accumulating blockers. The goal chip shows that it is waiting, and its menu shows the reason and next check time. Keep routine waiting updates brief; do not repeatedly ask the user whether to continue already-authorized monitoring. New immediate instructions bypass the wait. Send from the composer or use **Send instruction now** on a queued message to start the next Goal round immediately. The selected queue entry and its attachments are removed only after acceptance; other queued messages and the composer draft remain in place. Productive work, errors, blockers, revisions and resumption reset the waiting streak. Pause, completion, removal and application shutdown cancel pending checks; reopening still requires manual resumption.
 
 This delay handles ongoing work within the current goal. User-requested recurring checks use scheduled tasks separately.
 
 ## Validation
 
 `node --test tests/claude-goal.test.js tests/goal-tool-bridge.test.js tests/shared-conversations.test.js`
+
+`node --test tests/chat-pending-send.test.js tests/chat-queue.test.js`
+
+`python tests/goal-waiting-queue-ui.py`

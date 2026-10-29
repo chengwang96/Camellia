@@ -293,7 +293,7 @@ test('queue resumes when the turn finishes before the steering reply', async () 
       buildPrompt: text => text,
       chatApi: { steer: () => new Promise(resolve => { reply = resolve; }) },
     });
-    vm.runInContext(source.slice(source.indexOf('  async function steerQueuedMessage('), source.indexOf('  async function send(')), state);
+    vm.runInContext(source.slice(source.indexOf('  function canSteerQueuedMessage()'), source.indexOf('  async function send(')), state);
     const pending = state.steerQueuedMessage(state.messageQueue[1]);
     assert.equal(state.sending, true);
     state.running = false;
@@ -320,7 +320,7 @@ function steeringHarness() {
     updateSendEnabled() {}, buildPrompt: (text, attachments) => text + ':' + attachments.map(item => item.path).join(','),
     chatApi: { steer(payload) { requests.push(payload); return new Promise((resolve, reject) => { reply = { resolve, reject }; }); } },
   });
-  vm.runInContext(source.slice(source.indexOf('  async function steerQueuedMessage('), source.indexOf('  async function send(')), state);
+  vm.runInContext(source.slice(source.indexOf('  function canSteerQueuedMessage()'), source.indexOf('  async function send(')), state);
   return { state, requests, resolve: value => reply.resolve(value), reject: error => reply.reject(error) };
 }
 
