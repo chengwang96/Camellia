@@ -42,6 +42,13 @@ jobs:
           cache-dependency-path: |
             package-lock.json
             runtimes/*/package-lock.json
+      # Match runtimes/antigravity/runtime.json. The runner's default Python
+      # can advance beyond the wheels available for our locked SDK packages.
+      - name: Set up the SDK Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.13.14'
+          architecture: ${{ matrix.arch }}
       - run: npm ci
       - uses: actions/setup-go@v6
         with:
