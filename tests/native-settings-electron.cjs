@@ -59,7 +59,10 @@ async function main() {
     await settings.webContents.executeJavaScript("document.querySelector('#runtimeCards').style.paddingTop=''");
     await wait(() => view.getBounds().y === originalY, 'restored native position', 15000);
     const dropdowns = '.workbench-native-content button[aria-haspopup="menu"]';
-    const dropdownCount = ['0.2.0-rc.2', '0.2.1-rc.2'].includes(require('../runtimes/dsh/node_modules/@deepseek-ai/dsh/package.json').version) ? 4 : 3;
+    // 0.2.0 adds busy-send behavior; 0.2.1 adds work-detail collapse timing.
+    const version = require('../runtimes/dsh/node_modules/@deepseek-ai/dsh/package.json').version;
+    const dropdownCount = { '0.1.5-rc.2': 3, '0.2.0-rc.2': 4, '0.2.1-rc.2': 5 }[version];
+    assert.ok(dropdownCount, 'Verify native controls for DSH ' + version);
     await wait(() => native.executeJavaScript(`document.querySelectorAll('${dropdowns}').length === ${dropdownCount} && [...document.querySelectorAll('${dropdowns}')].every(button => !button.disabled)`), 'native controls', 15000).catch(async error => {
       throw new Error(error.message + '\n' + await native.executeJavaScript("document.querySelector('.workbench-native-content').innerText"));
     });
