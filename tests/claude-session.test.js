@@ -319,6 +319,36 @@ test('native error details are exposed instead of only error_during_execution', 
   assert.equal(f.results[0].result, 'Provider unavailable\nTry again later');
 });
 
+test('Claude spawn preserves the exact native edit cut and dropped-turn guard', t => {
+  const h = createHarness(); t.after(() => h.cleanup());
+  h.configureApi();
+  const resumeSessionAt = '12345678-1234-4234-8234-123456789abc';
+  const resumeDropsTurn = '23456789-1234-4234-8234-123456789abc';
+  const spec = h.api.claudeSpawnSpec({ model: 'test-model' }, { sessionId: 'source-native', fork: true, resumeSessionAt, resumeDropsTurn });
+  assert.equal(spec.args.includes('--fork-session'), true);
+  assert.equal(spec.args[spec.args.indexOf('--resume-session-at') + 1], resumeSessionAt);
+  assert.equal(spec.args[spec.args.indexOf('--resume-drops-turn') + 1], resumeDropsTurn);
+});
+
+test('Claude waits for the current input identity before cutting an identical earlier request', async t => {
+  const fs = require('node:fs'), os = require('node:os'), { randomUUID } = require('node:crypto');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'camellia-claude-input-'));
+  t.after(() => require('./test-fs.cjs').removeTree(root));
+  const file = path.join(root, 'history.jsonl'), parentUuid = randomUUID();
+  const row = { type: 'user', uuid: randomUUID(), parentUuid, message: { content: 'Continue' } };
+  fs.writeFileSync(file, JSON.stringify(row) + '\n');
+  const h = fixture(t);
+  h.session.nativeHistory = { find: () => file };
+  h.session.sendUserMessage('Continue');
+  const inputId = h.writes.at(-1).uuid;
+  assert.ok(inputId);
+  assert.equal(await h.session.editBoundary('Continue'), null, 'The prior identical turn must be retained');
+  h.session.complete({ subtype: 'stopped' });
+  assert.equal(await h.session.editBoundary('Continue'), null, 'Stopping does not make unpersisted input observable');
+  fs.appendFileSync(file, JSON.stringify({ ...row, uuid: inputId }) + '\n');
+  assert.deepEqual(await h.session.editBoundary('Continue'), { resumeSessionAt: parentUuid, resumeDropsTurn: inputId });
+});
+
 test('invalid replacement settings preserve the idle process and stale cancel cannot interrupt a newer session', t => {
   const h = createHarness(); t.after(() => h.cleanup());
   h.configureApi();

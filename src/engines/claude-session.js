@@ -1,15 +1,17 @@
 'use strict';
 
 const { StringDecoder } = require('node:string_decoder');
+const { randomUUID } = require('node:crypto');
 const { nativeMode } = require('./permission-levels');
 const { NativeSubagents, nativeStatus, contentText } = require('./native-subagents');
+const { claudeEditBoundary } = require('./native-edit-boundary');
 
 // Owns one CLI process. Application state stays in main; the callbacks below
 // also make process failures and fragmented output testable without Electron.
 class ClaudeSession {
   constructor({ gen, settings, opts, exe, spec, spawn, log = () => {}, onEvent, onSessionId, onResult,
-    setTimer = setTimeout, clearTimer = clearTimeout }) {
-    Object.assign(this, { gen, settings, opts, exe, spec, spawn, log, onEvent, onSessionId, onResult, setTimer, clearTimer });
+    setTimer = setTimeout, clearTimer = clearTimeout, nativeHistory }) {
+    Object.assign(this, { gen, settings, opts, exe, spec, spawn, log, onEvent, onSessionId, onResult, setTimer, clearTimer, nativeHistory });
     this.sessionId = opts.sessionId || null;
     this.proc = null;
     this.running = false;
@@ -103,6 +105,10 @@ class ClaudeSession {
     this.sessionId = id || this.sessionId;
     try { this.onSessionId?.(this.sessionId); }
     catch (err) { this.log(`claude: session metadata save failed: ${err.message}`); }
+  }
+
+  editBoundary(prompt) {
+    return claudeEditBoundary(this.nativeHistory?.find(this.sessionId), prompt, this.userMessageId);
   }
 
   complete(obj) {
@@ -300,7 +306,10 @@ class ClaudeSession {
     if (!this.initialized) {
       this.watchdog = this.setTimer(() => this.fail('session_timeout', "Claude did not initialize within 25 seconds (stream-json handshake failed)."), 25_000);
     }
-    return this.write({ type: 'user', message: { role: 'user', content } });
+    // The CLI may persist this input only after its first model response.
+    // Its identity prevents an earlier identical request supplying our cut.
+    this.userMessageId = randomUUID();
+    return this.write({ type: 'user', uuid: this.userMessageId, message: { role: 'user', content } });
   }
 
   interrupt() {

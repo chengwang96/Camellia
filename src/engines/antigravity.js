@@ -146,6 +146,16 @@ function createAntigravity({ dataDir, cliSettingsFile, node, openLogin, loadConf
     try { next.start(previousClosed); } catch (error) { next.kill(); throw error; }
     return next;
   }
+  async function forkNative({ sessionId, conversationId, cwd, settings, goalBridge, registerSession }) {
+    if (settings.connection === 'subscription') return null;
+    const session = ensureSession({ sessionId, conversationId, cwd, settings, goalBridge, fork: true });
+    registerSession(session);
+    try {
+      await (session.ready ||= session.open());
+      if (session.sessionId === sessionId) throw new Error('Antigravity did not create an independent native fork');
+      return { nativeId: session.sessionId };
+    } finally { await session.shutdown(); }
+  }
   const goal = new ClaudeGoal({ file: () => path.join(dataDir, 'antigravity-goal.json'), getSession: () => sessions.legacy,
     ensureSession, resolveWorkspace: payload => workspaces.resolveContext(settings(), payload).workspaceId,
     onChange: onGoal, log, setTimer: setTimeout, clearTimer: clearTimeout });
@@ -208,7 +218,7 @@ function createAntigravity({ dataDir, cliSettingsFile, node, openLogin, loadConf
     'goal-pause': () => goal.setPhase('paused'), 'goal-resume': () => goal.resume(),
     'goal-complete': () => goal.setPhase('complete'), 'goal-clear': () => goal.clear({ interrupt: false }),
   };
-  return { get session() { return sessions.legacy; }, home, goal, settings, saveSettings, handlers, ensureSession, history, sessions, workspaces,
+  return { get session() { return sessions.legacy; }, home, goal, settings, saveSettings, handlers, ensureSession, forkNative, history, sessions, workspaces,
     nativeStorageDirectory(id) {
       if (sessionConnection(id) === 'api') return path.join(home, 'sessions', id, 'native');
       const env = environment();

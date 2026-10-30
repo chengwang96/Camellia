@@ -122,6 +122,21 @@ async function run() {
     assert.equal((await turn('GROK_SMOKE fork native history')).subtype, 'success');
     assert.notEqual(session.sessionId, sourceId);
     assert.ok(requests.some(r => JSON.stringify(r.body.messages).includes('GROK_SMOKE fork native history') && JSON.stringify(r.body.messages).includes('GROK_SMOKE resume')));
+    for (const prompt of ['GROK_SMOKE revised native history', 'GROK_SMOKE revised again']) {
+      const replaced = prompt.includes('again') ? 'GROK_SMOKE revised native history' : 'GROK_SMOKE fork native history';
+      const boundary = await session.editBoundary(replaced);
+      assert.ok(Number.isSafeInteger(boundary?.targetPromptIndex), 'Native prompt boundary is required');
+      const previous = session.sessionId;
+      await create({ sessionId: previous, fork: true, ...boundary });
+      const start = requests.length;
+      assert.equal((await turn(prompt)).subtype, 'success');
+      assert.notEqual(session.sessionId, previous);
+      const sent = requests.slice(start).find(r => JSON.stringify(r.body.messages).includes(prompt));
+      assert.ok(sent);
+      assert.match(JSON.stringify(sent.body.messages), /GROK_SMOKE read|GROK_SMOKE resume/);
+      assert.doesNotMatch(JSON.stringify(sent.body.messages), new RegExp(replaced));
+      assert.equal(fs.readFileSync(written, 'utf8'), 'grok-wrote-7391');
+    }
     const image = path.join(cwd, 'pixel.png');
     fs.copyFileSync(path.join(appRoot, 'assets/icon-256.png'), image);
     assert.equal((await turn('GROK_SMOKE image attachment', [{ path: image, isImage: true }])).subtype, 'success');
@@ -131,7 +146,7 @@ async function run() {
     const config = fs.readFileSync(path.join(home, 'config.toml'), 'utf8');
     assert.ok(!config.includes('loopback-only') && !config.includes('proxy-managed'));
     assert.ok(!logs.join('\n').includes('loopback-only'));
-    console.log(`PASS: real Grok Build ${runtime.version}, isolated --version, ACP models, API tools, full/ask permissions, stop, resume, fork and image input. Local endpoints only.`);
+    console.log(`PASS: real Grok Build ${runtime.version}, isolated --version, ACP models, API tools, full/ask permissions, stop, resume, fork, repeated native editing and image input. Local endpoints only.`);
   } catch (error) {
     const nativeLog = path.join(home, 'logs/unified.jsonl');
     const diagnostics = { error: error.message, logs, events, requests,

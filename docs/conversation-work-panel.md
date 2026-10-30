@@ -41,7 +41,7 @@ The 2026-10-29 adapters were checked against the bundled Claude 2.1.291, DSH 0.2
 
 ## Fork and pricing behavior
 
-An active fork excludes the complete current turn: user prompt, steering, partial assistant output and tool rows. It snapshots completed history, starts fresh native context for a live fork and leaves the original run active. Desktop actions, Android/iOS remote controls and Camellia's own conversation-fork tool use the same boundary. Forks share the filesystem.
+An active fork excludes the complete current turn: user prompt, steering, partial assistant output and tool rows. It snapshots completed history and uses a native event or turn boundary where available, keeping the shared-history fallback when a safe native cut is unavailable. The source run remains active. Desktop actions, Android/iOS remote controls and Camellia's own conversation-fork tool use the same boundary. Forks share the filesystem. See [native editing and forks](design/native-conversation-history.md) for runtime support and verification.
 
 The bundled subscription price catalog includes `gpt-6.1-sol`. Desktop refreshes run daily or manually from Usage, persist a validated local cache and keep the last good catalog after errors. New eligible unpriced requests can be valued once a model rate becomes available; already priced requests and legacy aggregate unknown usage are preserved.
 

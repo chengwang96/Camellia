@@ -125,3 +125,28 @@ test('edited native preferences feed real spawn configuration without overriding
   const spec = claudeSpec({ settings: { model: 'model', connection: 'api', permissionMode: 'ask' }, opts: { conversationId: 'fixture' }, home: path.join(root, 'claude-native'), environment: {}, history: { find: () => null }, route: { baseUrl: 'http://127.0.0.1:8788', authToken: 'managed' }, mcpFile: settings.path('claude', 'mcp') });
   assert.ok(spec.args.includes(settings.path('claude', 'mcp')));
 });
+
+test('headless Claude resumes a frozen native cut and gives each branch its own MCP overlay', t => {
+  const { root, settings, save } = fixture(t);
+  save('claude', 'mcp', '{"mcpServers":{"existing":{"command":"custom-server"}}}');
+  const mcpFile = settings.path('claude', 'mcp'), original = fs.readFileSync(mcpFile, 'utf8');
+  const home = path.join(root, 'claude-native'), frozen = path.join(root, 'frozen.jsonl');
+  const boundary = { resumeSessionAt: '12345678-1234-4234-8234-123456789abc', resumeDropsTurn: '23456789-1234-4234-8234-123456789abc' };
+  const overlays = [];
+  for (const conversationId of ['parent', 'child']) {
+    const bridge = { command: 'node', args: ['goal-server'], env: { OWNER: conversationId } };
+    const spec = claudeSpec({ home, environment: {}, mcpFile, history: { find() { assert.fail('Frozen forks must not depend on the source transcript'); } },
+      settings: { model: 'fixture', connection: 'api', permissionMode: 'full' }, route: { baseUrl: 'http://127.0.0.1:8788', authToken: 'local' },
+      opts: { conversationId, sessionId: 'source', resumeFile: frozen, fork: true, ...boundary, goalBridge: { config: bridge } } });
+    assert.equal(spec.args[spec.args.indexOf('--resume') + 1], frozen);
+    assert.equal(spec.args[spec.args.indexOf('--resume-session-at') + 1], boundary.resumeSessionAt);
+    assert.equal(spec.args[spec.args.indexOf('--resume-drops-turn') + 1], boundary.resumeDropsTurn);
+    assert.ok(spec.args.includes('--fork-session'));
+    const file = spec.args[spec.args.indexOf('--mcp-config') + 1]; overlays.push(file);
+    const merged = JSON.parse(fs.readFileSync(file, 'utf8'));
+    assert.equal(merged.mcpServers.existing.command, 'custom-server');
+    assert.deepEqual(merged.mcpServers.camellia_goals, bridge);
+  }
+  assert.notEqual(overlays[0], overlays[1]);
+  assert.equal(fs.readFileSync(mcpFile, 'utf8'), original);
+});

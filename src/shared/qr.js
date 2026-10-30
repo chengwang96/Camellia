@@ -37,17 +37,6 @@
   })();
   const gfMultiply = (a, b) => (a === 0 || b === 0 ? 0 : GF_EXP[GF_LOG[a] + GF_LOG[b]]);
 
-  function utf8(text) {
-    if (typeof TextEncoder === 'function') return new TextEncoder().encode(text);
-    const escaped = encodeURIComponent(text);
-    const bytes = [];
-    for (let i = 0; i < escaped.length; i++) {
-      if (escaped[i] === '%') { bytes.push(parseInt(escaped.slice(i + 1, i + 3), 16)); i += 2; }
-      else bytes.push(escaped.charCodeAt(i));
-    }
-    return Uint8Array.from(bytes);
-  }
-
   function dataCapacity(version) {
     return LEVEL_M[version].groups.reduce((total, [count, size]) => total + count * size, 0);
   }
@@ -291,7 +280,7 @@
   function qrMatrix(text, options = {}) {
     const level = options.errorCorrectionLevel || 'M';
     if (level !== 'M') throw new Error('Only error-correction level M is supported');
-    const bytes = utf8(String(text));
+    const bytes = new TextEncoder().encode(String(text));
     const version = selectVersion(bytes.length);
     const matrix = baseMatrix(version);
     placeData(matrix, version, codewords(version, encodeData(bytes, version)));

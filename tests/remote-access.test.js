@@ -512,6 +512,59 @@ test('remote fork preserves workspace scope and rejects stale or out-of-scope so
   assert.equal(stale.body.ok, false);
 });
 
+for (const live of [false, true]) test(`remote ${live ? 'live' : 'idle'} fork prepares an independent native branch and deduplicates retries`, async context => {
+  const { gateway, pair, visible, manager } = fixture(context);
+  const { token } = pair();
+  await gateway.start('127.0.0.1', 0);
+  const engine = visible.currentEngine, driver = manager.drivers[engine];
+  visible.segments[engine] = { nativeId: 'source-native', isolated: true, cursor: visible.seq,
+    contextSettings: manager.settings(engine, visible.id) };
+  manager.save(visible);
+  const calls = [], runs = queuedRuns(manager, visible.id);
+  if (live) {
+    await manager.send(engine, { sessionId: visible.id, prompt: 'Discard active work' });
+    const session = manager.active.get(visible.id).session;
+    session.sessionId = 'source-native';
+    session.editBoundary = async prompt => { assert.equal(prompt, 'Discard active work'); return 'prior-turn'; };
+  }
+  driver.forkNative = async options => { calls.push(options); return { nativeId: 'child-native' }; };
+  const payload = { action: 'fork', requestId: require('node:crypto').randomUUID(), instanceId: gateway.instanceId, expectedSeq: visible.seq };
+  const endpoint = `/v1/conversations/${visible.id}/commands`;
+  const result = await request(gateway, endpoint, { token, method: 'POST', payload });
+  assert.equal(result.status, 200);
+  assert.equal(result.body.ok, true);
+  assert.equal(calls.length, 1);
+  const child = manager.get(result.body.conversation.id);
+  assert.equal(child.segments[engine].nativeId, 'child-native');
+  assert.equal(child.segments[engine].cursor, child.seq);
+  assert.equal(visible.segments[engine].nativeId, 'source-native');
+  assert.equal(calls[0].conversationId, child.id);
+  assert.deepEqual(calls[0].boundary, live ? { lastTurnId: 'prior-turn' } : undefined);
+  assert.doesNotMatch(JSON.stringify(manager.messages(child)), /Discard active work/);
+  assert.deepEqual((await request(gateway, endpoint, { token, method: 'POST', payload })).body, result.body);
+  assert.equal(calls.length, 1, 'A remote retry must not fork the native source again');
+  if (live) { assert.ok(manager.active.has(visible.id)); runs.finish(); }
+  assert.equal(manager.context(child, engine), '', 'Native branch must not replay the shared transcript');
+});
+
+test('remote fork retains an independent shared-history branch when native preparation is unsupported', async context => {
+  const { gateway, pair, visible, manager } = fixture(context);
+  const { token } = pair(); await gateway.start('127.0.0.1', 0);
+  visible.segments.codex = { nativeId: 'source-native', isolated: true, cursor: visible.seq,
+    contextSettings: manager.settings('codex', visible.id) };
+  manager.save(visible);
+  let calls = 0;
+  manager.drivers.codex.forkNative = async () => { calls++; throw new Error('Unsupported runtime'); };
+  const result = await request(gateway, `/v1/conversations/${visible.id}/commands`, { token, method: 'POST', payload: {
+    action: 'fork', requestId: require('node:crypto').randomUUID(), instanceId: gateway.instanceId, expectedSeq: visible.seq } });
+  assert.equal(result.body.ok, true);
+  assert.equal(calls, 1);
+  const child = manager.get(result.body.conversation.id);
+  assert.equal(child.segments.codex, undefined);
+  assert.match(manager.context(child, 'codex'), /Hello/);
+  assert.equal(visible.segments.codex.nativeId, 'source-native');
+});
+
 test('remote automation controls are scoped, explicit and cannot create tasks through control payloads', async context => {
   const { gateway, pair, visible, hidden, manager } = fixture(context);
   const { token } = pair(); await gateway.start('127.0.0.1', 0);

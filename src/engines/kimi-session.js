@@ -4,6 +4,19 @@ const path = require('node:path');
 const { AcpSession } = require('./acp-session');
 const TOML = require('smol-toml');
 const { writeText } = require('../shared/json-store');
+const { copyKimiFork } = require('./native-fork');
+const { validSessionId } = require('./claude-history');
+const { prepareKimiHistory } = require('./kimi-native-history');
+const { matchesPrompt, nativeEditOptions } = require('./native-edit-boundary');
+
+class KimiSession extends AcpSession {
+  async editBoundary(prompt) {
+    if (!this.spec.nativeHistory || this.running) return null;
+    await (this.ready ||= this.open());
+    const boundary = await this.request('session/camellia_history_boundary', { sessionId: this.sessionId });
+    return matchesPrompt(boundary.text, prompt) ? nativeEditOptions('kimi', boundary) : null;
+  }
+}
 
 const MANAGED_PROVIDER = 'managed:kimi-code';
 function kimiEnvironment(home, inherited = process.env) {
@@ -78,7 +91,42 @@ function kimiSpawnSpec({ home, runtime, model, contextWindow = 131072, route, co
   } else merged = routeKimi({ telemetry: false, ...config, providers: {}, models: {} }, { route, model, contextWindow });
   writeText(path.join(home, 'config.toml'), TOML.stringify(merged));
   writeText(path.join(home, 'mcp.json'), mcp || '{"mcpServers":{}}');
-  return { args: [runtime, 'acp'], env: { ...kimiEnvironment(home, env), KIMI_DISABLE_TELEMETRY: merged.telemetry ? '0' : '1' }, modeEngine: 'kimi' };
+  const bridge = prepareKimiHistory(runtime);
+  return { args: [bridge || runtime, 'acp'], env: { ...kimiEnvironment(home, env), KIMI_DISABLE_TELEMETRY: merged.telemetry ? '0' : '1' }, modeEngine: 'kimi', nativeHistory: Boolean(bridge) };
 }
 
-module.exports = { KimiSession: AcpSession, kimiSpawnSpec, kimiEnvironment, managedKimiConfig, kimiConnectionSettings, updateKimiConnectionSettings };
+async function forkKimiNative({ ensureSource, targetHome, sessionId, sourceConversationId, cwd, settings, goalBridge, sourceGoalBridge, registerSession }) {
+  // Kimi holds a writer lease on a loaded session. Fork through its owning
+  // connection instead of trying to restore that session in a second process.
+  const session = ensureSource({ sessionId, conversationId: sourceConversationId, cwd, settings, goalBridge: sourceGoalBridge });
+  await (session.ready ||= session.open());
+  if (!session.agentCapabilities?.sessionCapabilities?.close || !session.agentCapabilities?.sessionCapabilities?.resume)
+    throw new Error('Kimi cannot safely rebind native fork tools; update its runtime');
+  let nativeId, closed = false, cancelled = false;
+  const closeFork = async () => {
+    if (!nativeId || closed) return;
+    await session.request('session/close', { sessionId: nativeId });
+    closed = true;
+  };
+  registerSession({ kill() { cancelled = true; return closeFork().catch(() => {}); } });
+  try {
+    const result = await session.request('session/fork', { sessionId, cwd, mcpServers: [] });
+    nativeId = result.sessionId;
+    if (!validSessionId(nativeId) || nativeId === sessionId) throw new Error('Kimi did not create an independent native fork');
+    if (cancelled) throw new Error('Fork canceled');
+    // Fork preserves source MCP servers. Close the new, idle session and
+    // restore it with its own bridge before any model request is possible.
+    await closeFork();
+    const bridge = goalBridge?.config;
+    const mcpServers = bridge ? [{ name: 'camellia_goals', command: bridge.command, args: bridge.args,
+      env: Object.entries(bridge.env).map(([name, value]) => ({ name, value })) }] : [];
+    await session.request('session/resume', { sessionId: nativeId, cwd, mcpServers });
+    closed = false;
+    await closeFork();
+    if (cancelled) throw new Error('Fork canceled');
+    await copyKimiFork(session.spec.env.KIMI_CODE_HOME, targetHome, nativeId);
+    return { nativeId };
+  } finally { await closeFork().catch(() => {}); }
+}
+
+module.exports = { KimiSession, kimiSpawnSpec, kimiEnvironment, managedKimiConfig, kimiConnectionSettings, updateKimiConnectionSettings, forkKimiNative };

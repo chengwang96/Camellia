@@ -10,6 +10,8 @@ const { modelId } = require('../api/api-router-config');
 const { downloadSettings } = require('../main/download-network');
 const { valid, nativeMode } = require('./permission-levels');
 const { readJson, writeText } = require('../shared/json-store');
+const { grokEditBoundary, grokUpdatesFile } = require('./native-edit-boundary');
+const { copyGrokFork } = require('./native-fork');
 
 // Allow the native CLI's cold Windows startup before its ACP server is ready.
 const GROK_STARTUP_TIMEOUT_MS = 60000;
@@ -55,6 +57,11 @@ function grokSpawnSpec({ runtime, home, model, connection = 'api', route, contex
 }
 
 class GrokSession extends AcpSession {
+  async editBoundary(prompt) {
+    await (this.ready ||= this.open());
+    return grokEditBoundary(grokUpdatesFile(this.spec.env.GROK_HOME, this.sessionId), prompt);
+  }
+
   emit(event) {
     if (event.type === 'gui:subagent') for (const oldId of event.replacesIds || []) {
       const id = event.task.id;
@@ -123,8 +130,12 @@ class GrokSession extends AcpSession {
     const mcpServers = bridge ? [{ name: 'camellia_goals', command: bridge.command, args: bridge.args, env: Object.entries(bridge.env).map(([name, value]) => ({ name, value })) }] : [];
     const mode = nativeMode('grok', this.spec.modeValue || this.settings.permissionMode || 'default');
     const meta = mode === 'bypassPermissions' ? { yoloMode: true } : mode === 'auto' ? { autoMode: true } : {};
-    if (this.opts.fork) await this.request('session/load', { sessionId: sourceId, cwd: this.cwd, mcpServers });
-    const raw = await this.request(method, { ...(sourceId ? this.opts.fork ? { sourceSessionId: sourceId, sourceCwd: this.cwd, newCwd: this.cwd } : { sessionId: sourceId } : {}),
+    const sourceBridge = this.opts.sourceGoalBridge?.config;
+    const sourceServers = this.opts.sourceGoalBridge === undefined ? mcpServers : sourceBridge
+      ? [{ name: 'camellia_goals', command: sourceBridge.command, args: sourceBridge.args, env: Object.entries(sourceBridge.env).map(([name, value]) => ({ name, value })) }] : [];
+    if (this.opts.fork) await this.request('session/load', { sessionId: sourceId, cwd: this.cwd, mcpServers: sourceServers });
+    const raw = await this.request(method, { ...(sourceId ? this.opts.fork ? { sourceSessionId: sourceId, sourceCwd: this.cwd, newCwd: this.cwd,
+      ...(this.opts.targetPromptIndex === undefined ? {} : { targetPromptIndex: this.opts.targetPromptIndex }) } : { sessionId: sourceId } : {}),
       cwd: this.cwd, mcpServers, ...(Object.keys(meta).length ? { _meta: meta } : {}) });
     const result = raw?.result && typeof raw.result === 'object' ? raw.result : raw;
     this.sessionId = result.newSessionId || result.sessionId || sourceId;
@@ -132,7 +143,7 @@ class GrokSession extends AcpSession {
     if (this.opts.fork) {
       await this.request('session/load', { sessionId: this.sessionId, cwd: this.cwd, mcpServers });
       const source = this.history.find(sourceId);
-      if (source) fs.copyFileSync(source, this.historyFile());
+      if (source && this.opts.targetPromptIndex === undefined) fs.copyFileSync(source, this.historyFile());
     }
     let config = this.settings.model ? await this.request('session/set_model', { sessionId: this.sessionId,
       modelId: this.spec.modelValue || this.settings.model }) : result;
@@ -189,7 +200,7 @@ function createGrokChat({ dataDir, loadConfig, saveConfig, getRoute, getModels, 
     const selected = { ...settings(opts.sessionId), ...opts.settings, cwd: opts.cwd, nativeRevision: nativeRevision() };
     if (!['ask', 'auto', 'full', 'plan'].includes(selected.permissionMode)) throw new Error('Invalid Grok permission mode');
     const current = sessions.get(opts);
-    if (current && !current.dead && current.opts.goalBridge === opts.goalBridge && current.sessionId === (opts.sessionId || null)
+    if (current && !current.dead && !opts.fork && current.opts.goalBridge === opts.goalBridge && current.sessionId === (opts.sessionId || null)
       && JSON.stringify(current.settings) === JSON.stringify(selected)) return current;
     if (opts.sessionId && !validSessionId(opts.sessionId)) throw new Error('Invalid Grok session ID');
     const runtime = runtimes().locate('grok');
@@ -208,7 +219,8 @@ function createGrokChat({ dataDir, loadConfig, saveConfig, getRoute, getModels, 
       if (!selected.model || !getModels().includes(selected.model)) throw new Error('Select a configured API model first');
       route = getRoute();
       selected.contextWindow = getContextWindow(selected.model) || selected.contextWindow;
-      sessionHome = path.join(home, 'api', ...(opts.conversationId ? ['conversations', opts.conversationId] : ['standalone']));
+      const storageId = opts.forkSourceConversationId || opts.conversationId;
+      sessionHome = path.join(home, 'api', ...(storageId ? ['conversations', storageId] : ['standalone']));
     }
     const spec = grokSpawnSpec({ runtime: runtime.file, home: sessionHome, model: selected.model, connection: selected.connection,
       route, contextWindow: selected.contextWindow, env: environment(), config: nativeConfig(), proxyUrl: selected.proxyUrl,
@@ -221,7 +233,22 @@ function createGrokChat({ dataDir, loadConfig, saveConfig, getRoute, getModels, 
       onSessionId: id => saveConfig({ grokSessionConnections: { ...loadConfig().grokSessionConnections, [id]: selected.connection } }), onResult: () => {} });
     sessions.set(opts, session); session.start(previous); return session;
   }
-  return { home, history, settings, saveSettings, ensure, sessions, nativeAutoCompaction: true,
+  async function forkNative({ sessionId, sourceConversationId, conversationId, cwd, settings, goalBridge, sourceGoalBridge, boundary, registerSession }) {
+    const session = ensure({ sessionId, conversationId, cwd, settings, goalBridge, sourceGoalBridge,
+      fork: true, forkSourceConversationId: sourceConversationId, ...boundary });
+    registerSession(session);
+    try {
+      await (session.ready ||= session.open());
+      const nativeId = session.sessionId;
+      if (nativeId === sessionId) throw new Error('Grok did not create an independent native fork');
+      await session.shutdown();
+      const sourceHome = session.spec.env.GROK_HOME;
+      const targetHome = settings.connection === 'subscription' ? sourceHome : path.join(home, 'api', 'conversations', conversationId);
+      await copyGrokFork(grokUpdatesFile(sourceHome, nativeId), sourceHome, targetHome);
+      return { nativeId };
+    } finally { if (!session.dead) await session.shutdown(); }
+  }
+  return { home, history, settings, saveSettings, ensure, forkNative, sessions, nativeAutoCompaction: true,
     get session() { return sessions.legacy; }, shutdown: () => sessions.shutdown() };
 }
 

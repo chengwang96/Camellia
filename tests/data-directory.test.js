@@ -41,6 +41,18 @@ test('new installations use camellia for both application and browser data', con
   assert.equal(fs.existsSync(box.dataDir), false);
 });
 
+for (const code of ['EACCES', 'ENOTDIR']) test(`an unreadable current profile (${code}) must not silently select a different data directory`, context => {
+  const box = fixture(context);
+  box.write('desktop-config.json', '{"language":"en"}');
+  const readDirectory = fs.readdirSync;
+  const failure = Object.assign(new Error('Cannot read current profile'), { code });
+  context.mock.method(fs, 'readdirSync', (directory, ...args) => {
+    if (directory === box.destination) throw failure;
+    return readDirectory(directory, ...args);
+  });
+  assert.throws(() => defaultDataDirectory(box.appData), error => error === failure);
+});
+
 test('existing legacy data is used until explicitly migrated', context => {
   const box = fixture(context);
   box.write('desktop-config.json', '{"language":"en"}');

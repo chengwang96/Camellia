@@ -125,7 +125,7 @@ const DEFAULT_PORT = 3000;
 const DSH_HOME = process.env.DSH_HOME || path.join(os.homedir(), '.dsh');
 
 configureDataDirectory(app);
-const appDataDirectory = (() => { try { return app.getPath('appData'); } catch { return null; } })();
+const appDataDirectory = app.getPath('appData');
 app.setName(APP_NAME);
 let gotSingleInstanceLock = app.requestSingleInstanceLock();
 const managedBrowserDirectory = app.getPath('sessionData') === app.getPath('userData');
@@ -198,10 +198,7 @@ function installCrashHandlers() {
   process.on('uncaughtException', error => {
     logFatal('FATAL uncaughtException: ' + describe(error));
     process.exitCode = 1;
-    // Never throw from the crash path: the test harness loads this file with a
-    // mocked Electron that has no app.exit, and throwing here would replace the
-    // original failure with a confusing one.
-    if (typeof app.exit === 'function') app.exit(1);
+    app.exit(1);
   });
   process.on('unhandledRejection', reason => {
     logFatal('FATAL unhandledRejection: ' + describe(reason));
@@ -828,6 +825,7 @@ function saveClaudeSettings(patch) {
 let claudeGen = 0;        // session generation; also reported as runId to the renderer
 const { SessionPool } = require('../engines/session-pool');
 const { nativeMode } = require('../engines/permission-levels');
+const { nativeEditingSupported } = require('../engines/native-edit-boundary');
 const claudeSessions = new SessionPool();
 
 // Build spawn args/env for one persistent claude process.
@@ -846,8 +844,10 @@ function claudeSpawnSpec(settings, opts) {
   if (opts.sessionId) {
     // An absolute transcript also resumes across directories on older CLIs
     // whose ID lookup is limited to the current project. Keep the original ID.
-    args.push('--resume', findClaudeSessionFile(opts.sessionId) || opts.sessionId);
+    args.push('--resume', opts.resumeFile || findClaudeSessionFile(opts.sessionId) || opts.sessionId);
     if (opts.fork) args.push('--fork-session'); // fork: same history, new session id
+    if (opts.resumeSessionAt) args.push('--resume-session-at', opts.resumeSessionAt);
+    if (opts.resumeDropsTurn) args.push('--resume-drops-turn', opts.resumeDropsTurn);
   }
   if (settings.permissionMode) { const mode = nativeMode('claude', settings.permissionMode); if (mode !== 'default') args.push('--permission-mode', mode); }
   if (settings.model) args.push('--model', settings.model);
@@ -955,13 +955,16 @@ function ensureClaudeSession(settings, opts) {
   }
   // The selected ID is the resume target, including after a settings change.
   // An absent ID starts a new conversation.
-  const sessionOpts = { sessionId: opts.sessionId || null, fork: Boolean(opts.fork), workspaceId: opts.workspaceId, conversationId: opts.conversationId, lockPermissionMode: true, goalBridge: opts.goalBridge };
+  const sessionOpts = { sessionId: opts.sessionId || null, fork: Boolean(opts.fork),
+    ...(opts.resumeFile ? { resumeFile: opts.resumeFile } : {}),
+    ...(opts.resumeSessionAt ? { resumeSessionAt: opts.resumeSessionAt, resumeDropsTurn: opts.resumeDropsTurn } : {}),
+    workspaceId: opts.workspaceId, conversationId: opts.conversationId, lockPermissionMode: true, goalBridge: opts.goalBridge };
   // Validate the new route before retiring the current conversation process.
   const spec = claudeSpawnSpec(settings, sessionOpts);
   const exe = detectClaudeExe();
   if (current) current.kill();
   const session = new ClaudeSession({
-    gen: ++claudeGen, settings, opts: sessionOpts, exe, spec, spawn, log,
+    gen: ++claudeGen, settings, opts: sessionOpts, exe, spec, spawn, log, nativeHistory: claudeHistory,
     setTimer: setTimeout, clearTimer: clearTimeout,
     onEvent: event => {
       if (claudeSessions.get(opts) === session) publishChatEvent('claude', { ...event, conversationId: opts.conversationId });
@@ -1042,7 +1045,8 @@ function ensureKimiSession(settings, opts) {
   if (!settings.model) throw new Error("Select a configured model in the composer first");
   const subscription = settings.connection === 'subscription';
   let route;
-  let home = path.join(app.getPath('userData'), 'kimi-code', ...(opts.conversationId ? ['conversations', opts.conversationId] : []));
+  const storageId = opts.forkSourceConversationId || opts.conversationId;
+  let home = path.join(app.getPath('userData'), 'kimi-code', ...(storageId ? ['conversations', storageId] : []));
   if (subscription) {
     // A conversation keeps the account that owns its native session; a new one
     // uses whichever signed-in account still has quota.
@@ -1255,14 +1259,31 @@ sharedConversations = new SharedConversations({ dir: path.join(app.getPath('user
   createGoalBridge: options => require('../engines/goal-tool-bridge').createGoalToolBridge({ ...options, node: detectNode() }),
   webTools: require('../api/web-tools').createWebTools({ getConfig: readOllamaProxyConfig }),
   drivers: {
-    claude: { sessions: claudeSessions, history: claudeHistory, settings: claudeSettings, saveSettings: saveClaudeSettings, ensure: opts => ensureClaudeSession({ ...claudeSettings(), ...opts.settings }, opts), nativeCompaction: true, nativeAutoCompaction: true },
-    kimi: { sessions: kimiSessions, history: kimiHistory, settings: kimiSettings, saveSettings: saveKimiSettings, subscriptionAccounts: () => kimiAccount.state(), ensure: opts => ensureKimiSession({ ...kimiSettings(opts.sessionId), ...opts.settings }, opts), nativeCompaction: true, nativeAutoCompaction: true },
+    claude: { sessions: claudeSessions, history: claudeHistory, settings: claudeSettings, saveSettings: saveClaudeSettings, ensure: opts => ensureClaudeSession({ ...claudeSettings(), ...opts.settings }, opts), nativeCompaction: true, nativeAutoCompaction: true,
+      forkNative: ({ sessionId, snapshotFile, boundary }) => {
+        const source = claudeHistory.find(sessionId);
+        if (!source) return null;
+        require('../engines/native-fork').snapshotTranscript(source, snapshotFile);
+        return { pendingNativeFork: { sessionId, ...(boundary?.resumeSessionAt ? { resumeSessionAt: boundary.resumeSessionAt } : {}) } };
+      },
+      nativeEditing: () => nativeEditingSupported('claude', runtimes().locate('claude')?.version) },
+    kimi: { sessions: kimiSessions, history: kimiHistory, settings: kimiSettings, saveSettings: saveKimiSettings, subscriptionAccounts: () => kimiAccount.state(), ensure: opts => ensureKimiSession({ ...kimiSettings(opts.sessionId), ...opts.settings }, opts), nativeCompaction: true, nativeAutoCompaction: true,
+      nativeEditing: () => nativeEditingSupported('kimi', runtimes().locate('kimi')?.version),
+      forkNative: async options => {
+        const fork = await require('../engines/kimi-session').forkKimiNative({ ...options,
+          ensureSource: opts => ensureKimiSession({ ...kimiSettings(opts.sessionId), ...opts.settings }, opts),
+          targetHome: options.settings.connection === 'subscription' ? null : path.join(app.getPath('userData'), 'kimi-code', 'conversations', options.conversationId) });
+        if (fork?.nativeId) saveConfig({ kimiSessionConnections: { ...loadConfig().kimiSessionConnections, [fork.nativeId]: options.settings.connection || 'api' },
+          ...(options.settings.subscriptionId ? { kimiSessionAccounts: { ...loadConfig().kimiSessionAccounts, [fork.nativeId]: options.settings.subscriptionId } } : {}) });
+        return fork;
+      } },
     codex: { sessions: codex.sessions, history: codex.history, settings: codex.settings, saveSettings: codex.saveSettings, subscriptionAccounts: () => codex.accountState(), syncSubscriptionAccount: codex.syncAccountSelection,
       resetCredits: { preview: payload => codex.handlers['account-reset-preview'](payload), consume: payload => codex.handlers['account-reset-consume'](payload) },
-      ensure: codex.ensureSession, nativeCompaction: true, nativeEditing: true },
-    antigravity: { sessions: antigravity.sessions, history: antigravity.history, settings: antigravity.settings, saveSettings: antigravity.saveSettings, ensure: antigravity.ensureSession, nativeAutoCompaction: true },
+      ensure: codex.ensureSession, forkNative: codex.forkNative, nativeCompaction: true, nativeEditing: true },
+    antigravity: { sessions: antigravity.sessions, history: antigravity.history, settings: antigravity.settings, saveSettings: antigravity.saveSettings, ensure: antigravity.ensureSession, forkNative: antigravity.forkNative, nativeAutoCompaction: true },
     dsh: dshChat,
-    grok: { ...grokChat, subscriptionAccounts: () => grokAccount.state() },
+    grok: { ...grokChat, subscriptionAccounts: () => grokAccount.state(),
+      nativeEditing: () => nativeEditingSupported('grok', runtimes().locate('grok')?.version) },
   },
   prepare: async (engine, settings) => {
     assertRuntimeAvailable(engine);

@@ -5,12 +5,13 @@ const patchClientPerformance = require('./client-performance.cjs');
 module.exports = function patchDsh(runtimeDir) {
   const plugin = path.join(runtimeDir, 'node_modules/@deepseek-ai/dsh-client-ui-settings-general');
   const version = JSON.parse(fs.readFileSync(path.join(plugin, 'package.json'))).version;
-  if (!['0.1.5-rc.2', '0.2.0-rc.2'].includes(version)) throw new Error(`The DSH settings integration does not support ${version}. Use the runtime version pinned by this project.`);
+  if (!['0.1.5-rc.2', '0.2.0-rc.2', '0.2.1-rc.2'].includes(version)) throw new Error(`The DSH settings integration does not support ${version}. Use the runtime version pinned by this project.`);
+  const modern = ['0.2.0-rc.2', '0.2.1-rc.2'].includes(version);
   const file = path.join(plugin, 'lib/client.js');
   const original = file + '.workbench-original';
   if (!fs.existsSync(original)) fs.copyFileSync(file, original);
   const source = fs.readFileSync(original, 'utf8');
-  const register = version === '0.2.0-rc.2' ? '}, SettingsRoot);' : '}, SettingsRoot));';
+  const register = modern ? '}, SettingsRoot);' : '}, SettingsRoot));';
   const marker = '\t\texports.SettingsDocumentStore = SettingsDocumentStore;';
   if (source.split(register).length !== 2 || !source.includes(marker)) throw new Error("The DSH settings extension entry point changed");
   const component = fs.readFileSync(path.join(__dirname, 'settings-root.js'), 'utf8');
@@ -55,12 +56,12 @@ module.exports = function patchDsh(runtimeDir) {
   const localeOriginal = localeFile + '.workbench-original';
   if (!fs.existsSync(localeOriginal)) fs.copyFileSync(localeFile, localeOriginal);
   const localeSource = fs.readFileSync(localeOriginal, 'utf8');
-  const browserDefault = version === '0.2.0-rc.2' ? 'return detectBrowserLocale(locales, languages) ?? "en";' : 'return detectBrowserLocale(locales) ?? "en";';
+  const browserDefault = modern ? 'return detectBrowserLocale(locales, languages) ?? "en";' : 'return detectBrowserLocale(locales) ?? "en";';
   if (localeSource.split(browserDefault).length !== 2) throw new Error('The DSH default locale entry point changed');
   // Camellia owns the display language. Standalone DSH keeps its native preference.
-  const localeConstructor = version === '0.2.0-rc.2' ? 'new LocaleRuntime(ctx, ctx.configForms.get(LOCALE_SETTINGS_NAMESPACE), bootstrap)'
+  const localeConstructor = modern ? 'new LocaleRuntime(ctx, ctx.configForms.get(LOCALE_SETTINGS_NAMESPACE), bootstrap)'
     : 'new LocaleRuntime(ctx, ctx.settingsScope.bind({ namespace: LOCALE_SETTINGS_NAMESPACE }))';
-  const camelliaLocale = version === '0.2.0-rc.2' ? 'new LocaleRuntime(ctx, window.dshDesktop ? undefined : ctx.configForms.get(LOCALE_SETTINGS_NAMESPACE), bootstrap)'
+  const camelliaLocale = modern ? 'new LocaleRuntime(ctx, window.dshDesktop ? undefined : ctx.configForms.get(LOCALE_SETTINGS_NAMESPACE), bootstrap)'
     : 'new LocaleRuntime(ctx, window.dshDesktop ? undefined : ctx.settingsScope.bind({ namespace: LOCALE_SETTINGS_NAMESPACE }))';
   const installLocale = 'ctx.slots.installLocale(locale);';
   const languageRow = 'ctx.slots.inject("settings.general.item", () => ctx.slots.register({';

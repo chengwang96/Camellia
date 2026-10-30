@@ -1,7 +1,9 @@
 # Kimi Code runtime
 
 Official runtime: [MoonshotAI/kimi-code](https://github.com/MoonshotAI/kimi-code), MIT.
-This workbench pins `@moonshot-ai/kimi-code` to **2.1.1** and talks to its ACP stdio server.
+This workbench pins `@moonshot-ai/kimi-code` to **2.4.0** and talks to its ACP stdio server.
+The shared conversation adapter adds a version-checked bridge to native undo;
+see [native conversation history](../../docs/design/native-conversation-history.md).
 
 Kimi is an optional download. Choose it on the home screen or in Settings → Engine Settings,
 or run `npm run setup:kimi` from source. Root dependency installation does not download it.

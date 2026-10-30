@@ -32,7 +32,7 @@ function createHarness(existingRoot, { respondToInterrupts = false, clearGoogleC
       fromPartition: () => ({ setProxy: async () => {}, resolveProxy: async () => 'PROXY 127.0.0.1:18899' }),
       defaultSession: { setProxy: async () => {} },
     },
-    app: { getPath: name => name === 'appData' ? root : userData, getName: () => 'camellia-desktop', setName() {}, commandLine: { appendSwitch() {} }, getVersion: () => '0.3.0', requestSingleInstanceLock: () => true, on() {}, whenReady: () => ({ then() {} }) },
+    app: { getPath: name => name === 'appData' ? root : userData, getName: () => 'camellia-desktop', setName() {}, commandLine: { appendSwitch() {} }, getVersion: () => '0.3.0', requestSingleInstanceLock: () => true, on() {}, exit(code) { this.exitCode = code; }, whenReady: () => ({ then() {} }) },
     nativeTheme: { themeSource: 'system' },
     Menu: { buildFromTemplate: template => template, setApplicationMenu(menu) { this.current = menu; } },
     ipcMain: { handle: (channel, handler) => handlers.set(channel, handler) },

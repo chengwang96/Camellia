@@ -132,15 +132,25 @@ class AcpSession extends StreamingSession {
   async open() {
     await this.starting;
     const initResult = await this.request('initialize', { protocolVersion: 1, clientCapabilities: {}, clientInfo: { name: 'Camellia', version: '0.3.0' } });
+    this.agentCapabilities = initResult?.agentCapabilities || {};
     this.promptCapabilities = initResult?.agentCapabilities?.promptCapabilities || {};
     const sourceId = this.opts.sessionId;
     const method = sourceId ? this.opts.fork ? 'session/fork' : 'session/resume' : 'session/new';
     const bridge = this.opts.goalBridge?.config;
     const mcpServers = bridge ? [{ name: 'camellia_goals', command: bridge.command, args: bridge.args, env: Object.entries(bridge.env).map(([name, value]) => ({ name, value })) }] : [];
-    const result = await this.request(method, { ...(sourceId ? { sessionId: sourceId } : {}), cwd: this.cwd, mcpServers });
+    const undo = this.spec.modeEngine === 'kimi' && this.opts.fork && this.opts.undoCount;
+    const hostFork = this.spec.modeEngine === 'dsh' && this.opts.fork;
+    if (undo || hostFork) {
+      if (!this.spec.nativeHistory) throw new Error('Native history is unavailable in this runtime');
+      await this.request('session/resume', { sessionId: sourceId, cwd: this.cwd, mcpServers: [] });
+    }
+    const result = await this.request(undo ? 'session/camellia_fork_undo' : hostFork ? 'session/camellia_fork' : method,
+      { ...(sourceId ? { sessionId: sourceId } : {}), cwd: this.cwd, mcpServers,
+        ...(undo ? { undoCount: this.opts.undoCount, undoDigest: this.opts.undoDigest } : {}),
+        ...(hostFork && this.opts.atSeq !== undefined ? { atSeq: this.opts.atSeq } : {}) });
     this.sessionId = result.sessionId || sourceId;
     if (!validSessionId(this.sessionId)) throw new Error(`${this.name} returned an invalid session ID`);
-    if (this.opts.fork) {
+    if (this.opts.fork && !undo && !hostFork) {
       const source = this.history.find(sourceId);
       if (source) fs.copyFileSync(source, this.historyFile());
     }

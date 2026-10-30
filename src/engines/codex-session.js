@@ -53,7 +53,9 @@ class CodexSession extends StreamingSession {
       ...PERMISSIONS[permissionModeOf(this.settings)],
       ...((this.settings.permissionMode || 'default') === 'default' ? this.spec.permissions : {}) };
     const result = await this.client.request(sourceId ? this.opts.fork ? 'thread/fork' : 'thread/resume' : 'thread/start',
-      { ...params, ...(sourceId ? { threadId: sourceId, ...(this.opts.lastTurnId ? { lastTurnId: this.opts.lastTurnId } : {}) } : { allowProviderModelFallback: false }) });
+      { ...params, ...(sourceId ? { threadId: sourceId,
+        ...(this.opts.fork && this.opts.forkSourcePath ? { path: this.opts.forkSourcePath } : {}),
+        ...(this.opts.lastTurnId ? { lastTurnId: this.opts.lastTurnId } : {}) } : { allowProviderModelFallback: false }) });
     if (this.opts.lastTurnId && result.thread.turns?.at(-1)?.id !== this.opts.lastTurnId)
       throw new Error('Codex could not restore the selected turn boundary. Update the Codex runtime before retrying. Nothing was sent.');
     this.sessionId = result.thread.id;

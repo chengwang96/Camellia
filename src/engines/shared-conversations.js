@@ -8,6 +8,7 @@ const { translate } = require('../shared/i18n');
 const { canonicalModelId } = require('../shared/model-names');
 const { shortTitle, messageTitle } = require('../shared/conversation-title');
 const { validSessionId } = require('./claude-history');
+const { nativeEditOptions } = require('./native-edit-boundary');
 const { createSessionWorkspaces, directoryExists, relocatedWorkspaceCwd } = require('./session-workspaces');
 const { ClaudeGoal, goalPrompt, verifyPrompt, verifySignal } = require('./claude-goal');
 const { instructions: goalToolInstructions, validateTool, matchesUserRequest } = require('./goal-tools');
@@ -110,10 +111,14 @@ const CONVERSATION_HANDOFF_PREVIEW_CHARS = 24000;
 // fork at that turn's saved boundary, then replay only the records preceding
 // the edited instruction within this turn. Never reuse an older turn's anchor
 // across an intervening ordinary user message.
-function nativeEditCheckpoint(segment, edit) {
+function nativeEditCheckpoint(segment, edit, engine) {
   const saved = segment?.editCheckpoint;
-  if (!saved?.lastTurnId || !Number.isSafeInteger(saved.userSeq)) return null;
+  if (!saved || !Number.isSafeInteger(saved.userSeq)) return null;
+  const nativeBoundary = nativeEditOptions(engine, saved.nativeBoundary);
+  if (!saved.lastTurnId && !nativeBoundary) return null;
+  if (!nativeBoundary && engine !== 'codex') return null;
   const sameMessage = saved.userSeq === edit.row.seq;
+  if (nativeBoundary) return sameMessage ? { nativeBoundary } : null;
   if (!sameMessage && (!edit.row.steered || saved.userSeq >= edit.row.seq
       || !edit.prior.some(row => row.role === 'user' && row.seq === saved.userSeq)
       || edit.prior.some(row => row.role === 'user' && !row.steered && row.seq > saved.userSeq))) return null;
@@ -798,17 +803,82 @@ class SharedConversations {
     conversation.apiModel = source.apiModel;
     conversation.engineSettings = JSON.parse(JSON.stringify(source.engineSettings || {}));
     if (source.hasGlobalMemory) conversation.hasGlobalMemory = true;
-    // A fork starts a fresh native session, but it keeps the parked sessions of
-    // each binding so switching models there also returns to its own thread.
-    // A native binding may already contain the live prompt, steering or tool
-    // output. An active fork replays its completed transcript into fresh threads.
-    conversation.modelSessions = Number.isFinite(boundary) ? {} : JSON.parse(JSON.stringify(source.modelSessions || {}));
+    // Native IDs belong to their original conversation. Reusing parked IDs in
+    // a branch would let a later model switch modify the source conversation.
+    conversation.modelSessions = {};
     const sequences = new Map();
     for (const row of this.historyRows(source, { mask: HISTORY_FLAGS.public, before: boundary })) sequences.set(row.seq, this.append(conversation, row).seq);
     conversation.subagents = require('../shared/subagents').forkTasks(source.subagents, boundary)
       .filter(task => sequences.has(task.userSeq)).map(task => ({ ...task, userSeq: sequences.get(task.userSeq) }));
     this.save(conversation);
     return conversation;
+  }
+  forkSnapshotFile(c) { return path.join(this.dir, 'forks', c.id + '.jsonl'); }
+  async ensureGoalBridge(c) {
+    if (!this.createGoalBridge) return undefined;
+    if (this.goalToolsClosed) throw new Error('Goal tools are shutting down');
+    const webTools = this.webTools?.enabled() === true;
+    let bridge = this.goalBridges.get(c.id);
+    if (bridge && (bridge.webTools === true) !== webTools) {
+      await bridge.close(); this.goalBridges.delete(c.id); bridge = undefined;
+    }
+    if (!bridge) {
+      bridge = await this.createGoalBridge({ webTools, call: (name, args, options) => this.callGoalTool(c.id, name, args, options) });
+      if (this.goalToolsClosed) { await bridge.close(); throw new Error('Goal tools are shutting down'); }
+      this.goalBridges.set(c.id, bridge);
+    }
+    return bridge;
+  }
+  async prepareNativeFork(source, child) {
+    const engine = child.currentEngine, driver = this.drivers[engine], segment = source.segments[engine];
+    if (typeof driver.forkNative !== 'function' || source.currentEngine !== engine || !segment?.nativeId
+        || !segment.isolated || this.switching.has(source.id) || this.recovering.has(source.id) || this.stopping.has(source.id)) return;
+    const settings = this.settings(engine, child.id), bound = segment.contextSettings || this.settings(engine, source.id);
+    if (this.bindingKey(engine, settings) !== this.bindingKey(engine, bound)) return;
+    const active = this.active.get(source.id);
+    if (!active && (segment.cursor || 0) < source.seq) return;
+    const operation = { target: engine, cancelled: false };
+    this.switching.set(child.id, operation);
+    if (!active) this.switching.set(source.id, operation);
+    this.publishActivity(child.id);
+    if (!active) this.publishActivity(source.id);
+    try {
+      let boundary;
+      if (active) {
+        if (active.session?.sessionId !== segment.nativeId || typeof active.session.editBoundary !== 'function') return;
+        const found = await active.session.editBoundary(active.prompt);
+        boundary = engine === 'codex' && typeof found === 'string' && found ? { lastTurnId: found } : nativeEditOptions(engine, found);
+        if (!boundary) return;
+      }
+      const goalBridge = await this.ensureGoalBridge(child);
+      const sourceGoalBridge = this.goalBridges.get(source.id) || (!active ? await this.ensureGoalBridge(source) : undefined);
+      if (operation.cancelled) throw new Error('Fork canceled. The source conversation is retained.');
+      const fork = await driver.forkNative({ sessionId: segment.nativeId, sourceConversationId: source.id, conversationId: child.id,
+        cwd: child.cwd, settings, boundary, sourceSession: active?.session, goalBridge, sourceGoalBridge: sourceGoalBridge || null,
+        snapshotFile: this.forkSnapshotFile(child), registerSession: session => {
+          operation.session = { interrupt: () => { void session.kill(); }, kill: () => session.kill() };
+          if (operation.cancelled) void session.kill();
+        } });
+      if (operation.cancelled || this.deleting.has(child.id) || this.items.get(child.id) !== child)
+        throw new Error('Fork canceled. The source conversation is retained.');
+      if (fork?.pendingNativeFork) child.nativeFork = { engine, cursor: child.seq,
+        bindingKey: this.bindingKey(engine, settings), ...fork.pendingNativeFork };
+      else if (fork?.nativeId && fork.nativeId !== segment.nativeId) child.segments[engine] = {
+        nativeId: fork.nativeId, isolated: true, cursor: child.seq, bindingKey: this.bindingKey(engine, settings),
+        contextSettings: { ...bound }, ...(segment.contextUsage ? { contextUsage: { ...segment.contextUsage } } : {}),
+        ...(segment.nativeContextWindow ? { nativeContextWindow: segment.nativeContextWindow } : {}),
+      };
+      else return;
+      this.save(child);
+    } catch (error) {
+      if (operation.cancelled || storageFailure(error)) throw error;
+      this.log(engine + ': native fork unavailable; retaining the independent shared-history branch: ' + error.message);
+    } finally {
+      if (this.switching.get(child.id) === operation) this.switching.delete(child.id);
+      if (this.switching.get(source.id) === operation) this.switching.delete(source.id);
+      if (this.items.has(child.id)) this.publishActivity(child.id);
+      if (this.items.has(source.id)) this.publishActivity(source.id);
+    }
   }
   async list(engine, payload) {
     const data = await this.workspaces.listSessions(payload);
@@ -1116,7 +1186,9 @@ class SharedConversations {
     if (payload.editSeq !== undefined && (internal || payload.fork || !payload.sessionId)) throw new Error('Choose an existing conversation to edit; editing cannot be combined with a handoff or fork');
     let c = payload.sessionId ? this.get(payload.sessionId) : this.create(engine, payload.workspaceId);
     if (payload.fork) {
-      c = this.fork(engine, { sessionId: c.id });
+      const source = c;
+      c = this.fork(engine, { sessionId: source.id });
+      await this.prepareNativeFork(source, c);
     }
     const assertAvailable = () => {
       controlStart?.validate?.();
@@ -1182,6 +1254,8 @@ class SharedConversations {
           : account && (!account.signedIn || account.loginPending) ? 'native-account-unavailable'
             : compacted && !unchanged ? 'preferred-account-changed' : 'preferred-account';
     }
+    const nativeFork = !internal && !continuation && !edit && c.nativeFork?.engine === engine && c.nativeFork.cursor === c.seq
+      && c.nativeFork.bindingKey === this.bindingKey(engine, settings) && fs.existsSync(this.forkSnapshotFile(c)) ? c.nativeFork : null;
     if (!internal && !continuation && String(payload.prompt || '').length > 200000) throw new Error('The message is too large to send. Split it up or attach it as a file instead. Nothing was sent.');
     if (!internal && !continuation && !promptFits(memory + String(promptSuffix ?? payload.prompt ?? ''),
       this.contextPressure(c, engine, settings).cap))
@@ -1208,7 +1282,7 @@ class SharedConversations {
         if (binding.restored && (binding.segment.cursor || 0) < c.seq) bridgeSegment = binding.segment;
       }
     }
-    if (!internal && !continuation && !edit && c.seq) {
+    if (!internal && !continuation && !edit && !nativeFork && c.seq) {
       const nativeCompaction = this.nativeCompactionDecision(c, engine, settings);
       this.log('context routing: ' + JSON.stringify({ sessionId: c.id, engine, phase: 'before-send', nativeCompaction,
         ...(subscriptionSelection ? { subscriptionSelection, selectedAccount: settings.subscriptionId } : {}) }));
@@ -1262,7 +1336,7 @@ class SharedConversations {
       delete c.segments[engine];
       this.save(c);
     }
-    if (!internal && !continuation && !edit && c.seq) {
+    if (!internal && !continuation && !edit && !nativeFork && c.seq) {
       const nativeCompaction = this.nativeCompactionDecision(c, engine, settings);
       const context = this.contextPressure(c, engine, settings), replayed = this.contextEstimate(c, engine);
       const pending = pendingTokens + contextTokens(goalPrefix);
@@ -1279,10 +1353,12 @@ class SharedConversations {
       const bridged = this.rows(c, { after: bridgeSegment.cursor || 0, mask: HISTORY_FLAGS.public });
       if (bridged.length) await this.bridgeContext(c, engine, bridgeSegment, bridged);
     }
-    const canEditNative = edit && engine === 'codex' && c.currentEngine === engine && oldSegment?.isolated
+    const nativeEditing = typeof this.drivers[engine].nativeEditing === 'function'
+      ? this.drivers[engine].nativeEditing() : this.drivers[engine].nativeEditing;
+    const canEditNative = edit && (engine === 'codex' || nativeEditing) && c.currentEngine === engine && oldSegment?.isolated
       && oldSegment.nativeId && (!segmentConnection || segmentConnection === settings.connection);
-    let checkpoint = canEditNative && nativeEditCheckpoint(oldSegment, edit);
-    if (canEditNative && !checkpoint && !edit.row.steered && this.drivers[engine].nativeEditing) {
+    let checkpoint = canEditNative && nativeEditCheckpoint(oldSegment, edit, engine);
+    if (canEditNative && !checkpoint && !edit.row.steered && nativeEditing) {
       const operation = { target: engine, cancelled: false };
       this.switching.set(c.id, operation); this.publishActivity(c.id);
       try {
@@ -1293,9 +1369,11 @@ class SharedConversations {
           const session = this.drivers[engine].ensure({ conversationId: c.id, sessionId: oldSegment.nativeId, workspaceId: null, cwd: c.cwd, settings });
           operation.session = { interrupt: () => { void session.kill(); } };
           try {
-            const lastTurnId = await session.editBoundary(edit.row.text);
-            if (lastTurnId && !operation.cancelled) {
-              oldSegment.editCheckpoint = { userSeq: edit.row.seq, lastTurnId };
+            const boundary = await session.editBoundary(edit.row.text);
+            const nativeBoundary = nativeEditOptions(engine, boundary);
+            if ((engine === 'codex' && typeof boundary === 'string' || nativeBoundary) && !operation.cancelled) {
+              oldSegment.editCheckpoint = { userSeq: edit.row.seq,
+                ...(nativeBoundary ? { nativeBoundary } : { lastTurnId: boundary }) };
               this.save(c);
             }
           } catch (error) {
@@ -1311,14 +1389,17 @@ class SharedConversations {
       }
       if (operation.cancelled) throw new Error('Edit canceled. The original conversation is retained.');
       assertAvailable();
-      checkpoint = nativeEditCheckpoint(oldSegment, edit);
+      checkpoint = nativeEditCheckpoint(oldSegment, edit, engine);
     }
     const nativeEdit = checkpoint
-      ? { sessionId: oldSegment.nativeId, fork: true, lastTurnId: checkpoint.lastTurnId } : null;
+      ? { sessionId: oldSegment.nativeId, fork: true,
+        ...(checkpoint.nativeBoundary || { lastTurnId: checkpoint.lastTurnId }) } : null;
     const editReplay = nativeEdit && checkpoint.replayFromSeq !== undefined
       ? edit.prior.filter(row => row.seq >= checkpoint.replayFromSeq) : [];
-    let editContext = edit && ((nativeEdit ? this.formatContext(c, editReplay) : this.compactionContext(c, edit.prior)) + this.formatContext(c, [revisionNotice]));
-    let replayContext = promptOverride == null ? (edit ? editContext : this.context(c, engine)) : '';
+    let editContext = edit && (nativeEdit
+      ? this.formatContext(c, editReplay) + revisionNotice.text + '\n\n'
+      : this.compactionContext(c, edit.prior) + this.formatContext(c, [revisionNotice]));
+    let replayContext = promptOverride == null ? (edit ? editContext : nativeFork ? '' : this.context(c, engine)) : '';
     let prompt = memory + (promptOverride ?? (replayContext + String(promptSuffix ?? payload.prompt ?? '')));
     const promptCap = this.contextPressure(c, engine, settings).cap;
     if (!internal && !continuation && !promptFits(prompt, promptCap)) {
@@ -1348,14 +1429,14 @@ class SharedConversations {
     // A failed title request can recover on a later send or revision.
     const needsTitle = !internal && !continuation && this.needsTitle(c)
       && (String(payload.displayText ?? payload.prompt ?? '').trim() || payload.attachments?.length);
-    const nativeEditEligible = !internal && (Boolean(nativeEdit) || !edit && !(promptOverride == null ? replayContext : this.contextEstimate(c, engine)));
+    const nativeEditEligible = !internal && (Boolean(nativeEdit || nativeFork) || !edit && !(promptOverride == null ? replayContext : this.contextEstimate(c, engine)));
     const a = continuation || { c, engine, internal, ephemeral, scheduledTaskId, nativeEditEligible, goalContinuation: Boolean(facade), goalUserPrompt, prompt: payload.prompt || '', promptSuffix, attachments: payload.attachments || [], events: [], permissions: new Map(), tools: new Set(), eventSeq: 0, text: '', assistant: [], startedAt: Date.now(),
       nativeEditReplayFromSeq: checkpoint?.replayFromSeq,
       // Only evaluated if the native session turns out to be unavailable: the
       // stored transcript replaces whatever the missing native thread carried.
       nativeFallbackPrompt: () => (edit ? this.compactionContext(c, edit.prior) + this.formatContext(c, [revisionNotice])
         : this.context(c, engine, a.userSeq)) + String(a.promptSuffix ?? payload.prompt ?? ''),
-      facade: facade || { gen: ++this.sequence, sessionId: c.id, opts: { workspaceId: c.workspaceId } }, priorCursor: c.segments[engine]?.cursor || 0 };
+      facade: facade || { gen: ++this.sequence, sessionId: c.id, opts: { workspaceId: c.workspaceId } }, priorCursor: nativeFork?.cursor ?? c.segments[engine]?.cursor ?? 0 };
     a.settings = { ...settings };
     if (!continuation) {
       a.subscriptionSelection = subscriptionSelection;
@@ -1404,16 +1485,7 @@ class SharedConversations {
       a.goalToolsDisabled = internal || goalToolsDisabled || a.goalToolsDisabled || engine === 'antigravity' && settings.connection === 'subscription';
       let goalBridge = a.goalToolsDisabled ? undefined : this.goalBridges.get(c.id);
       if (!a.goalToolsDisabled && this.createGoalBridge) {
-        if (this.goalToolsClosed) throw new Error('Goal tools are shutting down');
-        const webTools = this.webTools?.enabled() === true;
-        if (goalBridge && (goalBridge.webTools === true) !== webTools) {
-          await goalBridge.close(); this.goalBridges.delete(c.id); goalBridge = undefined;
-        }
-        if (!goalBridge) {
-          goalBridge = await this.createGoalBridge({ webTools, call: (name, args, options) => this.callGoalTool(c.id, name, args, options) });
-          if (this.goalToolsClosed) { goalBridge.close(); throw new Error('Goal tools are shutting down'); }
-          this.goalBridges.set(c.id, goalBridge);
-        }
+        goalBridge = await this.ensureGoalBridge(c);
         a.goalRunToken = randomUUID();
         prompt = this.toolInstructions() + '\nCamellia goal run token for this turn: ' + a.goalRunToken + '\n\n' + prompt;
       }
@@ -1431,7 +1503,10 @@ class SharedConversations {
       a.subscriptionSettings = settings;
       a.contextSettings = { model: settings.model, connection: settings.connection, contextWindow: settings.contextWindow,
         ...(settings.subscriptionId ? { subscriptionId: settings.subscriptionId } : {}) };
-      a.session = this.drivers[engine].ensure({ conversationId: c.id, sessionId: fresh ? null : c.segments[engine]?.nativeId, ...nativeEdit, workspaceId: null, cwd: c.cwd, settings, goalBridge });
+      a.session = this.drivers[engine].ensure({ conversationId: c.id, sessionId: fresh ? null : c.segments[engine]?.nativeId,
+        ...(nativeFork ? { sessionId: nativeFork.sessionId, fork: true, resumeFile: this.forkSnapshotFile(c),
+          ...(nativeFork.resumeSessionAt ? { resumeSessionAt: nativeFork.resumeSessionAt } : {}) } : nativeEdit),
+        workspaceId: null, cwd: c.cwd, settings, goalBridge });
       if (!a.session.sendUserMessage(prompt, payload.attachments || [])) throw new Error('Engine did not accept the message');
       return { ok: true, runId: a.facade.gen, sessionId: c.id, userSeq: a.userSeq, done: a.done };
     } catch (error) {
@@ -1662,6 +1737,7 @@ class SharedConversations {
       }
       Object.assign(segment, { nativeId: event.session_id, isolated: true,
         contextSettings: a.contextSettings, bindingKey, lastUsedAt: Date.now() });
+      if (c.nativeFork && event.session_id !== c.nativeFork.sessionId) delete c.nativeFork;
       // Deltas repeat the same binding. Persist a new binding immediately;
       // the ordinary turn-completion save retains its latest usage timestamp.
       if (changed || event.type === 'system' && event.subtype === 'init') this.save(c);
@@ -2040,7 +2116,9 @@ class SharedConversations {
         }
         await pool.release({ conversationId: id });
       }
-      return await this.workspaces.removeSession(id);
+      const result = await this.workspaces.removeSession(id);
+      fs.rmSync(this.forkSnapshotFile({ id }), { force: true });
+      return result;
     } finally { this.deleting.delete(id); }
   }
   async switchEngine(id, target, mode = preferences(this.loadConfig()).mode) {
@@ -3034,7 +3112,11 @@ class SharedConversations {
       case 'list-sessions': return this.list(engine, payload);
       case 'load-session': return this.load(engine, payload, historyPage);
       case 'mark-reply-read': return this.markReplyRead(payload.id, payload.at);
-      case 'fork-session': return { ok: true, sessionId: this.fork(engine, payload).id };
+      case 'fork-session': {
+        const source = this.get(payload.sessionId), child = this.fork(engine, payload);
+        await this.prepareNativeFork(source, child);
+        return { ok: true, sessionId: child.id };
+      }
       case 'rename-session': return this.workspaces.renameSession(payload.id, payload.title);
       case 'archive-session':
         if (this.busy(payload.id)) throw new Error('Stop this conversation before archiving it');

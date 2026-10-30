@@ -88,11 +88,11 @@ test('Grok opens and resumes native sessions with authentication, model, effort 
   assert.deepEqual(calls[5].params, { sessionId, modeId: 'bypassPermissions' });
 });
 
-test('Grok loads the source before forking and keeps the returned child session ID', async t => {
+for (const targetPromptIndex of [undefined, 0]) test('Grok loads the source before forking and preserves the boundary ' + targetPromptIndex, async t => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'camellia-grok-fork-'));
   t.after(() => removeTree(home));
   const sourceId = '00000000-0000-4000-8000-000000000001', childId = '00000000-0000-4000-8000-000000000002', calls = [];
-  const session = new GrokSession({ gen: 1, settings: { cwd: home }, opts: { sessionId: sourceId, fork: true },
+  const session = new GrokSession({ gen: 1, settings: { cwd: home }, opts: { sessionId: sourceId, fork: true, targetPromptIndex },
     exe: '/fixture/grok', spec: { args: [], env: {} }, spawn: () => assert.fail('no process expected'), log() {},
     history: { root: home, find: () => null }, onEvent() {}, onSessionId() {}, onResult() {} });
   session.starting = Promise.resolve();
@@ -110,6 +110,7 @@ test('Grok loads the source before forking and keeps the returned child session 
   assert.deepEqual(calls[2].params.sourceSessionId, sourceId);
   assert.equal(calls[2].params.sourceCwd, home);
   assert.equal(calls[2].params.newCwd, home);
+  assert.equal(calls[2].params.targetPromptIndex, targetPromptIndex);
 });
 
 test('Grok connection settings keep API and subscription models separate', () => {

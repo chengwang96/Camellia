@@ -270,7 +270,8 @@ class RemoteCommands {
       }
       if (payload.action === 'fork') {
         this.authorizeCreate(deviceId, this.reader.summary(conversation).workspaceId);
-        return { ok: true, state: 'accepted', conversation: this.reader.summary(manager.fork(conversation.currentEngine, { sessionId: id })) };
+        const result = await manager.command(conversation.currentEngine, 'fork-session', { sessionId: id });
+        return { ok: true, state: 'accepted', conversation: this.reader.summary(manager.get(result.sessionId)) };
       }
       if (payload.action === 'switch-engine') {
         if (!(manager.remoteEngines || ['dsh', 'codex', 'kimi', 'claude', 'antigravity', 'grok']).includes(payload.engine)) fail(400, 'Unsupported engine');

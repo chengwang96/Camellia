@@ -19,7 +19,8 @@ function samePath(first, second) {
 }
 
 function hasData(directory) {
-  try { return fs.readdirSync(directory).length > 0; } catch { return false; }
+  try { return fs.readdirSync(directory).length > 0; }
+  catch (error) { if (error.code === 'ENOENT') return false; throw error; }
 }
 
 function defaultDataDirectory(appData, initialDirectory) {

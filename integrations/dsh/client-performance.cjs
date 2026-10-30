@@ -11,7 +11,7 @@ module.exports = function patchClientPerformance(source, version = '0.1.5-rc.2')
     'for (let index = value.indexOf("\\n"); index !== -1; index = value.indexOf("\\n", index + 1)) count += 1;');
   // 0.2 builds scripts and maps lazily and shares their promises upstream. Keep
   // that cache; the old two-argument wrapper would break the new map reader.
-  if (version === '0.2.0-rc.2') {
+  if (['0.2.0-rc.2', '0.2.1-rc.2'].includes(version)) {
     if (!source.includes('function buildCombo(records, sourceMapOf, revision) {') || !source.includes('function lazyBody(produce) {'))
       throw new Error('The DSH lazy artifact entry point changed');
     return source;

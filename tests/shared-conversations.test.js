@@ -4517,7 +4517,7 @@ test('parked model sessions are capped and the least recently used one retires',
   assert.equal(retired[0].nativeId, 'codex-1', 'the least recently used parked session retires first');
 });
 
-test('a fork keeps the parked model sessions of each binding', async t => {
+test('a fork never aliases the parked native sessions of its source', async t => {
   const f = fixture(t);
   let model = 'model-one';
   f.drivers.codex.settings = () => ({ model, connection: 'api' });
@@ -4527,7 +4527,97 @@ test('a fork keeps the parked model sessions of each binding', async t => {
   await f.manager.send('codex', { sessionId: first.sessionId, prompt: 'Continue' }); f.finish('codex');
   const parkedNative = Object.values(f.manager.get(first.sessionId).modelSessions)[0].nativeId;
   const forked = f.manager.fork('codex', { sessionId: first.sessionId, title: 'Branch' });
-  assert.equal(Object.values(forked.modelSessions)[0].nativeId, parkedNative);
+  assert.deepEqual(forked.modelSessions, {});
+  f.manager.saveSettings('codex', { sessionId: forked.id, model: 'model-one' });
+  const run = await f.manager.send('codex', { sessionId: forked.id, prompt: 'Independent branch work' });
+  assert.notEqual(f.sent.at(-1).opts.sessionId, parkedNative);
+  assert.match(f.sent.at(-1).prompt, /Work|Continue/);
+  assert.equal(Object.values(f.manager.get(first.sessionId).modelSessions)[0].nativeId, parkedNative);
+  f.finish('codex'); await run.done;
+});
+
+for (const engine of ['codex', 'grok', 'kimi', 'dsh', 'antigravity']) test(engine + ' unified fork creates a distinct native thread and binds child tools before continuing', async t => {
+  const h = fixture(t, { createGoalBridge: async options => ({ ...options, config: {}, close() {} }) });
+  t.after(() => h.manager.closeGoalTools());
+  h.drivers[engine].nativeAutoCompaction = true;
+  const first = await h.manager.send(engine, { prompt: 'SOURCE_REQUEST' });
+  h.finish(engine); await first.done;
+  const source = h.manager.get(first.sessionId), sourceId = source.segments[engine].nativeId;
+  h.manager.append(source, { role: 'tool', text: 'LARGE_NATIVE_HISTORY_'.repeat(50000) });
+  source.segments[engine].cursor = source.seq;
+  h.manager.save(source);
+  let forkOptions;
+  h.drivers[engine].forkNative = async options => { forkOptions = options; return { nativeId: engine + '-independent-native' }; };
+  const created = await h.manager.command(engine, 'fork-session', { sessionId: source.id });
+  const child = h.manager.get(created.sessionId);
+  assert.equal(child.segments[engine].nativeId, engine + '-independent-native');
+  assert.equal(forkOptions.sessionId, sourceId);
+  assert.equal(forkOptions.sourceConversationId, source.id);
+  assert.equal(forkOptions.conversationId, child.id);
+  assert.equal(forkOptions.goalBridge, h.manager.goalBridges.get(child.id));
+  assert.equal(forkOptions.sourceGoalBridge, h.manager.goalBridges.get(source.id));
+  assert.notEqual(forkOptions.goalBridge, forkOptions.sourceGoalBridge);
+  const parentTurn = await h.manager.send(engine, { sessionId: source.id, prompt: 'LATER_PARENT_REQUEST' });
+  h.finish(engine); await parentTurn.done;
+  const manager = h.restart();
+  const run = await manager.send(engine, { sessionId: child.id, prompt: 'CONTINUE_BRANCH' });
+  assert.equal(h.sent.at(-1).opts.sessionId, engine + '-independent-native');
+  assert.doesNotMatch(h.sent.at(-1).prompt, /LARGE_NATIVE_HISTORY_|SOURCE_REQUEST|LATER_PARENT_REQUEST|compact working context/);
+  assert.doesNotMatch(JSON.stringify(manager.messages(manager.get(child.id))), /LATER_PARENT_REQUEST/);
+  h.finish(engine); await run.done;
+});
+
+test('a deferred Claude native fork survives restart without replaying oversized shared history', async t => {
+  const h = fixture(t);
+  h.drivers.claude.nativeAutoCompaction = true;
+  const first = await h.manager.send('claude', { prompt: 'SOURCE_REQUEST' });
+  h.finish('claude'); await first.done;
+  const source = h.manager.get(first.sessionId);
+  h.manager.append(source, { role: 'tool', text: 'LARGE_NATIVE_HISTORY_'.repeat(50000) });
+  source.segments.claude.cursor = source.seq;
+  h.manager.save(source);
+  h.drivers.claude.forkNative = async options => {
+    fs.mkdirSync(path.dirname(options.snapshotFile), { recursive: true });
+    fs.writeFileSync(options.snapshotFile, '{"source":"frozen native prefix"}\n');
+    return { pendingNativeFork: { sessionId: options.sessionId } };
+  };
+  const created = await h.manager.command('claude', 'fork-session', { sessionId: source.id });
+  const ensure = h.drivers.claude.ensure;
+  h.drivers.claude.ensure = opts => {
+    const session = ensure(opts);
+    if (opts.fork) session.sessionId = 'claude-independent-native';
+    return session;
+  };
+  const manager = h.restart(), child = manager.get(created.sessionId);
+  const run = await manager.send('claude', { sessionId: child.id, prompt: 'CONTINUE_BRANCH' });
+  assert.equal(h.sent.at(-1).opts.fork, true);
+  assert.equal(h.sent.at(-1).opts.resumeFile, manager.forkSnapshotFile(child));
+  assert.doesNotMatch(h.sent.at(-1).prompt, /LARGE_NATIVE_HISTORY_|SOURCE_REQUEST|compact working context/);
+  assert.equal(child.nativeFork, undefined);
+  assert.equal(child.segments.claude.nativeId, 'claude-independent-native');
+  h.finish('claude'); await run.done;
+  await manager.deleteConversation(child.id);
+  assert.equal(fs.existsSync(manager.forkSnapshotFile(child)), false);
+});
+
+test('canceling native fork preparation preserves the source and stops the owned fork process', async t => {
+  const h = fixture(t), first = await h.manager.send('grok', { prompt: 'SOURCE_REQUEST' });
+  h.finish('grok'); await first.done;
+  const source = h.manager.get(first.sessionId), before = JSON.stringify(source);
+  let finishFork, killed = false;
+  h.drivers.grok.forkNative = async options => {
+    options.registerSession({ kill() { killed = true; finishFork({ nativeId: 'unused-fork' }); } });
+    return new Promise(resolve => { finishFork = resolve; });
+  };
+  const pending = h.manager.command('grok', 'fork-session', { sessionId: source.id });
+  const rejected = assert.rejects(pending, /Fork canceled/);
+  await h.flush();
+  const child = [...h.manager.items.values()].find(c => c.id !== source.id);
+  assert.equal((await h.manager.cancel({ sessionId: child.id })).ok, true);
+  await rejected;
+  assert.equal(killed, true);
+  assert.equal(JSON.stringify(source), before);
+  assert.deepEqual(child.segments, {});
 });
 
 test('an expired parked session is retired instead of resumed', async t => {
@@ -4820,6 +4910,57 @@ test('Codex edit forks at the persisted native boundary without replay or compac
   assert.doesNotMatch(sent.prompt, /OLD_LARGE_TOOL|ORIGINAL_TASK|compact working context/);
   assert.equal(harness.sent.length, 3);
   harness.finish('codex'); await revised.done;
+});
+
+for (const engine of ['claude', 'grok', 'kimi', 'dsh']) test(engine + ' native edit survives restart and avoids oversized shared-history replay', async t => {
+  const h = fixture(t), manager = h.manager;
+  h.drivers[engine].nativeEditing = true;
+  h.drivers[engine].nativeAutoCompaction = true;
+  const first = await manager.send(engine, { prompt: 'Earlier request' });
+  h.finish(engine); await first.done;
+  const c = manager.get(first.sessionId);
+  manager.append(c, { role: 'tool', text: 'LARGE_PRIOR_OUTPUT_'.repeat(50000) });
+  c.segments[engine].cursor = c.seq;
+  const original = await manager.send(engine, { sessionId: c.id, prompt: 'ORIGINAL_REQUEST' });
+  h.finish(engine); await original.done;
+  const sourceId = c.segments[engine].nativeId;
+  const boundary = engine === 'kimi' ? { undoCount: 1, undoDigest: 'a'.repeat(64) }
+    : engine === 'dsh' ? { atSeq: 15 } : engine === 'grok' ? { targetPromptIndex: 0 } : {
+    resumeSessionAt: '12345678-1234-4234-8234-123456789abc', resumeDropsTurn: '23456789-1234-4234-8234-123456789abc',
+  };
+  const ensure = h.drivers[engine].ensure;
+  h.drivers[engine].ensure = opts => Object.assign(ensure(opts), { editBoundary: async prompt => {
+    assert.equal(prompt, 'ORIGINAL_REQUEST'); return boundary;
+  } });
+  const restarted = h.restart();
+  const revised = await restarted.send(engine, { sessionId: c.id, editSeq: original.userSeq, prompt: 'REVISED_REQUEST' });
+  const sent = h.sent.at(-1);
+  assert.equal(sent.opts.sessionId, sourceId);
+  assert.equal(sent.opts.fork, true);
+  for (const [key, value] of Object.entries(boundary)) assert.equal(sent.opts[key], value);
+  assert.doesNotMatch(sent.prompt, /LARGE_PRIOR_OUTPUT_|ORIGINAL_REQUEST|compact working context/);
+  assert.equal(h.sent.length, 3);
+  h.finish(engine); await revised.done;
+});
+
+for (const engine of ['claude', 'grok', 'kimi', 'dsh']) test(engine + ' cancelling native boundary lookup preserves the original conversation', async t => {
+  const h = fixture(t), original = await h.manager.send(engine, { prompt: 'ORIGINAL_REQUEST' });
+  h.finish(engine); await original.done;
+  const c = h.manager.get(original.sessionId), before = h.manager.messages(c);
+  h.drivers[engine].nativeEditing = true;
+  let resolve;
+  const ensure = h.drivers[engine].ensure;
+  h.drivers[engine].ensure = opts => Object.assign(ensure(opts), {
+    editBoundary: () => new Promise(done => { resolve = done; }), kill: () => resolve(null),
+  });
+  const pending = h.manager.send(engine, { sessionId: c.id, editSeq: original.userSeq, prompt: 'REVISED_REQUEST' });
+  const rejected = assert.rejects(pending, /Edit canceled/);
+  await h.flush();
+  await h.manager.cancel({ sessionId: c.id });
+  await rejected;
+  assert.deepEqual(h.manager.messages(c), before);
+  assert.equal(h.sent.length, 1);
+  assert.equal(h.manager.busy(c.id), false);
 });
 
 for (const cancel of [false, true]) test('legacy Codex edit boundary lookup ' + (cancel ? 'is cancellable without revising history' : 'avoids replay after migration'), async context => {

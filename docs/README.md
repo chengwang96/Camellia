@@ -27,7 +27,7 @@ These explain current structures and past decisions. Check the guide and current
 
 | Area | Records |
 | --- | --- |
-| Shared chat and context | [Shared conversations](design/shared-conversations.md), [native model bindings](design/model-switch-segments.md), [context capacity](design/context-capacity.md). |
+| Shared chat and context | [Shared conversations](design/shared-conversations.md), [native model bindings](design/model-switch-segments.md), [native editing and forks](design/native-conversation-history.md), [context capacity](design/context-capacity.md). |
 | Discussion groups | [Coordinator design](design/group-chat-discussion.md), [implementation and acceptance](design/group-chat-implementation-plan.md), [rich interaction](design/group-chat-rich-interaction-plan.md), [capability and isolation audit](design/group-chat-capabilities.md). |
 | Engines and settings | [Unified settings](design/unified-settings.md), [harness integration](design/harness-integration.md), [provider balances](design/provider-balances.md). |
 | Server and benchmarks | [Linux CLI design](design/linux-server-cli.md), [benchmark modes](design/benchmark-modes.md). |

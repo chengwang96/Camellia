@@ -151,7 +151,9 @@ function callConversationTool(manager, parentId, name, args, active) {
     Object.assign(child, { controlParentId: parentId, controlRequestId: args.request_id, controlFingerprint: fingerprint,
       controlUserSeq: active.userSeq, controlHistoryBoundary: child.seq });
     saveSettings(manager, child, selected);
-    return { ok: true, conversation: view(manager, child), shared_workspace: true };
+    const response = { ok: true, conversation: view(manager, child), shared_workspace: true };
+    return operation === 'fork' && typeof manager.drivers[parent.currentEngine].forkNative === 'function'
+      ? manager.prepareNativeFork(parent, child).then(() => response) : response;
   }
   const child = accessible(manager, parentId, args.conversation_id);
   if (child.id === parentId) throw new Error('This operation requires an owned child conversation');

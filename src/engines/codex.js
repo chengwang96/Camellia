@@ -1,4 +1,5 @@
 'use strict';
+const { findRollout, copyCodexState, copyCodexRollouts } = require('./native-fork');
 const fs = require('node:fs');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
@@ -274,6 +275,26 @@ function createCodex({ dataDir, loadConfig, saveConfig, getRoute, getModels = ()
     });
     sessions.set(opts, next); next.start(previousClosed); return next;
   }
+  async function forkNative({ sessionId, sourceConversationId, conversationId, cwd, settings, goalBridge, boundary, registerSession }) {
+    const sourceHome = settings.connection === 'subscription' ? accountHome(settings.subscriptionId || activeId())
+      : path.join(home, 'api', 'conversations', sourceConversationId);
+    let forkSourcePath = findRollout(sourceHome, sessionId);
+    if (!forkSourcePath) throw new Error('The source native Codex rollout is unavailable');
+    if (settings.connection !== 'subscription') {
+      const targetHome = path.join(home, 'api', 'conversations', conversationId);
+      await copyCodexState(sourceHome, targetHome);
+      copyCodexRollouts(sourceHome, targetHome);
+      const snapshot = path.join(targetHome, path.relative(sourceHome, forkSourcePath));
+      forkSourcePath = snapshot;
+    }
+    const session = ensureSession({ sessionId, conversationId, cwd, settings, goalBridge, fork: true, forkSourcePath, ...boundary });
+    registerSession(session);
+    try {
+      await (session.ready ||= session.open());
+      if (session.sessionId === sessionId) throw new Error('Codex did not create an independent native fork');
+      return { nativeId: session.sessionId };
+    } finally { await session.shutdown(); }
+  }
   const goal = new ClaudeGoal({ file: () => path.join(dataDir, 'codex-goal.json'), getSession: () => sessions.legacy, ensureSession,
     resolveWorkspace: payload => workspaces.resolveContext(settings(), payload).workspaceId,
     onChange: onGoal, log, setTimer: setTimeout, clearTimer: clearTimeout });
@@ -447,7 +468,7 @@ function createCodex({ dataDir, loadConfig, saveConfig, getRoute, getModels = ()
   };
   return { get session() { return sessions.legacy; },
     get active() { return Boolean(sessions.active || [...accountEntries.values()].some(entry => entry.client && !entry.client.dead)); },
-    home, goal, settings, saveSettings, handlers, ensureSession, history, sessions, workspaces, accountState, syncAccountSelection,
+    home, goal, settings, saveSettings, handlers, ensureSession, forkNative, history, sessions, workspaces, accountState, syncAccountSelection,
     async shutdown() {
       await Promise.allSettled([...wakeClients].map(client => client.shutdown()));
       await sessions.shutdown();

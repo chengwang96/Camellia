@@ -8,7 +8,7 @@ const { npmCandidates } = require('../main/runtime-paths');
 const { SessionPool } = require('../engines/session-pool');
 const { ClaudeHistory } = require('../engines/claude-history');
 const { ClaudeSession } = require('../engines/claude-session');
-const { KimiSession, kimiSpawnSpec, kimiConnectionSettings, updateKimiConnectionSettings } = require('../engines/kimi-session');
+const { KimiSession, kimiSpawnSpec, kimiConnectionSettings, updateKimiConnectionSettings, forkKimiNative } = require('../engines/kimi-session');
 const { createKimiAccount } = require('../engines/kimi-account');
 const { createGrokChat } = require('../engines/grok-session');
 const { createGrokAccount } = require('../engines/grok-account');
@@ -19,14 +19,27 @@ const { createAntigravity } = require('../engines/antigravity');
 const { valid, nativeMode } = require('../engines/permission-levels');
 const { writeJson } = require('../shared/json-store');
 const { conversationModels } = require('../engines/conversation-models');
+const { nativeEditingSupported } = require('../engines/native-edit-boundary');
+const { snapshotTranscript } = require('../engines/native-fork');
 
 function claudeSpec({ settings, opts, home, route, environment, history, mcpFile }) {
   const env = { ...environment, CLAUDE_CONFIG_DIR: home };
   for (const key of Object.keys(env)) if (/^(ANTHROPIC_|CLAUDE_CODE_OAUTH_TOKEN$|CLAUDE_CODE_USE_BEDROCK$|CLAUDE_CODE_USE_VERTEX$)/i.test(key)) delete env[key];
   const args = ['-p', '--output-format', 'stream-json', '--input-format', 'stream-json', '--replay-user-messages', '--include-partial-messages', '--verbose'];
-  if (mcpFile && fs.existsSync(mcpFile)) args.push('--mcp-config', mcpFile);
-  if (opts.sessionId) args.push('--resume', history.find(opts.sessionId) || opts.sessionId);
+  if (opts.goalBridge?.config) {
+    let source = {};
+    if (mcpFile && fs.existsSync(mcpFile)) {
+      try { source = JSON.parse(fs.readFileSync(mcpFile, 'utf8')); }
+      catch { throw new Error('Native MCP configuration is invalid; repair it on the server'); }
+    }
+    const file = path.join(home, 'overlays', `${opts.conversationId || 'legacy'}.mcp.json`);
+    writeJson(file, { ...source, mcpServers: { ...source.mcpServers, camellia_goals: opts.goalBridge.config } });
+    args.push('--mcp-config', file);
+  } else if (mcpFile && fs.existsSync(mcpFile)) args.push('--mcp-config', mcpFile);
+  if (opts.sessionId) args.push('--resume', opts.resumeFile || history.find(opts.sessionId) || opts.sessionId);
   if (opts.fork) args.push('--fork-session');
+  if (opts.resumeSessionAt) args.push('--resume-session-at', opts.resumeSessionAt);
+  if (opts.resumeDropsTurn) args.push('--resume-drops-turn', opts.resumeDropsTurn);
   const permission = nativeMode('claude', settings.permissionMode || 'ask');
   if (permission !== 'default') args.push('--permission-mode', permission);
   if (!settings.model) throw new Error('Choose a model on this server before sending');
@@ -44,9 +57,9 @@ function claudeSpec({ settings, opts, home, route, environment, history, mcpFile
   return { args, env: { ...env, ...overlay }, cwd: settings.cwd };
 }
 
-function createEngineDrivers({ root, dataDir, loadConfig, saveConfig, onEvent, getRoute, router, isBusy, runtimeManager, nativeSettings, contextCapacity, createUsageMeter = () => null }) {
+function createEngineDrivers({ root, dataDir, loadConfig, saveConfig, onEvent, getRoute, router, isBusy, runtimeManager, nativeSettings, contextCapacity, createUsageMeter = () => null, environment: baseEnvironment = () => process.env }) {
   const native = nativeSettings || require('./native-settings').createNativeSettings({ dataDir, isBusy });
-  const environment = () => ({ ...process.env, PATH: path.dirname(process.execPath) + path.delimiter + (process.env.PATH || '') });
+  const environment = () => { const env = baseEnvironment(); return { ...env, PATH: path.dirname(process.execPath) + path.delimiter + (env.PATH || '') }; };
   const runtimes = runtimeManager || createRuntimeManager({ root, installRoot: dataDir, node: process.execPath,
     npm: npmCandidates(process.execPath, { resourcesPath: root }).find(file => fs.existsSync(file)), downloadOptions: () => loadConfig().downloadProxy });
   const locate = (engine, mode) => { const found = runtimes.locate(engine, mode); if (!found) throw new Error(`Install ${engine} on this server with runtime-install first`); return found; };
@@ -84,6 +97,14 @@ function createEngineDrivers({ root, dataDir, loadConfig, saveConfig, onEvent, g
       && JSON.stringify(current.settings) === JSON.stringify(settings) ? current : null;
   }
   const kimi = { sessions: kimiPool, history: kimiHistory, settings: kimiSettings, nativeCompaction: true, nativeAutoCompaction: true,
+    nativeEditing: () => nativeEditingSupported('kimi', runtimes.locate('kimi')?.version),
+    async forkNative(options) {
+      const result = await forkKimiNative({ ...options, ensureSource: kimi.ensure,
+        targetHome: options.settings.connection === 'subscription' ? null : path.join(dataDir, 'kimi-api', options.conversationId) });
+      if (result?.nativeId) saveConfig({ kimiSessionConnections: { ...loadConfig().kimiSessionConnections,
+        [result.nativeId]: options.settings.connection || 'api' } });
+      return result;
+    },
     saveSettings(patch) { saveConfig({ kimi: updateKimiConnectionSettings(loadConfig(), patch) }); return kimiSettings(patch.sessionId); },
     ensure(opts) {
       kimiPool.assertAccess(opts);
@@ -106,6 +127,13 @@ function createEngineDrivers({ root, dataDir, loadConfig, saveConfig, onEvent, g
     async shutdown() { await kimiPool.shutdown(); await kimiAccount.shutdown(); },
   };
   const claude = { sessions: claudePool, history: claudeHistory, nativeCompaction: true, nativeAutoCompaction: true,
+    nativeEditing: () => nativeEditingSupported('claude', runtimes.locate('claude')?.version),
+    forkNative({ sessionId, snapshotFile, boundary }) {
+      const source = claudeHistory.find(sessionId);
+      if (!source) return null;
+      snapshotTranscript(source, snapshotFile);
+      return { pendingNativeFork: { sessionId, ...(boundary?.resumeSessionAt ? { resumeSessionAt: boundary.resumeSessionAt } : {}) } };
+    },
     settings() { const saved = loadConfig().claude || {}; return { permissionMode: 'ask', connection: 'api', ...saved, model: saved[`${saved.connection || 'api'}Model`] || saved.model || '' }; },
     saveSettings(patch) {
       const next = { ...loadConfig().claude };
@@ -122,7 +150,7 @@ function createEngineDrivers({ root, dataDir, loadConfig, saveConfig, onEvent, g
       if (settings.connection !== 'subscription' && !models().includes(settings.model)) throw new Error('Choose a configured API model');
       const spec = claudeSpec({ settings, opts, home: claudeHome, route: settings.connection === 'subscription' ? null : getRoute(), environment: environment(), history: claudeHistory, mcpFile: native.path('claude', 'mcp') });
       claudePool.get(opts)?.kill();
-      const session = new ClaudeSession({ gen: ++generation, settings, opts: { ...opts, lockPermissionMode: true }, exe: locate('claude').file, spec, spawn, log: noLog,
+      const session = new ClaudeSession({ gen: ++generation, settings, opts: { ...opts, lockPermissionMode: true }, exe: locate('claude').file, spec, spawn, log: noLog, nativeHistory: claudeHistory,
         onEvent: event => { if (claudePool.get(opts) === session) onEvent('claude', { ...event, conversationId: opts.conversationId }); }, onSessionId: noLog, onResult: noLog });
       claudePool.set(opts, session); session.start(); return session;
     }, async shutdown() {
@@ -160,12 +188,13 @@ function createEngineDrivers({ root, dataDir, loadConfig, saveConfig, onEvent, g
     nativeInstructions: () => native.config('grok', 'instructions'),
     onEvent: event => onEvent('grok', event), log: noLog });
   const drivers = { dsh, grok: { ...grok, subscriptionAccounts: () => grokAccount.state(),
+    nativeEditing: () => nativeEditingSupported('grok', runtimes.locate('grok')?.version),
     shutdown: async () => { await grok.shutdown(); await grokAccount.shutdown(); } }, codex: { sessions: codex.sessions, history: codex.history, settings: codex.settings, saveSettings: codex.saveSettings, ensure: codex.ensureSession,
     subscriptionAccounts: () => codex.accountState(),
     resetCredits: { preview: payload => codex.handlers['account-reset-preview'](payload), consume: payload => codex.handlers['account-reset-consume'](payload) },
-    nativeCompaction: true, nativeEditing: true, shutdown: () => codex.shutdown() }, kimi, claude };
+    forkNative: codex.forkNative, nativeCompaction: true, nativeEditing: true, shutdown: () => codex.shutdown() }, kimi, claude };
   drivers.antigravity = { sessions: antigravity.sessions, history: antigravity.history, settings: antigravity.settings, saveSettings: antigravity.saveSettings,
-    ensure: antigravity.ensureSession, nativeAutoCompaction: true, shutdown: () => antigravity.shutdown() };
+    ensure: antigravity.ensureSession, forkNative: antigravity.forkNative, nativeAutoCompaction: true, shutdown: () => antigravity.shutdown() };
   require('../engines/discussions/native-access').installDiscussionGuards({ dataDir, drivers: {
     codex, antigravity, dsh, grok,
     claude: { sessions: claudePool, history: claudeHistory }, kimi: { sessions: kimiPool, history: kimiHistory },
