@@ -660,7 +660,7 @@ with sync_playwright() as p:
         page.locator('#input').fill('Unsent next message')
         page.mouse.move(2,2)
         user=page.locator('.msg-user').last
-        expect(user.locator('.message-actions')).to_have_css('opacity','0')
+        expect(user.locator('.message-actions')).to_have_css('opacity','1')
         user.hover()
         expect(user.locator('.message-edit')).to_be_visible()
         user.locator('.message-edit').click()

@@ -34,20 +34,21 @@ bridge = """(() => {
 })();"""
 try:
     fixtures = rpc('fixtures')['result']
-    rpc('claudeMetaOp', {'op':'create-workspace', 'name':'Settings', 'path':fixtures['alpha']})
+    workspace = rpc('conversationCommand', {'engine':'claude', 'action':'meta-op',
+        'payload':{'op':'create-workspace', 'name':'Settings', 'path':fixtures['alpha']}})['result']['workspace']
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         errors = []
-        def open_page(file):
+        def open_page(file, query=''):
             page = browser.new_page(viewport={'width':1160,'height':900})
             page.on('pageerror', lambda e: errors.append(str(e)))
             page.expose_function('testRpc', rpc)
             page.add_init_script(bridge)
-            page.goto((repo/'src/renderer'/file).as_uri(), wait_until='networkidle')
+            page.goto((repo/'src/renderer'/file).as_uri() + query, wait_until='networkidle')
             return page
         settings = open_page('settings/api-settings.html')
         home = open_page('home/home.html')
-        chat = open_page('chat/claude.html')
+        chat = open_page('chat/claude.html', '?new=1&workspace=' + workspace['id'])
         expect(home.locator('h1')).to_have_text('Start working')
         expect(chat.locator('.ws-name')).to_have_text('Settings')
         chat.locator('#input').fill('Settings / Ready / Keep this draft 原样保留')

@@ -5,19 +5,30 @@ const assert = require('node:assert/strict');
 const { EventEmitter } = require('node:events');
 const fs = require('node:fs');
 const path = require('node:path');
-const { settingsWindowSize, createSettingsWindowSizeCache } = require('../src/main/settings-window-size');
+const { settingsWindowSize, settingsWindowBounds, createSettingsWindowSizeCache } = require('../src/main/settings-window-size');
 
 const main = fs.readFileSync(path.join(__dirname, '../src/main/main.js'), 'utf8').replace(/\r\n/g, '\n');
 const openSettings = /function openSettingsWindow\(target = \{\}\) \{([\s\S]*?)\n\}\n\nfunction createMainWindow/.exec(main)[1];
 
-test('the settings window is created hidden and centered so it never flashes at the default position', () => {
+test('settings opens hidden as a frameless modal panel and is positioned before it is shown', () => {
   assert.match(openSettings, /new BrowserWindow\(\{/);
-  assert.match(openSettings, /const \{ width, height \} = settingsWindowSizes\.size;/);
+  assert.match(openSettings, /const preferredSize = settingsWindowSizes\.size;/);
   assert.doesNotMatch(openSettings, /settingsWindowSize\(|getPrimaryDisplay\(/);
-  assert.match(openSettings, /\n    width,\n    height,\n/);
-  assert.match(openSettings, /\n    show: false,\n/);
-  assert.match(openSettings, /\n    center: true,\n/);
-  assert.match(openSettings, /settingsWindow\.once\('ready-to-show', \(\) => \{[\s\S]*?settingsWindow\.center\(\);[\s\S]*?settingsWindow\.show\(\);/);
+  assert.match(openSettings, /\n\s+show: false,\n/);
+  assert.match(openSettings, /parent: owner, modal: true/);
+  assert.match(openSettings, /frame: false/);
+  assert.match(openSettings, /transparent: true/);
+  assert.match(openSettings, /settingsWindow\.once\('ready-to-show', \(\) => \{[\s\S]*?settingsWindow\.setBounds\([\s\S]*?settingsWindow\.show\(\);/);
+});
+
+test('the floating panel stays centered inside small and secondary-monitor workbenches', () => {
+  const preferred = { width: 1160, height: 960 };
+  assert.deepEqual(settingsWindowBounds(preferred, { x: 100, y: 50, width: 1320, height: 900 }),
+    { width: 1160, height: 852, x: 180, y: 74 });
+  assert.deepEqual(settingsWindowBounds(preferred, { x: -1920, y: 0, width: 960, height: 680 }),
+    { width: 912, height: 632, x: -1896, y: 24 });
+  assert.deepEqual(settingsWindowBounds(preferred, { x: 0, y: 0, width: 2560, height: 1400 }),
+    { width: 1160, height: 960, x: 700, y: 220 });
 });
 
 test('the settings window follows the display work area within readable bounds', () => {

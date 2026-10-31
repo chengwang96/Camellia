@@ -1,16 +1,21 @@
-/* Only visible topic groups own page-wide rules. Component/table/card borders
-   keep their own meaning; a setting row is not a topic boundary. */
-.settings-main .settings-groups > .settings-group { margin: 0; padding: 0; border: 0; }
+/* Topic groups own both the divider and its surrounding whitespace. Rows only
+   add spacing between controls inside a topic, regardless of their wrapper. */
+.settings-main .settings-groups { --settings-group-space: 20px; --settings-row-space: 20px; }
+.settings-main .settings-groups > .settings-group { display: flow-root; margin: 0; padding: var(--settings-group-space) 0; border: 0; }
 .settings-main .settings-group:not(:has(> :not([hidden]):not(:empty))) { display: none; }
 .settings-main .settings-groups > .settings-group:has(> :not([hidden]):not(:empty)) ~ .settings-group:has(> :not([hidden]):not(:empty)) {
-  margin-top: 22px; padding-top: 22px; border-top: 1px solid var(--dsw-alias-border-l2);
+  border-top: 1px solid var(--dsw-alias-border-l2);
 }
-.settings-main .settings-group .setting-row { padding: 16px 0; border-bottom: 0; }
-.settings-main .settings-group .engine-field { padding: 14px 0; border-bottom: 0; }
-.settings-main .settings-group > .setting-row:first-child,
-.settings-main .settings-group > .engine-field:first-child { padding-top: 0; }
-.settings-main .settings-group > .setting-row:last-child,
-.settings-main .settings-group > .engine-field:last-child { padding-bottom: 0; }
+.settings-main .settings-group :is(.setting-row, .engine-field) { padding: var(--settings-row-space) 0; border-bottom: 0; }
+/* Hidden status/progress elements and empty results must not create extra
+   space at the first or last visible row. This also handles section wrappers. */
+.settings-main .settings-group :is(.setting-row, .engine-field, .runtime-card):nth-child(1 of :not([hidden]):not(:empty)) { padding-top: 0; }
+.settings-main .settings-group :is(.setting-row, .engine-field, .runtime-card):nth-last-child(1 of :not([hidden]):not(:empty)) { padding-bottom: 0; }
+.settings-main .settings-group > :nth-child(1 of :not([hidden]):not(:empty)) { margin-top: 0; }
+.settings-main .settings-group > :nth-last-child(1 of :not([hidden]):not(:empty)) { margin-bottom: 0; }
+/* A group containing another group list is structural; its inner groups own
+   the whitespace so nested pages such as storage do not double it. */
+.settings-main .settings-group:has(> .settings-groups) { padding: 0; }
 .settings-main .settings-group > .section,
 .settings-main .settings-group > .subscription-account,
 .settings-main .settings-group > .connectivity-section,

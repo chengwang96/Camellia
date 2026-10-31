@@ -70,7 +70,7 @@ try:
             expect(icon).to_have_attribute('aria-hidden','true')
             expect(icon).to_have_attribute('focusable','false')
             expect(icon).to_have_attribute('viewBox','0 0 24 24')
-            assert icon.bounding_box()['width']==18 and icon.bounding_box()['height']==18
+            assert icon.bounding_box()['width']==20 and icon.bounding_box()['height']==20
         page.set_viewport_size({'width':560,'height':900})
         for icon in nav_icons.all():
             bounds=icon.bounding_box()
@@ -551,7 +551,7 @@ try:
         page.locator('#balanceChart [data-chart-kind=quota] svg').first.hover(position={'x':80,'y':100})
         expect(page.locator('.chart-tooltip:visible')).to_have_count(1)
         page.screenshot(path=str(repo/'dist/ui-preview/settings-balances-dark-compact.png'))
-        page.locator('[data-view=general]').click();page.locator('#theme').select_option('dark')
+        page.locator('[data-view=general]').click();page.locator('[data-theme-choice=dark]').click()
         expect(page.locator('#openMobileAccess')).to_have_count(0)
         page.evaluate("""() => {
           const original = window.testCall;

@@ -14,7 +14,10 @@ async function main() {
       wc.on('preload-error', (_event, _file, error) => errors.push(error.message));
       wc.on('console-message', event => { if (event.level === 'error') errors.push(event.message); });
     });
-    app.on('browser-window-created', (_event, window) => { window.show = () => {}; window.hide(); });
+    app.on('browser-window-created', (_event, window) => {
+      window.show = () => {}; window.focus = () => {};
+      window.webContents.setBackgroundThrottling(false);
+    });
     require('../src/main/main'); await app.whenReady();
     async function wait(check, label = 'native settings', timeout = 90000) {
       const deadline = Date.now() + timeout;

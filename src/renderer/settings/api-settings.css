@@ -23,13 +23,16 @@ p { margin: 5px 0; }
 small { font-size: 12px; color: var(--dsw-alias-label-secondary); line-height: 1.5; }
 /* Page-level caveats that belong to the whole view, not to one control. */
 .footnote { max-width: 76ch; font-size: 12.5px; color: var(--dsw-alias-label-secondary); line-height: 1.6; }
-/* Group-level explanation gets a container so long prose has a shape. */
-.setting-note { max-width: 76ch; margin: 6px 0 0; padding: 12px 16px; border-left: 2px solid var(--dsw-alias-border-l2); border-radius: 0 10px 10px 0; background: var(--dsw-alias-bg-soft); color: var(--dsw-alias-label-secondary); font-size: 13px; line-height: 1.6; }
+/* Keep optional explanations near their controls without a persistent banner. */
+.settings-help { margin: 8px 0; color: var(--dsw-alias-label-secondary); font-size: 13px; line-height: 1.6; }
+.settings-help summary { cursor: pointer; width: fit-content; max-width: 100%; }
+.settings-help p { max-width: 76ch; margin-top: 8px; }
+.hint:empty { margin: 0; }
 .primary { background: var(--dsw-static-deepseek-500); color: #fff; border-color: transparent; }
 .primary:hover { background: var(--dsw-static-deepseek-400); }
 .web-tools-section .setting-row { gap: 20px; flex-wrap: wrap; }
 .web-tools-section .setting-row > div { flex: 1 1 260px; }
-.web-tools-section select { max-width: 100%; width: 260px; text-overflow: ellipsis; }
+.web-tools-section select { max-width: 100%; width: auto; flex: 0 0 auto; text-overflow: ellipsis; }
 .danger, .error { color: var(--dsw-alias-state-error-primary); }
 .settings-nav { flex: 0 0 192px; min-height: 0; background: var(--dsw-specific-sidebar-fill); padding: 28px 12px 20px; display: flex; flex-direction: column; border-right: 1px solid var(--dsw-alias-border-l2); }
 .settings-brand { display: flex; align-items: center; gap: 10px; padding: 0 12px 28px; font-weight: 600; }
@@ -301,7 +304,6 @@ dialog > button { display: block; margin: 20px 0 0 auto; }
   .grid { grid-template-columns: 1fr; }
   .usage-summary { grid-template-columns: repeat(2, 1fr); }
 }
-#storageSection h2 { margin: 0 0 12px; }
 .archived-row h2 { overflow-wrap: anywhere; }
 .archived-delete-activity { margin: 0 0 14px; }
 .archived-delete-activity p { margin: 0 0 7px; }
@@ -451,8 +453,6 @@ dialog > button { display: block; margin: 20px 0 0 auto; }
 #networkMode { flex: 0 0 auto; width: auto; min-width: 0; }
 #networkMode option { white-space: nowrap; overflow-wrap: normal; }
 .connectivity-section { padding: 22px 0 24px; }
-.connectivity-section .section-head { align-items: flex-start; margin-bottom: 6px; }
-.connectivity-section .section-head > h2 { margin-top: 6px; }
 .connectivity-section .hint { margin: 0 0 18px; max-width: 76ch; }
 .connectivity-summary { margin: 0 0 14px; font-size: 13px; color: var(--dsw-alias-label-secondary); overflow-wrap: anywhere; }
 .connectivity-summary.bad { color: var(--dsw-alias-state-error-primary); }

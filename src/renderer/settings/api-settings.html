@@ -9,9 +9,12 @@
 <link rel="stylesheet" href="./settings-groups.css">
 <link rel="stylesheet" href="../remote/diagnostics.css">
 <link rel="stylesheet" href="./device-settings.css">
+<link rel="stylesheet" href="./settings-surface.css">
+<script src="./settings-frame.js" defer></script>
 </head><body>
+<div class="settings-shell">
 <aside class="settings-nav">
-  <div class="settings-brand"><img src="../../../assets/icon-256.png" alt="Camellia cat" width="36" height="36"><span>Camellia<small data-i18n>Settings</small></span></div>
+  <div class="settings-brand"><span data-i18n>Settings</span></div>
   <nav aria-label="Settings categories" data-i18n-attrs="aria-label">
     <button data-view="subscriptions" data-i18n><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="12" cy="7" r="4"/><path d="M4 21v-2a8 8 0 0 1 16 0v2"/></svg>Subscription accounts</button>
     <button data-view="providers" data-i18n><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="8" cy="8" r="4.5"/><path d="m11.2 11.2 9.3 9.3m-3-3 3-3m-6 0 3-3"/></svg>API Keys</button>
@@ -29,11 +32,11 @@
   <div class="nav-foot"><span class="status-dot" id="routerDot"></span><span id="routerLabel" data-i18n>Connecting</span></div>
 </aside>
 <div class="settings-main">
-  <header class="page-head"><div><h1 id="pageTitle" data-i18n>General</h1><p id="pageSubtitle" data-i18n>Language, appearance, and local preferences.</p></div></header>
+  <header class="page-head"><h1 id="pageTitle" data-i18n>General</h1><button id="closeSettings" class="settings-close-window" type="button" aria-label="Close" title="Close" data-i18n-attrs="aria-label title" hidden><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button></header>
   <main class="scroll-content">
     <section id="subscriptionsPage" class="page" hidden>
       <section class="account-connections" aria-label="Subscription accounts" data-i18n-attrs="aria-label">
-        <p class="hint" data-i18n>Sign-ins are separate from API keys and engine settings. The selected account applies from the next message, and quota errors can switch accounts automatically.</p>
+        <p class="hint" data-i18n>Account changes apply from the next message. Quota errors can switch accounts automatically.</p>
         <div id="accountShortcuts" role="group" aria-label="Subscription accounts" data-i18n-attrs="aria-label" class="account-shortcuts"><button data-account-engine="kimi" data-i18n>Kimi account</button><button data-account-engine="antigravity" data-i18n>Google account</button><button data-account-engine="codex" data-i18n>ChatGPT account</button></div>
         <div id="subscriptionAccounts"></div>
       </section>
@@ -51,7 +54,7 @@
         <div class="toolbar"><div class="toolbar-actions"><button id="refreshBalances" class="primary" data-i18n>Refresh all</button></div></div>
         <div class="balance-filter"><select id="balanceProvider" aria-label="Balance provider" data-i18n-attrs="aria-label"></select><input id="balanceSearch" aria-label="Filter accounts" placeholder="Filter by account label or masked key" data-i18n-attrs="aria-label placeholder"></div>
         <div id="balanceCards" class="balance-grid"></div>
-        <p class="hint footnote" data-i18n>Keys may share one account balance, so card amounts are not added together. Charts show local observations; earlier history is not reconstructed.</p>
+        <p class="hint footnote" data-i18n>Keys can share a balance; amounts are not summed. Charts only show locally recorded history.</p>
         <div id="balanceChart" class="chart-grid-layout"></div>
       </section>
     </section>
@@ -67,35 +70,40 @@
       <div class="table-scroll"><table class="usage-table"><thead><tr><th data-i18n>Model / Provider</th><th data-i18n>Account / Key</th><th data-i18n>Success</th><th data-i18n>Input</th><th data-i18n>Output</th><th data-i18n>Cache read</th><th data-i18n>Cache write</th><th data-i18n>Failed / Canceled</th><th data-i18n>Subscription estimate (USD)</th></tr></thead><tbody id="usageRows"></tbody></table></div>
     </section>
     <section id="generalPage" class="page">
-      <div class="setting-row memory-setting"><div><h2><label for="memoryDirectory" data-i18n>Global memory</label></h2><p class="hint" data-i18n>All harnesses and models use this folder for shared memory. Reading and writing follow the rules in your files. Leave blank to disable.</p><div class="memory-folder"><input id="memoryDirectory" type="text" placeholder="Choose a memory folder" data-i18n-attrs="placeholder" spellcheck="false"><button id="chooseMemoryDirectory" data-i18n>Choose folder</button></div></div></div>
+      <div class="setting-row memory-setting"><div><h2><label for="memoryDirectory" data-i18n>Global memory</label></h2><p class="hint" data-i18n>Shared by all engines and models. Follow this folder's rules; leave blank to disable.</p><div class="memory-folder"><input id="memoryDirectory" type="text" placeholder="Choose a memory folder" data-i18n-attrs="placeholder" spellcheck="false"><button id="chooseMemoryDirectory" data-i18n>Choose folder</button></div></div></div>
       <div class="setting-row"><div><h2 data-i18n>Language</h2></div><select id="language" aria-label="Language" data-i18n-attrs="aria-label"><option value="en" lang="en">English</option><option value="zh-CN" lang="zh-CN">简体中文</option></select></div>
-      <div class="setting-row"><div><h2 data-i18n>Appearance</h2></div><select id="theme" aria-label="Appearance" data-i18n-attrs="aria-label"><option value="system" data-i18n>System</option><option value="light" data-i18n>Light</option><option value="dark" data-i18n>Dark</option></select></div>
-      <div class="setting-row"><div><h2 data-i18n>Conversation width</h2><p class="hint" data-i18n>How wide the message column grows on a large window. Full width uses the whole workbench.</p></div><select id="chatContentWidth" aria-label="Conversation width" data-i18n-attrs="aria-label"><option value="standard" data-i18n>Standard width</option><option value="wide" data-i18n>Wider</option><option value="full" data-i18n>Full width</option></select></div>
-      <div class="setting-row"><div><h2 data-i18n>Refresh balances automatically</h2><p class="hint" data-i18n>An exhausted key stays out of the route pool until its quota window recovers.</p></div><input id="autoRefreshBalances" type="checkbox" aria-label="Refresh balances automatically" data-i18n-attrs="aria-label"></div>
+      <div class="setting-row appearance-setting"><div><h2 id="appearanceTitle" data-i18n>Appearance</h2>
+        <div class="theme-choices" role="group" aria-labelledby="appearanceTitle">
+          <button type="button" data-theme-choice="light" aria-pressed="false"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M2 12h2m16 0h2M5 5l1.5 1.5m11 11L19 19M5 19l1.5-1.5m11-11L19 5"/></svg><span data-i18n>Light</span></button>
+          <button type="button" data-theme-choice="dark" aria-pressed="false"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20.5 14A9 9 0 0 1 10 3.5 9 9 0 1 0 20.5 14Z"/></svg><span data-i18n>Dark</span></button>
+          <button type="button" data-theme-choice="system" aria-pressed="true"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="13" rx="1.5"/><path d="M8 21h8m-4-4v4"/></svg><span data-i18n>System</span></button>
+        </div>
+      </div><select id="theme" hidden aria-label="Appearance" data-i18n-attrs="aria-label"><option value="system" data-i18n>System</option><option value="light" data-i18n>Light</option><option value="dark" data-i18n>Dark</option></select></div>
+      <div class="setting-row"><div><h2 data-i18n>Conversation width</h2></div><select id="chatContentWidth" aria-label="Conversation width" data-i18n-attrs="aria-label"><option value="standard" data-i18n>Standard width</option><option value="wide" data-i18n>Wider</option><option value="full" data-i18n>Full width</option></select></div>
+      <div class="setting-row"><div><h2 data-i18n>Refresh balances automatically</h2></div><input id="autoRefreshBalances" type="checkbox" aria-label="Refresh balances automatically" data-i18n-attrs="aria-label"></div>
       <div class="setting-row"><div><h2 data-i18n>Balance and quota refresh interval</h2></div><select id="accountRefreshMinutes" aria-label="Balance and quota refresh interval" data-i18n-attrs="aria-label"><option value="5" data-i18n>Every 5 minutes</option><option value="15" data-i18n>Every 15 minutes</option><option value="30" data-i18n>Every 30 minutes</option><option value="60" data-i18n>Every 60 minutes</option></select></div>
-      <div class="setting-row"><div><h2 data-i18n>Keep refreshing Google quota in the background</h2><p class="hint" data-i18n>Turn this off when the official Antigravity CLI keeps opening its Google sign-in page. Quota then updates only when you refresh it in Subscription accounts.</p></div><input id="antigravityAutoRefresh" type="checkbox" aria-label="Keep refreshing Google quota in the background" data-i18n-attrs="aria-label"></div>
-      <div class="setting-row"><div><h2 data-i18n>Close to tray and keep routing</h2><p class="hint" data-i18n>Closing the window keeps the router serving other apps. Quit from the tray icon to stop everything.</p></div><input id="closeToTray" type="checkbox" aria-label="Close to tray and keep routing" data-i18n-attrs="aria-label"></div>
-      <div class="setting-row"><div><h2 data-i18n>Shared conversations</h2><p class="hint" data-i18n>Continue any conversation in Claude Code, Codex CLI, DSH, Kimi Code, Antigravity or Grok Build.</p></div><select id="conversationMode" aria-label="Default conversation handoff" data-i18n-attrs="aria-label"><option value="direct" data-i18n>Continue directly (default)</option><option value="markdown" data-i18n>Automatic Markdown handoff</option></select></div>
-      <p class="setting-note" data-i18n>Direct continuation sends missing history to the next engine. Markdown asks the previous engine to summarize into a .md file and automatically starts a new native session. Both keep your shared conversation. Switching may increase latency and token usage; caches and internal state cannot transfer, and a summary may lose details.</p>
+      <div class="setting-row"><div><h2 data-i18n>Keep refreshing Google quota in the background</h2><p class="hint" data-i18n>If Google sign-in keeps opening, turn this off and refresh quota manually in Subscription accounts.</p></div><input id="antigravityAutoRefresh" type="checkbox" aria-label="Keep refreshing Google quota in the background" data-i18n-attrs="aria-label"></div>
+      <div class="setting-row"><div><h2 data-i18n>Close to tray and keep routing</h2><p class="hint" data-i18n>Use the tray menu to quit Camellia.</p></div><input id="closeToTray" type="checkbox" aria-label="Close to tray and keep routing" data-i18n-attrs="aria-label"></div>
+      <div class="setting-row"><div><h2 data-i18n>Shared conversations</h2><p class="hint" data-i18n>Switching can take longer and use extra tokens; summaries may omit details.</p></div><select id="conversationMode" aria-label="Default conversation handoff" data-i18n-attrs="aria-label"><option value="direct" data-i18n>Continue directly (default)</option><option value="markdown" data-i18n>Automatic Markdown handoff</option></select></div>
+      <details id="conversationHandoffHelp" class="settings-help"><summary data-i18n>How engine switching works</summary><p class="hint" data-i18n>Direct mode sends missing history to the next engine. Markdown mode asks the previous engine to write a summary file and starts a new native session. Both keep the shared conversation; caches and internal state do not transfer.</p></details>
       <div class="setting-row"><div><h2 data-i18n>Remind me when switching engines</h2></div><input id="conversationWarn" type="checkbox" aria-label="Remind me when switching engines" data-i18n-attrs="aria-label"></div>
       <div class="setting-row"><div><h2 data-i18n>Show conversation origins</h2><p class="hint" data-i18n>Also lists Markdown handoff records.</p></div><input id="conversationOriginSetting" type="checkbox" aria-label="Show conversation origins" data-i18n-attrs="aria-label"></div>
       <article class="runtime-card runtime-python" id="pythonCard">
         <div><h2 data-i18n>Python interpreter</h2><span id="pythonBadge" data-i18n class="badge"></span></div>
-        <p class="hint" data-i18n>Shared by every harness and the benchmark verifier, not by Antigravity alone. Leave empty for automatic detection.</p>
-        <fieldset class="runtime-path" id="pythonPath" disabled><label for="runtime-path-python" data-i18n>Python executable</label><div class="runtime-path-actions"><input id="runtime-path-python" type="text" data-runtime-path="python" placeholder="Automatic detection" data-i18n-attrs="placeholder" spellcheck="false"><button type="button" data-path-action="browse" data-i18n>Browse…</button><button type="button" data-path-action="save" data-i18n>Save path</button><button type="button" data-path-action="reset" data-i18n>Use automatic detection</button></div><p class="hint" id="pythonHint" data-i18n>Choose any Python 3 installation; Camellia never edits it or installs packages.</p></fieldset>
+        <p class="hint" data-i18n>Shared by all engines. Leave blank for automatic detection.</p>
+        <fieldset class="runtime-path" id="pythonPath" disabled><label for="runtime-path-python" data-i18n>Python executable</label><div class="runtime-path-actions"><input id="runtime-path-python" type="text" data-runtime-path="python" placeholder="Automatic detection" data-i18n-attrs="placeholder" spellcheck="false"><button type="button" data-path-action="browse" data-i18n>Browse…</button><button type="button" data-path-action="save" data-i18n>Save path</button><button type="button" data-path-action="reset" data-i18n>Use automatic detection</button></div><p class="hint" id="pythonHint" data-i18n>Uses your Python 3 installation without changing it or installing packages.</p></fieldset>
       </article>
-      <div class="setting-row"><div><h2>Camellia</h2><p class="hint">Claude Code · Codex CLI · DeepSeek Harness · Kimi Code · Antigravity · Grok Build</p></div><span id="version" class="hint"></span></div>
-      <div class="setting-row app-update"><div><h2 data-i18n>Application updates</h2><p class="hint" id="appUpdateStatus" role="status" aria-live="polite" data-i18n>Check the official release feed for a newer version of Camellia.</p><progress id="appUpdateProgress" max="100" hidden></progress></div><div class="app-update-actions"><button id="checkAppUpdate" data-i18n>Check for updates</button><button id="installAppUpdate" class="primary" hidden data-i18n>Download and install</button></div></div>
-      <details id="appUpdateDetails" hidden><summary data-i18n>Release notes</summary><p class="hint" id="appUpdateMeta"></p><pre id="appUpdateNotes"></pre><p class="hint" data-i18n>Installing closes Camellia and replaces the current installation in place. Your conversations, settings and downloaded engines are kept.</p></details>
+      <div class="setting-row"><div><h2>Camellia</h2></div><span id="version" class="hint"></span></div>
+      <div class="setting-row app-update"><div><h2 data-i18n>Application updates</h2><p class="hint" id="appUpdateStatus" role="status" aria-live="polite" data-i18n></p><progress id="appUpdateProgress" max="100" hidden></progress></div><div class="app-update-actions"><button id="checkAppUpdate" data-i18n>Check for updates</button><button id="installAppUpdate" class="primary" hidden data-i18n>Download and install</button></div></div>
+      <details id="appUpdateDetails" hidden><summary data-i18n>Release notes</summary><p class="hint" id="appUpdateMeta"></p><pre id="appUpdateNotes"></pre><p class="hint" data-i18n>Installing closes Camellia. Conversations, settings and downloaded engines are kept.</p></details>
     </section>
     <section id="dataPage" class="page" hidden>
       <div class="setting-row app-update" id="dataDirectorySection"><div><h2 data-i18n>Local data</h2><p class="hint" id="dataPath"></p><p class="hint" id="dataDirectoryStatus" role="status" aria-live="polite" hidden></p></div><div class="app-update-actions"><button id="migrateDataDirectory" hidden data-i18n>Move to camellia folder</button><button id="openLogs" data-i18n>View logs</button></div></div>
-      <div class="setting-row app-update" id="dataMigrationSection"><div><h2 data-i18n>Move to another installation</h2><p class="hint" id="dataMigrationStatus" role="status" aria-live="polite" data-i18n>Choose API configuration, application settings or conversation history to transfer. Subscription accounts are not transferred.</p><progress id="dataMigrationProgress" max="100" hidden></progress></div><div class="app-update-actions"><button id="exportData" data-i18n>Export data</button><button id="importData" data-i18n>Import data</button><button id="importDataAgain" hidden data-i18n>Import another package</button></div></div>
+      <div class="setting-row app-update" id="dataMigrationSection"><div><h2 data-i18n>Move to another installation</h2><p class="hint" id="dataMigrationStatus" role="status" aria-live="polite" data-i18n>Transfer API configuration, settings or conversations. Subscription sign-ins are excluded.</p><progress id="dataMigrationProgress" max="100" hidden></progress></div><div class="app-update-actions"><button id="exportData" data-i18n>Export data</button><button id="importData" data-i18n>Import data</button><button id="importDataAgain" hidden data-i18n>Import another package</button></div></div>
       <div class="section" id="storageSection">
-        <div class="setting-row app-update"><div><h2 data-i18n>Codex plugin caches</h2><p class="hint" id="pluginCacheStatus" role="status" aria-live="polite" data-i18n>Restart to share identical cached plugins and free space. Conversation history and account data are kept.</p></div><div class="app-update-actions"><button id="maintainPluginCaches" data-i18n>Deduplicate and restart</button></div></div>
-        <h2 data-i18n>Space cleanup</h2>
-        <div class="toolbar"><p class="hint" data-i18n>Unused remote attachments, group attachment copies and expired import backups are cleaned when idle.</p><button id="scanStorage" class="primary" data-i18n>Scan for unused files</button></div>
-        <p class="hint" data-i18n>Protects active, archived and forked conversations, saved drafts, recent attachment copies and the newest import backup. Workspace files, exported packages and shared native engine histories are excluded. Deleted conversations' dedicated engine directories may be cleaned.</p>
+        <div class="setting-row app-update"><div><h2 data-i18n>Codex plugin caches</h2><p class="hint" id="pluginCacheStatus" role="status" aria-live="polite" data-i18n>Share duplicate plugin caches after restarting. Keeps conversations and accounts.</p></div><div class="app-update-actions"><button id="maintainPluginCaches" data-i18n>Deduplicate and restart</button></div></div>
+        <div class="setting-row app-update"><div><h2 data-i18n>Space cleanup</h2><p class="hint" data-i18n>Unused attachments and expired import backups are cleaned when idle.</p></div><div class="app-update-actions"><button id="scanStorage" class="primary" data-i18n>Scan for unused files</button></div></div>
+        <details id="storageCleanupHelp" class="settings-help"><summary data-i18n>What cleanup includes</summary><p class="hint" data-i18n>Protects active, archived and forked conversations, saved drafts, recent attachment copies and the newest import backup. Workspace files, exported packages and shared native engine histories are excluded. Deleted conversations' dedicated engine directories may be cleaned.</p></details>
         <p id="storageStatus" role="status" aria-live="polite" data-i18n>No scan yet.</p>
         <div id="storageSummary"></div>
         <details id="storageDetails" hidden><summary data-i18n>Review candidate paths</summary><p class="hint" data-i18n>Paths are relative to the Camellia data folder. Actual recovered disk space may differ.</p><div id="storageFiles"></div></details>
@@ -109,21 +117,21 @@
       </section>
       <section class="section" aria-labelledby="multiKeyRoutingTitle">
         <h2 id="multiKeyRoutingTitle" data-i18n>API key routing</h2>
-        <p class="hint" data-i18n>Applies to all API models. Changes save automatically and apply to new requests.</p>
-        <div class="setting-row"><div><h2 data-i18n>Multi-key concurrency</h2><p class="hint" id="multiKeyConcurrencyHint" data-i18n>Share concurrent requests for the same model across keys and providers at the same priority. When off, requests stay on the current key.</p></div><input id="multiKeyConcurrency" type="checkbox" role="switch" disabled aria-label="Multi-key concurrency" aria-describedby="multiKeyConcurrencyHint" data-i18n-attrs="aria-label"></div>
-        <div class="setting-row"><div><h2 data-i18n>Automatic key failover</h2><p class="hint" id="multiKeyFailoverHint" data-i18n>Retry with another key for the same model when a route fails or becomes unavailable. When off, an unavailable selected key needs a manual switch or reset.</p></div><input id="multiKeyFailover" type="checkbox" role="switch" disabled aria-label="Automatic key failover" aria-describedby="multiKeyFailoverHint" data-i18n-attrs="aria-label"></div>
+        <p class="hint" data-i18n>Saves automatically for new API requests.</p>
+        <div class="setting-row"><div><h2 data-i18n>Multi-key concurrency</h2><p class="hint" id="multiKeyConcurrencyHint" data-i18n>Distribute same-model requests across keys and providers at equal priority. When off, keep the current key.</p></div><input id="multiKeyConcurrency" type="checkbox" role="switch" disabled aria-label="Multi-key concurrency" aria-describedby="multiKeyConcurrencyHint" data-i18n-attrs="aria-label"></div>
+        <div class="setting-row"><div><h2 data-i18n>Automatic key failover</h2><p class="hint" id="multiKeyFailoverHint" data-i18n>Switch failed or unavailable routes to another key for the same model. When off, switch or reset keys manually.</p></div><input id="multiKeyFailover" type="checkbox" role="switch" disabled aria-label="Automatic key failover" aria-describedby="multiKeyFailoverHint" data-i18n-attrs="aria-label"></div>
       </section>
       <section class="subscription-models-section" aria-labelledby="subscriptionModelsTitle">
         <h2 id="subscriptionModelsTitle" data-i18n>Subscription models</h2>
-        <p class="hint" data-i18n>Choose which account models appear in model menus. Hidden models stay available to existing conversations. This preference applies to all accounts of the same subscription.</p>
+        <p class="hint" data-i18n>Hidden models remain usable in existing conversations. Visibility applies to all accounts of each subscription.</p>
         <div id="subscriptionModels" class="subscription-model-groups"></div>
       </section>
-      <div class="setting-row"><div><h2 data-i18n>Quick-switch defaults</h2><p class="hint" data-i18n>Choose a model and reasoning level for each engine. Double-click the model menu in the composer to switch to them.</p></div></div>
+      <div class="setting-row"><div><h2 data-i18n>Quick-switch defaults</h2><p class="hint" data-i18n>Double-click the composer's model menu to use these defaults.</p></div></div>
       <div id="quickSwitchModels"></div>
       <section class="section" aria-labelledby="modelSessionsTitle">
         <h2 id="modelSessionsTitle" data-i18n>Model sessions</h2>
-        <div class="setting-row"><div><h2 data-i18n>Keep a model's session briefly</h2><p class="hint" data-i18n>Minutes an inactive model keeps its own native session for a quick switch-back. Older sessions are rebuilt on demand.</p></div><input id="conversationSessionTtl" type="number" min="1" max="1440" step="1" aria-label="Keep a model's session briefly" data-i18n-attrs="aria-label"></div>
-        <div class="setting-row"><div><h2 data-i18n>Models kept ready per engine</h2><p class="hint" data-i18n>How many recently used models keep their own native session at once; beyond this the least recently used one is rebuilt on demand.</p></div><input id="conversationSessionLimit" type="number" min="1" max="20" step="1" aria-label="Models kept ready per engine" data-i18n-attrs="aria-label"></div>
+        <div class="setting-row"><div><h2 data-i18n>Session retention (minutes)</h2><p class="hint" data-i18n>Rebuild on next use after this idle period.</p></div><input id="conversationSessionTtl" type="number" min="1" max="1440" step="1" aria-label="Session retention (minutes)" data-i18n-attrs="aria-label"></div>
+        <div class="setting-row"><div><h2 data-i18n>Models kept ready per engine</h2><p class="hint" data-i18n>When exceeded, release the least recently used session and rebuild it on next use.</p></div><input id="conversationSessionLimit" type="number" min="1" max="20" step="1" aria-label="Models kept ready per engine" data-i18n-attrs="aria-label"></div>
       </section>
     </section>
     <section id="networkPage" class="page" hidden>
@@ -134,13 +142,12 @@
         <button id="networkWebToolsAddApi" type="button" hidden data-i18n>Add DeepSeek API key</button>
       </section>
       <section class="connectivity-section">
-        <div class="section-head"><h2 data-i18n>Connectivity test</h2><div class="toolbar-actions"><button id="networkTest" class="primary" data-i18n>Test all connections</button></div></div>
-        <p class="hint" data-i18n>Tests every configured provider host and added subscription, including disabled and signed-out entries, through both a direct connection and the detected proxy. Results are read-only and never change your connection mode.</p>
+        <div class="setting-row app-update"><div><h2 data-i18n>Connectivity test</h2><p class="hint" data-i18n>Test direct and proxy access for all providers and subscriptions, including disabled or signed-out entries. Your connection mode stays unchanged.</p></div><div class="app-update-actions"><button id="networkTest" class="primary" data-i18n>Test all connections</button></div></div>
         <div id="networkResults" class="network-results"></div>
       </section>
     </section>
     <section id="archivedPage" class="page" hidden>
-      <div class="toolbar"><p class="hint" data-i18n>Restore or permanently delete archived conversations.</p><div class="toolbar-actions"><button id="deleteAllArchived" class="danger" disabled data-i18n>Delete all</button></div></div>
+      <div class="toolbar"><div class="toolbar-actions"><button id="deleteAllArchived" class="danger" disabled data-i18n>Delete all</button></div></div>
       <div id="archivedDeleteActivity" class="archived-delete-activity" hidden><p id="archivedDeleteStatus" role="status" aria-live="polite"></p><progress id="archivedDeleteProgress" max="1" value="0"></progress></div>
       <div id="archivedList"></div>
     </section>
@@ -163,7 +170,7 @@
         <div class="device-heading"><h2 id="mobile-pairTitle" data-copy="pair">配对设备</h2><button id="mobile-invite" disabled data-copy="generate">生成配对码</button></div>
         <div class="device-name-row"><label for="mobile-deviceName" data-copy="deviceName">本机名称</label><input id="mobile-deviceName" maxlength="80" autocomplete="off"><button id="mobile-saveDeviceName" data-copy="deviceNameSave">保存名称</button></div>
         <p class="hint" data-copy="deviceNameHint"></p><p id="mobile-deviceNameStatus" class="hint" role="status"></p>
-        <div id="mobile-invitation" hidden><div class="mobile-pair-layout"><div id="mobile-qr" class="qr"></div><div class="mobile-pair-details"><code id="mobile-code"></code><p id="mobile-expires" class="hint" role="timer"></p><p class="hint" data-copy="scanHint"></p><p class="hint" data-copy="scanFallback"></p></div></div></div>
+        <div id="mobile-invitation" hidden><div class="mobile-pair-layout"><div id="mobile-qr" class="qr"></div><div class="mobile-pair-details"><code id="mobile-code"></code><p id="mobile-expires" class="hint" role="timer"></p><p class="hint" data-copy="scanHint"></p></div></div></div>
         <button id="mobile-refreshInvite" hidden data-copy="refreshCode">刷新二维码</button>
         <div id="mobile-pairPending" class="mobile-pair-success" role="status" hidden><span class="mobile-success-mark" aria-hidden="true">…</span><div><strong id="mobile-pairPendingLabel" data-copy="pairWaiting">等待电脑授权</strong><span id="mobile-pendingName"></span></div></div>
         <div id="mobile-pair-success" class="mobile-pair-success" role="status" hidden><span class="mobile-success-mark" aria-hidden="true">✓</span><div><strong data-copy="pairSuccess">配对成功</strong><span id="mobile-pairedName"></span></div><button id="mobile-continuePair" data-copy="continuePair">继续配对</button></div>
@@ -178,10 +185,10 @@
     <section id="enginesPage" class="page" hidden>
       <div class="engine-tabs" role="tablist" aria-label="Engine" data-i18n-attrs="aria-label"><button role="tab" data-engine="claude">Claude Code</button><button role="tab" data-engine="codex">Codex CLI</button><button role="tab" data-engine="dsh">DeepSeek Harness</button><button role="tab" data-engine="kimi">Kimi Code</button><button role="tab" data-engine="antigravity">Antigravity</button><button role="tab" data-engine="grok">Grok Build</button></div>
       <section class="engine-runtime" aria-label="Engine installation" data-i18n-attrs="aria-label">
-        <div class="download-save"><p class="hint" data-i18n>The selected engine pauses during its update and becomes available again when the update finishes.</p><button id="checkRuntimeUpdates" type="button" data-i18n>Check for updates</button></div>
+        <div class="download-save"><p class="hint" data-i18n>Updating temporarily pauses this engine.</p><button id="checkRuntimeUpdates" type="button" data-i18n>Check for updates</button></div>
         <div id="runtimeCards"></div>
       </section>
-      <div class="global-notice"><strong id="engineScopeTitle" data-i18n>These settings also apply to the CLI</strong><p id="engineScopeDescription" data-i18n>Saving overwrites the CLI's global settings and affects other CLI sessions. Before the first overwrite, an original <code>.workbench.bak</code> backup is kept.</p><p class="hint" id="engineRouteHint" data-i18n>Camellia manages API routes centrally; CLI sessions using its router need the app running. Project settings follow each engine's precedence rules.</p><details><summary data-i18n>View affected files</summary><div id="enginePaths"></div></details></div>
+      <div class="global-notice"><strong id="engineScopeTitle" data-i18n>These settings also apply to the CLI</strong><p id="engineScopeDescription" data-i18n>Saving overwrites the CLI's global settings and affects other CLI sessions.</p><details id="engineScopeDetails"><summary data-i18n>Connection details and affected files</summary><p class="hint" id="engineRouteHint" data-i18n>CLI sessions using Camellia's API router need the app running. Project settings follow each engine's precedence rules.</p><p class="hint" id="engineBackupHint" data-i18n>The original configuration is backed up as .workbench.bak before the first save.</p><div id="enginePaths"></div></details></div>
       <div id="engineLoading" class="hint" role="status" data-i18n>Loading settings…</div>
       <div id="engineContent" hidden>
         <div id="codexConnectionPanel" class="engine-connection" hidden>
@@ -190,7 +197,7 @@
             <div class="account-actions"><button id="codexSignIn" class="primary" data-i18n>Sign in with ChatGPT</button><button id="codexAddAccount" data-i18n>Add another account</button><button id="codexRefresh" data-i18n>Refresh account</button><button id="codexCancelLogin" hidden data-i18n>Cancel sign-in</button><button id="codexSignOut" hidden data-i18n>Sign out</button></div>
             <p id="codexAccountStatus" class="hint" role="status" data-i18n></p>
             <div id="codexQuotas" class="codex-quotas"></div>
-            <p class="hint" data-i18n>Sign-in opens the official ChatGPT authorization page; your personal Codex CLI settings stay separate.</p>
+            <p class="hint" data-i18n>Sign in through the official ChatGPT page. Your personal Codex CLI stays separate.</p>
           </div>
         </div>
         <div id="kimiConnectionPanel" class="engine-connection" hidden>
@@ -201,7 +208,7 @@
             <p id="kimiAccountStatus" class="hint" role="status" data-i18n></p>
             <button id="kimiUsage" hidden data-i18n>Refresh quota</button>
             <div id="kimiDeviceLogin" hidden><p data-i18n>Authorization code: <code id="kimiUserCode"></code></p><button id="kimiOpenLogin" data-i18n>Open sign-in page</button><p id="kimiLoginExpiry" class="hint" data-i18n></p></div>
-            <p class="hint" data-i18n>Complete the official Kimi authorization in your browser. This login stays separate from your personal Kimi CLI, and never falls back to API billing.</p>
+            <p class="hint" data-i18n>Sign in through Kimi in your browser. This login is separate from your personal CLI and never uses API billing.</p>
           </div>
         </div>
         <div id="grokConnectionPanel" class="engine-connection" hidden>
@@ -210,7 +217,7 @@
             <div class="account-actions"><button id="grokSignIn" class="primary" data-i18n>Sign in with Grok</button><button id="grokAddAccount" data-i18n>Add another account</button><button id="grokRefresh" data-i18n>Refresh account</button><button id="grokCancelLogin" hidden data-i18n>Cancel sign-in</button><button id="grokSignOut" hidden data-i18n>Sign out</button></div>
             <p id="grokAccountStatus" class="hint" role="status" data-i18n></p>
             <div id="grokDeviceLogin" hidden><p data-i18n>Authorization code: <code id="grokUserCode"></code></p><button id="grokOpenLogin" data-i18n>Open sign-in page</button></div>
-            <p class="hint" data-i18n>Complete the official Grok authorization in your browser. Each account has an isolated Grok home, and subscription usage never falls back to API billing.</p>
+            <p class="hint" data-i18n>Sign in through Grok in your browser. Subscription usage never falls back to API billing.</p>
           </div>
         </div>
         <div id="antigravityConnectionPanel" class="engine-connection" hidden>
@@ -220,18 +227,19 @@
             <details id="googleQuotaErrorDetails" class="account-error-details" hidden><summary data-i18n>Error details</summary><pre id="googleQuotaErrorRaw" translate="no"></pre></details>
             <div id="googleAccountList" class="account-list" role="radiogroup" aria-label="Google accounts" data-i18n-attrs="aria-label"></div>
             <div id="googleAccountActions" class="account-actions" hidden><button id="googleSignIn" class="primary" data-i18n>Sign in with Google</button><button id="googleVerify" data-i18n>Verify sign-in</button><button id="googleSignOut" data-i18n>Sign out</button></div>
-            <p class="hint" data-i18n>Sign-in opens the official CLI and your browser; return here and verify. Sign-out also clears the official CLI login.</p>
-            <p class="hint" data-i18n>Google sign-in is shared with the official CLI. Gemini and Claude/GPT have separate weekly and 5-hour limits.</p>
+            <p class="hint" data-i18n>Sign in through the official CLI and browser, then verify here. Signing out also signs out the CLI.</p>
+            <p class="hint" data-i18n>Gemini and Claude/GPT have separate weekly and 5-hour limits.</p>
           </div>
         </div>
-        <div id="dshNative" hidden><p class="hint native-save-note" data-i18n>This panel saves immediately. Models and keys stay in the shared pool.</p><div id="nativeLoading" class="hint" role="status" data-i18n></div><div id="dshSettingsSurface" aria-label="DSH native settings" data-i18n-attrs="aria-label"></div><button id="retryNative" hidden data-i18n>Reload panel</button></div>
+        <div id="dshNative" hidden><p class="hint native-save-note" data-i18n>Saves immediately; models and keys use the shared pool.</p><div id="nativeLoading" class="hint" role="status" data-i18n></div><div id="dshSettingsSurface" aria-label="DSH native settings" data-i18n-attrs="aria-label"></div><button id="retryNative" hidden data-i18n>Reload panel</button></div>
         <div id="engineCommon"></div>
-        <details class="advanced native-documents" id="nativeDocuments"><summary data-i18n>Advanced configuration · MCP · Global instructions</summary><p class="hint" id="engineAdvancedHint" data-i18n>Edit full native configuration, including tools, hooks, plugins, and permission rules. Camellia manages API connections; common options above apply on save.</p><div class="document-toolbar"><select id="engineDocument" aria-label="Configuration file" data-i18n-attrs="aria-label"></select><span id="documentFormat" class="badge"></span></div><textarea id="engineSource" aria-label="Native configuration" spellcheck="false" data-i18n-attrs="aria-label"></textarea></details>
+        <details class="advanced native-documents" id="nativeDocuments"><summary data-i18n>Advanced configuration · MCP · Global instructions</summary><p class="hint" id="engineAdvancedHint" data-i18n>Edit tools, hooks, plugins and permission rules. Options above are applied on save.</p><div class="document-toolbar"><select id="engineDocument" aria-label="Configuration file" data-i18n-attrs="aria-label"></select><span id="documentFormat" class="badge"></span></div><textarea id="engineSource" aria-label="Native configuration" spellcheck="false" data-i18n-attrs="aria-label"></textarea></details>
         <div class="engine-save"><span class="hint" id="engineSaveHint" data-i18n>Applies to the next message</span><button id="reloadEngine" data-i18n>Reload</button><button id="saveEngine" class="primary" disabled data-i18n>Save engine settings</button></div>
       </div>
     </section>
   </main>
   <div id="statusToast" class="status-toast" hidden><span id="status" role="status" aria-live="polite" data-i18n></span></div>
+</div>
 </div>
 <dialog id="addDialog"><form method="dialog" class="dialog-head"><h2 data-i18n>Add API provider</h2><button aria-label="Close" data-i18n-attrs="aria-label">×</button></form><p class="hint" data-i18n>Connect with an API key. Choose a service to fill in its API address.</p><label for="preset" data-i18n>Provider</label><select id="preset"></select><div id="presetAccount" class="preset-account" hidden><p id="presetAccountHint" class="hint"></p><button id="openPresetAccount"></button></div><button id="confirmAdd" class="primary" data-i18n>Add API provider</button></dialog>
 <dialog id="modelDialog"><form method="dialog" class="dialog-head"><h2 data-i18n>Select model</h2><button aria-label="Close" data-i18n-attrs="aria-label">×</button></form><input id="modelSearch" placeholder="Search models" aria-label="Search models" data-i18n-attrs="aria-label placeholder"><div id="catalogList"></div><button id="applyModels" class="primary" data-i18n>Apply model selection</button></dialog>

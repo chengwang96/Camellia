@@ -102,7 +102,7 @@ try:
         rpc('runtimeCheckUpdates')
         page.goto(url + '?page=engines&engine=claude&focus=updates', wait_until='networkidle')
         expect(page.locator('.engine-runtime > .download-save .hint')).to_have_text(
-            'The selected engine pauses during its update and becomes available again when the update finishes.')
+            'Updating temporarily pauses this engine.')
         claude = page.locator('[data-update=claude]')
         kimi = page.locator('[data-update=kimi]')
         expect(claude).to_be_enabled()
@@ -155,7 +155,7 @@ try:
         page.evaluate("CamelliaI18n.setLanguage('zh-CN')")
         expect(kimi).to_have_text('正在更新…')
         expect(page.locator('.engine-runtime > .download-save .hint')).to_have_text(
-            '所选引擎更新期间会暂时不可用，更新结束后恢复使用。')
+            '更新期间此引擎会暂停使用。')
         page.evaluate("finishUpdate('kimi')")
         expect(kimi).to_have_count(0)
         assert calls == ['claude', 'kimi', 'kimi'], calls

@@ -10,16 +10,9 @@ const assert = require('node:assert/strict');
 async function main() {
   if (process.versions.electron) {
     const electron = require('electron');
-    const NativeBrowserWindow = electron.BrowserWindow;
     // Keep test windows hidden even when production code calls show()/focus().
     // Inputs below go directly to isolated webContents, never to the desktop.
     const testElectron = Object.create(electron);
-    Object.defineProperty(testElectron, 'BrowserWindow', { value: class BrowserWindow extends NativeBrowserWindow {
-      constructor(options) { super({ ...options, show: false, webPreferences: { ...options.webPreferences, backgroundThrottling: false } }); }
-      show() {}
-      showInactive() {}
-      focus() {}
-    } });
     const Module = require('node:module'), loadModule = Module._load;
     const antigravityModule = require('../src/engines/antigravity');
     const googleCredentialClears = [];
@@ -157,7 +150,10 @@ async function main() {
     const errors = [];
     app.on('browser-window-created', (_event, window) => {
       diag('DIAG window created: ' + window.getTitle() + ' id=' + window.id);
-      window.hide();
+      // Production creates these windows hidden. Suppress showing them without
+      // calling hide(), so backdrop animation frames remain available to QA.
+      window.show = () => {}; window.showInactive = () => {}; window.focus = () => {};
+      window.webContents.setBackgroundThrottling(false);
       window.webContents.on('preload-error', (_event, _path, error) => errors.push(error.message));
       window.webContents.on('console-message', (event) => { if (event.level === 'error') errors.push(event.message); });
     });
@@ -207,20 +203,21 @@ async function main() {
     diag('DIAG home window ready');
     assert.equal(await home.webContents.executeJavaScript('document.documentElement.lang'), 'en');
     assert.equal(home.getTitle(), 'Camellia');
+    assert.deepEqual(await home.webContents.executeJavaScript("[...document.querySelectorAll('.home-tools .config-title')].map(el => el.textContent)"), ['Agent discussions (beta)', 'Mobile access', 'Server connections', 'Settings']);
     assert.equal(await home.webContents.executeJavaScript("document.querySelector('.home-brand').textContent"), 'Camellia');
     assert.deepEqual(await home.webContents.executeJavaScript("[...document.querySelectorAll('[data-mode]')].map(el => el.dataset.mode)"), ['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'grok']);
     const mobileMenu = electron.Menu.getApplicationMenu().items[0].submenu.items.find(item => item.label === 'Mobile access…');
     assert.ok(mobileMenu);
-    assert.equal((await home.webContents.executeJavaScript('window.dshDesktop.openMobileAccess()')).ok, false);
+    await home.webContents.executeJavaScript("document.querySelector('#openMobileAccess').click()");
+    const mobile = await waitWindow("document.querySelector('#toggle') && !document.querySelector('#toggle').disabled");
     await home.webContents.executeJavaScript("window.dshDesktop.openSettingsWindow({page:'general'})");
-    const pairingSettings = await waitWindow("window.mobileAccessUI && typeof window.mobileAccessUI.setVisible === 'function'");
+    const pairingSettings = await waitWindow("document.querySelector('#generalPage') && window.mobileAccessUI && typeof window.mobileAccessUI.setVisible === 'function'");
     assert.equal(await pairingSettings.webContents.executeJavaScript("document.querySelector('#generalPage').hidden"), false);
     await pairingSettings.webContents.executeJavaScript("setView('mobile')");
     assert.equal(await pairingSettings.webContents.executeJavaScript("document.querySelector('#mobilePage').hidden"), false);
     assert.equal(await pairingSettings.webContents.executeJavaScript("document.querySelector('#generalPage').hidden"), true);
     assert.equal(await pairingSettings.webContents.executeJavaScript("document.querySelector('#mobile-invite').disabled"), true);
     assert.equal((await pairingSettings.webContents.executeJavaScript('window.dshDesktop.openMobileAccess()')).ok, true);
-    const mobile = await waitWindow("document.querySelector('#toggle') && !document.querySelector('#toggle').disabled");
     mobileMenu.click();
     assert.equal(BrowserWindow.getAllWindows().filter(window => window.webContents.getURL().includes('/remote/remote.html')).length, 1);
     const mobileState = await mobile.webContents.executeJavaScript("window.camelliaRemote.control('state')");
@@ -246,26 +243,6 @@ async function main() {
     assert.equal(initialSettings.isDestroyed(), true, 'Unsaved settings must not trap the Electron window open');
     assert.equal(fs.existsSync(marker), false, 'Saving configuration at home must not enter DSH');
     assert.ok(await home.webContents.executeJavaScript("document.querySelector('#enterDsh') !== null"));
-
-    await home.webContents.executeJavaScript("document.querySelector('#openBenchmark').click()");
-    const benchmark = await waitWindow("document.querySelector('#scoreboard')?.children.length === 6");
-    const benchState = await benchmark.webContents.executeJavaScript('window.dshDesktop.benchmarkState()');
-    assert.equal(benchState.ok, true); assert.equal(benchState.models.length, 0);
-    assert.deepEqual(benchState.engines.map(engine => engine.id), ['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'grok']); assert.equal(benchState.suites.length, 10);
-    assert.deepEqual(benchState.libraries.map(library => library.id), ['builtin', 'ds1000', 'scicode']);
-    assert.equal(await benchmark.webContents.executeJavaScript("document.querySelector('#library').options.length"), 3);
-    await benchmark.webContents.executeJavaScript("document.querySelector('input[name=runMode][value=custom]').click();document.querySelector('#library').value='scicode';document.querySelector('#library').dispatchEvent(new Event('change'))");
-    assert.equal(await benchmark.webContents.executeJavaScript("document.querySelector('#prepareLibrary').hidden"), false);
-    assert.equal(await benchmark.webContents.executeJavaScript("document.querySelector('#suite').value"), 'scicode-quick');
-    const invalidLibrary = await benchmark.webContents.executeJavaScript("window.dshDesktop.benchmarkPrepareLibrary('unknown')");
-    assert.equal(invalidLibrary.ok, false); assert.match(invalidLibrary.error, /Unknown question library/);
-    assert.equal(await benchmark.webContents.executeJavaScript("document.querySelector('#start').disabled"), true);
-    assert.equal(await benchmark.webContents.executeJavaScript("[...document.querySelectorAll('img')].every(img => img.complete && img.naturalWidth > 0)"), true);
-    const invalidStart = await benchmark.webContents.executeJavaScript("window.dshDesktop.benchmarkStart({model: 'missing', providerId: 'missing'})");
-    assert.equal(invalidStart.ok, false);
-    assert.equal(fs.existsSync(marker), false, 'Opening Benchmark must not start a harness or send model requests');
-    await benchmark.webContents.executeJavaScript("document.querySelector('#home').click()");
-    await waitWindow("document.querySelector('#enterDsh')");
 
     await home.webContents.executeJavaScript("document.querySelector('#enterDsh').click()");
     await waitWindow("document.body.dataset.harness === 'dsh'");
@@ -296,6 +273,7 @@ async function main() {
     assert.ok(await home.webContents.executeJavaScript("document.querySelector('#enterDsh') !== null"));
     await closeWindow(startupSettings);
     assert.equal(home.getTitle(), 'Camellia');
+    assert.deepEqual(await home.webContents.executeJavaScript("[...document.querySelectorAll('.home-tools .config-title')].map(el => el.textContent)"), ['Agent discussions (beta)', 'Mobile access', 'Server connections', 'Settings']);
     await home.webContents.executeJavaScript("document.querySelector('#enterClaude').click()");
     const claude = await waitWindow("document.querySelector('#engineSwitch')");
     assert.equal(await claude.webContents.executeJavaScript("getComputedStyle(document.querySelector('#selPermission')).appearance"), 'base-select');

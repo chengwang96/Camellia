@@ -1509,7 +1509,11 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     const actions = document.createElement('div');
     actions.className = 'message-actions';
     const time = document.createElement('time');
-    if (at) { time.dateTime = new Date(at).toISOString(); time.textContent = new Date(at).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }); }
+    if (at) {
+      const date = new Date(at);
+      time.dateTime = date.toISOString(); time.title = date.toLocaleString();
+      time.textContent = date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
+    }
     actions.appendChild(time);
     const copy = document.createElement('button');
     copy.type = 'button'; copy.className = 'message-copy'; copy.title = 'Copy message'; copy.setAttribute('aria-label', 'Copy message');
@@ -1751,6 +1755,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     if (existing) return existing;
     const footer = messageActions(at, readText);
     footer.classList.add('turn-actions');
+    footer.appendChild(footer.querySelector('time'));
     turn.appendChild(footer);
     return footer;
   }
@@ -1826,7 +1831,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
         row.append(open, menu); (index < limit ? list : overflow).appendChild(row);
       }
       if (sortedFiles.length > limit) list.appendChild(overflow);
-      const resultChip = turn.querySelector('.run-result');
+      const resultChip = turn.querySelector('.run-result:not(.turn-completion)');
       if (resultChip) resultChip.before(list); else turn.appendChild(list);
       moveTurnFooter(turn);
       maybeScroll(was);
@@ -2812,6 +2817,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       for (const card of Object.values(pendingTools)) if (!card.finished) card.setOutput(stopped ? 'Stopped before a tool result was received.' : 'No tool result was received before the response ended.', true);
       (turnEl || chat).appendChild(chip);
       moveTurnFooter(turnEl);
+      window.CamelliaTurnDetails.render(turnEl, { ...ev, ...ev.turnMetrics });
       if (ev.session_id) {
         context.sessionId = ev.session_id;
         context.workspaceId = ev.workspaceId || null;
@@ -3334,7 +3340,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     const openButton = document.createElement('button'); openButton.type = 'button'; openButton.className = 'btn-secondary'; openButton.dataset.i18n = ''; openButton.textContent = 'Answer questions';
     openButton.onclick = () => { if (!dialog.open && !pendingQuestion) dialog.showModal(); };
     slot.append(description, openButton);
-    turn.insertBefore(slot, turn.querySelector('.run-result'));
+    turn.insertBefore(slot, turn.querySelector('.run-result:not(.turn-completion), .turn-actions'));
     const state = { slot, turn, field, choiceKey, sourceBlock, sessionId: context.sessionId,
       openSeq: sessionOpenSeq, runId: live ? currentRunId : null };
     textChoice = state;
@@ -4057,6 +4063,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
             if (runResult) div.appendChild(runResultChip(runResult, false,
               m === latestAssistant && latestUser?.seq < m.seq ? m.userSeq || latestUser.seq : null).chip);
             turnFooter(div, m.at, () => turnCopyText(div));
+            window.CamelliaTurnDetails.render(div, { ...runResult, ...m.turnMetrics, usage: m.usage || runResult?.usage });
             chat.insertBefore(div, before);
             void showTurnArtifacts(div, resultOnly ? '' : m.text, m.artifacts);
           }

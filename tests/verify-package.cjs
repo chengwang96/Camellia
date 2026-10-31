@@ -73,10 +73,6 @@ for (const file of ['goal-mcp-stdio.js', 'goal-tools.js', 'task-tools.js', 'conv
   assert.ok(fs.existsSync(path.join(resources, 'app.asar.unpacked/src/engines', file)), 'Goal MCP helper must run under bundled Node outside ASAR: ' + file);
 }
 assert.ok(fs.existsSync(path.join(resources, 'app.asar.unpacked/src/engines/antigravity/cli-bridge.cjs')), 'The Google CLI bridge must run under bundled Node outside ASAR');
-assert.ok(fs.existsSync(path.join(resources, 'app.asar.unpacked/src/benchmark/python/check.py')), 'The scientific checker must run outside ASAR');
-assert.ok(fs.existsSync(path.join(resources, 'app.asar.unpacked/src/benchmark/python/scicode_targets.py')), 'The SciCode target reader must run outside ASAR');
-assert.ok(fs.existsSync(path.join(resources, 'app.asar.unpacked/src/benchmark/python/scicode/compare/cmp.py')), 'Official SciCode comparisons must be importable outside ASAR');
-assert.ok(!asar.listPackage(archive).some(file => /test_data\.h5|ds1000\.jsonl|problems_test\.jsonl/.test(file)), 'Official datasets are downloaded on demand');
 for (const engine of ['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'grok']) {
   const files = fs.readdirSync(path.join(resources, 'runtimes', engine));
   assert.ok(files.every(file => ['package.json', 'package-lock.json', 'runtime.json', 'requirements.lock', 'README.md'].includes(file)), 'Only download manifests belong in the base package: ' + engine);

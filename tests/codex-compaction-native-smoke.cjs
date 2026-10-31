@@ -16,7 +16,7 @@ const { createRuntimeManager } = require('../src/main/runtime-manager');
 const { startApiRouter } = require('../src/api/api-router');
 const { normalizeConfig, writeConfig } = require('../src/api/api-router-config');
 const { frame } = require('../src/api/api-protocol');
-const { isolatedEnvironment } = require('../src/benchmark/engines');
+const { isolatedEnvironment } = require('../src/engines/isolated-environment');
 const { removeTree } = require('./test-fs.cjs');
 
 async function main() {

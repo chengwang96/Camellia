@@ -20,6 +20,14 @@ function settingsWindowSize(workArea = {}) {
   };
 }
 
+// Keep a visible workbench margin around the settings panel, including on a
+// secondary monitor and when the workbench is smaller than the display.
+function settingsWindowBounds(size, owner) {
+  const width = Math.min(size.width, Math.max(1, owner.width - SCREEN_GAP));
+  const height = Math.min(size.height, Math.max(1, owner.height - SCREEN_GAP));
+  return { width, height, x: Math.round(owner.x + (owner.width - width) / 2), y: Math.round(owner.y + (owner.height - height) / 2) };
+}
+
 function createSettingsWindowSizeCache({ screen, fallback = FALLBACK_SIZE, onError = () => {} }) {
   let current = { ...fallback };
   let started = false;
@@ -41,4 +49,4 @@ function createSettingsWindowSizeCache({ screen, fallback = FALLBACK_SIZE, onErr
   return { start, refresh, get size() { return { ...current }; } };
 }
 
-module.exports = { settingsWindowSize, createSettingsWindowSizeCache };
+module.exports = { settingsWindowSize, settingsWindowBounds, createSettingsWindowSizeCache };

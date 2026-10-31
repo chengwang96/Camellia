@@ -20,7 +20,7 @@ const { createRuntimeManager } = require('../src/main/runtime-manager');
 const { startApiRouter } = require('../src/api/api-router');
 const { normalizeConfig, writeConfig } = require('../src/api/api-router-config');
 const { frame } = require('../src/api/api-protocol');
-const { isolatedEnvironment } = require('../src/benchmark/engines');
+const { isolatedEnvironment } = require('../src/engines/isolated-environment');
 const { removeTree } = require('./test-fs.cjs');
 
 async function main() {
@@ -31,7 +31,7 @@ async function main() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'discussion-codex-source-smoke-'));
   const cwd = path.join(root, 'work'), home = path.join(root, 'profile/.codex'); fs.mkdirSync(cwd);
   const env = isolatedEnvironment(path.join(root, 'profile'), process.execPath);
-  // The benchmark helper copies both spellings from Windows' case-insensitive
+  // The environment helper copies both spellings from Windows' case-insensitive
   // process.env. The strict Job launcher accepts one unambiguous entry only.
   if (env.SystemRoot === env.SYSTEMROOT) delete env.SYSTEMROOT;
   const version = execFileSync(runtime.file, ['--version'], { env, cwd, windowsHide: true, timeout: 10000, encoding: 'utf8' }).trim();

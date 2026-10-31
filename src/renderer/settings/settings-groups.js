@@ -96,7 +96,7 @@
       ['appearance', ['#language', '#theme', '#chatContentWidth']],
       ['quota-refresh', ['#autoRefreshBalances', '#accountRefreshMinutes', '#antigravityAutoRefresh']],
       ['background-routing', ['#closeToTray']],
-      ['conversation-handoff', ['#conversationMode', '.setting-note', '#conversationWarn', '#conversationOriginSetting']],
+      ['conversation-handoff', ['#conversationMode', '#conversationHandoffHelp', '.setting-note', '#conversationWarn', '#conversationOriginSetting']],
       ['python', ['#pythonCard']],
       ['application-updates', ['#version', '#checkAppUpdate', '#appUpdateDetails']],
       // Older installed releases keep data controls on General/Archived.
@@ -109,7 +109,7 @@
     const storage = get('storageSection');
     if (storage) {
       arrange('storageSection', [['plugin-caches', ['#maintainPluginCaches']]]);
-      group(storage, 'unused-files', range(storage, 'unused-files', get('scanStorage')?.closest('.toolbar')?.previousElementSibling, get('cleanStorage'), true));
+      group(storage, 'unused-files', range(storage, 'unused-files', get('scanStorage')?.closest('.setting-row'), get('cleanStorage'), true));
     }
     arrange('modelsPage', [
       ['web-tools', ['#webToolsSection']],

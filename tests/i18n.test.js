@@ -12,8 +12,8 @@ test('UI translations preserve values and fall back to English for unknown copy'
   assert.equal(translate('Providers: 2 · Keys: 3', 'zh-CN'), '供应商：2 · Key：3');
   assert.equal(translate('gpt-5.4', 'zh-CN'), 'gpt-5.4');
   assert.equal(translate('constructor', 'zh-CN'), 'constructor');
-  assert.equal(translate('Recommended · 5 minutes', 'zh-CN'), '推荐 · 5 分钟');
-  assert.equal(translate('270 seconds shared across each engine’s 3 tasks · 250K tokens per task attempt', 'zh-CN'), '每个引擎的 3 个任务共用 270 秒 · 每次任务尝试 250K Token');
+  assert.equal(translate('Mobile access', 'zh-CN'), '手机访问');
+  assert.equal(translate('Pair your phone to access this computer', 'zh-CN'), '配对手机，远程访问这台电脑');
   assert.equal(translate('Ready', 'en'), 'Ready');
 });
 

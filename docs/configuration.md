@@ -138,7 +138,7 @@ To use a subscription **API key** instead:
 2. Enter a key from the Kimi Code console. The preset uses `https://api.kimi.com/coding/v1`.
 3. Select or enter `kimi-for-coding`, save, and validate the key before starting a session.
 
-Choose **Shared API routes** for the Kimi engine when using this key. This endpoint uses eligible Kimi Code subscription quota. The separate **Kimi / Moonshot** preset connects to the pay-as-you-go platform. Benchmark runs always use the selected shared API route, including when chat uses a Kimi subscription login.
+Choose **Shared API routes** for the Kimi engine when using this key. This endpoint uses eligible Kimi Code subscription quota. The separate **Kimi / Moonshot** preset connects to the pay-as-you-go platform.
 
 ## Key balancing and same-model failover
 
@@ -158,103 +158,6 @@ No balancing setting is required. Keep the accounts you want to use enabled unde
 
 The router bridges OpenAI Chat Completions and Anthropic Messages for text, images, streaming, and common tool calls. Provider-specific content blocks and tools are not guaranteed to work across protocols.
 
-## Benchmark
-
-### Run modes
-
-- **5-minute preview** is the default when opening the page. It always selects the built-in `quick` suite (three fixed coding tasks), one attempt per engine and 250K reported tokens per attempt. Each engine's three tasks share 270 seconds from run creation. A slower task can use more of this allowance; there is no shorter fixed per-task cutoff. At 270 seconds active agents stop and unstarted work is marked `skipped`, leaving 30 seconds for final checks and cleanup. The runner enforces these choices even if a caller supplies stale selections. Its whole-run deadline is 300 seconds from run creation, including startup and verification. At that deadline it aborts remaining work and API scopes; process cleanup can take a few extra seconds. Required engine downloads happen before a run can start. Slow API responses can leave insufficient evidence. It previews coding and tool use only.
-- **Full library** selects all seven built-in tasks, all 1,000 DS-1000 problems, or all 65 SciCode test problems. It has no five-minute deadline. Time/check allowances and token ceilings appear before starting; these are not duration or cost predictions. Keep Camellia open and the computer awake. Every completed attempt is saved; closing Camellia cancels the run and does not resume billable work automatically.
-- **Custom sample** retains the available sample sizes, repeats and manual limits. It has no whole-run time deadline.
-
-The results update after each evaluated attempt. `observedCheckScore` and `observedPassRate` describe evaluated attempts only, and the UI labels them **Preliminary** with completed/expected counts until the entire engine queue finishes. `checkScore` and `score` remain final-only fields in exported reports. Pending, skipped and user-cancelled work have no score; started attempts that time out earn zero. A small number of completed tasks is not a reliable ranking, particularly when engines have reached different questions. Historical reports keep their original limits under **Run details**, while a new page defaults to the bounded preview. Expand **Limits & scoring** to adjust budgets and read the grading rules.
-
-New trial details include the time allowance available when the engine starts, request durations, tool activity, and the last activity plus in-flight request count at timeout. The execution timeline retains the latest 80 events. Changed files and available partial agent output are captured before cleanup even after a timeout, so a slow provider response can be distinguished from unfinished tool work. These diagnostics do not change the grading rules. See the [preview timeout investigation](benchmark-preview-timeouts-2026-09-16.md) for the reproduced issue and live validation.
-
-The [benchmark selection assessment](design/benchmark-modes.md) describes the separate capabilities and runtime requirements of OCRBench, MMMU-Pro Vision, BEAM (1M), and DeepSWE; these four are not yet selectable.
-
-### Libraries and scoring
-
-Open **Home → Benchmark** (also available in the Engine menu). Configure and validate a tool-capable API model in Providers & Keys, then select the model and provider on the benchmark page. All six API runtimes must be installed; missing runtimes have individual Download buttons. Antigravity uses its SDK here even if your chat connection uses a Google subscription.
-
-Select a **Question library** before choosing the task set:
-
-| Library | Available questions | Task sets |
-| --- | --- | --- |
-| Camellia built-in | 7 integration tasks | Quick check (3) or Standard (7) |
-| [DS-1000](https://github.com/xlang-ai/DS-1000) | 1,000 official Python data-science problems | Fixed samples of 3, 6, 12, or all 1,000 |
-| [SciCode](https://github.com/scicode-bench/SciCode) | 65 main problems from the official test split | Fixed samples of 3, 6, 12, or all 65 |
-
-External libraries have a **Prepare library** button. Preparation uses the saved direct/proxy download settings, verifies the data's SHA-256 hashes, and installs Python 3.10.21 and locked dependencies under `<app-data>/benchmark-libraries/`. System Python and personal packages are not modified. SciCode downloads a 1.05 GB HDF5 file in addition to its questions and scientific packages; DS-1000 installs its seven libraries and supporting packages. A failed download can be retried, and preparation never calls a model API. Only prepared libraries can start a run. Windows x64 and macOS ARM64 have platform-specific Python installers; Windows execution is tested locally, while macOS execution still requires its native validation job.
-
-Sample order is deterministic; smaller samples are prefixes of larger ones. DS-1000 uses `camellia-sample-1` and rotates through its seven library categories before selecting a second question from any category. SciCode uses `camellia-sample-2-known-issues-last`: #15 and #46 come last, outside the short samples. #15 omits the coefficient of a physical constant in its original prompt; #46 can reject mathematically equivalent Monte Carlo sampling rules. The full 65-question split keeps both, with the original checks, raw scores and explicit limitation notices. Every engine receives the same ordered questions. Old reports retain their question IDs and sample version. The complete DS-1000 split means 5,000 attempts with one repeat, so inspect the attempt count and token budget before running it. Large result tables show 25 tasks per page.
-
-| Option | Behavior |
-| --- | --- |
-| 5-minute preview | Fixed Quick check, one repeat; each engine's three tasks share 270 seconds; 300-second whole-run deadline |
-| Full library | Every question in the selected library; no whole-run time deadline |
-| Quick check | 3 tasks: basic text formatting with public self-tests, transaction reconciliation, multi-file invoice calculation |
-| Standard | 7 tasks: adds Unicode normalization, interval merging, retry logic, and configuration tracing |
-| Attempts per task | 1 or 3 independent attempts; every attempt counts, with no best-of selection |
-| Check score (primary) | Average each attempt's passed checks divided by its total checks, then multiply by 100; every task and repeat has equal weight |
-| Full-task pass rate | Fully passed attempts divided by all completed attempts, multiplied by 100; a full task pass requires every check |
-| Failure | Partially correct outputs earn check credit; runtime/API errors, per-task limits, and timeouts earn zero |
-| Grader error | Test-environment failures invalidate the attempt and the engine's final scores; they are not counted as incorrect solutions |
-| Stop / interruption | Unevaluated tasks remain pending; an incomplete engine has no final score |
-
-A Quick check with one attempt executes 18 trials. Standard with three attempts executes 126. All six engines run in parallel, each processing its own task and repeat queue sequentially. A faster engine advances without waiting for slower engines. Every trial has a fresh temporary workspace and profile. They use Claude's stream-json interface, Codex app-server, DSH's shipped headless profile, Kimi ACP, Antigravity SDK over ACP, and Grok Build ACP. Personal settings and external MCP servers are excluded. Native tool sets and reasoning defaults remain different, so this evaluates the shipped integrations with those defaults. Fresh directories are not an operating-system security sandbox.
-
-The per-task token allowance and a model's **single-response output limit** are different. DSH uses its pinned native default of **32,768 output tokens per response**, including reasoning. The earlier Camellia adapter incorrectly imposed 8,192. A response can reach its output cap while the task still has time and tokens remaining. New reports record API stop reasons and distinguish **Output limit** from network errors and task timeouts. Auxiliary title generation is kept separate from the agent response when diagnosing the exit. Historical scores are retained; reports without stop metadata cannot be conclusively reclassified.
-
-For example, an attempt passing 11 of 12 checks earns **91.7 check points** and displays **Partial**. With two other fully passed tasks, the engine's check score is **97.2**, and its full-task pass rate is **66.7%**. Aggregation uses the unrounded fractions; adding more checks to one task does not give it extra weight. Checks that could not execute stay in that task's denominator. Check scores describe success on the supplied checks, including required input preservation; they are not a measure of how important the remaining failures are.
-
-Built-in code tasks use an independent Node checker with restricted filesystem access; output tasks are compared with expected JSON and required input files are checked for changes. External libraries use the official Python checks in fresh processes, after the agent finishes. Expected answers and test programs are not copied to the candidate workspace or included in model prompts. Python subprocesses and native agents run locally with the current user's permissions; fresh directories and isolated Python imports are not an OS sandbox.
-
-Task instructions forbid looking up hidden benchmark tests, expected targets and reference solutions locally or online, including in Camellia's library cache. This instruction is not enforced by an OS filesystem or network sandbox. Inspect recorded artifacts for such access before treating a result as a valid comparison.
-
-DS-1000 asks for a solution fragment in `solution.py`. The adapter runs the original `test_execution` loop in order, retaining shared setup and random state, then runs the official `test_string` constraint check where present. SciCode includes scientific background and every subproblem's public instructions; the agent implements all requested functions together in `solution.py`. Cases within each subproblem share a process and namespace in their official order; different subproblems start fresh. Failures are recorded per case so later checks can still earn partial credit. The official numerical targets and assertion tolerances stay unchanged. The three helper steps supplied by upstream are included as starter code and do not earn points. Each official test-case block earns one check; nested assertions are not counted separately. The SciCode validation split is used only by developer conformance tests, not included in the selectable 65-problem test split.
-
-These **Camellia Bench v1** scores use file-editing agents, custom limits, fixed samples, and partial credit. They are not official DS-1000/SciCode leaderboard scores. Compare the same question IDs, suite hash, dataset and Python environment versions, provider, upstream model version, runtime versions, limits, and execution mode. Parallel runs share local resources and provider rate limits, which can affect latency and errors. Reports record the execution mode and concurrency; older reports without this field display as sequential. Per-engine durations sum that engine's trials and overlap with other engines' durations. Three attempts help expose variation but are not a statistical significance test.
-
-In full-library and custom modes, the default **Recommended** time limit follows the selected library: **5 minutes** per trial for built-in tasks, **10 minutes** for DS-1000, and **30 minutes** for SciCode. A manual selection stays selected when switching libraries; the UI offers limits up to **60 minutes**. All engines use the same selected limit, and reports preserve the actual limit used, including for older runs. This gives multi-step research tasks more time to implement and self-test their solutions; it does not guarantee completion.
-
-**Tokens per task attempt** is the primary token control: **250,000 for built-in tasks, 500,000 for DS-1000, and 1 million for SciCode** by default. It is adjustable up to **5 million**. Every engine, task and repeat receives a fresh allowance. Reaching the limit stops that attempt with **Limit reached** and allows the other engines and queued tasks to continue. Recommendations follow the selected library; manual choices stay selected when switching libraries or changing the number of tasks or repeats.
-
-The **Optional whole-run token cap** is **off by default**. It can be explicitly enabled with a value from 1M to 1B in the UI. This shared cap stops the entire run when reached. The setup summary always shows the per-attempt cap and the sum of all independent task allowances, making the possible usage visible before starting. The sum is informational and is not an additional stop condition. These are usage ceilings, not consumption or cost estimates.
-
-Each trial is still capped at 40 API requests. Increasing time does not change token or request limits. Requests already in flight may exceed a token limit; providers that omit usage are labeled as unreported, and only request/time limits constrain those calls. Input/output tokens are measured at the shared router, so concurrent chat traffic is excluded from benchmark totals. Benchmark requests still appear in the normal Usage page. Reports record `maxTokensPerTask` and `tokenBudget` (`null` when the whole-run cap is disabled). Existing reports keep their original limits. Neither changing limits nor restarting the app starts a benchmark.
-
-Scientific verification has an additional 30-second limit per check and 2-minute limit per task after the agent finishes. Remaining checks after that limit are marked unevaluated and stay in the denominator. **Stop run** also terminates a running Python verifier. These limits may be too short for some expensive research computations and are recorded in the report.
-
-The selected provider, model mapping, and endpoints are pinned. Key failover stays within that provider and model; it cannot switch to another provider. Stop a run before editing API routes. **Stop run** terminates every active harness and closes all its scoped API connections. When enabled, the optional whole-run token cap is shared across engines; reaching it stops all active trials and prevents queued trials from starting. A per-task limit affects only that trial. The run remains busy until all workers finish cleanup and usage accounting. Closing the application cancels the run; unfinished reports are marked interrupted after a restart and never resume automatically.
-
-Reports are saved under the application's `benchmarks/` data directory after each trial. The latest 30 appear in Run history. **Export JSON** includes suite/version information, limits, per-engine scores, per-trial usage, errors, and bounded snippets of changed files and engine output, without provider API keys. Temporary trial workspaces are removed after grading; a cleanup failure is recorded in the report.
-
-External reports also store `library` provenance (source URL, revision, split, data hashes, Python/environment version, adapter version, background setting and sampling method) and ordered public `tasks` metadata. This keeps historical task labels readable without downloading the library again. Reference solutions and complete checker code are excluded from report metadata. Licenses and adapter changes are recorded in `src/benchmark/licenses/NOTICE.md`.
-
-### Investigating a failure
-
-Click a task result to see its check score, independent check count, failed case number, arguments, expected value, and actual value. Non-ASCII characters are escaped, so differences such as `"a\u1ab0b"` remain visible. Function errors, changed input files, malformed JSON, and checks that could not execute have separate diagnostics. Counts such as **11/12 checks passed** earn partial check credit; the attempt counts as fully passed only when every check passes. The engine's own completion message is shown separately under **Engine reply and log**.
-
-For code failures, reproduce the failed case from the saved files and improve the implementation or harness self-checking. For API errors, check model access, key permissions, quota, and connectivity. For a timeout, compare all six engines with the same revised limit in a new run. Keep the original report, and use the same tasks and configuration for subsequent comparisons; do not choose only successful retries as the score. Diagnostic results are not sent back to the agent during scored attempts.
-
-Reports identify shared failed cases across at least three distinct engines and display known task limitations. Scientific failures distinguish assertion mismatches, exceptions, timeout and unevaluated cases, with bounded output and source locations. These notices do not award points or change historical scores. Every scientific attempt retains its complete `solution.py` (within the grader's 1 MiB limit), ahead of scratch files, for offline inspection and regrading. New snapshots also record a SHA-256 hash.
-
-Scientific self-tests use the prepared interpreter with `-E -s -X utf8`, allowing workspace imports while ignoring Python environment overrides and user site packages. Numerical libraries use one thread per process. The separate grader still uses `-I`. Agents are instructed to solve from the supplied files and not retrieve external benchmark tests or reference solutions; this is a prompt rule, not an operating-system network restriction.
-
-New reports record the checker version and check diagnostics. Check scores can also be calculated from older saved check counts without another model call. A historical full pass counts as 100; a historical failed attempt without check counts remains unknown, so its engine's check score is unavailable. The original full-task pass rate remains available. JSON exports include per-trial and per-engine `checkScore`, the original per-engine `score` (full-task pass rate), and `checkScoreMethod: "mean-trial-check-fraction-v1"`. The saved file changes can still be inspected or replayed offline. Compare checker versions and score methods along with the suite hash when reviewing runs.
-
-SciCode checks imports used by the official tests and the required numerical-target keys before any engine starts. Its official comparison helpers are bundled with the checker. If trusted test preparation fails during grading, the result is **Grader error**, with no valid attempt score or final engine scores. Candidate-code errors and verification timeouts still count against the checks. Grader versions are tracked separately from installed environment versions, so a checker fix does not force a dataset download.
-
-### Recheck saved answers
-
-After a checker fix, run this command from a source checkout to evaluate captured external-library answers in a completed or stopped report without calling a model:
-
-```sh
-node scripts/regrade-benchmark.cjs "path/to/benchmarks/run-id.json" --write
-```
-
-Omit `--write` to preview the results. The original library revision, data hashes, and Python environment must still be installed next to the reports. Rechecking requires a complete saved `solution.py` for each previously graded attempt. It preserves prompts, model outputs, API usage, original run times, and unexecuted attempts. Before writing, it backs up the original report under `benchmarks/regrade-backups/` and records the previous verdicts, checker versions, and recheck time in the report. The results page labels rechecked reports. Reload the report or restart Camellia after updating a file externally.
-
 ## Settings pages
 
 | Page | Purpose |
@@ -271,7 +174,7 @@ In desktop **Settings → Engine Settings**, use **Browse…** or paste an absol
 
 For a Camellia-managed engine, **Check for updates** shows newer runtime versions. Stop active responses in that engine before selecting **Update**. Camellia stops its idle processes, installs the new version, and starts its settings service again if that panel was open. That engine is unavailable until the update and service restoration finish; other engines remain available. Idle conversation processes start with the new runtime on their next message. Camellia itself does not restart.
 
-**Python is a single shared interpreter**, configured in **Settings → General → Python interpreter** and used by every harness that calls Python, not by Antigravity alone. When nothing is saved, Camellia detects the first usable Python 3 on `PATH` (`python3`, `python`, and the Windows `py -3` launcher) and shows the detected version; the text field only ever holds a path you saved yourself. Installing Antigravity reuses that interpreter instead of downloading its own CPython, and installs the pinned SDK packages against it. A shared interpreter older than Python 3.10 cannot run the SDK, so the bundled CPython is used instead. Save any Python 3 executable; Camellia reports separately whether it can also import `google.antigravity`, which only Antigravity API mode requires, and it neither modifies the environment nor installs packages into it. The path does not change the dedicated Python environments that external benchmark libraries install. Antigravity still has its own **Antigravity CLI** path for Google subscription mode. If a saved or recorded executable is removed, the engine reports an error instead of silently downloading or choosing a different installation.
+**Python is a single shared interpreter**, configured in **Settings → General → Python interpreter** and used by every harness that calls Python, not by Antigravity alone. When nothing is saved, Camellia detects the first usable Python 3 on `PATH` (`python3`, `python`, and the Windows `py -3` launcher) and shows the detected version; the text field only ever holds a path you saved yourself. Installing Antigravity reuses that interpreter instead of downloading its own CPython, and installs the pinned SDK packages against it. A shared interpreter older than Python 3.10 cannot run the SDK, so the bundled CPython is used instead. Save any Python 3 executable; Camellia reports separately whether it can also import `google.antigravity`, which only Antigravity API mode requires, and it neither modifies the environment nor installs packages into it. Antigravity still has its own **Antigravity CLI** path for Google subscription mode. If a saved or recorded executable is removed, the engine reports an error instead of silently downloading or choosing a different installation.
 
 **Settings → General → Application updates** checks the project's public GitHub release feed. When a newer version has a package for your platform, **Download and install** downloads it, verifies the release's SHA-256 digest, and confirms before replacing the installation. Installing closes Camellia; your conversations, preferences and downloaded engines are kept. Windows installers run the NSIS wizard in overwrite mode, and macOS builds extract the ZIP and replace the application bundle before restarting. On platforms without a package Camellia can apply in place, the downloaded installer is revealed in the file manager instead. In development the check still works, but in-place installation is limited to packaged builds. No update is downloaded or installed without an explicit click.
 

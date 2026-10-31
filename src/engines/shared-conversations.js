@@ -1791,7 +1791,15 @@ class SharedConversations {
       }
     }
     if (toolBoundary) { a.overflowRetried = false; a.overflowRescueTried = false; }
+    // Keep presentation facts from this turn, rather than looking up the
+    // conversation's current model when an older reply is opened later.
+    const turnMetrics = event.type === 'result' ? {
+      duration_ms: Number.isFinite(event.duration_ms) ? event.duration_ms : Date.now() - a.startedAt,
+      ...(a.contextSettings?.model ? { model: a.contextSettings.model } : {}),
+      ...(event.total_cost_usd != null ? { total_cost_usd: event.total_cost_usd } : {}),
+    } : null;
     const out = { ...event, session_id: c.id, workspaceId: c.workspaceId, engine, runId: a.facade.gen, eventSeq: ++a.eventSeq,
+      ...(turnMetrics ? { turnMetrics } : {}),
       ...(event.type === 'result' && !a.internal ? { userSeq: a.userSeq } : {}) };
     if (!a.internal) {
       // Bound the event count by coalescing deltas while retaining all text.
@@ -1823,7 +1831,7 @@ class SharedConversations {
         : mobileOutput.text || (!process.some(block => block.type === 'text') ? text : '');
       if (text || output.outputBlocks?.length || process.length || event.usage || a.lastCallUsage || event.artifacts?.length || terminal) this.append(c, { role: 'assistant', engine, text, ...output,
         ...(process.length ? { process } : {}), ...(terminal || process.length ? { mobileText } : {}),
-        ...(runResult ? { runResult, userSeq: a.userSeq } : {}), internal: a.internal, artifacts: event.artifacts,
+        ...(runResult ? { runResult, userSeq: a.userSeq } : {}), turnMetrics, internal: a.internal, artifacts: event.artifacts,
         ...(event.usage ? { usage: event.usage } : {}), ...(a.lastCallUsage ? { lastCallUsage: a.lastCallUsage } : {}) });
       c.pending = null; c.updatedAt = this.stamp();
       if (!a.ephemeral) c.interrupted = Boolean(event.is_error || event.subtype === 'stopped');

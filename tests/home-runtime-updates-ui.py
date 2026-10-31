@@ -9,7 +9,7 @@ with sync_playwright() as playwright:
     errors = []
     page.on('pageerror', lambda error: errors.append(str(error)))
     page.add_init_script("""
-      window.calls = {checks: 0, settings: [], launches: []};
+      window.calls = {checks: 0, settings: [], launches: [], mobile: 0};
       window.rows = ['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'grok'].map(id => ({
         id, name: id, status: 'ready', version: '1.0.0', mode: 'api'
       }));
@@ -32,10 +32,16 @@ with sync_playwright() as playwright:
           return {ok: true, engines};
         },
         async openSettingsWindow(target) { calls.settings.push(target); return {ok: true}; },
+        async openMobileAccess() { calls.mobile++; return window.mobileError ? {ok: false, error: 'Cannot open mobile access'} : {ok: true}; },
         async switchMode(mode) { calls.launches.push(mode); return {ok: true, canceled: true}; }
       };
     """)
     page.goto((repo / 'src/renderer/home/home.html').as_uri(), wait_until='networkidle')
+    mobile = page.get_by_role('button', name='手机访问', exact=True)
+    expect(mobile).to_contain_text('配对手机，远程访问这台电脑')
+    mobile.click()
+    assert page.evaluate('calls.mobile') == 1
+    assert page.evaluate('calls.launches') == []
     badge = page.locator('[data-runtime-update=claude]')
     expect(badge).to_be_visible()
     expect(badge).to_contain_text('有更新')
@@ -70,6 +76,14 @@ with sync_playwright() as playwright:
     screenshots.mkdir(parents=True, exist_ok=True)
     page.screenshot(path=str(screenshots / 'home-zh.png'), full_page=True)
     page.evaluate("CamelliaI18n.setLanguage('en')")
+    mobile = page.get_by_role('button', name='Mobile access', exact=True)
+    expect(mobile).to_contain_text('Pair your phone to access this computer')
+    mobile.click()
+    assert page.evaluate('calls.mobile') == 2
+    page.evaluate('window.mobileError = true')
+    mobile.click()
+    expect(page.locator('#homeStatus')).to_have_text('Cannot open mobile access')
+    page.evaluate("window.mobileError = false; document.getElementById('homeStatus').textContent = ''")
     expect(badge).to_contain_text('Update available')
     expect(badge).to_have_attribute('title', 'Claude Code runtime: v1.0.0 → v2.0.0. View update')
     for scheme in ['light', 'dark']:

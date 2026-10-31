@@ -1,0 +1,38 @@
+/* One 40-DIP caption row, matching the workbench surface in both themes.
+   Its size stays aligned with Windows caption buttons at any page zoom. */
+.settings-window-backdrop {
+  position: fixed; inset: 0; z-index: 2147483647;
+  background: var(--dsw-alias-bg-mask-1);
+  -webkit-app-region: no-drag; app-region: no-drag;
+}
+.settings-window-backdrop[hidden] { display: none; }
+html[data-desktop-chrome] body { box-sizing: border-box; padding-top: var(--desktop-chrome-height); }
+html[data-desktop-chrome] .desktop-titlebar {
+  position: fixed; z-index: 100; top: 0; left: 0;
+  box-sizing: border-box; display: flex; align-items: center; gap: 0;
+  width: 100%; height: var(--desktop-chrome-height); padding: 0 calc(8px / var(--desktop-chrome-zoom));
+  padding-right: calc(144px / var(--desktop-chrome-zoom));
+  background: var(--dsw-alias-bg-base); color: var(--dsw-alias-label-secondary);
+  font: calc(13px / var(--desktop-chrome-zoom))/1.5 var(--dsw-font-family);
+  -webkit-app-region: drag; app-region: drag; user-select: none;
+}
+html[data-desktop-chrome] .desktop-titlebar[hidden] { display: none; }
+html[data-desktop-chrome] .desktop-titlebar button {
+  -webkit-app-region: no-drag; app-region: no-drag;
+  display: inline-flex; align-items: center; flex: none; justify-content: center;
+  width: auto; min-height: 0; height: calc(28px / var(--desktop-chrome-zoom));
+  margin: 0; padding: 0 calc(10px / var(--desktop-chrome-zoom));
+  border: 0; border-radius: calc(6px / var(--desktop-chrome-zoom));
+  background: transparent; color: inherit; font: inherit; font-weight: 400; cursor: default;
+}
+html[data-desktop-chrome] .desktop-titlebar button:is(:hover, [aria-expanded=true]) { background: var(--dsw-alias-interactive-bg-hover); }
+html[data-desktop-chrome] .desktop-titlebar button:focus-visible { outline: 2px solid var(--dsw-static-deepseek-400); outline-offset: -2px; }
+html[data-desktop-chrome] body > .app,
+html[data-desktop-chrome] .file-viewer { height: calc(100dvh - var(--desktop-chrome-height)); }
+html[data-desktop-chrome] body:has(> .home-panel) { padding-top: calc(40px + var(--desktop-chrome-height)); }
+html[data-desktop-chrome] .cli-devices.standalone,
+html[data-desktop-chrome] .cli-devices.standalone main { height: calc(100dvh - var(--desktop-chrome-height)); }
+@media (max-width: 760px) {
+  html[data-desktop-chrome] body > .app > .sidebar,
+  html[data-desktop-chrome] .workbench-sidebar-backdrop { top: var(--desktop-chrome-height); }
+}

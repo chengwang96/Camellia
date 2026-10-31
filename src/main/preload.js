@@ -2,6 +2,13 @@
 
 const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
+contextBridge.exposeInMainWorld('camelliaWindowChrome', {
+  getState: () => ipcRenderer.invoke('camellia:window-chrome-state'),
+  openMenu: payload => ipcRenderer.invoke('camellia:window-chrome-menu', payload),
+  onState: callback => subscribe('camellia:window-chrome', callback),
+  onFocus: callback => subscribe('camellia:window-chrome-focus', callback),
+});
+
 function subscribe(channel, callback) {
   const listener = (_event, data) => callback(data);
   ipcRenderer.on(channel, listener);
@@ -12,12 +19,16 @@ contextBridge.exposeInMainWorld('dshDesktop', {
   platform: process.platform,
   nativeSettingsView: true,
   settingsEmbedded: process.argv.includes('--workbench-settings'),
+  settingsWindow: process.argv.includes('--camellia-settings-window'),
   showNativeSettings: (payload) => ipcRenderer.invoke('dsh:show-native-settings', payload),
   nativeSettingsReady: () => ipcRenderer.invoke('dsh:native-settings-ready'),
   onNativeSettingsReady: (callback) => subscribe('dsh:native-settings-ready', callback),
   getState: () => ipcRenderer.invoke('dsh:get-state'),
   openLogs: () => ipcRenderer.invoke('dsh:open-logs'),
   openSettingsWindow: (target) => ipcRenderer.invoke('dsh:open-settings-window', target),
+  closeSettingsWindow: () => ipcRenderer.invoke('dsh:close-settings-window'),
+  settingsOverlay: () => ipcRenderer.invoke('dsh:settings-overlay'),
+  onSettingsOverlay: callback => subscribe('dsh:settings-overlay', callback),
   openMobileAccess: () => ipcRenderer.invoke('dsh:open-mobile-access'),
   openCliDevices: () => ipcRenderer.invoke('camellia:open-devices'),
   listCliServers: () => ipcRenderer.invoke('camellia:list-servers'),
@@ -54,18 +65,9 @@ contextBridge.exposeInMainWorld('dshDesktop', {
   onRuntimeState: (callback) => subscribe('dsh:runtime-state', callback),
   onRuntimePythonState: (callback) => subscribe('dsh:runtime-python-state', callback),
   onAppUpdateState: (callback) => subscribe('dsh:app-update-state', callback),
-  benchmarkState: () => ipcRenderer.invoke('dsh:benchmark-state'),
   discussion: (action, payload = {}) => ipcRenderer.invoke('dsh:discussion', { action, payload }),
   onDiscussionEvent: callback => subscribe('dsh:discussion-event', callback),
   onDiscussionNavigate: callback => subscribe('dsh:discussion-navigate', callback),
-  benchmarkStart: payload => ipcRenderer.invoke('dsh:benchmark-start', payload),
-  benchmarkCancel: () => ipcRenderer.invoke('dsh:benchmark-cancel'),
-  benchmarkReport: id => ipcRenderer.invoke('dsh:benchmark-report', { id }),
-  benchmarkInstall: engine => ipcRenderer.invoke('dsh:benchmark-install', { engine }),
-  benchmarkPrepareLibrary: library => ipcRenderer.invoke('dsh:benchmark-prepare-library', { library }),
-  benchmarkExport: id => ipcRenderer.invoke('dsh:benchmark-export', { id }),
-  benchmarkDelete: id => ipcRenderer.invoke('dsh:benchmark-delete', { id }),
-  onBenchmarkState: callback => subscribe('dsh:benchmark-state', callback),
   onSettingsNavigate: (callback) => subscribe('dsh:settings-navigate', callback),
   onEngineSettingsChanged: (callback) => subscribe('dsh:engine-settings-changed', callback),
   onChatContentWidthChanged: (callback) => subscribe('dsh:chat-content-width-changed', callback),

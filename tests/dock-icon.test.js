@@ -20,6 +20,7 @@ function runDockStartup(context) {
   return vm.runInNewContext('(async () => {' + dockStartup + '\n})()', {
     networkSettings: () => ({ initialize: async () => {} }),
     settingsWindowSizes: { start() {} },
+    windowChrome: { start() {} },
     log: message => assert.fail('Unexpected startup error: ' + message),
     path,
     APP_ROOT: root,

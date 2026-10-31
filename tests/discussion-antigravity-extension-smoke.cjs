@@ -17,7 +17,7 @@ const { locateAntigravityCli } = require('../src/main/antigravity-cli-runtime');
 const { parseModels, groupModels, runCli } = require('../src/engines/antigravity/subscription');
 const { prepareWindowsJob } = require('../src/engines/discussions/windows-job');
 const { WindowsJobJournal } = require('../src/engines/discussions/windows-job-journal');
-const { isolatedEnvironment } = require('../src/benchmark/engines');
+const { isolatedEnvironment } = require('../src/engines/isolated-environment');
 const { frame } = require('../src/api/api-protocol');
 const { removeTree } = require('./test-fs.cjs');
 

@@ -14,7 +14,7 @@ const { antigravitySpawnSpec } = require('../src/engines/antigravity');
 const { locatePythonRuntime } = require('../src/main/python-runtime');
 const { prepareWindowsJob } = require('../src/engines/discussions/windows-job');
 const { WindowsJobJournal } = require('../src/engines/discussions/windows-job-journal');
-const { isolatedEnvironment } = require('../src/benchmark/engines');
+const { isolatedEnvironment } = require('../src/engines/isolated-environment');
 const { frame } = require('../src/api/api-protocol');
 const { removeTree } = require('./test-fs.cjs');
 

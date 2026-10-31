@@ -34,8 +34,6 @@
     "pack:mac": "electron-builder --mac --arm64 --dir",
     "setup:antigravity": "node scripts/prepare-runtimes.cjs antigravity",
     "test:antigravity": "node tests/antigravity-smoke.cjs",
-    "test:benchmark": "node tests/benchmark-native-smoke.cjs",
-    "test:benchmark:science": "node tests/benchmark-science-smoke.cjs",
     "setup:antigravity:subscription": "node scripts/prepare-runtimes.cjs antigravity --google-subscription",
     "test:antigravity:subscription": "node tests/antigravity-subscription-smoke.cjs",
     "setup:codex": "node scripts/prepare-runtimes.cjs codex",
@@ -182,8 +180,7 @@
       "src/engines/discussions/dsh-text-policy.mjs",
       "src/engines/goal-tools.js",
       "src/engines/task-tools.js",
-      "src/engines/conversation-tools.js",
-      "src/benchmark/python/**"
+      "src/engines/conversation-tools.js"
     ]
   },
   "dependencies": {

@@ -12,7 +12,7 @@ const { checkRuntimeFile, validateRuntimePath, validatePythonPath } = require('.
 const { runtimeRemovalPlan, removeRuntime } = require('./runtime-removal');
 
 // Python is not an engine runtime: one interpreter is shared by every harness
-// and by the benchmark verifier. It is stored as its own top-level setting.
+// and is stored as its own top-level setting.
 const PYTHON_KEY = 'python';
 // Probing PATH is synchronous and runs on every state read, so results are
 // cached for the lifetime of the manager and invalidated only by file changes.

@@ -1,9 +1,0 @@
-# Five-minute preview timeout audit
-
-In report `50be9bfb-a3b5-4240-b1c0-21932e420bc7`, a preview ended after 163.867 seconds even though its whole-run allowance was five minutes. The old rule capped each of three tasks at 75 seconds. Codex reached 75.524 seconds on the invoice task after finishing the first two, while about 136 seconds remained in the whole run. The saved changes lacked `invoice.cjs`, so the task was incomplete rather than incorrectly graded.
-
-The revised preview runs the same three tasks sequentially for each engine, with five engines in parallel. Each engine shares **270 seconds** across its three tasks; the whole run has a **300-second** deadline, reserving the final 30 seconds for grading and cleanup. An attempt running at 270 seconds is stopped; a task not yet started is marked **Not started**, not failed. Timed-out attempts still score zero. Historical reports keep their original limits and scores.
-
-An intermediate 90-second-per-task experiment still stopped slow first tasks while API responses were pending. The final shared-budget run, report `133c708e-43fa-4f5f-b5ca-4d3c39c27803`, completed all 15 attempts in 112.543 seconds with no timeout or runtime error. Claude, Kimi, and Antigravity passed all three whole tasks; Codex and DSH each scored 11/12 on the Unicode text task because they missed a combining-mark edge case. All five passed the invoice task. The run reported 1,545,089 tokens. Raw data is under `dist/benchmark-audit/live-1789548113569/`.
-
-Unit tests cover a 110-second first task, a 100-second last task, the 270-second stop, the 300-second whole-run deadline, cancellation, usage, and unstarted-task scoring. UI tests cover preview/full/custom modes, historic limits, timeout details, and narrow windows. This improves use of the fixed budget; it cannot guarantee completion when the provider is slow.

@@ -12,6 +12,7 @@ const { GeminiToolState } = require('./gemini-tool-state');
 const { RequestScopes } = require('./request-scopes');
 const { responsesToChat, ResponsesStream, chatToResponse } = require('./responses-protocol');
 const { routedModelId } = require('../shared/codex-tool-model');
+const { canonicalModelId } = require('../shared/model-names');
 const { accountCapability, queryAccount } = require('./provider-accounts');
 const { createModelDiscovery } = require('./model-discovery');
 
@@ -321,13 +322,37 @@ function startApiRouter({ configPath, log = () => {}, onState = () => {}, onCont
       const booleanThinking = route.model.thinking?.values;
       const effort = payload.reasoning_effort || payload.output_config?.effort;
       if (booleanThinking?.length && booleanThinking.every(value => typeof value === 'boolean') && effort) {
-        payload.thinking = { type: ['none', 'off'].includes(effort) ? 'disabled' : 'enabled' };
+        payload.thinking = { type: ['none', 'off'].includes(effort) || payload.thinking?.type === 'disabled' ? 'disabled' : 'enabled' };
         if (source === 'anthropic') {
           delete payload.output_config.effort;
           if (!Object.keys(payload.output_config).length) delete payload.output_config;
         } else if (route.provider.type !== 'ollama' && new URL(route.provider.baseUrl).hostname !== 'ollama.com') delete payload.reasoning_effort;
       }
-      if (isGemini) geminiTools.restore(payload, body.model);
+      // DeepSeek's Chat/Messages APIs use a separate thinking switch. The
+      // Responses "none" effort must not become an unsupported native effort.
+      const host = new URL(route.provider.baseUrl).hostname;
+      const deepseek = route.provider.type === 'deepseek' || host === 'api.deepseek.com'
+        || (['commandcode', 'opencode', 'opencode-go'].includes(route.provider.type) || ['api.commandcode.ai', 'opencode.ai'].includes(host))
+        && /^deepseek-/.test(canonicalModelId(route.model.upstream));
+      if (deepseek && effort) {
+        const off = ['none', 'off'].includes(effort);
+        payload.thinking = { ...payload.thinking, type: off || payload.thinking?.type === 'disabled' ? 'disabled' : 'enabled' };
+        if (off) {
+          delete payload.reasoning_effort;
+          if (payload.output_config) {
+            delete payload.output_config.effort;
+            if (!Object.keys(payload.output_config).length) delete payload.output_config;
+          }
+        }
+      }
+      // Kimi K3 uses reasoning_effort only; generic harness thinking blocks
+      // are not a supported control on the first-party Chat Completions API.
+      if (source === 'openai' && (route.provider.type === 'kimi' || ['api.moonshot.cn', 'api.moonshot.ai', 'api.kimi.ai'].includes(host))
+        && ['kimi-k3', 'kimi-k3.1-pro'].includes(route.model.upstream)) delete payload.thinking;
+      if (isGemini) {
+        if (payload.thinking?.type === 'disabled' && !payload.reasoning_effort) payload.reasoning_effort = 'none';
+        geminiTools.restore(payload, body.model);
+      }
     }
     catch (e) { return Promise.resolve({ status: 400, kind: 'protocol', detail: e.message }); }
     payload.model = route.model.upstream;
@@ -487,13 +512,13 @@ function startApiRouter({ configPath, log = () => {}, onState = () => {}, onCont
     const bufferTools = scoped.pathname.startsWith('/compat/antigravity/');
     const pathname = (bufferTools ? scoped.pathname.slice('/compat/antigravity'.length) : scoped.pathname).replace(/^\/v1(?=\/)/, '');
     if (bufferTools && pathname !== '/chat/completions') return apiError(res, 404, 'Unsupported Antigravity API path', 'openai');
-    if (scoped.scoped && (!scope || scope.closed)) return apiError(res, 410, 'This benchmark trial has ended', pathname.startsWith('/messages') ? 'anthropic' : 'openai');
+    if (scoped.scoped && (!scope || scope.closed)) return apiError(res, 410, 'This API scope has ended', pathname.startsWith('/messages') ? 'anthropic' : 'openai');
     refreshDisk();
     if (scope) {
       scope.responses.add(res);
       res.once('close', () => scope.responses.delete(res));
       if (req.method === 'GET' && pathname === '/models') return json(res, 200, { object: 'list', data: [{ id: scope.model, object: 'model' }] });
-      if (pathname.startsWith('/__')) return apiError(res, 404, 'Unsupported benchmark API path', 'openai');
+      if (pathname.startsWith('/__')) return apiError(res, 404, 'Unsupported scoped API path', 'openai');
     }
     if (req.method === 'GET' && ['/__router/state', '/__ollama/state'].includes(pathname)) return json(res, 200, getState());
     if (req.method === 'GET' && pathname === '/models') return json(res, 200, { object: 'list', data: publicState(cfg).models.map(id => ({ id, object: 'model', owned_by: 'api-pool' })) });
@@ -507,7 +532,7 @@ function startApiRouter({ configPath, log = () => {}, onState = () => {}, onCont
     try { body = JSON.parse(Buffer.concat(chunks).toString('utf8')); model = modelId(routedModelId(modelId(body.model))); }
     catch { return apiError(res, 400, "Requests require valid JSON and an explicit model ID", protocol); }
     if (scope?.toolPolicy === 'none' && !pathname.endsWith('/count_tokens')) { delete body.tools; delete body.tool_choice; }
-    if (scope && model !== scope.model) return apiError(res, 400, 'Benchmark requests must use the selected model', protocol, 'benchmark_model_mismatch');
+    if (scope && model !== scope.model) return apiError(res, 400, 'Scoped requests must use the selected model', protocol, 'scope_model_mismatch');
     const routes = candidates(model, protocol).filter(route => !scope || (route.provider.id === scope.providerId
       && (!scope.keyId || route.key.id === scope.keyId) && route.model.upstream === scope.upstream && routeFingerprint(route) === scope.routeFingerprint));
     if (!routes.length) return apiError(res, 404, `Model "${model}" has no configured routes. Add a route for this model; no other model will be used.`, protocol, 'model_not_found');
@@ -525,8 +550,8 @@ function startApiRouter({ configPath, log = () => {}, onState = () => {}, onCont
       if (!route) break;
       remaining.splice(remaining.indexOf(route), 1);
       if (scope && !pathname.endsWith('/count_tokens')) {
-        const reason = scope.begin({ hasTools: Boolean(body.tools?.length) });
-        if (reason) return apiError(res, 429, reason, protocol, 'benchmark_limit');
+        const reason = scope.begin();
+        if (reason) return apiError(res, 429, reason, protocol, 'scope_limit');
       }
       const requestStarted = Date.now(), requestSequence = scope?.requests;
       const identity = quotaIdentity(route.provider, route.key);
@@ -652,15 +677,15 @@ function startApiRouter({ configPath, log = () => {}, onState = () => {}, onCont
   }
   function createScope(options) {
     refreshDisk();
-    if (!running || stopped || !cfg.enabled) throw new Error('Enable the API route pool before running a benchmark');
+    if (!running || stopped || !cfg.enabled) throw new Error('Enable the API route pool before creating a provider scope');
     const model = modelId(options.model);
     const matching = candidates(model, 'openai').filter(r => r.provider.id === options.providerId
       && (!options.keyId || r.key.id === options.keyId) && available(r, model));
     const route = options.routeFingerprint ? matching.find(route => routeFingerprint(route) === options.routeFingerprint) : matching[0];
-    if (!route && matching.length && options.routeFingerprint) throw new Error('The provider route changed; start a new benchmark');
+    if (!route && matching.length && options.routeFingerprint) throw new Error('The provider route changed; create a new scope');
     if (!route) throw new Error('This model has no available key on the selected provider');
     const fingerprint = routeFingerprint(route);
-    if (options.routeFingerprint && options.routeFingerprint !== fingerprint) throw new Error('The provider route changed; start a new benchmark');
+    if (options.routeFingerprint && options.routeFingerprint !== fingerprint) throw new Error('The provider route changed; create a new scope');
     const result = scopes.create({ ...options, model, upstream: route.model.upstream, routeFingerprint: fingerprint });
     return { ...result, baseUrl: `http://127.0.0.1:${cfg.port}${result.path}`, authToken: 'proxy-managed' };
   }

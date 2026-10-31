@@ -27,17 +27,17 @@ document.addEventListener('error', event => {
   brand.replaceWith(document.createTextNode(brand.dataset.fallback || 'API'));
 }, true);
 const titles = {
-  subscriptions: ["Subscription accounts", "Manage subscription sign-ins, quotas and login preferences."],
-  providers: ["API Keys", "Manage API providers, keys, balances, models and routes."],
-  usage: ["Usage", "Track requests and token consumption."],
-  general: ["General", "Language, appearance, and local preferences."],
-  data: ["Data & backups", ""],
-  network: ["Network", "Choose how Camellia reaches the internet and test each connection."],
-  archived: ["Archived", "Restore or permanently delete archived conversations."],
-  mobile: ["Mobile access", "Connect your phone through Tailscale."],
-  devices: ["CLI devices", "Connect to CLI servers through Tailscale."],
-  engines: ["Engine Settings", "Manage engine installation, updates, permissions, instructions and tools."],
-  models: ["Model Settings", "Manage API key routing, visible subscription models, quick-switch defaults and model sessions."],
+  subscriptions: "Subscription accounts",
+  providers: "API Keys",
+  usage: "Usage",
+  general: "General",
+  data: "Data & backups",
+  network: "Network",
+  archived: "Archived",
+  mobile: "Mobile access",
+  devices: "CLI devices",
+  engines: "Engine Settings",
+  models: "Model Settings",
 };
 let config, live, presets = [], insight = { providers: {}, keys: {} }, selected = null, view = 'general';
 let balanceKey = null, usageData = [];
@@ -200,7 +200,7 @@ function setView(next, engine, focus) {
   view = next;
   for (const id of Object.keys(titles)) $(id + 'Page').hidden = id !== next;
   document.querySelectorAll('[data-view]').forEach(button => { button.classList.toggle('active', button.dataset.view === next); button.setAttribute('aria-current', button.dataset.view === next ? 'page' : 'false'); });
-  [$('pageTitle').textContent, $('pageSubtitle').textContent] = titles[next];
+  $('pageTitle').textContent = titles[next];
   engineUI.setVisible(next === 'engines');
   window.mobileAccessUI.setVisible(next === 'mobile');
   window.cliDevicesUI?.setVisible(next === 'devices');
@@ -254,7 +254,7 @@ function renderProviders() {
     const connected = p.keys.filter(k => keyBadge(k)[1] === 'good').length;
     const requests = p.keys.reduce((sum,k) => sum + (live.usage?.[k.id]?.requests || 0), 0);
     return `<article class="provider"><button data-select="${p.id}"><span class="provider-title"><span class="provider-mark">${brandMark(p)}</span>${esc(p.name)}</span><p class="hint" data-i18n>Keys: ${p.keys.length} · Models: ${p.models.length}${p.enabled ? '' : " · Disabled"}</p></button><div class="provider-footer"><button data-select="${p.id}"><span data-i18n class="badge ${connected ? 'good' : ''}">${connected ? connected + " connected" : "Not connected"}</span><small data-i18n>Total ${fmt(requests)} successful requests</small></button><button data-up="${i}" aria-label="Move up ${esc(p.name)}" ${i ? '' : 'disabled'} data-i18n-attrs="aria-label">↑</button><button data-down="${i}" aria-label="Move down ${esc(p.name)}" ${i === config.providers.length-1 ? 'disabled' : ''} data-i18n-attrs="aria-label">↓</button></div></article>`;
-  }).join('') || "<div class=\"empty\"><img src=\"../../../assets/icon-256.png\" alt=\"\"><h2 data-i18n>Add your first provider</h2><p data-i18n>Choose a service, paste your keys, and select models.</p><p class=\"hint\" data-i18n>DSH, Claude, and Kimi share these connections.</p></div>";
+  }).join('') || "<div class=\"empty\"><img src=\"../../../assets/icon-256.png\" alt=\"\"><h2 data-i18n>Add your first provider</h2><p data-i18n>Choose a service, paste your keys, and select models.</p></div>";
 }
 function renderEditor() {
   renderProviders();
@@ -267,14 +267,15 @@ function renderEditor() {
   $('editor').innerHTML = `<button class="back" id="backProviders" data-i18n>← All providers</button>
     <div class="editor-heading"><span class="provider-mark">${brandMark(p)}</span><input id="pName" value="${esc(p.name)}" aria-label="Provider name" data-i18n-attrs="aria-label"><label><input id="pEnabled" type="checkbox" ${p.enabled ? 'checked' : ''}>Enabled</label></div>
     <label for="pPriority" data-i18n>API priority</label><select id="pPriority"><option value="-1" data-i18n>Low</option><option value="0" data-i18n>Default</option><option value="1" data-i18n>High</option></select>
-    <p class="hint" data-i18n>Routes follow High, Default, Low priority. Configure multi-key concurrency and automatic key failover in Model Settings. Next route manually switches among available keys at the highest available priority.</p>
+    <p class="hint" data-i18n>Routes use High, Default, then Low priority.</p>
+    <details id="providerRoutingHelp" class="settings-help"><summary data-i18n>Routing behavior</summary><p class="hint" data-i18n>Manage concurrency and failover in Model Settings. Next route switches among available keys at the highest available priority.</p></details>
     ${p.type.startsWith('mimo-token-plan-') ? '<p class="hint" data-i18n>Use your Token Plan tp- key and the region shown in your console. Coding use only. Do not add a pay-as-you-go route for the same model unless you want paid fallback. Check remaining Credits in the MiMo console.</p>' : ''}
     ${p.type === 'mimo' ? '<p class="hint" data-i18n>Use a regular MiMo API key, not a Token Plan tp- key. Requests are billed to your API balance. Adding this provider alongside Token Plan for the same model allows paid fallback.</p>' : ''}
     <div class="section-head"><h2 data-i18n>${p.type === 'qclaw' ? 'Connection' : 'API Key'}</h2><button id="showImport" ${p.type === 'qclaw' ? 'hidden' : ''} data-i18n>Import keys</button><button id="addKey" ${p.type === 'qclaw' ? 'hidden' : ''} data-i18n>+ Add key</button></div>
-    <p class="hint" ${p.type === 'qclaw' ? 'hidden' : ''} data-i18n>Keys are tried in order. Leave a key blank to keep it. Use labels to identify accounts.</p><div id="keyRows"></div>
+    <p class="hint" ${p.type === 'qclaw' ? 'hidden' : ''} data-i18n>Keys are tried in order. Leave blank to keep a saved key.</p><div id="keyRows"></div>
     <div id="keyImport" class="key-import" hidden><label for="bulkKeys" data-i18n>One key per line</label><textarea id="bulkKeys" placeholder="Paste API keys" spellcheck="false" data-i18n-attrs="placeholder"></textarea><button id="importKeys" data-i18n>Add to key pool</button><p class="hint" data-i18n>Duplicate keys for this provider are merged on save.</p></div>
     <div class="section"><div class="section-head"><h2 data-i18n>Model</h2><button id="mapModels" data-i18n>Map model aliases</button><button id="discoverModels" data-i18n>Fetch models</button></div><div id="modelChips" class="model-chips"></div>
-      <details class="advanced" id="modelAdvanced"><summary data-i18n>Manual models and mappings</summary><p class="hint" data-i18n>Recognized owner prefixes and letter case are normalized automatically. For other aliases of the same model, choose the same routing model ID. Upstream IDs are sent unchanged. Keep versions, dates, variants and moving aliases separate. Mappings save automatically.</p><div class="table-scroll"><table class="model-table"><thead><tr><th data-i18n>Routing model ID</th><th data-i18n>Upstream model ID</th><th data-i18n>Protocol</th><th data-i18n>Context</th><th></th></tr></thead><tbody id="modelRows"></tbody></table></div><datalist id="routingModelIds"></datalist><button id="addModel" data-i18n>+ Add model</button></details>
+      <details class="advanced" id="modelAdvanced"><summary data-i18n>Manual models and mappings</summary><p class="hint" data-i18n>Use one routing ID for aliases of the same model; keep versions, dates, variants and moving aliases separate. Recognized owner prefixes and case normalize automatically; upstream IDs stay unchanged. Saves automatically.</p><div class="table-scroll"><table class="model-table"><thead><tr><th data-i18n>Routing model ID</th><th data-i18n>Upstream model ID</th><th data-i18n>Protocol</th><th data-i18n>Context</th><th></th></tr></thead><tbody id="modelRows"></tbody></table></div><datalist id="routingModelIds"></datalist><button id="addModel" data-i18n>+ Add model</button></details>
       <div class="row verify-row" style="margin-top:18px"><label data-i18n>Validation model<select id="verifyModel" aria-label="Validation model" data-i18n-attrs="aria-label"></select></label><button id="verifyNow" data-verify-now data-i18n>Validate</button></div><p class="hint" data-i18n>Validate sends a short model request and may incur a charge. Fetching the catalog only checks catalog access.</p>
     </div>
     <details class="advanced section" id="connectionAdvanced" ${p.type === 'custom' ? 'open' : ''}><summary data-i18n>Advanced connection settings</summary><div class="grid">
@@ -777,7 +778,7 @@ $('openLogs').onclick = () => api.openLogs();
 // files, so the main process asks for confirmation first.
 let dataMigrationBusy = false, dataMigrationActive = false, dataMigrationPackage = null, dataDirectory = null;
 const migrationBytes = bytes => bytes < 1024 ? bytes + ' B' : bytes < 1024 ** 2 ? (bytes / 1024).toFixed(1) + ' KiB' : bytes < 1024 ** 3 ? (bytes / 1024 ** 2).toFixed(1) + ' MiB' : (bytes / 1024 ** 3).toFixed(2) + ' GiB';
-const migrationIdle = () => window.CamelliaI18n.t('Choose API configuration, application settings or conversation history to transfer. Subscription accounts are not transferred.');
+const migrationIdle = () => window.CamelliaI18n.t('Transfer API configuration, settings or conversations. Subscription sign-ins are excluded.');
 function dataMigrationControls() {
   $('exportData').disabled = dataMigrationBusy;
   $('importData').disabled = dataMigrationBusy;
@@ -1295,6 +1296,20 @@ $('chooseMemoryDirectory').onclick = async () => {
     await saveMemoryDirectory();
   } catch (error) { status(error.message, true); }
 };
+function syncThemeChoices() {
+  const value = $('theme').value;
+  for (const button of document.querySelectorAll('[data-theme-choice]')) {
+    button.setAttribute('aria-pressed', String(button.dataset.themeChoice === value));
+  }
+  document.documentElement.dataset.theme = value;
+}
+for (const button of document.querySelectorAll('[data-theme-choice]')) {
+  button.addEventListener('click', () => {
+    $('theme').value = button.dataset.themeChoice;
+    $('theme').dispatchEvent(new Event('change', { bubbles: true }));
+  });
+}
+$('theme').addEventListener('change', syncThemeChoices);
 async function saveGeneral() {
   try {
     const result = await api.workbenchSaveSettings({ language: $('language').value, theme: $('theme').value, autoRefreshBalances: $('autoRefreshBalances').checked, closeToTray: $('closeToTray').checked,
@@ -1316,9 +1331,9 @@ function renderNetworkModeHint(value = lastNetworkValue) {
   const t = window.CamelliaI18n.t;
   const mode = value?.configured || $('networkMode').value || 'direct';
   const text = {
-    auto: 'Auto tests the connections and keeps direct-first only when direct works everywhere; otherwise it stays on the system proxy. Requests already sent are not replayed.',
-    direct: 'Every request goes straight out without a proxy, including subscriptions and downloads.',
-    system: 'Every request goes through the detected system proxy. If that proxy stops working, Camellia switches to Auto so work continues.',
+    auto: 'Prefer direct connections if all tests pass; otherwise use the system proxy. Sent requests are not replayed.',
+    direct: 'Connect without a proxy, including subscriptions and downloads.',
+    system: 'Use the system proxy; switch to Auto if it becomes unreachable.',
   }[mode] || '';
   $('networkModeHint').textContent = t(text);
 }
@@ -1444,7 +1459,7 @@ async function refresh(initial = false) {
       const preferences = await api.workbenchSettings();
       if (!preferences.ok) throw new Error(preferences.error);
       $('language').value = preferences.language || 'en';
-      $('theme').value = preferences.theme; $('autoRefreshBalances').checked = preferences.autoRefreshBalances; $('closeToTray').checked = !!preferences.closeToTray;
+      $('theme').value = preferences.theme; syncThemeChoices(); $('autoRefreshBalances').checked = preferences.autoRefreshBalances; $('closeToTray').checked = !!preferences.closeToTray;
       $('antigravityAutoRefresh').checked = preferences.subscriptionAutoRefresh?.antigravity !== false;
       $('chatContentWidth').value = preferences.chatContentWidth || 'standard';
       $('memoryDirectory').value = preferences.memoryDirectory || '';
@@ -1469,7 +1484,7 @@ function renderPluginCacheMaintenance(state) {
   $('pluginCacheStatus').classList.toggle('error', Boolean(result?.error));
   $('pluginCacheStatus').textContent = result?.error ? t(result.error) : result
     ? t('Shared {0} duplicate caches; freed {1}. Skipped {2} items.').replace('{0}', () => fmt(result.duplicates || 0)).replace('{1}', () => migrationBytes(result.bytes || 0)).replace('{2}', () => fmt(result.skipped?.length || 0))
-    : t('Restart to share identical cached plugins and free space. Conversation history and account data are kept.');
+    : t('Share duplicate plugin caches after restarting. Keeps conversations and accounts.');
 }
 $('maintainPluginCaches').onclick = async () => {
   if (dataMigrationBusy || storageBusy) return;
@@ -1599,7 +1614,7 @@ async function renderArchived() {
     $('archivedList').innerHTML = result.sessions.map(s => `<div class="setting-row archived-row">
       <div><h2>${esc(s.title)}</h2><p class="hint">${esc(engineNames[s.origin || s.source] || s.source)} · ${esc(t("Archived"))} ${when(s.archivedAt)}${s.missing ? ' · ' + esc(t("Files missing")) : ''}</p></div>
       <div class="archived-actions"><button data-restore="${esc(s.source)}:${esc(s.id)}" data-i18n>Restore</button><button class="danger" data-delete="${esc(s.source)}:${esc(s.id)}" data-i18n>Delete</button></div>
-    </div>`).join('') || `<div class="empty"><h2 data-i18n>No archived conversations</h2><p class="hint" data-i18n>Archive a conversation from its ⋯ menu in the sidebar and it will appear here.</p></div>`;
+    </div>`).join('') || `<div class="empty"><h2 data-i18n>No archived conversations</h2><p class="hint" data-i18n>Archive conversations from the sidebar's ⋯ menu.</p></div>`;
   } catch (e) { if (sequence === archivedRenderSeq && !archivedDeleting) status(e.message, true); }
 }
 $('archivedList').onclick = async e => {

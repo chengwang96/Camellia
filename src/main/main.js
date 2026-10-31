@@ -36,15 +36,13 @@ const { downloadSettings } = require('./download-network.js');
 const { subscriptionEnvironment } = require('./network-settings.js');
 const { createEngineSettings, backup } = require('../engines/engine-settings.js');
 const runtimePaths = require('./runtime-paths.js');
-const { BenchmarkRunner } = require('../benchmark/runner');
-const { createLibraryManager } = require('../benchmark/libraries');
 const { SharedConversations, preferences: conversationPreferences, shortTitle } = require('../engines/shared-conversations');
 const { validateMemoryDirectory } = require('../engines/global-memory');
 const { createDshChat } = require('../engines/dsh-session');
 const { createGrokChat } = require('../engines/grok-session');
 const { createGrokAccount } = require('../engines/grok-account');
 const { createZoomController, readLegacyZoom } = require('./zoom-controller');
-const { createSettingsWindowSizeCache } = require('./settings-window-size');
+const { createSettingsWindowSizeCache, settingsWindowBounds } = require('./settings-window-size');
 const settingsWindowSizes = createSettingsWindowSizeCache({
   screen, onError: error => log(`Settings window size: ${error.message}`),
 });
@@ -120,6 +118,7 @@ const APP_ROOT = path.resolve(__dirname, '../..');
 const RENDERER_ROOT = path.join(APP_ROOT, 'src/renderer');
 const APP_NAME = 'Camellia';
 const APP_NAME_CLAUDE = 'Claude Code';
+const windowChrome = require('./window-chrome').createWindowChrome({ ipcMain, Menu, nativeTheme, loadConfig, translate });
 const STARTUP_TIMEOUT_MS = 120_000;
 const DEFAULT_PORT = 3000;
 const DSH_HOME = process.env.DSH_HOME || path.join(os.homedir(), '.dsh');
@@ -292,7 +291,6 @@ let migrationBusy = false;
 // Serializing transfers does not require stopping unrelated engine activity.
 // Only native history snapshots and imports that replace settings/history do.
 let migrationBlocksEngines = false;
-let migrationImportsApi = false;
 function engineBusy(engine) {
   return sharedConversations.isBusy(engine)
     || (engine === 'grok' && grokChat.sessions.running)
@@ -372,7 +370,7 @@ const runtimeUninstallPreviews = new Map();
 function assertRuntimeReinstallAllowed(engine) {
   assertRuntimeAvailable(engine);
   if (appUpdatesService?.state().installing) throw new Error('Wait for the Camellia update to finish before updating a runtime');
-  if (benchmarkRunner?.pending || discussionService?.active) throw new Error('Stop the benchmark or discussion before updating a runtime');
+  if (discussionService?.active) throw new Error('Stop the discussion before updating a runtime');
   if (engineBusy(engine)) throw new Error('Stop conversations using this engine before updating it');
   if (engine === 'kimi' && kimiAccount.active) throw new Error('Wait for Kimi account activity to finish before updating it');
 }
@@ -405,7 +403,7 @@ function runtimeUpdates() {
       downloadSettings: () => loadConfig().downloadProxy,
       beforeInstall: async engine => {
         if (appUpdatesService?.state().installing) throw new Error('Wait for the Camellia update to finish before updating a runtime');
-        if (benchmarkRunner?.pending || discussionService?.active) throw new Error('Stop the benchmark or discussion before updating a runtime');
+        if (discussionService?.active) throw new Error('Stop the discussion before updating a runtime');
         if (engineBusy(engine)) throw new Error('Stop conversations using this engine before updating it');
         if (engine === 'kimi' && kimiAccount.active) throw new Error('Wait for Kimi account activity to finish before updating it');
         const reopenDshPanel = engine === 'dsh' && Boolean(nativeSettingsLoad || backend.current);
@@ -446,22 +444,6 @@ function runtimeEnvironment(node, engine) {
   return { ...process.env, PATH: paths.concat(process.env.PATH || '').join(path.delimiter) };
 }
 
-let benchmarkRunner;
-let benchmarkLibraryManager;
-function benchmarkLibraries() {
-  if (!benchmarkLibraryManager) benchmarkLibraryManager = createLibraryManager({
-    directory: path.join(app.getPath('userData'), 'benchmark-libraries'),
-    downloadOptions: () => downloadSettings(loadConfig().downloadProxy),
-    onChange: () => benchmarkRunner?.emit(true),
-  });
-  return benchmarkLibraryManager;
-}
-function benchmarks() {
-  if (!benchmarkRunner) benchmarkRunner = new BenchmarkRunner({ directory: path.join(app.getPath('userData'), 'benchmarks'),
-    runtimes, node: detectNode, getRouter: () => ollamaProxyHandle, libraries: benchmarkLibraries(),
-    onChange: state => { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('dsh:benchmark-state', state); } });
-  return benchmarkRunner;
-}
 let nativeSettings;
 function engineSettings() {
   if (!nativeSettings) nativeSettings = createEngineSettings({ home: os.homedir(),
@@ -732,7 +714,6 @@ async function stopOllamaProxyHandle() {
   if (handle) await handle.stop();
 }
 async function saveApiRouter(payload) {
-  if (benchmarkRunner?.pending) throw new Error('Stop the benchmark before changing API routes so all engines use the same configuration');
   const prev = readOllamaProxyConfig();
   const next = routerConfig.normalizeConfig(payload, prev);
   const restartClient = prev.port !== next.port || routerConfig.hasRoutes(prev) !== routerConfig.hasRoutes(next);
@@ -1315,12 +1296,13 @@ sharedConversations = new SharedConversations({ dir: path.join(app.getPath('user
   },
 });
 
-remoteDesktop = require('./remote/desktop').createRemoteDesktop({ app, BrowserWindow, ipcMain, nativeTheme,
+remoteDesktop = require('./remote/desktop').createRemoteDesktop({ app, BrowserWindow, ipcMain, nativeTheme, windowChrome,
+  getMainWindow: () => mainWindow,
   getDiscussions: ['win32', 'darwin'].includes(process.platform) ? discussions : null,
   prepareRestart: async () => {
     const available = () => {
       if (appQuitting || migrationBusy || migrationBlocksEngines || runtimeManager?.busy || anyRuntimeUpdating()
-          || benchmarkLibraryManager?.busy || appUpdatesService?.state().installing)
+          || appUpdatesService?.state().installing)
         throw new Error('Wait for Camellia downloads, updates and data transfers to finish before restarting');
     };
     available();
@@ -1329,7 +1311,7 @@ remoteDesktop = require('./remote/desktop').createRemoteDesktop({ app, BrowserWi
   }, log,
   manager: sharedConversations, rendererRoot: RENDERER_ROOT, loadConfig, getSettingsWindow: () => settingsWindow, apiRoutes: apiRoutesBundle,
   networkFactory: sharedDesktopNetwork.factory, computerName, saveComputerName: name => normalizeComputerName(saveConfig({ computerName: normalizeComputerName(name) }).computerName) });
-const cliDevices = require('./remote/devices-desktop').createDevicesDesktop({ app, ipcMain, BrowserWindow,
+const cliDevices = require('./remote/devices-desktop').createDevicesDesktop({ app, ipcMain, BrowserWindow, windowChrome,
   safeStorage: require('electron').safeStorage, shell, dialog, nativeImage: require('electron').nativeImage,
   getSurfaces: () => [settingsWindow, nativeSettingsView].map(liveWebContents).filter(Boolean),
   getSettingsWindow: () => settingsWindow, openSettings: target => openSettingsWindow(target),
@@ -1467,6 +1449,8 @@ let appQuitting = false;
 let currentMode = 'home';
 
 let settingsWindow = null;
+let settingsOpening = null;
+let settingsShowReady = false;
 let settingsCloseReady = false, settingsFlush = null, settingsQuitPending = false;
 let nativeSettingsView = null;
 let nativeSettingsLoad = null;
@@ -1494,11 +1478,27 @@ function flushSettingsWindow() {
   return settingsFlush;
 }
 
+function setSettingsBackdrop(owner, visible) {
+  // Prepare the native caption before creating/showing a modal can disable its
+  // owner. Wait for the matching renderer frame before revealing Settings.
+  windowChrome.setDimmed(owner, visible);
+  const contents = liveWebContents(owner);
+  if (!contents) return Promise.resolve();
+  contents.send('dsh:settings-overlay', visible);
+  if (!visible) return Promise.resolve();
+  return contents.executeJavaScript('window.paintSettingsBackdrop?.()').catch(error => {
+    if (liveWebContents(owner)) log(`Settings backdrop: ${error.message}`);
+  });
+}
+
 function openSettingsWindow(target = {}) {
   if (settingsWindow && !settingsWindow.isDestroyed()) {
     const existingSettingsWindow = settingsWindow;
-    existingSettingsWindow.show();
-    existingSettingsWindow.focus();
+    // Repeated clicks during startup must not bypass the first-paint barrier.
+    if (settingsShowReady) {
+      existingSettingsWindow.show();
+      existingSettingsWindow.focus();
+    }
     const navigate = () => {
       if (settingsWindow !== existingSettingsWindow || existingSettingsWindow.isDestroyed()) return;
       existingSettingsWindow.webContents.send('dsh:settings-navigate', target);
@@ -1507,58 +1507,96 @@ function openSettingsWindow(target = {}) {
     else navigate();
     return;
   }
-  settingsCloseReady = false;
-  const { width, height } = settingsWindowSizes.size;
-  settingsWindow = new BrowserWindow({
-    width,
-    height,
-    minWidth: 760,
-    minHeight: 620,
-    // Create hidden and centered: showing the window before the renderer has
-    // painted makes it appear at the OS default position for a moment and then
-    // jump to its final place.
-    show: false,
-    center: true,
-    icon: path.join(APP_ROOT, 'assets/icon-256.png'),
-    title: `Settings — ${APP_NAME}`,
-    backgroundColor: nativeTheme.shouldUseDarkColors ? '#151517' : '#ffffff',
-    autoHideMenuBar: true,
-    webPreferences: {
-      zoomFactor: desktopZoom().factor,
-      preload: path.join(__dirname, 'preload.js'),
-      contextIsolation: true,
-      nodeIntegration: false,
-    },
-  });
-  const settingsContents = settingsWindow.webContents;
-  const closingWindow = settingsWindow;
-  settingsWindow.on('close', event => {
-    if (settingsCloseReady) return;
-    event.preventDefault();
-    void flushSettingsWindow().then(saved => {
-      if (!saved || closingWindow.isDestroyed()) return;
-      settingsCloseReady = true;
-      closingWindow.close();
+  if (settingsOpening) { settingsOpening.target = target; return; }
+  settingsCloseReady = false; settingsShowReady = false;
+  const owner = mainWindow && !mainWindow.isDestroyed() ? mainWindow : null;
+  if (owner?.isMinimized()) owner.restore();
+  if (owner && !owner.isVisible()) owner.show();
+  const opening = settingsOpening = { target };
+  void (async () => {
+    // Yield before BrowserWindow construction as well: creating a modal can
+    // block native painting while the renderer is already drawing its mask.
+    await setSettingsBackdrop(owner, true);
+    if (appQuitting || (owner && owner.isDestroyed())) {
+      settingsOpening = null;
+      void setSettingsBackdrop(owner, false);
+      return;
+    }
+    const preferredSize = settingsWindowSizes.size;
+    const bounds = owner ? settingsWindowBounds(preferredSize, owner.getContentBounds()) : preferredSize;
+    settingsWindow = new BrowserWindow({
+      ...bounds,
+      minWidth: Math.min(760, bounds.width),
+      minHeight: Math.min(620, bounds.height),
+      ...(owner ? { parent: owner, modal: true } : { center: true }),
+      // The renderer paints the rounded panel and close control. Keep the
+      // existing isolated settings renderer and its save-before-close lifecycle.
+      frame: false,
+      transparent: true,
+      backgroundColor: '#00000000',
+      hasShadow: true,
+      roundedCorners: true,
+      resizable: false,
+      minimizable: false,
+      maximizable: false,
+      fullscreenable: false,
+      skipTaskbar: Boolean(owner),
+      show: false,
+      icon: path.join(APP_ROOT, 'assets/icon-256.png'),
+      title: `Settings — ${APP_NAME}`,
+      autoHideMenuBar: true,
+      webPreferences: {
+        zoomFactor: desktopZoom().factor,
+        preload: path.join(__dirname, 'preload.js'),
+        contextIsolation: true,
+        nodeIntegration: false,
+        additionalArguments: ['--camellia-settings-window'],
+      },
     });
+    opening.window = settingsWindow; settingsOpening = null;
+    const settingsContents = settingsWindow.webContents;
+    settingsWindow.setMenu(null);
+    const closingWindow = settingsWindow;
+    settingsWindow.on('close', event => {
+      if (settingsCloseReady) return;
+      event.preventDefault();
+      void flushSettingsWindow().then(saved => {
+        if (!saved || closingWindow.isDestroyed()) return;
+        settingsCloseReady = true;
+        closingWindow.close();
+      });
+    });
+    desktopZoom().attach(settingsContents);
+    settingsWindow.once('ready-to-show', () => {
+      if (settingsWindow !== closingWindow || closingWindow.isDestroyed()) return;
+      if (owner && !owner.isDestroyed()) {
+        settingsWindow.setBounds(settingsWindowBounds(preferredSize, owner.getContentBounds()));
+      } else settingsWindow.center();
+      settingsShowReady = true;
+      settingsWindow.show();
+    });
+    settingsWindow.on('closed', () => {
+      const nativeContents = liveWebContents(nativeSettingsView);
+      settingsWindow = null; settingsShowReady = false;
+      nativeSettingsView = null; nativeSettingsLoad = null;
+      cliDevices.detach([settingsContents, nativeContents]);
+      if (nativeContents && !nativeContents.isDestroyed()) nativeContents.close();
+      void setSettingsBackdrop(owner, false);
+    });
+    const destination = opening.target;
+    settingsWindow.loadFile(path.join(RENDERER_ROOT, 'settings/api-settings.html'), { query: { page: destination.page || 'general', engine: destination.engine || 'dsh', ...(destination.focus ? { focus: destination.focus } : {}) } });
+  })().catch(error => {
+    if (settingsOpening === opening) settingsOpening = null;
+    if (opening.window && !opening.window.isDestroyed()) opening.window.destroy();
+    if (settingsWindow === opening.window) { settingsWindow = null; settingsShowReady = false; }
+    void setSettingsBackdrop(owner, false);
+    log(`Settings window: ${error.message}`);
   });
-  desktopZoom().attach(settingsContents);
-  settingsWindow.once('ready-to-show', () => {
-    if (!settingsWindow || settingsWindow.isDestroyed()) return;
-    settingsWindow.center();
-    settingsWindow.show();
-  });
-  settingsWindow.on('closed', () => {
-    const nativeContents = liveWebContents(nativeSettingsView);
-    settingsWindow = null;
-    nativeSettingsView = null; nativeSettingsLoad = null;
-    cliDevices.detach([settingsContents, nativeContents]);
-    if (nativeContents && !nativeContents.isDestroyed()) nativeContents.close();
-  });
-  settingsWindow.loadFile(path.join(RENDERER_ROOT, 'settings/api-settings.html'), { query: { page: target.page || 'general', engine: target.engine || 'dsh', ...(target.focus ? { focus: target.focus } : {}) } });
 }
 
 function createMainWindow() {
   mainWindow = new BrowserWindow({
+    ...windowChrome.options(),
     width: 1320,
     height: 900,
     minWidth: 960,
@@ -1576,6 +1614,7 @@ function createMainWindow() {
   });
 
   desktopZoom().attach(mainWindow.webContents);
+  windowChrome.attach(mainWindow);
 
   mainWindow.on('close', event => {
     if (!appQuitting && loadConfig().closeToTray) { event.preventDefault(); mainWindow.hide(); }
@@ -1626,6 +1665,15 @@ if (!gotSingleInstanceLock) {
     return { ok: true };
   });
 
+  ipcMain.handle('dsh:close-settings-window', event => {
+    const contents = settingsWindow?.webContents;
+    if (!contents || event.sender !== contents || event.senderFrame !== contents.mainFrame) return { ok: false };
+    settingsWindow.close();
+    return { ok: true };
+  });
+  ipcMain.handle('dsh:settings-overlay', event => Boolean((settingsOpening || (settingsWindow && !settingsWindow.isDestroyed()))
+    && event.sender === mainWindow?.webContents && event.senderFrame === mainWindow.webContents.mainFrame));
+
   ipcMain.handle('dsh:native-settings-ready', event => {
     if (event.sender === nativeSettingsView?.webContents) settingsWindow?.webContents.send('dsh:native-settings-ready');
   });
@@ -1662,35 +1710,6 @@ if (!gotSingleInstanceLock) {
   });
 
   for (const [name, handler] of Object.entries({
-    'benchmark-state': () => ({ ok: true, ...benchmarks().state() }),
-    'benchmark-start': async payload => {
-      if (migrationBlocksEngines || migrationImportsApi) throw new Error('Wait for the data transfer to finish before starting a benchmark');
-      if (anyRuntimeUpdating()) throw new Error('Wait for runtime updates to finish before starting a benchmark');
-      return { ok: true, ...await benchmarks().start(payload) };
-    },
-    'benchmark-cancel': () => benchmarks().cancel(),
-    'benchmark-report': ({ id }) => ({ ok: true, report: benchmarks().report(id) }),
-    'benchmark-delete': ({ id }) => benchmarks().deleteReport(id),
-    'benchmark-install': async ({ engine }) => {
-      if (!['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'grok'].includes(engine)) throw new Error('Unknown benchmark engine');
-      assertRuntimeAvailable(engine);
-      if (benchmarkRunner?.pending) throw new Error('Stop the benchmark before downloading an engine');
-      await runtimes().ensure(engine, 'api');
-      return { ok: true, ...benchmarks().state() };
-    },
-    'benchmark-prepare-library': async ({ library }) => {
-      if (benchmarkRunner?.pending) throw new Error('Stop the benchmark before preparing a question library');
-      await benchmarkLibraries().ensure(library);
-      return { ok: true, ...benchmarks().state() };
-    },
-    'benchmark-export': async ({ id }) => {
-      const report = benchmarks().report(id);
-      const result = await dialog.showSaveDialog(mainWindow, { title: uiText('Export benchmark report'),
-        defaultPath: `camellia-bench-${report.startedAt.slice(0, 10)}-${id.slice(0, 8)}.json`, filters: [{ name: 'JSON report', extensions: ['json'] }] });
-      if (result.canceled || !result.filePath) return { ok: true, canceled: true };
-      writeJson(result.filePath, report);
-      return { ok: true };
-    },
     'engine-settings-get': ({ engine }) => ({ ok: true, ...engineSettings().get(engine) }),
     'subscription-preferences-get': ({ engine }) => {
       if (!['codex', 'kimi', 'antigravity', 'grok'].includes(engine)) throw new Error('Unknown subscription engine');
@@ -1808,7 +1827,7 @@ if (!gotSingleInstanceLock) {
     'runtime-update': async ({ engine }) => {
       if (migrationBlocksEngines) throw new Error('Wait for the data transfer to finish before starting an engine');
       if (appUpdatesService?.state().installing) throw new Error('Wait for the Camellia update to finish before updating a runtime');
-      if (benchmarkRunner?.pending || discussionService?.active) throw new Error('Stop the benchmark or discussion before updating a runtime');
+      if (discussionService?.active) throw new Error('Stop the discussion before updating a runtime');
       if (engineBusy(engine)) throw new Error('Stop conversations using this engine before updating it');
       if (engine === 'kimi' && kimiAccount.active) throw new Error('Wait for Kimi account activity to finish before updating it');
       return runtimeUpdates().update(engine);
@@ -2375,8 +2394,8 @@ if (!gotSingleInstanceLock) {
   };
   const assertMigrationIdle = () => {
     if (cleanupActivity()) throw new Error('Stop the current response or goal before moving your data');
-    if (benchmarkRunner?.pending || discussionService?.active) throw new Error('Stop the benchmark or discussion before moving your data');
-    if (runtimeManager?.busy || anyRuntimeUpdating() || benchmarkLibraryManager?.busy || appUpdatesService?.state().installing) {
+    if (discussionService?.active) throw new Error('Stop the discussion before moving your data');
+    if (runtimeManager?.busy || anyRuntimeUpdating() || appUpdatesService?.state().installing) {
       throw new Error('Wait for downloads and updates to finish before moving your data');
     }
   };
@@ -2387,14 +2406,11 @@ if (!gotSingleInstanceLock) {
     const replacesProfile = importing && (scope.includes('settings') || scope.includes('conversations'));
     if (scope.includes('conversations') || replacesProfile) {
       if (cleanupActivity()) throw new Error('Stop the current response or goal before moving your data');
-      if (benchmarkRunner?.pending || discussionService?.active) throw new Error('Stop the benchmark or discussion before moving your data');
+      if (discussionService?.active) throw new Error('Stop the discussion before moving your data');
     }
     // Runtime upgrades can rewrite the local configuration merged by these
-    // imports. Runtime/quiz downloads only populate excluded installation data.
+    // imports. Runtime downloads only populate excluded installation data.
     if (replacesProfile && anyRuntimeUpdating()) throw new Error('Wait for runtime updates to finish before importing settings or conversations');
-    if (importing && scope.includes('api') && benchmarkRunner?.pending) {
-      throw new Error('Stop the benchmark before changing API routes so all engines use the same configuration');
-    }
   };
   ipcMain.handle('dsh:data-directory-migrate', async () => {
     if (migrationBusy) return { ok: false, error: uiText('A data transfer is already running') };
@@ -2494,7 +2510,6 @@ if (!gotSingleInstanceLock) {
       const summary = await importDataPackage({ file, scope, dataDir: app.getPath('userData'), home: migrationHome,
         installedEngines: migrationEngines(), onProgress: migrationProgress, beforeApply: async () => {
           migrationBlocksEngines = kinds.includes('settings') || kinds.includes('conversations');
-          migrationImportsApi = kinds.includes('api');
           assertDataTransferIdle(kinds, true);
           if (migrationBlocksEngines) {
             for (const engine of NETWORK_ENGINES) await stopEngineForUpdate(engine, 'data import');
@@ -2505,7 +2520,7 @@ if (!gotSingleInstanceLock) {
       return { ok: true, ...summary, ...(warning ? { warning } : {}) };
     } catch (error) { log('data import failed: ' + error.message); return { ok: false, error: error.message,
       ...(error.backupDir ? { backupDir: error.backupDir, rolledBack: error.rolledBack, recoveryRequired: error.recoveryRequired === true } : {}) }; }
-    finally { migrationBusy = false; migrationBlocksEngines = false; migrationImportsApi = false; migrationProgress({ phase: 'done' }); remoteDesktop?.attachmentsChanged(); }
+    finally { migrationBusy = false; migrationBlocksEngines = false; migrationProgress({ phase: 'done' }); remoteDesktop?.attachmentsChanged(); }
   });
   const archivedSources = () => ({
     claude: claudeWorkspaces, kimi: kimiWorkspaces, codex: codex.workspaces,
@@ -2775,7 +2790,7 @@ if (!gotSingleInstanceLock) {
       return;
     }
     createMainWindow();
-    const mode = ['home', 'benchmark', 'claude', 'codex', 'dsh', 'kimi', 'antigravity', 'grok'].includes(currentMode) ? currentMode : 'home';
+    const mode = ['home', 'claude', 'codex', 'dsh', 'kimi', 'antigravity', 'grok'].includes(currentMode) ? currentMode : 'home';
     currentMode = mode;
     void loadMode(mode);
   }
@@ -2811,6 +2826,7 @@ if (!gotSingleInstanceLock) {
 
   app.whenReady().then(async () => {
     settingsWindowSizes.start();
+    windowChrome.start();
     try { await networkSettings().initialize(); }
     catch (error) { log('Network settings: ' + error.message); }
     if (process.platform === 'darwin' && app.dock) {
@@ -2895,7 +2911,7 @@ if (!gotSingleInstanceLock) {
       kimiClosing = true;
       void Promise.allSettled([remoteDesktop?.close(), cliDevices.close(), backend.stopAndWait(), stopOllamaProxyHandle(),
         discussionService?.shutdown(), claudeSessions.shutdown(), codex.shutdown(), kimiAccount.shutdown(), grokChat.shutdown(),
-        dshChat.shutdown(), kimiSessions.shutdown(), antigravity.shutdown(), benchmarkRunner?.shutdown()]).then(results => {
+        dshChat.shutdown(), kimiSessions.shutdown(), antigravity.shutdown()]).then(results => {
         if (results.some(result => result.status === 'rejected')) {
           if (pluginCacheRestart) {
             try { cancelPluginCacheMaintenance(app.getPath('userData')); } catch (error) { log('Cancel plugin cache maintenance: ' + error.message); }
@@ -2908,10 +2924,10 @@ if (!gotSingleInstanceLock) {
       });
       return;
     }
-    if ((discussionService?.active || claudeSessions.active || codex.active || kimiAccount.active || grokChat.sessions.active || dshChat.sessions.active || kimiSessions.active || antigravity.sessions.active || benchmarkRunner?.pending) && !kimiClosing) {
+    if ((discussionService?.active || claudeSessions.active || codex.active || kimiAccount.active || grokChat.sessions.active || dshChat.sessions.active || kimiSessions.active || antigravity.sessions.active) && !kimiClosing) {
       event.preventDefault();
       kimiClosing = true;
-      void Promise.allSettled([discussionService?.shutdown(), claudeSessions.shutdown(), codex.shutdown(), kimiAccount.shutdown(), grokChat.shutdown(), dshChat.shutdown(), kimiSessions.shutdown(), antigravity.shutdown(), benchmarkRunner?.shutdown()]).finally(() => app.quit());
+      void Promise.allSettled([discussionService?.shutdown(), claudeSessions.shutdown(), codex.shutdown(), kimiAccount.shutdown(), grokChat.shutdown(), dshChat.shutdown(), kimiSessions.shutdown(), antigravity.shutdown()]).finally(() => app.quit());
       return;
     }
     stopBackend();
@@ -2944,7 +2960,7 @@ if (!gotSingleInstanceLock) {
     return switchMode(mode);
   }
   async function switchMode(mode, conversationId, navigation, inPlace = false) {
-    if (!['home', 'benchmark', 'discussions', 'claude', 'codex', 'dsh', 'kimi', 'antigravity', 'grok'].includes(mode)) {
+    if (!['home', 'discussions', 'claude', 'codex', 'dsh', 'kimi', 'antigravity', 'grok'].includes(mode)) {
       return { ok: false, error: 'Unknown engine or page' };
     }
     const request = ++modeRequest;
@@ -2963,7 +2979,7 @@ if (!gotSingleInstanceLock) {
       return { ok: true };
     }
     try {
-      if (!['home', 'benchmark', 'discussions'].includes(next) && !(next === 'dsh' && loadConfig().dshBin)) await runtimes().ensure(next, conversationId ? sharedConversations.settings(next, conversationId).connection : undefined);
+      if (!['home', 'discussions'].includes(next) && !(next === 'dsh' && loadConfig().dshBin)) await runtimes().ensure(next, conversationId ? sharedConversations.settings(next, conversationId).connection : undefined);
     } catch (error) {
       if (error.code === 'DOWNLOAD_CANCELLED') return { ok: true, canceled: true };
       log(`runtime preparation failed: ${error.message}`);
@@ -2975,7 +2991,7 @@ if (!gotSingleInstanceLock) {
       || mainWindow.webContents.getURL().split(/[?#]/)[0] !== require('node:url').pathToFileURL(path.join(RENDERER_ROOT, 'chat/claude.html')).href)) {
       return { ok: false, error: 'The chat page changed. Open the conversation again.' };
     }
-    if (!['home', 'benchmark', 'discussions'].includes(next)) saveConfig({ mode: next });
+    if (!['home', 'discussions'].includes(next)) saveConfig({ mode: next });
     currentMode = next;
     log(`switch mode → ${next}`);
     // Update window title and menu according to mode
@@ -2993,8 +3009,8 @@ if (!gotSingleInstanceLock) {
       if (mainWindow && !mainWindow.isDestroyed()) {
         if (currentMode !== next) return;
         const discussionEngine = Object.hasOwn(ENGINES, loadConfig().mode) ? loadConfig().mode : 'claude';
-        await mainWindow.loadFile(path.join(RENDERER_ROOT, next === 'benchmark' ? 'benchmark/benchmark.html' : next === 'home' ? 'home/home.html' : 'chat/claude.html'),
-          ['home', 'benchmark'].includes(next) ? undefined : { query: next === 'discussions' ? { harness: discussionEngine, discussion: '1', ...navigation }
+        await mainWindow.loadFile(path.join(RENDERER_ROOT, next === 'home' ? 'home/home.html' : 'chat/claude.html'),
+          next === 'home' ? undefined : { query: next === 'discussions' ? { harness: discussionEngine, discussion: '1', ...navigation }
             : { harness: next, ...(conversationId ? { conversation: conversationId } : {}), ...navigation } });
       }
     } catch (err) {
@@ -3009,7 +3025,7 @@ if (!gotSingleInstanceLock) {
   function setMenu() {
     const template = [
       {
-        label: APP_NAME,
+        label: process.platform === 'darwin' ? APP_NAME : 'Application',
         submenu: [
           { label: "About", click: () => dialog.showMessageBox({ type: 'info', title: `About ${APP_NAME}`, message: APP_NAME, detail: `Version ${app.getVersion()}\nEngine: ${engineStatusText()}` }) },
           { type: 'separator' },
@@ -3025,7 +3041,6 @@ if (!gotSingleInstanceLock) {
         label: "Engine",
         submenu: [
           { label: "Home", accelerator: 'CmdOrCtrl+Shift+H', click: () => switchMode('home') },
-          { label: "Benchmark", click: () => switchMode('benchmark') },
           { type: 'separator' },
           { label: "Switch to Claude Code", click: () => navigateMode('claude') },
           { label: "Switch to Codex CLI", click: () => navigateMode('codex') },
@@ -3068,5 +3083,9 @@ if (!gotSingleInstanceLock) {
     }
     localize(template);
     Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+    // Rebuilding translated menus must not restore a native menu on the
+    // frameless settings panel.
+    if (settingsWindow && !settingsWindow.isDestroyed()) settingsWindow.setMenu(null);
+    windowChrome.refresh();
   }
 }

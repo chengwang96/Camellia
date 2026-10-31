@@ -49,6 +49,7 @@ const methods = {
   grokAccountAdd: 'grok-account-add', grokAccountRemove: 'grok-account-remove', grokAccountLabel: 'grok-account-label',
   grokSignIn: 'grok-sign-in', grokCancelLogin: 'grok-cancel-login', grokOpenLogin: 'grok-open-login', grokSignOut: 'grok-sign-out',
   workbenchSettings: 'workbench-settings', workbenchSaveSettings: 'workbench-save-settings',
+  settingsOverlay: 'settings-overlay',
   savePastedText: 'save-pasted-text',
   openFileExternally: 'open-file-externally',
 };

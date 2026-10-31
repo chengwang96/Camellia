@@ -50,6 +50,7 @@ try:
         page.goto((repo/'src/renderer/settings/api-settings.html').as_uri()+'?page=engines&engine=grok',wait_until='networkidle')
         expect(page.locator('[data-engine=grok]')).to_have_attribute('aria-selected','true')
         expect(page.locator('#engineScopeTitle')).to_have_text('Grok Build in Camellia')
+        expect(page.locator('#engineCommon input[data-field=contextWindow], #engineCommon input[data-desktop=contextWindow]')).to_have_count(1)
         page.locator('[data-field=permissionMode]').select_option('auto')
         page.locator('[data-field=thinkingBudget]').select_option('high')
         page.locator('[data-field=contextWindow]').fill('131072')

@@ -111,10 +111,6 @@ jobs:
         run: npm run test:antigravity
       - name: Antigravity subscription CLI smoke test
         run: npm run test:antigravity:subscription
-      - name: Benchmark harnesses smoke test
-        run: npm run test:benchmark
-      - name: Benchmark DSH limits smoke test
-        run: node tests/benchmark-dsh-limits-smoke.cjs
       - name: Native tools audit
         run: npm run test:tools
       - name: Kimi subscription protocol smoke test
@@ -157,7 +153,6 @@ jobs:
           retention-days: 14
           path: |
             dist/tools-native-audit*.json
-            dist/benchmark-native-smoke.json
             dist/antigravity-sdk-diagnostics.json
             dist/antigravity-subscription-diagnostics.json
             dist/grok-smoke-diagnostics.json

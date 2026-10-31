@@ -242,14 +242,13 @@ test('scoped requests preserve the actual output cap and stream finish reason af
     events.find(event => event.choices?.[0]?.finish_reason).choices[0].finish_reason = 'length';
     stream(res, events);
   }, url => [provider('p', url, ['exhausted', 'working'])]);
-  const usage = [], requests = [], scope = f.router.createScope({ model: 'kimi-k3', providerId: 'p',
-    onUsage: record => usage.push(record), onRequest: request => requests.push(request) });
+  const usage = [], scope = f.router.createScope({ model: 'kimi-k3', providerId: 'p',
+    onUsage: record => usage.push(record) });
   const response = await f.post({ stream: true, max_tokens: 8192 }, scope.path + '/v1/messages');
   assert.match(await response.text(), /max_tokens/); await scope.close();
   assert.equal(usage.length, 2); assert.equal(usage[0].failureKind, 'quota');
   assert.equal(usage[1].outcome, 'success'); assert.equal(usage[1].finishReason, 'length');
   assert.equal(usage[1].maxOutputTokens, 8192);
-  assert.deepEqual(requests.map(r => r.sequence), [1, 2]);
   assert.deepEqual(usage.map(r => r.sequence), [1, 2]);
   assert.ok(usage.every(r => Number.isFinite(r.durationMs) && r.durationMs >= 0));
 });
@@ -315,6 +314,95 @@ test('boolean-only Anthropic routes use thinking switches instead of fabricated 
     const request = harness.requests.at(-1).body;
     assert.equal(request.output_config, undefined);
     assert.deepEqual(request.thinking, effort ? { type: effort === 'none' ? 'disabled' : 'enabled' } : undefined);
+  }
+});
+
+test('boolean-only thinking controls preserve an explicit disabled switch alongside a named effort', async t => {
+  const model = { ...mapping('kimi-k2.6', 'kimi-k2.6'), thinking: { values: [false, true] } };
+  const harness = await fixture(t, (request, response) => reply(response, 200, completion(request.body.model)),
+    url => [{ ...provider('kimi', url, ['secret'], [model]), type: 'kimi' }]);
+  for (const path of ['/v1/messages', '/v1/chat/completions']) {
+    const response = await harness.post({ model: model.id, max_tokens: 32, thinking: { type: 'disabled' },
+      ...(path === '/v1/messages' ? { output_config: { effort: 'high' } } : { reasoning_effort: 'high' }) }, path);
+    assert.equal(response.status, 200); await response.json();
+    const request = harness.requests.at(-1).body;
+    assert.deepEqual(request.thinking, { type: 'disabled' });
+    assert.equal(request.reasoning_effort, undefined);
+  }
+});
+
+test('DeepSeek effort selections use the native switch across client protocols and built-in API routes', async context => {
+  for (const type of ['deepseek', 'commandcode', 'opencode', 'opencode-go']) {
+    await context.test(type, async t => {
+      const model = { ...mapping('deepseek-v4.1-flash', 'deepseek/deepseek-v4.1-flash'), thinking: { values: ['none', 'low', 'high', 'max'] } };
+      const harness = await fixture(t, (request, response) => reply(response, 200, completion(request.body.model)),
+        url => [{ ...provider(type, url, ['secret'], [model]), type }]);
+      for (const path of ['/v1/responses', '/v1/messages', '/v1/chat/completions']) for (const effort of [undefined, 'none', 'low', 'high', 'max']) {
+        const body = { model: model.id, ...(path === '/v1/responses' ? { input: 'Reply OK.', ...(effort ? { reasoning: { effort } } : {}) }
+          : { max_tokens: 32, ...(effort ? path === '/v1/messages' ? { output_config: { effort } } : { reasoning_effort: effort } : {}) }) };
+        const response = await harness.post(body, path);
+        assert.equal(response.status, 200); await response.json();
+        const request = harness.requests.at(-1).body;
+        assert.equal(request.reasoning_effort, effort === 'none' ? undefined : effort);
+        assert.deepEqual(request.thinking, effort ? { type: effort === 'none' ? 'disabled' : 'enabled' } : undefined);
+      }
+    });
+  }
+});
+
+test('DeepSeek preserves an explicit disabled thinking switch when a named effort is also present', async t => {
+  const model = { ...mapping('deepseek-flash', 'deepseek-flash'), thinking: { values: ['none', 'low', 'high', 'max'] } };
+  const harness = await fixture(t, (request, response) => reply(response, 200, completion(request.body.model)),
+    url => [{ ...provider('deepseek', url, ['secret'], [model]), type: 'deepseek' }]);
+  for (const path of ['/v1/messages', '/v1/chat/completions']) {
+    const response = await harness.post({ model: model.id, max_tokens: 32, thinking: { type: 'disabled' },
+      ...(path === '/v1/messages' ? { output_config: { effort: 'high' } } : { reasoning_effort: 'high' }) }, path);
+    assert.equal(response.status, 200); await response.json();
+    const request = harness.requests.at(-1).body;
+    assert.deepEqual(request.thinking, { type: 'disabled' });
+    assert.equal(request.reasoning_effort, 'high');
+  }
+});
+
+test('DeepSeek Anthropic routes remove only the off effort and preserve other output configuration', async t => {
+  const model = { ...mapping('deepseek-flash', 'deepseek-flash'), thinking: { values: ['none', 'low', 'high', 'max'] } };
+  const harness = await fixture(t, (request, response) => reply(response, 200, {
+    id: 'reply', type: 'message', role: 'assistant', content: [{ type: 'text', text: 'OK' }], stop_reason: 'end_turn', usage: { input_tokens: 1, output_tokens: 1 },
+  }), url => [{ ...provider('deepseek', url, ['secret'], [model], 'anthropic'), type: 'deepseek' }]);
+  const format = { type: 'json_schema', schema: { type: 'object' } };
+  for (const effort of ['none', 'max']) {
+    const response = await harness.post({ model: model.id, max_tokens: 32, output_config: { effort, format } }, '/v1/messages');
+    assert.equal(response.status, 200); await response.json();
+    const request = harness.requests.at(-1).body;
+    assert.deepEqual(request.output_config, effort === 'none' ? { format } : { effort, format });
+    assert.deepEqual(request.thinking, { type: effort === 'none' ? 'disabled' : 'enabled' });
+  }
+});
+
+test('Kimi K3 effort requests strip unsupported generic thinking fields without affecting toggle models', async t => {
+  const models = [mapping('kimi-k3', 'kimi-k3'), mapping('kimi-k3.1-pro', 'kimi-k3.1-pro'),
+    { ...mapping('kimi-k2.6', 'kimi-k2.6'), thinking: { values: [false, true] } }];
+  const harness = await fixture(t, (request, response) => reply(response, 200, completion(request.body.model)),
+    url => [{ ...provider('kimi', url, ['secret'], models), type: 'kimi' }]);
+  for (const model of models) {
+    const response = await harness.post({ model: model.id, max_tokens: 32, thinking: { type: 'adaptive' }, output_config: { effort: 'high' } }, '/v1/messages');
+    assert.equal(response.status, 200); await response.json();
+    const request = harness.requests.at(-1).body;
+    assert.equal(request.reasoning_effort, model.id === 'kimi-k2.6' ? undefined : 'high');
+    assert.deepEqual(request.thinking, model.id === 'kimi-k2.6' ? { type: 'enabled' } : undefined);
+  }
+});
+
+test('Gemini preserves native off selections as none effort and forwards named levels', async t => {
+  const harness = await fixture(t, (request, response) => reply(response, 200, completion(request.body.model)),
+    url => [{ ...provider('gemini', url, ['secret'], [mapping('gemini-2.5-flash', 'gemini-2.5-flash')]), type: 'gemini' }]);
+  for (const effort of [undefined, 'low', 'high']) {
+    const response = await harness.post({ model: 'gemini-2.5-flash', max_tokens: 32,
+      thinking: { type: effort ? 'adaptive' : 'disabled' }, ...(effort ? { output_config: { effort } } : {}) }, '/v1/messages');
+    assert.equal(response.status, 200); await response.json();
+    const request = harness.requests.at(-1).body;
+    assert.equal(request.reasoning_effort, effort || 'none');
+    assert.equal(request.thinking, undefined);
   }
 });
 
@@ -397,16 +485,16 @@ test('Responses adapts custom tools and Anthropic replies without losing tool in
   assert.equal(f.requests[0].url, '/messages'); assert.equal(value.usage.input_tokens, 4);
 });
 
-test('benchmark routes pin provider and model, isolate usage, and expire on close', async t => {
-  const f = await fixture(t, (r, res) => reply(res, 200, completion(r.body.model)), url => [provider('chat', url + '/chat'), provider('bench', url + '/bench')]);
+test('provider scopes pin provider and model, isolate usage, and expire on close', async t => {
+  const f = await fixture(t, (r, res) => reply(res, 200, completion(r.body.model)), url => [provider('chat', url + '/chat'), provider('discussion', url + '/discussion')]);
   const usage = [];
-  const scoped = f.router.createScope({ model: 'kimi-k3', providerId: 'bench', onUsage: record => usage.push(record) });
+  const scoped = f.router.createScope({ model: 'kimi-k3', providerId: 'discussion', onUsage: record => usage.push(record) });
   assert.equal((await f.post({})).status, 200);
   assert.equal((await f.post({}, scoped.path + '/v1/chat/completions')).status, 200);
-  assert.deepEqual(f.requests.map(r => r.headers.authorization), ['Bearer secret-chat', 'Bearer secret-bench']);
+  assert.deepEqual(f.requests.map(r => r.headers.authorization), ['Bearer secret-chat', 'Bearer secret-discussion']);
   assert.equal(usage.length, 1); assert.equal(usage[0].tokens.input, 10); assert.equal(usage[0].tokens.output, 4);
   assert.equal(f.router.getState().usage['chat-key-0'].requests, 1);
-  assert.equal(f.router.getState().usage['bench-key-0'].requests, 1);
+  assert.equal(f.router.getState().usage['discussion-key-0'].requests, 1);
   assert.equal((await f.post({ model: 'another' }, scoped.path + '/v1/chat/completions')).status, 400);
   assert.equal((await fetch(scoped.baseUrl + '/__router/state')).status, 404);
   assert.deepEqual((await fetch(scoped.baseUrl + '/v1/models').then(r => r.json())).data.map(m => m.id), ['kimi-k3']);
@@ -459,20 +547,19 @@ test('discussion provider scopes rotate keys inside the selected provider only',
   await scope.close();
 });
 
-test('benchmark API limits stop requests without falling through to other keys or models', async t => {
+test('scoped API limits stop requests without falling through to other keys or models', async t => {
   const f = await fixture(t, (r, res) => reply(res, 200, completion(r.body.model)), url => [provider('p', url, ['one', 'two'])]);
-  let limits = 0;
-  const limited = f.router.createScope({ model: 'kimi-k3', providerId: 'p', maxRequests: 1, onLimit: () => limits++ });
+  const limited = f.router.createScope({ model: 'kimi-k3', providerId: 'p', maxRequests: 1 });
   assert.equal((await f.post({}, limited.path + '/v1/chat/completions')).status, 200);
   assert.equal((await f.post({}, limited.path + '/v1/chat/completions')).status, 429);
-  assert.equal(limits, 1); assert.equal(f.requests.length, 1); await limited.close();
-  const tokens = f.router.createScope({ model: 'kimi-k3', providerId: 'p', maxTokens: 14, onLimit: () => limits++ });
+  assert.equal(limited.scope.limited, true); assert.equal(f.requests.length, 1); await limited.close();
+  const tokens = f.router.createScope({ model: 'kimi-k3', providerId: 'p', maxTokens: 14 });
   assert.equal((await f.post({}, tokens.path + '/v1/chat/completions')).status, 200);
   assert.equal((await f.post({}, tokens.path + '/v1/chat/completions')).status, 429);
-  assert.equal(limits, 2); assert.equal(f.requests.length, 2); await tokens.close();
+  assert.equal(tokens.scope.limited, true); assert.equal(f.requests.length, 2); await tokens.close();
 });
 
-test('benchmark routes reject endpoint changes and close in-flight provider connections', async t => {
+test('provider scopes reject endpoint changes and close in-flight provider connections', async t => {
   let received;
   const entered = new Promise(resolve => { received = resolve; });
   const f = await fixture(t, async (r, res) => { received(res); }, url => [provider('p', url)]);

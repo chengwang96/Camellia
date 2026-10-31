@@ -38,7 +38,7 @@ test('settings navigation offers CLI devices directly below mobile access', () =
   assert.match(html, /<script src="\.\.\/devices\/connections\.js"><\/script>/);
   assert.doesNotMatch(html, /<script src="\.\.\/devices\/devices\.js"><\/script>/);
   const script = fs.readFileSync(path.join(__dirname, '../src/renderer/settings/api-settings.js'), 'utf8');
-  assert.match(script, /devices: \["CLI devices"/);
+  assert.match(script, /devices: "CLI devices"/);
   assert.match(script, /window\.cliDevicesUI\?\.setVisible\(next === 'devices'\)/);
   assert.doesNotMatch(script, /showCliDevices|devicesSurface|openCliDevices\(\)/);
   const messages = fs.readFileSync(path.join(__dirname, '../src/shared/i18n-messages.js'), 'utf8');

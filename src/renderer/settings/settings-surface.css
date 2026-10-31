@@ -1,0 +1,103 @@
+/* Settings surface inspired by DeepSeek Harness's open-source settings chrome.
+   See docs/design/settings-surface.md for the source revision and adaptation. */
+body {
+  --settings-control-fill: light-dark(#f5f6f7, #292a2d);
+  --settings-selected-stroke: light-dark(#adb2b8, #737981);
+  --settings-card-stroke: light-dark(#d6d6d8, #424448);
+}
+.settings-shell { display: contents; }
+html[data-settings-window], html[data-settings-window] body { background: transparent; }
+html[data-settings-window] .settings-shell {
+  display: flex; width: 100%; height: 100%; min-width: 0; min-height: 0;
+  overflow: hidden; border: 1px solid var(--dsw-alias-border-l2); border-radius: 24px;
+  background: var(--dsw-alias-bg-base);
+}
+html[data-settings-window] .page-head { display: flex; align-items: center; gap: 20px; }
+html[data-settings-window] :is(.page-head, .settings-brand) { -webkit-app-region: drag; app-region: drag; }
+.settings-close-window {
+  -webkit-app-region: no-drag; app-region: no-drag;
+  display: inline-flex; align-items: center; justify-content: center; flex: none;
+  width: 32px; height: 32px; min-height: 32px; margin-left: auto; padding: 6px;
+  border: 0; border-radius: 8px; background: transparent;
+}
+.settings-close-window svg { width: 20px; height: 20px; }
+.settings-nav {
+  flex-basis: 214px;
+  padding: 28px 12px 20px;
+  border: 0;
+  background: transparent;
+}
+.settings-brand { padding: 0 12px 24px; font-size: 18px; font-weight: 500; line-height: 28px; }
+.settings-nav nav { gap: 4px; }
+.settings-nav nav button { min-height: 42px; padding: 10px 12px; border-radius: 12px; font-weight: 400; }
+.settings-nav .nav-icon { width: 20px; height: 20px; flex-basis: 20px; color: inherit; }
+.settings-nav nav button.active { font-weight: 400; }
+.nav-divider { margin: 6px 12px; }
+.page-head { padding: 30px 36px 24px; }
+.page-head h1 { margin: 0; font-size: 20px; line-height: 28px; font-weight: 600; letter-spacing: 0; }
+.scroll-content { padding: 0 36px 40px; }
+.page { width: 100%; }
+#generalPage, #dataPage { max-width: 1080px; }
+.settings-main h2 { font-weight: 500; }
+.settings-main .hint { color: var(--dsw-alias-label-tertiary); }
+button, .device-settings button { border-radius: 10px; }
+select { min-height: 36px; padding: 7px 14px; border-color: transparent; border-radius: 10px; background: var(--settings-control-fill); }
+input:not([type=checkbox]), textarea { border-radius: 10px; }
+.settings-main .setting-row { gap: 24px; }
+.settings-main .setting-row h2 { margin-bottom: 0; font-size: 14px; line-height: 22px; font-weight: 400; }
+.settings-main .setting-row .hint { margin: 4px 0 0; }
+/* Related rows remain grouped; appearance is the one expansive visual choice. */
+.appearance-setting { align-items: stretch; }
+.theme-choices { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin-top: 10px; }
+.theme-choices button { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; min-height: 84px; padding: 16px 8px; border: 1px solid var(--settings-card-stroke); border-radius: 16px; font-weight: 400; white-space: normal; }
+.theme-choices button[aria-pressed=true] { background: var(--settings-control-fill); border-color: var(--settings-selected-stroke); }
+.theme-choices svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+/* Preserve checkbox semantics and keyboard behavior while painting a switch. */
+.setting-row > input[type=checkbox] {
+  appearance: none; position: relative; width: 36px; height: 21px; margin: 0;
+  padding: 0; border: 0; border-radius: 20px; background: light-dark(#d9dce0, #54575d); cursor: pointer;
+}
+.setting-row > input[type=checkbox]::before { content: ''; position: absolute; width: 17px; height: 17px; top: 2px; left: 2px; border-radius: 50%; background: #fff; transition: transform .12s ease; }
+.setting-row > input[type=checkbox]:checked { background: var(--dsw-alias-label-primary); }
+.setting-row > input[type=checkbox]:checked::before { transform: translateX(15px); background: var(--dsw-alias-bg-base); }
+.provider-grid { gap: 12px; }
+.provider-grid > .provider { padding: 16px; border-radius: 16px; border-color: var(--settings-card-stroke); }
+.balance-card, .chart-panel, .subscription-model-group { border-radius: 16px; }
+.device-settings .device-card, .device-settings .device-row { border-radius: 16px; box-shadow: none; }
+/* Subscription accounts keep their quota colors, with the same quiet material
+   as the provider and engine cards instead of blue raised surfaces. */
+#subscriptionsPage, .subscription-card, #codexResetDialog {
+  --subscription-ink: var(--dsw-alias-label-primary);
+  --subscription-muted: var(--dsw-alias-label-tertiary);
+  --subscription-surface: var(--dsw-alias-bg-base);
+  --subscription-border: var(--settings-card-stroke);
+  --subscription-tool-bg: var(--settings-control-fill);
+  --subscription-shadow: none;
+}
+@media (min-width: 1400px) {
+  .settings-nav { flex-basis: 240px; padding-inline: 18px; }
+  .page-head { padding-inline: 48px; }
+  .scroll-content { padding-inline: 48px; }
+}
+@media (min-width: 701px) and (max-width: 950px) {
+  .settings-nav { flex-basis: 188px; padding-inline: 10px; }
+  .page-head { padding: 28px 24px 20px; }
+  .scroll-content { padding: 0 24px 32px; }
+}
+@media (max-width: 700px) {
+  .settings-nav { flex-basis: 58px; padding: 22px 6px; }
+  .settings-brand { display: none; }
+  .settings-nav nav button { padding: 10px 0; }
+  .page-head { padding: 22px 16px 16px; }
+  .scroll-content { padding: 0 16px 28px; }
+  .settings-main .setting-row { gap: 12px; flex-wrap: wrap; }
+  .settings-main .setting-row > select { max-width: 100%; }
+  .memory-folder { flex-wrap: wrap; }
+  .memory-folder input { flex: 1 1 180px; }
+  .memory-folder button { margin-left: auto; }
+  .theme-choices { gap: 6px; }
+  .theme-choices button { min-height: 76px; padding: 12px 4px; font-size: 12px; border-radius: 12px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .setting-row > input[type=checkbox]::before { transition: none; }
+}

@@ -42,7 +42,10 @@ document.getElementById('openCliDevices').addEventListener('click', async () => 
   try { const result = await window.dshDesktop.openCliDevices(); if (!result.ok) throw new Error(result.error); }
   catch (error) { status.textContent = error.message; status.className = 'error'; }
 });
-document.getElementById('openBenchmark').addEventListener('click', () => window.dshDesktop.switchMode('benchmark'));
+document.getElementById('openMobileAccess').addEventListener('click', async () => {
+  try { const result = await window.dshDesktop.openMobileAccess(); if (!result.ok) throw new Error(result.error); }
+  catch (error) { status.textContent = error.message; status.className = 'error'; }
+});
 document.getElementById('openDiscussions').addEventListener('click', async () => {
   try { const result = await window.dshDesktop.switchMode('discussions'); if (!result.ok) throw new Error(result.error); }
   catch (error) { status.textContent = error.message; status.className = 'error'; }

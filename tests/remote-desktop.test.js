@@ -121,6 +121,7 @@ test('desktop control is disabled by default and accepts only remote-access and 
     async openLogin() { openedLogin = true; }, async stop() { this.snapshot = { state: 'Stopped' }; },
     async logout() { this.snapshot = { state: 'Stopped' }; }, async listen(target, token) { listenTarget = target; assert.match(token, /^[a-f0-9]{64}$/); } };
   const settings = { webContents: { mainFrame: {} }, isDestroyed: () => false };
+  const desktop = { webContents: { mainFrame: {} }, isDestroyed: () => false };
   class FakeWindow extends EventEmitter {
     constructor(options) {
       super(); this.options = options; windows.push(this);
@@ -136,14 +137,16 @@ test('desktop control is disabled by default and accepts only remote-access and 
   const controller = createRemoteDesktop({ app: { getPath: () => root }, BrowserWindow: FakeWindow,
     ipcMain: { handle: (channel, callback) => handlers.set(channel, callback) }, nativeTheme: { shouldUseDarkColors: false },
     manager: { workspaces: { sessionMeta: () => ({ workspaces: [{ id: 'workspace', name: 'Work' }] }) } },
-    rendererRoot: path.join(__dirname, '../src/renderer'), loadConfig: () => ({ closeToTray: false, language: 'en' }), getSettingsWindow: () => settings,
+    rendererRoot: path.join(__dirname, '../src/renderer'), loadConfig: () => ({ closeToTray: false, language: 'en' }), getSettingsWindow: () => settings, getMainWindow: () => desktop,
     networkFactory: options => { failure = options.onFailure; return network; } });
   context.after(() => controller.close());
   const command = handlers.get('dsh:remote-control');
   const open = handlers.get('dsh:open-mobile-access');
   const settingsEvent = { sender: settings.webContents, senderFrame: settings.webContents.mainFrame };
+  const desktopEvent = { sender: desktop.webContents, senderFrame: desktop.webContents.mainFrame };
   assert.equal(open({}).ok, false);
   assert.equal(open({ ...settingsEvent, senderFrame: {} }).ok, false);
+  assert.equal(open({ ...desktopEvent, senderFrame: {} }).ok, false);
   assert.equal(windows.length, 0);
   assert.equal((await command({}, { action: 'state' })).ok, false);
   const embeddedState = await command(settingsEvent, { action: 'state' });
@@ -151,7 +154,8 @@ test('desktop control is disabled by default and accepts only remote-access and 
   assert.equal(embeddedState.result.running, false);
   assert.equal(windows.length, 0);
   assert.equal((await command({ ...settingsEvent, senderFrame: {} }, { action: 'state' })).ok, false);
-  assert.equal(open(settingsEvent).ok, true);
+  assert.equal((await command(desktopEvent, { action: 'state' })).ok, false, 'opening the panel does not grant desktop remote controls');
+  assert.equal(open(desktopEvent).ok, true);
   assert.equal((await command(settingsEvent, { action: 'state' })).ok, true);
   assert.equal(windows.length, 1);
   const window = windows[0], event = { sender: window.webContents, senderFrame: window.webContents.mainFrame };
@@ -180,6 +184,9 @@ test('desktop control is disabled by default and accepts only remote-access and 
   assert.equal((await command(event, { action: 'send', payload: { prompt: 'Never execute' } })).ok, false);
   controller.open(); assert.equal(windows.length, 1); assert.equal(window.shown, true);
   assert.equal(open(settingsEvent).ok, true); assert.equal(windows.length, 1);
+  assert.equal(open(desktopEvent).ok, true); assert.equal(windows.length, 1);
+  desktop.isDestroyed = () => true;
+  assert.equal(open(desktopEvent).ok, false);
   settings.isDestroyed = () => true;
   assert.equal(open(settingsEvent).ok, false);
   assert.equal((await command(settingsEvent, { action: 'state' })).ok, false);

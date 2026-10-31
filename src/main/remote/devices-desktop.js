@@ -7,7 +7,7 @@ const { createApiImportClient } = require('./api-import-client');
 const { readAttachment, bufferAttachments, createAttachmentTray, downloadName, saveDownload } = require('./device-files');
 const { randomUUID } = require('node:crypto');
 
-function createDevicesDesktop({ app, ipcMain, BrowserWindow, safeStorage, shell, dialog, nativeImage, getSettingsWindow, getSurfaces = () => [], openSettings, authorizedSender, loadConfig, apiSource,
+function createDevicesDesktop({ app, ipcMain, BrowserWindow, windowChrome, safeStorage, shell, dialog, nativeImage, getSettingsWindow, getSurfaces = () => [], openSettings, authorizedSender, loadConfig, apiSource,
   networkFactory = ({ onFailure }) => new EmbeddedNetwork({ app, safeStorage, directory: path.join(app.getPath('userData'), 'remote', 'tailnet'),
     openExternal: url => shell.openExternal(url), onFailure }), clientFactory = options => new DeviceClient(options) }) {
   let network = null, client = null, imports = null, closed = false, generation = 0;
@@ -209,9 +209,11 @@ function createDevicesDesktop({ app, ipcMain, BrowserWindow, safeStorage, shell,
       const existing = windows.get(deviceId);
       if (existing && !existing.isDestroyed()) { if (existing.isMinimized()) existing.restore(); existing.show(); existing.focus(); return { ok: true }; }
       const window = new BrowserWindow({ width: 1440, height: 960, minWidth: 800, minHeight: 600, show: false,
+        ...windowChrome?.options(),
         icon: path.join(__dirname, '../../../assets/icon-256.png'),
         title: `${device.name} — Camellia`, webPreferences: { preload: path.join(__dirname, 'devices-preload.js'), contextIsolation: true, nodeIntegration: false, sandbox: true } });
       windows.set(deviceId, window);
+      windowChrome?.attach(window);
       const contents = window.webContents;
       serverContents.set(contents, deviceId);
       const detach = () => {

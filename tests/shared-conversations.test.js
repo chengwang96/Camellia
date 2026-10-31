@@ -6323,6 +6323,25 @@ test('summary failure ends the original task once and preserves its context', as
   assert.equal(f.manager.busy(run.sessionId), false);
 });
 
+test('turn metrics retain the recorded model and duration across reload without changing the answer', async t => {
+  const h = fixture(t);
+  const run = await h.manager.send('codex', { prompt: 'Check recorded usage' });
+  const session = h.sent.at(-1).session;
+  const usage = { input_tokens: 11861, output_tokens: 140, cache_read_input_tokens: 0 };
+  h.manager.capture('codex', { type: 'result', subtype: 'success', result: 'Verified answer',
+    duration_ms: 1234, total_cost_usd: 0.0123, usage, session_id: session.sessionId, runId: session.gen });
+  await run.done;
+  const metrics = { duration_ms: 1234, model: 'fixture', total_cost_usd: 0.0123 };
+  assert.deepEqual(h.events.findLast(event => event.type === 'result').turnMetrics, metrics);
+  const manager = h.restart();
+  const row = manager.load('codex', run.sessionId).messages.at(-1);
+  assert.deepEqual(row.turnMetrics, metrics);
+  assert.deepEqual(row.usage, usage);
+  assert.equal(row.text, 'Verified answer');
+  assert.equal(row.runResult, undefined);
+  assert.doesNotMatch(manager.context(manager.get(run.sessionId), 'codex'), /turnMetrics|duration_ms|0\.0123/);
+});
+
 test('terminal errors keep their result styling after history reload and stay out of model context', async context => {
   const harness = fixture(context);
   const run = await harness.manager.send('codex', { prompt: 'Finish the task' });

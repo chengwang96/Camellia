@@ -82,8 +82,8 @@ with sync_playwright() as playwright:
 
     # Localized labels exist for both rows in both languages.
     for language, ttl_label, limit_label in [
-        ("en", "Keep a model's session briefly", "Models kept ready per engine"),
-        ("zh-CN", "短暂保留模型的会话", "每个引擎保留就绪的模型数"),
+        ("en", "Session retention (minutes)", "Models kept ready per engine"),
+        ("zh-CN", "会话保留时间（分钟）", "每个引擎保留就绪的模型数"),
     ]:
         page.evaluate("language => CamelliaI18n.setLanguage(language)", language)
         assert ttl_label in page.locator("#modelsPage").inner_text()

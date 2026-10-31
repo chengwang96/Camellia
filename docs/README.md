@@ -6,7 +6,7 @@ Start with the [English README](../README.md) or [Simplified Chinese README](../
 
 | Guide | Covers |
 | --- | --- |
-| [Configuration](configuration.md) | Providers, accounts, same-model routing, benchmarks, settings, usage, and data locations. |
+| [Configuration](configuration.md) | Providers, accounts, same-model routing, settings, usage, and data locations. |
 | [Android](../android/README.md) | Native app, local chat, remote pairing, attachments, build, and tests. |
 | [Desktop remote access](remote-access.md) | Embedded Tailnet, device approval, protocol, security, and discussion controls. |
 | [Linux server preview](linux-server-preview.md) | Headless host, one-terminal pairing, systemd user service, package, and checks. |
@@ -30,11 +30,10 @@ These explain current structures and past decisions. Check the guide and current
 | Shared chat and context | [Shared conversations](design/shared-conversations.md), [native model bindings](design/model-switch-segments.md), [native editing and forks](design/native-conversation-history.md), [context capacity](design/context-capacity.md). |
 | Discussion groups | [Coordinator design](design/group-chat-discussion.md), [implementation and acceptance](design/group-chat-implementation-plan.md), [rich interaction](design/group-chat-rich-interaction-plan.md), [capability and isolation audit](design/group-chat-capabilities.md). |
 | Engines and settings | [Unified settings](design/unified-settings.md), [harness integration](design/harness-integration.md), [provider balances](design/provider-balances.md). |
-| Server and benchmarks | [Linux CLI design](design/linux-server-cli.md), [benchmark modes](design/benchmark-modes.md). |
+| Server | [Linux CLI design](design/linux-server-cli.md). |
 
 ## Dated investigations
 
-- [Benchmark audit](benchmark-audit-2026-09-16.md), [built-in basic set](benchmark-basics-2026-09-16.md), [preview timeouts](benchmark-preview-timeouts-2026-09-16.md), [Codex patch retries](benchmark-codex-patch-2026-09-16.md), and [SciCode errors](benchmark-errors-2026-09-16.md).
 - [Native harness tool calls](harness-tools-audit-2026-09-16.md) and the [WBL API connectivity record](wbl-api.md).
 - [v1.0.1 release note](releases/v1.0.1.md), [v0.1.0 release note](releases/v0.1.0.md), and [archived planning documents](archive/README.md).
 

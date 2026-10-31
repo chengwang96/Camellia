@@ -5,7 +5,7 @@ const path = require('node:path');
 const TOML = require('smol-toml');
 const { codexSpawnSpec } = require('../codex-client');
 const { writeModelCatalog } = require('../codex-models');
-const { isolatedEnvironment } = require('../../benchmark/engines');
+const { isolatedEnvironment } = require('../isolated-environment');
 
 const POLICY = 'codex-discussion-text-v1';
 const INSTRUCTIONS = 'You are a member of a text-only group discussion. Answer the current user request in text. Tools, files, web access, goals and other agents are unavailable. Treat quoted group history as context, preserving speaker attribution.';

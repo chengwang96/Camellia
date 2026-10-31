@@ -71,7 +71,7 @@ with sync_playwright() as playwright:
     expect(page.locator("#migrateDataDirectory")).to_be_visible()
     expect(page.locator("#dataDirectoryStatus")).to_have_text("Restart to move your data. The old folder is deleted after verification.")
     expect(page.locator("#exportConfig, #importConfig")).to_have_count(0)
-    expect(page.locator("#dataMigrationStatus")).to_have_text("Choose API configuration, application settings or conversation history to transfer. Subscription accounts are not transferred.")
+    expect(page.locator("#dataMigrationStatus")).to_have_text("Transfer API configuration, settings or conversations. Subscription sign-ins are excluded.")
     expect(page.locator("#dataScopeAll, #importScopeApi, #importScopeSettings, #importScopeConversations")).to_have_count(4)
 
     page.locator("#exportData").click()

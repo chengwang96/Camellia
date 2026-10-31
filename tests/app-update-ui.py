@@ -31,7 +31,7 @@ with sync_playwright() as playwright:
     page.goto((root / "src/renderer/settings/api-settings.html").as_uri() + "?page=general")
     page.wait_for_load_state("networkidle")
 
-    expect(page.locator("#appUpdateStatus")).to_contain_text("Check the official release feed")
+    expect(page.locator("#appUpdateStatus")).to_be_empty()
     expect(page.locator("#installAppUpdate")).to_be_hidden()
     expect(page.locator("#appUpdateDetails")).to_be_hidden()
 

@@ -279,12 +279,6 @@ from every engine pool. Failed shutdowns remain tracked. The test harness uses
 its own process event emitter so repeated fixtures do not leak crash handlers
 onto the real Node process.
 
-Scientific library installation runs `uv cache prune --ci` after validation,
-retaining the installed Python environments and datasets. Pruning failure does
-not invalidate a successful install. Cache size is not necessarily reclaimable
-physical storage when uv uses hard links; use uv's cache commands rather than
-deleting environment files.
-
 These targeted fixes and regression tests are not a proof that every engine or
 renderer is free of memory leaks; that requires a long-running heap/process soak.
 
@@ -292,9 +286,6 @@ renderer is free of memory leaks; that requires a long-running heap/process soak
 
 - A no-follow audit found 32 files, 1,928 links and approximately 0.9 MiB in
   `dsh-chat`; the earlier recursive 755 MB estimate counted linked dependencies.
-- `uv cache prune --ci` reported 35,788 removed files (3.0 GiB). Both installed
-  DS-1000 and SciCode Python environments subsequently imported NumPy and SciPy.
-  This is uv's reported cleanup size, not a measurement of free-disk increase.
 - The live-profile read-only scan reached reference consistency verification in
   57.8 seconds, with 546 timer callbacks at 100 ms intervals. It stopped because
   reference files were changing during live turns. No cleanup was executed;

@@ -141,6 +141,18 @@ with sync_playwright() as playwright:
         "els => els.map(el => el.dataset.view)")
     assert views == ["subscriptions", "providers", "usage", "general", "data", "network", "engines",
                      "models", "archived", "mobile", "devices"], views
+    # Appearance cards share the existing save path and restore saved state.
+    page.locator('[data-view=general]').click()
+    expect(page.locator('[data-theme-choice][aria-pressed=true]')).to_have_attribute('data-theme-choice', 'system')
+    for theme in ['dark', 'light', 'system']:
+        page.locator(f'[data-theme-choice="{theme}"]').click()
+        page.wait_for_function('theme => savedPreferences.theme === theme', arg=theme)
+        expect(page.locator('[data-theme-choice][aria-pressed=true]')).to_have_count(1)
+        expect(page.locator(f'[data-theme-choice="{theme}"]')).to_have_attribute('aria-pressed', 'true')
+        expect(page.locator('html')).to_have_attribute('data-theme', theme)
+    page.evaluate('refresh(true)')
+    expect(page.locator('[data-theme-choice=system]')).to_have_attribute('aria-pressed', 'true')
+    page.locator('[data-view=models]').click()
     for language in ["en", "zh-CN"]:
         page.evaluate("language => CamelliaI18n.setLanguage(language)", language)
         expect(page.locator('#pageTitle')).to_have_text('Model Settings' if language == 'en' else '模型设置')
@@ -220,8 +232,23 @@ with sync_playwright() as playwright:
     expect(page.locator("#devicesPage")).to_be_visible()
 
     # Embedded device controls use the same metrics as the other settings controls.
-    assert page.evaluate("getComputedStyle(document.getElementById('checkAppUpdate')).borderRadius") == "18px"
-    assert page.evaluate("getComputedStyle(document.getElementById('cli-refresh')).borderRadius") == "18px"
+    assert page.evaluate("getComputedStyle(document.getElementById('checkAppUpdate')).borderRadius") == "10px"
+    assert page.evaluate("getComputedStyle(document.getElementById('cli-refresh')).borderRadius") == "10px"
+    page.locator('[data-view=general]').click()
+    for language in ['en', 'zh-CN']:
+        page.locator('#language').select_option(language)
+        page.evaluate('language => CamelliaI18n.setLanguage(language)', language)
+        for theme in ['light', 'dark']:
+            page.locator(f'[data-theme-choice="{theme}"]').click()
+            page.wait_for_function('theme => savedPreferences.theme === theme', arg=theme)
+            for width in [1180, 850, 390, 320]:
+                page.set_viewport_size({'width': width, 'height': 900})
+                page.locator('.scroll-content').evaluate('el => el.scrollTop = 0')
+                assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
+                for card in page.locator('[data-theme-choice]').all():
+                    box = card.bounding_box()
+                    assert box['width'] > 45 and box['x'] + box['width'] <= width
+                page.screenshot(path=str(output / f'settings-{language}-{theme}-{width}.png'))
     assert not errors, errors
     browser.close()
 print("Settings page: model and general groups, quick-switch saves, bilingual responsive layout and CLI device navigation passed")

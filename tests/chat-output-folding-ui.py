@@ -73,8 +73,10 @@ with sync_playwright() as playwright:
         page.locator('[data-sid="shared-fixture"]').click()
         turn = page.locator('.turn').last
         expect(turn.locator('.turn-body > .md')).to_have_count(0)
-        expect(turn.locator('.execution-process')).to_be_visible()
+        expect(turn.locator('.completion-label')).to_be_visible()
         expect(turn.locator('.execution-process')).not_to_have_attribute('open', '')
+        turn.locator('.completion-label').click()
+        expect(turn.locator('.execution-process .md').first).to_be_visible()
         assert not errors, errors
         page.close()
     browser.close()

@@ -1,14 +1,40 @@
 """Reported model thinking controls drive composer menus and hot updates."""
 from pathlib import Path
+import json
+import subprocess
 from playwright.sync_api import sync_playwright, expect
 
 repo = Path(__file__).resolve().parents[1]
+# Exercise the production discovery/parser/state path before checking menus.
+# Command Code's standard model list has no efforts, while its client view
+# and OpenCode's nested capabilities carry different metadata schemas.
+router = subprocess.run(['node', '-e', r"""
+const {fetchModels} = require('./src/api/provider-accounts');
+const {PRESETS,normalizeConfig,publicState} = require('./src/api/api-router-config');
+(async () => {
+  const providers = [];
+  for (const [type, entries] of [
+    ['commandcode', [
+      {id:'zai-org/GLM-5.3',reasoningEfforts:['low','high','max']},
+      {id:'deepseek/deepseek-v4.1-flash',reasoningEfforts:['off','low','high','max']},
+    ]],
+    ['opencode', [{id:'kimi-k2.6',capabilities:{reasoning:{supported:true,toggle:true}}}]],
+  ]) {
+    const provider = {...PRESETS.find(p=>p.type===type), id:type, keys:[{key:'fixture-key'}]};
+    provider.models = await fetchModels(provider, 'fixture-key', {fetchImpl:async url=>{
+      if(type==='commandcode'&&!url.endsWith('?view=client')) throw Error('must use client view');
+      return {ok:true,json:async()=>({data:entries})};
+    }});
+    providers.push(provider);
+  }
+  const state=publicState(normalizeConfig({providers}));
+  state.models.push('unknown-model');
+  process.stdout.write(JSON.stringify(state));
+})().catch(error=>{console.error(error);process.exit(1)});
+"""], cwd=repo, capture_output=True, text=True, encoding='utf-8', check=True).stdout
 bridge = r"""(() => {
   window.settings = {model:'glm-5.3',connection:'api',thinkingBudget:'',permissionMode:'ask'};
-  window.router = {ok:true,enabled:true,models:['glm-5.3','kimi-k2.6','unknown-model'],providers:[],modelThinking:{
-    'glm-5.3':{values:['low','high','max'],default:'max'},
-    'kimi-k2.6':{values:[false,true],default:true},
-  }};
+  window.router = __ROUTER_STATE__;
   window.dshDesktop = new Proxy({
     sharedConversations: true,
     conversationCommand: async ({action,payload}) => {
@@ -25,7 +51,7 @@ bridge = r"""(() => {
     antigravityAccountState:async()=>({ok:true,models:[]}),
     onApiRouterState:callback=>{window.refreshRouter=callback;},
   },{get:(target,key)=>key in target?target[key]:key.startsWith('on')?()=>()=>{}:async()=>({ok:true})});
-})();"""
+})();""".replace('__ROUTER_STATE__', json.dumps(json.loads(router)))
 
 with sync_playwright() as playwright:
     browser = playwright.chromium.launch(headless=True)
@@ -55,6 +81,13 @@ with sync_playwright() as playwright:
         page.evaluate("router.modelThinking['glm-5.3']={values:['high','max','ultra'],default:'max'}; refreshRouter(router)")
         reasoning_menu(['Default', 'High', 'Max', 'Ultra']).get_by_text('Ultra', exact=True).click()
         page.wait_for_function("settings.thinkingBudget==='ultra'")
+
+        page.evaluate("persistModel('deepseek-v4.1-flash')")
+        page.wait_for_function("settings.model==='deepseek-v4.1-flash' && LEVELS.map(level=>level.id).join(',')===',none,low,high,max'")
+        reasoning_menu(['Default', 'Off', 'Low', 'High', 'Max']).get_by_text('Off', exact=True).click()
+        page.wait_for_function("settings.thinkingBudget==='none'")
+        reasoning_menu(['Default', 'Off', 'Low', 'High', 'Max']).get_by_text('Max', exact=True).click()
+        page.wait_for_function("settings.thinkingBudget==='max'")
 
         page.evaluate("persistModel('kimi-k2.6')")
         page.wait_for_function("settings.model==='kimi-k2.6' && LEVELS.map(level=>level.id).join(',')===',none,high'")

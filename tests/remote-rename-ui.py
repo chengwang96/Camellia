@@ -79,7 +79,7 @@ with sync_playwright() as playwright:
                 rename.click()
                 expect(dialog.get_by_role('heading')).to_have_text('重命名移动设备' if chinese else 'Rename mobile device')
                 expect(field).to_have_value('iPad14,1')
-                expect(dialog).to_contain_text('已授权设备列表' if chinese else 'authorized devices list')
+                expect(dialog).to_contain_text('访问权限不变' if chinese else 'access permissions stay the same')
                 field.fill('Reading iPad')
                 poll(page)
                 expect(save).to_be_enabled()

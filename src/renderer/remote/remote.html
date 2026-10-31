@@ -8,6 +8,7 @@
   <link rel="stylesheet" href="../shared/ui-theme.css">
   <link rel="stylesheet" href="remote.css">
   <link rel="stylesheet" href="diagnostics.css">
+  <link rel="stylesheet" href="../shared/window-chrome.css">
 </head>
 <body>
   <main>
@@ -31,7 +32,7 @@
       <div class="name-row"><input id="deviceName" maxlength="80" autocomplete="off"><button id="saveDeviceName" data-copy="deviceNameSave">保存名称</button></div>
       <p class="hint" data-copy="deviceNameHint"></p><p id="deviceNameStatus" class="hint" role="status"></p>
       <button id="invite" disabled data-copy="generate">生成配对码</button>
-      <div id="invitation" hidden><div class="pair-layout"><div id="qr" class="qr"></div><div class="pair-details"><code id="code"></code><p id="expires" class="hint"></p><p class="hint" data-copy="scanHint">用手机扫描二维码即可自动填入地址和配对码。</p><p class="hint" data-copy="scanFallback">也可手动输入地址和一次性配对码。</p></div></div></div>
+      <div id="invitation" hidden><div class="pair-layout"><div id="qr" class="qr"></div><div class="pair-details"><code id="code"></code><p id="expires" class="hint"></p><p class="hint" data-copy="scanHint">用手机扫码填入地址和配对码，也可手动输入。</p></div></div></div>
       <button id="refreshInvite" hidden data-copy="refreshCode">刷新二维码</button>
       <div id="pairPending" class="pair-success" role="status" hidden><span class="success-mark" aria-hidden="true">…</span><div><strong id="pairPendingLabel" data-copy="pairWaiting">等待电脑授权</strong><span id="pendingName"></span></div></div>
       <div id="pair-success" class="pair-success" role="status" hidden><span class="success-mark" aria-hidden="true">✓</span><div><strong data-copy="pairSuccess">配对成功</strong><span id="pairedName"></span></div><button id="continuePair" data-copy="continuePair">继续配对</button></div>
@@ -45,5 +46,6 @@
   <script src="../../shared/qr.js"></script>
   <script src="diagnostics.js"></script>
   <script src="remote.js"></script>
+  <script src="../shared/window-chrome.js"></script>
 </body>
 </html>

@@ -13,7 +13,7 @@ running router without restarting Camellia. Settings and conversation history
 still take effect after a restart.
 
 API/settings exports and read-only import previews remain available during
-responses, goals, benchmarks and unrelated downloads. Exporting conversations
+responses, goals and unrelated downloads. Exporting conversations
 requires their writers to be idle; new engine work is blocked only while native
 processes stop and the immutable snapshot is prepared, not while the ZIP is
 written. Importing settings or conversations also requires idle writers and no
@@ -21,7 +21,7 @@ runtime upgrade that could change the destination configuration. Engine access
 stays available during staging; conflicts are rechecked before activation and
 the native processes are stopped only after the package passes validation.
 Runtime and question-library downloads do not block these transfers. API-only imports can
-run alongside responses, but cannot change routes during a benchmark.
+run alongside responses.
 Whole-directory migration and cache maintenance retain their full idle checks.
 Transfers that write or snapshot profile data wait for an application update or
 restart to finish. Selecting a file or previewing its categories does not stop

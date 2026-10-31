@@ -17,7 +17,7 @@ const { parseModels, groupModels, runCli } = require('../src/engines/antigravity
 const { prepareWindowsJob } = require('../src/engines/discussions/windows-job');
 const { WindowsJobJournal } = require('../src/engines/discussions/windows-job-journal');
 const { readAntigravityNativeInventory } = require('../src/engines/discussions/antigravity-history-inventory');
-const { isolatedEnvironment } = require('../src/benchmark/engines');
+const { isolatedEnvironment } = require('../src/engines/isolated-environment');
 const { removeTree } = require('./test-fs.cjs');
 
 async function main() {

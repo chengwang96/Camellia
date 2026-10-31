@@ -15,12 +15,12 @@ const { createRuntimeManager } = require('../src/main/runtime-manager');
 const { startApiRouter } = require('../src/api/api-router');
 const { normalizeConfig, writeConfig } = require('../src/api/api-router-config');
 const { frame } = require('../src/api/api-protocol');
-const { ENGINES, runEngine, isolatedEnvironment, stopProcess } = require('../src/benchmark/engines');
+const { ENGINES, runEngine, isolatedEnvironment, stopProcess } = require('./native-engine-harness.cjs');
 const { AcpSession } = require('../src/engines/acp-session');
 const { dshAcpSpec } = require('../src/engines/dsh-session');
 const { ClaudeHistory } = require('../src/engines/claude-history');
 const { ClaudeSession } = require('../src/engines/claude-session');
-const { claudeSpec } = require('../src/benchmark/engines');
+const { claudeSpec } = require('./native-engine-harness.cjs');
 
 const CONTENT = 'ORIGINAL_词🙂\r\nquotes: "double" \'single\' $literal `backtick` \\slash\r\n';
 const EDITED = CONTENT.replace('ORIGINAL_词🙂', 'EDITED_词🙂');
@@ -280,7 +280,7 @@ async function main() {
           const lastAgent = usage.filter(record => record.hasTools).at(-1);
           assert.equal(lastAgent.outcome, 'error'); assert.match(lastAgent.error, /EXPECTED_UPSTREAM_FAILURE/);
           if (engine !== 'kimi') assert.equal(result.ok, false, id + ': a terminal API error must not report success');
-          console.log('PASS ' + id + ': terminal upstream error recorded' + (result.ok ? '; native end_turn requires the benchmark API-error guard' : ' and reported by the runtime'));
+          console.log('PASS ' + id + ': terminal upstream error recorded' + (result.ok ? '; native end_turn requires the API-error guard' : ' and reported by the runtime'));
           return;
         }
         assert.equal(result.ok, true, id + ': ' + JSON.stringify(result));
@@ -297,7 +297,7 @@ async function main() {
         if (flagged.join() !== [id + '_4_shell_0', id + '_5_edit_0'].join()) {
           const detail = observedTools.filter(tool => [id + '_4_shell_0', id + '_5_edit_0'].includes(tool.id))
             .map(tool => tool.id + ' [' + tool.name + '] => ' + JSON.stringify(tool.output).slice(0, 300)).join(' ; ');
-          throw new Error(id + ': tool failures missing from benchmark diagnostics; flagged=' + JSON.stringify(flagged) + ' declared=' + ctx.tools.map(t => t.function.name).join(',') + ' outputs: ' + detail);
+          throw new Error(id + ': tool failures missing from API request diagnostics; flagged=' + JSON.stringify(flagged) + ' declared=' + ctx.tools.map(t => t.function.name).join(',') + ' outputs: ' + detail);
         }
         console.log('PASS ' + id + ': parallel reads/searches, split arguments, native write/edit, shell and edit errors, exact result IDs');
       } finally { clearTimeout(timer); await route.close(); }

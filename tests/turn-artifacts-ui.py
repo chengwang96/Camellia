@@ -154,7 +154,7 @@ with sync_playwright() as playwright:
         }""", files)
         expect(page.locator('.turn').last.locator('.artifact-row')).to_have_count(8)
         expect(page.locator('.turn').last.locator('.artifact-row:visible')).to_have_count(4)
-        assert page.locator('.turn').last.locator('.turn-artifacts + .run-result').count() == 1
+        assert page.locator('.turn').last.locator('.turn-artifacts + .turn-actions').count() == 1
         page.evaluate("""() => {
           emit({type:'conversation:started',runId:902,prompt:'Thanks',userSeq:4});
           emit({type:'assistant',runId:902,message:{content:[{type:'text',text:'Welcome.'}]}});
@@ -211,11 +211,11 @@ with sync_playwright() as playwright:
         }""", readme)
         rows.last.locator('.artifact-file').click()
         article = page.locator('.file-preview-markdown')
-        expect(article.get_by_role('link', name='scheduled experiment checks')).to_have_attribute('href', 'file:///C:/project/docs/scheduled-tasks.md')
-        expect(article.get_by_role('link', name='Configuration guide', exact=True)).to_have_attribute('href', 'file:///C:/project/docs/configuration.md')
-        expect(article.locator('li').filter(has=page.get_by_role('link', name='Configuration guide', exact=True))).to_have_count(1)
-        assert '[Configuration guide](docs/configuration.md)' not in article.inner_text()
-        article.get_by_role('heading', name='Documentation and upstream projects').scroll_into_view_if_needed()
+        expect(article.get_by_role('link', name='documentation index')).to_have_attribute('href', 'file:///C:/project/docs/README.md')
+        expect(article.get_by_role('link', name='work panel', exact=True)).to_have_attribute('href', 'file:///C:/project/docs/conversation-work-panel.md')
+        expect(article.locator('li').filter(has=page.get_by_role('link', name='work panel', exact=True))).to_have_count(1)
+        assert '[documentation index](docs/README.md)' not in article.inner_text()
+        article.get_by_role('heading', name='Documentation', exact=True).scroll_into_view_if_needed()
         page.screenshot(path=str(preview / f'markdown-readme-{theme}.png'), animations='disabled')
         page.close()
     browser.close()

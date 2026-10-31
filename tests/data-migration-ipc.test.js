@@ -247,7 +247,6 @@ test('API and settings exports ignore active responses and unrelated downloads o
     h.configureApi();
     const services = h.api.migrationServices();
     context.mock.getter(services.runtimes, 'busy', () => true);
-    context.mock.getter(services.libraries, 'busy', () => true);
     context.mock.method(services.updates, 'isUpdating', () => true);
     context.mock.method(h.api.sharedConversations, 'isBusy', () => true);
     let shutdowns = 0;
@@ -270,7 +269,6 @@ test('conversation exports allow downloads and release engine access after the i
     h.configureApi();
     const services = h.api.migrationServices();
     context.mock.getter(services.runtimes, 'busy', () => true);
-    context.mock.getter(services.libraries, 'busy', () => true);
     context.mock.method(services.updates, 'isUpdating', () => false);
     const access = [];
     h.api.setWindow({ isDestroyed: () => false, webContents: { send(channel, state) {
@@ -301,8 +299,6 @@ test('read-only import previews ignore running work, downloads and application u
     assert.equal((await source.call('data-export')).ok, true);
     const services = target.api.migrationServices();
     context.mock.getter(services.runtimes, 'busy', () => true);
-    context.mock.getter(services.libraries, 'busy', () => true);
-    services.benchmarks.pending = { id: 'preview-benchmark' };
     context.mock.method(services.updates, 'isUpdating', () => true);
     context.mock.method(services.appUpdates, 'state', () => ({ installing: true }));
     context.mock.method(target.api.sharedConversations, 'isBusy', () => true);
@@ -317,7 +313,7 @@ test('read-only import previews ignore running work, downloads and application u
   } finally { source.cleanup(); target.cleanup(); }
 });
 
-test('API imports allow active responses and downloads, but keep benchmark routes stable', async context => {
+test('API imports allow active responses and downloads', async context => {
   const source = createHarness(), target = createHarness();
   try {
     source.configureApi();
@@ -326,17 +322,10 @@ test('API imports allow active responses and downloads, but keep benchmark route
     assert.equal((await source.call('data-export', { scope: ['api'] })).ok, true);
     const services = target.api.migrationServices();
     context.mock.getter(services.runtimes, 'busy', () => true);
-    context.mock.getter(services.libraries, 'busy', () => true);
     context.mock.method(services.updates, 'isUpdating', () => true);
     context.mock.method(target.api.sharedConversations, 'isBusy', () => true);
     let shutdowns = 0;
-    services.benchmarks.pending = { id: 'active-benchmark' };
     context.mock.method(target.api.codex, 'shutdown', async () => { shutdowns++; });
-    const refused = await target.call('data-import', { file, scope: ['api'] });
-    assert.equal(refused.ok, false);
-    assert.match(refused.error, /Stop the benchmark before changing API routes/);
-    assert.equal(fs.existsSync(path.join(target.home, '.dsh', 'ollama-proxy.json')), false);
-    services.benchmarks.pending = null;
     await isolateRouter(target);
     const imported = await target.call('data-import', { file, scope: ['api'] });
     assert.equal(imported.ok, true, imported.error);
@@ -355,7 +344,6 @@ test('settings and conversation imports reject conflicting writers, but allow un
     assert.equal((await source.call('data-export')).ok, true);
     const services = target.api.migrationServices();
     context.mock.getter(services.runtimes, 'busy', () => true);
-    context.mock.getter(services.libraries, 'busy', () => true);
     let active = true, updating = false;
     context.mock.method(target.api.sharedConversations, 'isBusy', () => active);
     context.mock.method(services.updates, 'isUpdating', () => updating);

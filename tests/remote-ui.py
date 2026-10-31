@@ -16,9 +16,9 @@ bridge = """(() => {
     if (action === 'invite') {
       window.lastInviteScope = payload.workspaceIds;
       window.lastInviteOptions = payload;
-      state.pending = [{ id: 'phone', name: '<img src=x onerror=alert(1)>', ...payload }];
       return { ok: true, result: { code: 'preview-pairing-code', address: state.address, expiresAt: Date.now() + 300000 } };
     }
+    if (action === 'simulate-phone-request') state.pending = [{ id: 'phone', name: '<img src=x onerror=alert(1)>', state: 'pending', ...window.lastInviteOptions }];
     if (action === 'approve') { state.devices = state.pending; state.pending = []; }
     if (action === 'reject') state.pending = [];
     if (action === 'revoke') state.devices = [];
@@ -32,6 +32,7 @@ with sync_playwright() as playwright:
     try:
         for scheme in ['light', 'dark']:
             page = browser.new_page(viewport={'width': 640, 'height': 850}, color_scheme=scheme)
+            page.clock.install()
             errors = []
             page.on('pageerror', lambda error: errors.append(str(error)))
             page.add_init_script(bridge)
@@ -59,13 +60,18 @@ with sync_playwright() as playwright:
             assert page.evaluate('window.lastInviteOptions.allWorkspaces') is True
             assert page.evaluate('window.lastInviteOptions.includeUnassigned') is True
             page.evaluate("remoteTest.workspaces.push({id:'future', name:'Future workspace'})")
-            page.get_by_role('button', name='生成配对码').click()
+            page.get_by_role('button', name='刷新二维码').click()
             expect(page.get_by_role('checkbox')).to_have_count(0)
             expect(page.locator('#qr img')).to_have_count(1)
             expect(page.locator('#code')).to_have_text('preview-pairing-code')
-            expect(page.locator('#invite')).to_be_enabled()
+            expect(page.locator('#refreshInvite')).to_be_enabled()
             assert page.evaluate('window.lastInviteScope') == []
             assert page.evaluate('window.lastInviteOptions.allWorkspaces') is True
+            # Generating a code does not create a request until the phone scans it.
+            page.evaluate("camelliaRemote.control('simulate-phone-request')")
+            page.clock.fast_forward(5100)
+            expect(page.locator('#invitation')).to_be_hidden()
+            expect(page.locator('#pairPending')).to_be_visible()
             expect(page.locator('#pending .name')).to_contain_text('<img src=x onerror=alert(1)>')
             # The pairing QR is the only image; a hostile device name must stay text.
             assert page.locator('#pending img, #devices img').count() == 0
@@ -73,13 +79,11 @@ with sync_playwright() as playwright:
             expect(page.locator('#pending .device')).to_have_count(0)
             expect(page.locator('#devices .device')).to_have_count(1)
             expect(page.get_by_role('button', name='授权全部访问', exact=True)).to_have_count(0)
-            page.evaluate("remoteTest.devices[0].allWorkspaces = false; remoteTest.devices[0].workspaceIds = ['project']")
             page.get_by_role('button', name='关闭手机访问', exact=True).click()
-            page.on('dialog', lambda dialog: dialog.accept())
-            page.get_by_role('button', name='授权全部访问', exact=True).click()
-            expect(page.get_by_role('button', name='授权全部访问', exact=True)).to_have_count(0)
             page.get_by_role('button', name='开启手机访问', exact=True).click()
-            expect(page.locator('#devices .name')).to_contain_text('全部工作区（含今后新增）及独立会话')
+            expect(page.locator('#devices .name')).to_contain_text('<img src=x onerror=alert(1)>')
+            assert page.evaluate('remoteTest.devices[0].allWorkspaces') is True
+            assert page.evaluate('remoteTest.devices[0].includeUnassigned') is True
             expect(page.locator('#devices button')).to_have_count(2)
             expect(page.locator('#devices button').first).to_have_text('重命名')
             expect(page.locator('#devices button').last).to_have_text('撤销')

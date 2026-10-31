@@ -316,16 +316,17 @@ window.createEngineSettingsUI = ({ api, status, navigate }) => {
     renderConnection();
     $('engineScopeTitle').textContent = appScope ? ({ codex: 'Codex in Camellia', antigravity: 'Antigravity in Camellia', grok: 'Grok Build in Camellia' })[engine] : 'These settings also apply to the CLI';
     $('engineScopeDescription').textContent = engine === 'grok'
-      ? 'Grok Build settings and instructions are stored in Camellia. Choose a subscription account or a shared API model in the conversation.' : appScope
-      ? (engine === 'codex' ? 'Codex configuration, credentials and history are stored inside Camellia. Saving here does not change your personal ~/.codex directory.' : 'These settings apply to the Antigravity engine in Camellia. Choose models and manage API keys in Providers & Keys.')
-      : "Saving overwrites the CLI's global settings and affects other CLI sessions. Before the first overwrite, an original .workbench.bak backup is kept.";
-    $('engineRouteHint').textContent = engine === 'grok' ? 'Grok Build uses a signed-in Grok account or the shared API routes. Select a connection and model in the conversation.' : engine === 'antigravity'
+      ? 'Settings and instructions are saved in Camellia.' : appScope
+      ? (engine === 'codex' ? 'Saved in Camellia; your personal ~/.codex directory is unchanged.' : 'Saved in Camellia. Choose models in the conversation and manage keys in API Keys.')
+      : "Saving overwrites the CLI's global settings and affects other CLI sessions.";
+    $('engineBackupHint').hidden = appScope;
+    $('engineRouteHint').textContent = engine === 'grok' ? 'Choose a Grok subscription or shared API model in the conversation.' : engine === 'antigravity'
       ? appScope ? 'API mode uses the shared key pool; choose a Google account model in the composer to use your Google plan.'
         : 'Subscription mode uses the official Google account provider. Review tool approvals in the conversation; configure permission rules here. AI credits are used only if you enable them.'
-      : "Camellia manages API routes centrally; CLI sessions using its router need the app running. Project settings follow each engine's precedence rules.";
-    $('engineAdvancedHint').textContent = engine === 'grok' ? 'Edit native Grok TOML, including MCP servers, plugins and permission rules. Camellia manages models and credentials; these instructions apply to every session.' : engine === 'codex' ? 'Edit native TOML, including [mcp_servers] and skills. Connection settings and credentials are managed by Camellia.' : appScope
+      : "CLI sessions using Camellia's API router need the app running. Project settings follow each engine's precedence rules.";
+    $('engineAdvancedHint').textContent = engine === 'grok' ? 'Edit Grok TOML, MCP servers, plugins and permission rules. Global instructions apply to every session.' : engine === 'codex' ? 'Edit native TOML, including [mcp_servers] and skills. Connection settings and credentials are managed by Camellia.' : appScope
       ? 'Add MCP servers under mcpServers and local skill directories under skillsPaths. Common options above are applied when you save.'
-      : 'Edit full native configuration, including tools, hooks, plugins, and permission rules. Camellia manages API connections; common options above apply on save.';
+      : 'Edit tools, hooks, plugins and permission rules. Options above are applied on save.';
     $('nativeDocuments').querySelector('summary').textContent = engine === 'grok' ? 'Advanced configuration · MCP · Global instructions' : engine === 'dsh' ? "Advanced configuration · Full YAML" : "Advanced configuration · MCP · " + (engine === 'kimi' ? "Terminal" : engine === 'antigravity' ? "Skills" : "Global instructions");
     $('engineCommon').innerHTML = state.fields.map((field, i) => {
       const value = field.key in state.common ? state.common[field.key] : field.value;
@@ -334,8 +335,8 @@ window.createEngineSettingsUI = ({ api, status, navigate }) => {
         : field.type === 'textarea' ? `<textarea id="${id}" data-field="${field.key}" rows="4" placeholder="${esc(field.placeholder || '')}" data-i18n-attrs="placeholder">${esc(value)}</textarea>`
         : `<input id="${id}" data-field="${field.key}" type="${field.type}" ${field.type === 'checkbox' ? value ? 'checked' : '' : `value="${esc(value)}" placeholder="${esc(field.placeholder || '')}"`} ${field.type === 'number' ? `min="${field.min}" max="${field.max}"` : ''} data-i18n-attrs="placeholder">`;
       return `<div class="engine-field"><label for="${id}" data-i18n>${esc(field.label)}</label>${input}</div>`;
-    }).join('') + (engine === 'dsh' ? '' : `<h2 class="engine-common-title" data-i18n>Workbench sessions</h2><div class="engine-field"><label for="engineCwd" data-i18n>Default directory for standalone sessions<small class="hint" style="display:block" data-i18n>Leave blank to use the application directory. Workspace sessions use their own folders.</small></label><input id="engineCwd" data-desktop="cwd" value="${esc(state.desktop.cwd || '')}" placeholder="Application session directory" data-i18n-attrs="placeholder"></div>`)
-      + (['kimi', 'grok'].includes(engine) ? `<div class="engine-field"><label for="engineContext" data-i18n>API model context window (tokens)<small class="hint" data-i18n>Subscription models use the context limit reported by the provider.</small></label><input id="engineContext" data-desktop="contextWindow" type="number" min="4096" max="2000000" value="${state.desktop.contextWindow || 131072}"></div>` : '');
+    }).join('') + (engine === 'dsh' ? '' : `<h2 class="engine-common-title" data-i18n>Workbench sessions</h2><div class="engine-field"><label for="engineCwd" data-i18n>Default directory for standalone sessions<small class="hint" style="display:block" data-i18n>Leave blank for the application directory; workspaces use their own folders.</small></label><input id="engineCwd" data-desktop="cwd" value="${esc(state.desktop.cwd || '')}" placeholder="Application session directory" data-i18n-attrs="placeholder"></div>`)
+      + (engine === 'kimi' ? `<div class="engine-field"><label for="engineContext" data-i18n>API model context window (tokens)<small class="hint" data-i18n>Subscription models use the context limit reported by the provider.</small></label><input id="engineContext" data-desktop="contextWindow" type="number" min="4096" max="2000000" value="${state.desktop.contextWindow || 131072}"></div>` : '');
     $('engineDocument').innerHTML = state.files.map(file => `<option data-i18n value="${file.id}">${esc(file.label)}</option>`).join('');
     renderDocument(); $('saveEngine').disabled = !state.dirty;
     $('reloadEngine').textContent = state.dirty ? "Discard and reload" : "Reload";
@@ -438,7 +439,7 @@ window.createEngineSettingsUI = ({ api, status, navigate }) => {
       const key = row.id + ':' + mode;
       const saved = row.paths?.[mode] || (row.mode === mode ? row.customPath : '') || '';
       const label = row.id === 'antigravity' ? 'Antigravity CLI executable (Google subscription)' : ['dsh', 'kimi'].includes(row.id) ? 'Local JavaScript entry file' : 'Local executable';
-      return `<fieldset class="runtime-path" data-runtime="${row.id}" data-mode="${mode}" ${runtimePathBusy || row.status === 'installing' || isRuntimeUpdating(row.id) ? 'disabled' : ''}><div class="runtime-path-actions"><label for="runtime-path-${row.id}-${mode}" data-i18n>${label}</label><input id="runtime-path-${row.id}-${mode}" type="text" data-runtime-path="${key}" value="${esc(runtimePathDrafts.get(key) ?? saved)}" placeholder="Automatic detection" data-i18n-attrs="placeholder" spellcheck="false"><button type="button" data-path-action="browse" data-i18n>Browse…</button><button type="button" data-path-action="save" data-i18n>Save path</button><button type="button" data-path-action="reset" data-i18n>Use automatic detection</button></div><p class="hint" data-i18n>Choose a local executable or paste its full path. Saving runs it to check its version. Clear to use automatic detection.</p></fieldset>`;
+      return `<fieldset class="runtime-path" data-runtime="${row.id}" data-mode="${mode}" ${runtimePathBusy || row.status === 'installing' || isRuntimeUpdating(row.id) ? 'disabled' : ''}><div class="runtime-path-actions"><label for="runtime-path-${row.id}-${mode}" data-i18n>${label}</label><input id="runtime-path-${row.id}-${mode}" type="text" data-runtime-path="${key}" value="${esc(runtimePathDrafts.get(key) ?? saved)}" placeholder="Automatic detection" data-i18n-attrs="placeholder" spellcheck="false"><button type="button" data-path-action="browse" data-i18n>Browse…</button><button type="button" data-path-action="save" data-i18n>Save path</button><button type="button" data-path-action="reset" data-i18n>Use automatic detection</button></div><p class="hint" data-i18n>Saving runs the executable to check its version.</p></fieldset>`;
     }).join('');
     if (row.id !== 'antigravity' || row.mode === 'subscription' || !row.subscriptionRuntime) return controls;
     const cli = row.subscriptionRuntime, ready = cli.status === 'ready';
@@ -461,8 +462,8 @@ window.createEngineSettingsUI = ({ api, status, navigate }) => {
       : pythonState.file ? t('Detected automatically: v{0}').replace('{0}', () => pythonState.version || '') : t('No Python found');
     badge.className = 'badge' + (saved && !pythonState.antigravitySdk ? ' bad' : pythonState.file ? ' good' : ' bad');
     $('pythonHint').textContent = saved && !pythonState.antigravitySdk
-      ? t('This interpreter cannot import google.antigravity. Antigravity API mode needs the SDK; other engines and the benchmark verifier work without it.')
-      : t('Choose any Python 3 installation; Camellia never edits it or installs packages.');
+      ? t('Antigravity API mode requires google.antigravity in this interpreter. Other engines do not.')
+      : t('Uses your Python 3 installation without changing it or installing packages.');
   }
   function runtimeStatusControls(row, marker = 'data-runtime-status') {
     if (isRuntimeUninstalling(row.id)) return `<button ${marker} data-uninstall="${row.id}" data-i18n disabled>Uninstalling…</button>`;

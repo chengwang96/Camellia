@@ -2,7 +2,8 @@
 const fs = require('node:fs');
 const path = require('node:path');
 // The error page is loaded as a data URL, so its shared styles are embedded.
-const desktopStyles = ['ui-theme.css', 'desktop-views.css'].map(file => fs.readFileSync(path.join(__dirname, '../renderer/shared', file), 'utf8')).join('\n');
+const desktopStyles = ['ui-theme.css', 'desktop-views.css', 'window-chrome.css'].map(file => fs.readFileSync(path.join(__dirname, '../renderer/shared', file), 'utf8')).join('\n');
+const chromeScript = fs.readFileSync(path.join(__dirname, '../renderer/shared/window-chrome.js'), 'utf8');
 
 function createDesktopViews({ appName: APP_NAME, isDark }) {
 function escapeHtml(v) {
@@ -19,7 +20,7 @@ function errorHtml(err) {
   document.getElementById('openSettings').addEventListener('click', () => window.dshDesktop.openSettingsWindow());
   document.getElementById('retry').addEventListener('click', () => window.dshDesktop.applySettings());
   </script>
-  </body></html>`;
+  <script>${chromeScript}</script></body></html>`;
 }
 
 return { errorHtml };

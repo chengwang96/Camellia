@@ -21,7 +21,7 @@ const { apiAccountRef } = require('../src/engines/discussions/catalog');
 const { normalizeConfig, writeConfig } = require('../src/api/api-router-config');
 const { startApiRouter } = require('../src/api/api-router');
 const { frame } = require('../src/api/api-protocol');
-const { isolatedEnvironment } = require('../src/benchmark/engines');
+const { isolatedEnvironment } = require('../src/engines/isolated-environment');
 
 async function main() {
   const online = process.argv.includes('--online'), source = online ? process.argv[process.argv.indexOf('--online') + 1] : null;

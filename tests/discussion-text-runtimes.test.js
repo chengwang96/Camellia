@@ -9,7 +9,7 @@ const YAML = require('yaml');
 const TOML = require('smol-toml');
 const { googleDiscussionSpec, extraTextSpec, kimiCredentialFile } = require('../src/engines/discussions/text-runtimes');
 const { CONNECTIONS } = require('../src/engines/discussions/capabilities');
-const { isolatedEnvironment } = require('../src/benchmark/engines');
+const { isolatedEnvironment } = require('../src/engines/isolated-environment');
 const { removeTree } = require('./test-fs.cjs');
 const { DiscussionProduction } = require('../src/engines/discussions/production');
 const { codexTextSpec } = require('../src/engines/discussions/codex-text-policy');
@@ -21,7 +21,7 @@ function setup(t) {
   const home = path.join(root, 'native'), cwd = path.join(root, 'work');
   fs.mkdirSync(home); fs.mkdirSync(cwd);
   return { root, home, cwd, env: isolatedEnvironment(path.join(root, 'profile'), process.execPath), node: process.execPath,
-    route: { baseUrl: 'http://127.0.0.1:3333/bench/fixed', authToken: 'proxy-managed' } };
+    route: { baseUrl: 'http://127.0.0.1:3333/scopes/fixed', authToken: 'proxy-managed' } };
 }
 
 test('Codex discussion catalogs keep text-only instructions in both native schema fields', t => {

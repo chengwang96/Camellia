@@ -4,7 +4,7 @@ const path = require('node:path');
 const { EmbeddedNetwork } = require('./embedded-network');
 const { createRemoteService } = require('./service');
 
-function createRemoteDesktop({ app, BrowserWindow, ipcMain, nativeTheme, manager, rendererRoot, loadConfig, getSettingsWindow = () => null, networkFactory, apiRoutes = null, getDiscussions = null,
+function createRemoteDesktop({ app, BrowserWindow, ipcMain, nativeTheme, windowChrome, manager, rendererRoot, loadConfig, getSettingsWindow = () => null, getMainWindow = () => null, networkFactory, apiRoutes = null, getDiscussions = null,
   computerName = () => '', saveComputerName = () => {}, prepareRestart = async () => {}, log = () => {} }) {
   let window = null;
   // Pairing stores the display name on the invitation; an explicit edit stores it
@@ -30,9 +30,10 @@ function createRemoteDesktop({ app, BrowserWindow, ipcMain, nativeTheme, manager
     return service.command(action, payload);
   });
   ipcMain.handle('dsh:open-mobile-access', event => {
-    const settings = getSettingsWindow();
-    if (!settings || settings.isDestroyed() || event.sender !== settings.webContents || event.senderFrame !== settings.webContents.mainFrame) {
-      return { ok: false, error: 'Local settings window required' };
+    const authorized = [getMainWindow(), getSettingsWindow()].some(candidate => candidate && !candidate.isDestroyed()
+      && event.sender === candidate.webContents && event.senderFrame === candidate.webContents.mainFrame);
+    if (!authorized) {
+      return { ok: false, error: 'Local desktop or settings window required' };
     }
     try { controller.open(); return { ok: true }; }
     catch (error) { return { ok: false, error: error.message }; }
@@ -49,9 +50,11 @@ function createRemoteDesktop({ app, BrowserWindow, ipcMain, nativeTheme, manager
         // the OS default position before moving to its final place.
         show: false, center: true,
         title: 'Mobile access — Camellia', autoHideMenuBar: true,
+        ...windowChrome?.options(),
         backgroundColor: nativeTheme.shouldUseDarkColors ? '#151517' : '#ffffff',
         webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false, sandbox: true } });
       window = created;
+      windowChrome?.attach(created);
       created.once('ready-to-show', () => { if (!created.isDestroyed()) created.show(); });
       window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
       window.webContents.on('will-navigate', event => event.preventDefault());

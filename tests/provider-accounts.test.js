@@ -141,7 +141,7 @@ test('Command Code complete endpoint URLs use one base for discovery and validat
     const models = await fetchModels(p, 'secret', options);
     await verifyModel(p, 'secret', models[0], options);
     assert.deepEqual(calls, [
-      ['https://api.commandcode.ai/provider/v1/models', 'GET'],
+      ['https://api.commandcode.ai/provider/v1/models?view=client', 'GET'],
       ['https://api.commandcode.ai/provider/v1/chat/completions', 'POST'],
     ]);
   }

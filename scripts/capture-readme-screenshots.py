@@ -56,11 +56,13 @@ HOME_BRIDGE = """(() => {
     onLanguageChanged: () => () => {},
     onRuntimeState: () => {},
     onNetworkHealth: () => {},
+    workbenchSettings: async () => ({ok: true, language: 'en'}),
     runtimeState: async () => ({ok: true, engines: engines.map(id => ({id, status:'ready', name:id}))}),
     runtimeCheckUpdates: async () => ({ok: true, engines: []}),
     listCliServers: async () => ({ok: true, language:'en', devices: []}),
     switchMode: async () => ({ok: true}),
     openSettingsWindow: async () => ({ok: true}),
+    openMobileAccess: async () => ({ok: true}),
     openCliDevices: async () => ({ok: true})
   };
 })();"""

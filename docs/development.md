@@ -24,9 +24,7 @@ The installation and startup hooks only check already installed engines and reap
 | `src/main/` | Electron entry point, preload bridge, windows, IPC, backend processes, and runtime management |
 | `src/api/` | Provider configuration, same-model routing, protocol conversion, usage, and account adapters |
 | `src/engines/` | Claude sessions, Codex app-server, shared streaming/ACP transport, Antigravity SDK bridge, history, goals, workspaces, and native settings |
-| `src/benchmark/` | Versioned tasks, independent file/code graders, isolated native harness profiles, trial scheduling and reports |
 | `src/renderer/home/` | Home screen and engine selection |
-| `src/renderer/benchmark/` | Model selection, run limits, six-engine scores, per-task evidence and report history |
 | `src/renderer/chat/` | Shared six-engine conversation UI, sidebar, and goal controls |
 | `src/renderer/settings/` | Provider, usage, account, and engine-settings interfaces |
 | `src/renderer/shared/` | Theme tokens and shared desktop styles |
@@ -64,7 +62,7 @@ Desktop distributions contain download manifests and lockfiles for all six engin
 
 Codex API mode uses `src/api/responses-protocol.js` to bridge Responses into the existing same-model router. It preserves streamed text, reasoning, parallel function calls, raw custom tool inputs, and token usage. Partial stream failures emit `response.failed` and never rotate to another key after output begins. Protocol fixtures and `npm run test:codex` verify these contracts; the native smoke also checks file writes, resume, fork, cancellation, and an empty isolated account. A live ChatGPT login and quota require an eligible account and are not covered by offline tests. When updating the pin, generate schemas with the new CLI and review the [official app-server documentation](https://developers.openai.com/codex/app-server).
 
-For third-party API models absent from the native catalog, `codex-models.js` supplies the pinned fallback metadata with Codex's native `apply_patch` handler enabled. The default instructions and reasoning settings stay the same. Known native models, explicit user catalogs and subscription connections retain their native configuration. The versioned metadata and upstream license are in `src/engines/codex-metadata/`; review them when upgrading the CLI. This avoids the Windows batch wrapper truncating multiline patches. Native smoke tests reproduce that failure and verify raw patch streaming, Unicode/quotes/spaces, multiple files, and a denied native patch approval. See [the timeout investigation](benchmark-codex-patch-2026-09-16.md).
+For third-party API models absent from the native catalog, `codex-models.js` supplies the pinned fallback metadata with Codex's native `apply_patch` handler enabled. The default instructions and reasoning settings stay the same. Known native models, explicit user catalogs and subscription connections retain their native configuration. The versioned metadata and upstream license are in `src/engines/codex-metadata/`; review them when upgrading the CLI. This avoids the Windows batch wrapper truncating multiline patches. Native smoke tests reproduce that failure and verify raw patch streaming, Unicode/quotes/spaces, multiple files, and a denied native patch approval.
 
 Antigravity uses `LocalOpenAIAgentConfig` against Camellia's local router. `src/engines/antigravity/bridge.py` adapts SDK chunks, policies, tool hooks, and saved conversations to the ACP transport shared with Kimi. This Python file is unpacked from ASAR in desktop builds. Its package directory is selected through `PYTHONPATH`; no global Python or CLI settings are changed. Runtime downloads and dependencies are pinned with checksums in `runtimes/antigravity/`.
 
@@ -103,7 +101,6 @@ node tests/archived-settings-electron.cjs
 npm run test:codex
 npm run test:kimi
 npm run test:antigravity
-npm run test:benchmark
 npm run test:tools
 node tests/tools-native-audit.cjs --permissions
 node tests/tools-native-audit.cjs --permissions --allow
@@ -113,9 +110,9 @@ node tests/claude-cli-resume.cjs ./runtimes/claude/node_modules/@anthropic-ai/cl
 node tests/api-router-cli-smoke.cjs ./runtimes/claude/node_modules/@anthropic-ai/claude-code/bin/claude.exe
 ```
 
-`test:tools` runs nine native read/search/write/edit/error probes through each of the six API engines plus DSH's separate ACP chat entry. It verifies fragmented and interleaved tool arguments, Unicode, exact result IDs and benchmark error evidence. The permission variants exercise real Claude and DSH approvals and denials. See the [tool integration audit](harness-tools-audit-2026-09-16.md) for findings and coverage limits. Antigravity's SDK uses a dedicated local compatibility path to receive complete tool argument deltas; its profile version is recorded in benchmark reports. Claude print mode explicitly connects its permission prompt to the stdio host.
+`test:tools` runs nine native read/search/write/edit/error probes through each of the six API engines plus DSH's separate ACP chat entry. It verifies fragmented and interleaved tool arguments, Unicode, exact result IDs and API error evidence. The permission variants exercise real Claude and DSH approvals and denials. See the [tool integration audit](harness-tools-audit-2026-09-16.md) for findings and coverage limits. Antigravity's SDK uses a dedicated local compatibility path to receive complete tool argument deltas. Claude print mode explicitly connects its permission prompt to the stdio host.
 
-The upstream-error variant deliberately returns HTTP 400 after native reads. Kimi 0.43.0's ACP can report a normal end despite that error; benchmark checks the last tool-enabled API outcome before grading. Successful title requests cannot override a terminal agent API failure.
+The upstream-error variant deliberately returns HTTP 400 after native reads. Kimi 0.43.0's ACP can report a normal end despite that error; the native tool audit checks the last tool-enabled API outcome. Successful title requests cannot override a terminal agent API failure.
 
 Browser checks require Python, Playwright, and Chromium:
 
@@ -123,7 +120,6 @@ Browser checks require Python, Playwright, and Chromium:
 python -m pip install playwright
 python -m playwright install chromium
 python tests/desktop-ui.py
-python tests/benchmark-ui.py
 python tests/api-settings-ui.py
 python tests/engine-settings-ui.py
 python tests/claude-workspaces-ui.py
@@ -173,24 +169,6 @@ Installer registration is restricted to GitHub Actions; local acceptance
 targets a bundle or an already installed application directory. These
 fixture checks validate product integration, not live subscription login,
 model quality, or every operating-system and network configuration.
-
-`test:benchmark` drives all six real API runtimes concurrently against one local model fixture: overlapping API requests, native file writes, independent grading, model/provider pinning, isolated per-trial usage, and cancellation. Its fake responses validate integration only and must never be reported as model benchmark scores. `benchmark.test.js` covers grading, Unicode mismatch diagnostics, exceptions and file checks, report persistence, fresh directories, repeats, independent engine queues, concurrent cancellation and accounting, shared budget stops, per-task limit isolation, worker cleanup after persistence errors, and interrupted-run recovery; router tests cover scoped traffic and cancellation. When changing task content or scoring rules, bump the suite version before publishing; reports also record a hash of the full task definition. The independent checker lives in `src/benchmark/verifier.js` and records its own version. Expected values stay in the parent process; the restricted child receives only inputs. Diagnostic previews are bounded and displayed as text.
-
-The additional `checkScore` metric is defined by `checkScoreMethod` (`mean-trial-check-fraction-v1`). It averages unrounded per-attempt fractions, while the existing `score` field remains the full-task pass rate. Tests distinguish partial credit, equal task weighting, repeated attempts, unexecuted checks, API/runtime failures, incomplete runs, and historical reports with missing counts. Changing this metric's formula requires a new method identifier; UI and exports name both metrics explicitly.
-
-External question libraries live in `src/benchmark/libraries.js`: fixed source revisions and checksums, on-demand downloads, pinned Python environments, stable sampling, and public/private task separation. `python-verifier.js` starts one cancellable process per DS-1000 execution loop or SciCode subproblem. `python/check.py` preserves the official case order, shared variables and random state, reporting each case over a bounded JSON-lines protocol. A later timeout retains completed checks. The checker uses isolated Python imports; agents' scratch tests use `-E -s -X utf8` so `import solution` works. Scientific subprocesses use one numerical-library thread to avoid oversubscription when six engines run together. Unlike the built-in Node permission checker, these local Python processes are not a security sandbox. Keep answers and checker programs out of agent files and prompts. `tests/benchmark-libraries.test.js` covers download integrity, task selection, provenance, private-answer exclusion, report compatibility and the runner's external-verifier routing.
-
-After preparing both libraries in the app, run `npm run test:benchmark:science` (or pass an explicit library directory to `tests/benchmark-science-smoke.cjs`). It checks an official reference solution from each of DS-1000's seven libraries, three SciCode validation problems against the real HDF5 targets, deliberately wrong candidates, partial credit, UTF-8/BOM files, timeouts and cancellation. It uses no model API. `node tests/benchmark-native-smoke.cjs --science` also exercises all six real harnesses concurrently with a loopback API fixture, writing a DS-1000 solution through native tools and grading it with the prepared Python environment. The small SciCode fixtures retain their upstream provenance and Apache-2.0 license; they are not packaged into the application.
-
-Dependency inputs and generated hash locks are in `src/benchmark/requirements/`. Regenerate with `uv pip compile <input> --python-version 3.10 --universal --generate-hashes --output-file <lock>`, then verify both supported platform resolutions and run native smoke tests. Windows requires the `tensorflow-intel` package explicitly and the last Windows `tensorflow-io-gcs-filesystem` wheel; macOS ARM64 uses its separate filesystem-wheel version. Environment/adapter cache changes require a new `ADAPTER_VERSION`; grading fixes bump `PYTHON_GRADER_VERSION` without redownloading data. Scientific Python files must be unpacked from ASAR so the managed interpreter can execute them; official datasets and installed scientific packages remain outside the application bundle.
-
-`diagnostics.js` records independently reproduced question limitations and shared failed cases across engines. Notices never alter upstream answers or historical scores. Known problematic questions sort last in SciCode's versioned sample policy; the full split retains them. Complete `solution.py` snapshots (up to the grader's 1 MiB limit) and SHA-256 hashes take priority over scratch-file diffs; binary caches are omitted. `scripts/regrade-benchmark.cjs` resolves saved IDs against the full catalog, so changed sample order cannot prevent offline regrading.
-
-For an explicitly authorized paid diagnostic, `node scripts/benchmark-live-audit.cjs --use-configured-api` uses the configured Ollama `deepseek-v4.1-flash` model on SciCode #74 and DS-1000 #354/#160 across all six native runtimes. Optional `--science-only` runs just the science control; `--timeout-seconds=300` changes the default 180-second limit equally for all engines. It uses separate temporary router credentials and report directories, with bounded calls/tokens, and does not modify the app's active run. This is an integration control, not a representative harness leaderboard.
-
-`--preview --codex-only --model=kimi-k3` runs the three preview tasks through just Codex with the same shared 270-second deadline, 250K tokens per task and 40-request limit. It records `single-engine-audit` and must not be imported or presented as a six-engine comparison. New reports also retain bounded tool errors and their timestamps, so a failed editing loop can be distinguished from API waiting in the task details.
-
-Choose checks for the changed behavior. Layout and resource-path changes should cover affected browser pages and the Electron entry point. Runtime or packaging changes should also verify a built application.
 
 ## Packaging
 

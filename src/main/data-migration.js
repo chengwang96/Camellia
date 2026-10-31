@@ -41,7 +41,7 @@ const HOME_FILES = ['.claude.json'];
 // Caches, browser state and download-on-demand payloads. They are either
 // rebuilt automatically or are a fraction of the transfer in size.
 const APP_SKIP_TOP = new Set([
-  'runtimes', 'logs', 'benchmark-libraries', 'migration-backups',
+  'runtimes', 'logs', 'migration-backups',
   'Cache', 'Code Cache', 'GPUCache', 'GPUPersistentCache', 'GPUShaderCache', 'GrShaderCache', 'ShaderCache',
   'DawnGraphiteCache', 'DawnWebGPUCache', 'blob_storage', 'Local Storage', 'Session Storage',
   'Network', 'Shared Dictionary', 'DIPS', 'SharedStorage', 'lockfile', 'Preferences', 'Local State',

@@ -4,7 +4,7 @@ Updated 2026-10-08. The original v1 gate below was drafted for a Windows text-on
 
 ## Delivered integration
 
-- Desktop home has a 2×2 tools grid: Agent discussions, Benchmark, Server connections, and Settings. Ordinary chats and discussions share a seven-entry navigation menu while retaining separate histories and drafts.
+- Desktop home has a 2×2 tools grid: Agent discussions, Mobile access, Server connections, and Settings. Ordinary chats and discussions share a seven-entry navigation menu while retaining separate histories and drafts.
 - Members can use Claude Code, Codex CLI, DSH, Kimi Code, Antigravity, and Grok Build through currently configured API routes. Codex, Kimi, Antigravity, and Grok Build also reuse supported subscription sign-ins. API members select a **provider and model**, not an individual key; the router can rotate keys within that provider, while the member binding does not silently change providers.
 - Groups can be created, renamed, pinned, and deleted; a member can have an identity prompt. Structured mentions select one or more responders, with parallel/serial mode, streaming replies, stop, retry, and serial-failure handling.
 - The native-tools path uses the corresponding ordinary-chat transport and permissions. The discussion UI shares attachment, tool card, question/approval, and file preview components. A group has a managed work directory and can pass real generated files between members. [Rich interaction](group-chat-rich-interaction-plan.md) records tested bindings and input limits.
@@ -24,7 +24,7 @@ These eight checks preserve the intent of the original release review. Evidence 
 | V1-05 | Tool and permission behavior matches the selected actual native path and group policy. | Native tools and approvals were later enabled and tested for representative paths; the original tool-free wording is superseded. |
 | V1-06 | Stop and restart handle preparation, active replies, queues, and late events without automatic side-effect replay. | Live stop and local process-tree checks passed; abnormal-exit and summary lifecycle coverage remained open. |
 | V1-07 | History, attribution, results, and cursors persist together; cleanup preserves referenced state. | Completed-round desktop restart passed; in-flight and summary recovery remained open. |
-| V1-08 | Ordinary chat, benchmark, server, settings, and unsupported-path errors remain sound. | Focused desktop/IPC regression passed; full release regression remained open. |
+| V1-08 | Ordinary chat, mobile access, server, settings, and unsupported-path errors remain sound. | Focused desktop/IPC regression passed; full release regression remained open. |
 
 ## Decision history and boundaries
 

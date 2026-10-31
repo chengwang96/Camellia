@@ -223,11 +223,31 @@ function catalogThinking(entry) {
     if (!source || typeof source !== 'object') continue;
     const thinking = normalizeThinking(source.thinking);
     if (thinking) return thinking;
+    // Command Code's client catalog uses reasoningEfforts; OpenCode Zen/Go
+    // uses capabilities.reasoning.effort; Kimi uses support_efforts.
+    const reasoning = source.reasoning;
     const efforts = source.supported_reasoning_efforts ?? source.supportedReasoningEfforts ?? source.supported_reasoning_levels
-      ?? source.reasoning_efforts ?? source.effort?.supported_levels ?? source.reasoning?.supported_efforts ?? source.reasoning?.efforts;
-    if (!Array.isArray(efforts)) continue;
-    const reported = normalizeThinking({ values: efforts.map(level => typeof level === 'object' && level !== null ? level.reasoningEffort ?? level.effort : level),
-      default: source.default_reasoning_effort ?? source.defaultReasoningEffort ?? source.default_reasoning_level ?? source.effort?.default_level ?? source.reasoning?.default });
+      ?? source.reasoning_efforts ?? source.reasoningEfforts ?? source.support_efforts ?? source.effort?.supported_levels
+      ?? reasoning?.supported_efforts ?? reasoning?.efforts ?? reasoning?.effort;
+    const defaultValue = source.default_reasoning_effort ?? source.defaultReasoningEffort ?? source.default_reasoning_level
+      ?? source.default_effort ?? source.effort?.default_level ?? reasoning?.default?.value ?? reasoning?.default;
+    const levelValue = level => {
+      const value = typeof level === 'object' && level !== null ? level.reasoningEffort ?? level.effort : level;
+      return value === 'off' ? 'none' : value;
+    };
+    const capabilities = Array.isArray(source.capabilities) ? source.capabilities : [];
+    const toggle = reasoning?.toggle === true || capabilities.includes('thinking') && !capabilities.includes('always_thinking');
+    if (reasoning?.supported === false) return { values: [] };
+    if (!Array.isArray(efforts)) {
+      if (toggle) return { values: [false, true] };
+      // A null list in Command Code's client schema explicitly means there
+      // is no selectable effort. Do not probe a nonexistent detail endpoint.
+      if (source.reasoningEfforts === null) return { values: [] };
+      continue;
+    }
+    const values = efforts.map(levelValue);
+    if (toggle && values.length && !values.includes('none')) values.unshift('none');
+    const reported = normalizeThinking({ values: values.length ? values : toggle ? [false, true] : [], default: levelValue(defaultValue) });
     if (reported) return reported;
   }
 }
@@ -244,19 +264,69 @@ function documentedThinking(provider, model) {
   if (host === 'api.deepseek.com' && model.thinking?.values.some(value => typeof value === 'string') && !model.thinking.values.includes('none')) {
     model.thinking.values.unshift('none');
   }
+  if (model.thinking) return;
+  // These first-party APIs do not consistently advertise controls in /models.
+  // Exact documented IDs only; a provider type on a relay is not evidence.
+  // https://platform.kimi.ai/docs/guide/use-thinking-models (2026-10-31).
+  if (['api.moonshot.cn', 'api.moonshot.ai', 'api.kimi.ai'].includes(host) && new URL(provider.baseUrl).pathname.replace(/\/+$/, '') === '/v1') {
+    if (['kimi-k3', 'kimi-k3.1-pro'].includes(model.upstream)) model.thinking = { values: ['low', 'high', 'max'], default: 'max' };
+    if (['kimi-k2.5', 'kimi-k2.6'].includes(model.upstream)) model.thinking = { values: [false, true], default: true };
+    if (['kimi-k2.7-code', 'kimi-k2.7-code-highspeed', 'kimi-k2-thinking', 'kimi-k2-thinking-turbo'].includes(model.upstream)) model.thinking = { values: [] };
+  }
+  // https://www.kimi.com/code/docs/en/kimi-code/models.html (2026-10-31).
+  if (['api.kimi.com', 'api.kimi.ai'].includes(host) && /^\/coding(?:\/v1)?\/?$/.test(new URL(provider.baseUrl).pathname)) {
+    if (['k3.1-pro', 'k3.1-pro-highspeed', 'k3', 'k3-256k', 'kimi-for-coding'].includes(model.upstream)) {
+      model.thinking = { values: ['low', 'high', 'max'], default: model.upstream === 'kimi-for-coding' ? 'max' : 'high' };
+    }
+    if (model.upstream === 'kimi-for-coding-highspeed') model.thinking = { values: [] };
+  }
+  // https://ai.google.dev/gemini-api/docs/openai#thinking and /thinking.
+  // OpenAI effort names, not native thinking budgets. No blanket Gemini match:
+  // image/audio/embedding models and future IDs must report their own controls.
+  if (host === 'generativelanguage.googleapis.com') {
+    const gemini = {
+      'gemini-4-argon': ['low', 'medium', 'high'],
+      'gemini-3.8-flash': ['low', 'medium', 'high'],
+      'gemini-3.6-flash': ['minimal', 'low', 'medium', 'high'],
+      'gemini-3.5-flash-lite': ['minimal', 'low', 'medium', 'high'],
+      'gemini-3.1-flash-lite': ['minimal', 'low', 'medium', 'high'],
+      'gemini-3.1-pro-preview': ['low', 'medium', 'high'],
+      'gemini-3-flash-preview': ['minimal', 'low', 'medium', 'high'],
+      'gemini-3-pro-preview': ['low', 'high'],
+      'gemini-2.5-pro': ['low', 'medium', 'high'],
+      'gemini-2.5-flash': ['none', 'low', 'medium', 'high'],
+      'gemini-2.5-flash-lite': ['none', 'low', 'medium', 'high'],
+    };
+    const values = Object.hasOwn(gemini, model.upstream) ? gemini[model.upstream] : undefined;
+    if (values) model.thinking = { values };
+  }
 }
 async function fetchModels(provider, key, options = {}) {
   const base = endpoint(provider.baseUrl);
   const ollama = provider.type === 'ollama' || new URL(base).hostname === 'ollama.com';
+  const commandcode = new URL(base).hostname === 'api.commandcode.ai' && new URL(base).pathname === '/provider/v1';
   let data;
   if (options.configuredOnly && ollama) data = { data: [] };
   else {
-    try { data = await requestJson(base + '/models', key, options); }
+    try {
+      // The standard Command Code list omits reasoningEfforts. This is the
+      // same richer, same-host catalog used by their official CLI (v1.88.2).
+      if (commandcode) {
+        try {
+          data = await requestJson(base + '/models?view=client', key, options);
+          if (!Array.isArray(data?.data)) data = undefined;
+        } catch { /* Older servers may expose only the standard catalog. */ }
+      }
+      if (!data) data = await requestJson(base + '/models', key, options);
+    }
     catch (error) { if (!options.configuredOnly) throw error; data = { data: [] }; }
   }
   if (!Array.isArray(data.data) && !Array.isArray(data.models)) throw new Error("No model catalog was returned. Add models manually.");
   const unique = new Map();
   for (const entry of data.data || data.models) {
+    // The client catalog also carries hidden/legacy models. Preserve them
+    // only for existing configured routes, not the Add models picker.
+    if (commandcode && entry?.hidden === true && !options.configuredOnly) continue;
     const model = catalogModel(provider, entry);
     if (!model) continue;
     const existing = unique.get(model.upstream);

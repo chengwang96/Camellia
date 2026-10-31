@@ -34,12 +34,16 @@ async function main() {
   const { app, BrowserWindow } = require('electron');
   process.on('uncaughtException', error => { console.error(error); app.exit(1); });
   const root = process.env.SETTINGS_CLOSE_ROOT;
+  app.setPath('appData', root);
   const userData = path.join(root, 'app');
   fs.mkdirSync(userData, { recursive: true });
   fs.writeFileSync(path.join(userData, 'desktop-config.json'), JSON.stringify({ firstRunComplete: true, mode: 'home', port: 0 }));
   app.setPath('userData', userData);
   app.disableHardwareAcceleration();
-  app.on('browser-window-created', (_event, window) => { window.show = () => {}; window.hide(); });
+  app.on('browser-window-created', (_event, window) => {
+    window.show = () => {}; window.focus = () => {};
+    window.webContents.setBackgroundThrottling(false);
+  });
   require('../src/main/main');
   await app.whenReady();
   async function waitFor(check) {
@@ -126,7 +130,7 @@ async function main() {
     await window.flushApiSettings();
     fill('#pName', 'Edited immediately before closing');
   })()`);
-  settings.close();
+  await settings.webContents.executeJavaScript('document.getElementById("closeSettings").click()');
   await waitFor(() => settings.isDestroyed());
   let state = await home.webContents.executeJavaScript('window.dshDesktop.apiRouterGetState()');
   assert.equal(state.providers[0].name, 'Edited immediately before closing');
@@ -144,7 +148,7 @@ async function main() {
     const input = document.getElementById('pUrl'); input.value = 'https://';
     input.dispatchEvent(new Event('input', { bubbles: true }));
   })()`);
-  reopened.close();
+  await reopened.webContents.executeJavaScript('document.getElementById("closeSettings").click()');
   await waitFor(() => reopened.webContents.executeJavaScript('document.getElementById("status").classList.contains("error")'));
   assert.equal(reopened.isDestroyed(), false, 'invalid API settings keep the window open');
   state = await home.webContents.executeJavaScript('window.dshDesktop.apiRouterGetState()');

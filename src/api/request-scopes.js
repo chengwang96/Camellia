@@ -3,14 +3,13 @@
 const { randomUUID } = require('node:crypto');
 const { collectToolResults } = require('./tool-results');
 
-// In-memory routes for one benchmark trial. They reuse the normal router's
-// accounting, but pin the provider/model and keep concurrent chat usage apart.
+// In-memory provider/model bindings for discussions. Scoped limits and usage
+// are independent of concurrent chat traffic on the same router.
 class RequestScopes {
   constructor() { this.scopes = new Map(); }
-  create({ model, providerId, keyId, upstream, routeFingerprint, maxRequests = 40, maxTokens = 1000000, toolPolicy = 'preserve', onUsage = () => {}, onLimit = () => {}, onRequest = () => {}, onToolResult = () => {} }) {
+  create({ model, providerId, keyId, upstream, routeFingerprint, maxRequests = 40, maxTokens = 1000000, toolPolicy = 'preserve', onUsage = () => {}, onToolResult = () => {} }) {
     const id = randomUUID();
     const seenTools = new Set();
-    const limit = () => { if (!scope.limited) { scope.limited = true; try { onLimit(); } catch { /* observer */ } } };
     const scope = { model, providerId, keyId, upstream, routeFingerprint, maxRequests, maxTokens, toolPolicy, requests: 0, tokens: 0,
       closed: false, limited: false, responses: new Set(), pending: new Set(),
       observeTools: (body, protocol) => {
@@ -23,24 +22,23 @@ class RequestScopes {
           }
         } catch { /* Malformed requests are handled by the protocol adapter. */ }
       },
-      begin: (metadata = {}) => {
-        if (scope.closed) return 'This benchmark trial has ended';
+      begin: () => {
+        if (scope.closed) return 'This API scope has ended';
         if (scope.limited || scope.requests >= maxRequests || scope.tokens >= maxTokens) {
-          limit();
-          return 'Benchmark trial API limit reached';
+          scope.limited = true;
+          return 'Scoped API limit reached';
         }
         scope.requests++;
-        try { onRequest({ ...metadata, sequence: scope.requests }); } catch { /* observer */ }
         return null;
       },
       record: record => {
         scope.tokens += (record.tokens?.input || 0) + (record.tokens?.output || 0);
         try { onUsage(record); } catch { /* observers must not affect routing */ }
-        if (scope.tokens >= maxTokens) limit();
+        if (scope.tokens >= maxTokens) scope.limited = true;
       },
     };
     this.scopes.set(id, scope);
-    return { scope, path: '/bench/' + id, close: async () => {
+    return { scope, path: '/scopes/' + id, close: async () => {
       scope.closed = true;
       for (const res of scope.responses) res.destroy();
       await Promise.allSettled([...scope.pending]);
@@ -48,7 +46,7 @@ class RequestScopes {
     } };
   }
   resolve(pathname) {
-    const match = /^\/bench\/([^/]+)(\/.*)?$/.exec(pathname);
+    const match = /^\/scopes\/([^/]+)(\/.*)?$/.exec(pathname);
     if (!match) return { pathname };
     return { scoped: true, scope: this.scopes.get(match[1]), pathname: match[2] || '/' };
   }

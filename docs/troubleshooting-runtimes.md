@@ -4,7 +4,6 @@
 
 ## Symptoms
 
-- A benchmark run reports `runtime is not installed or is incomplete` for an engine that used to work.
 - The engine stops opening sessions, and `npm start` prints `runtime incomplete — reinstall with: npm run setup:runtimes -- <engine>`.
 - The engine's directory under `runtimes/` exists but its package folder is empty.
 - A run fails with `Cannot find package '…/@deepseek-ai/dsh-app-boot/index.js'` while the engine's own entry file is still there — the entry survived but its companion packages are empty shells.
@@ -22,7 +21,7 @@ The engines differ in how much of their logic is a signed binary:
 | Antigravity | Official Python SDK | Python packages |
 | DSH | Official JS package, ~240 plugin sub-packages (`@deepseek-ai/dsh-*`), including modules that **create processes and adjust Windows ACLs** to build its sandbox | An unsigned script collection performing sensitive operations — the highest-risk profile |
 
-DSH's design (a microkernel with hundreds of small plugin packages, plus sandbox modules that touch process creation and ACLs) is legitimate engineering, but it is exactly the shape that behavioural security software flags first — especially when a benchmark launches six CLI processes at once with full permissions.
+DSH's design (a microkernel with hundreds of small plugin packages, plus sandbox modules that touch process creation and ACLs) is legitimate engineering, but it is exactly the shape that behavioural security software flags first — especially when several conversations launch CLI processes at once with full permissions.
 
 The empty folders come from how engines are installed. Camellia runs `npm ci`, which **deletes `node_modules` before it installs**. If that command is killed part-way — by security software, a cancelled download, or quitting the app — the engine is left as a directory shell whose packages are all empty. An entry file on its own is not a working runtime, so Camellia now also requires a companion plugin (for DSH, `@deepseek-ai/dsh-app-boot`) before it reports an engine as installed.
 
