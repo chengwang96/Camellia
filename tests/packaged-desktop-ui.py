@@ -268,7 +268,12 @@ class Application:
         while time.monotonic() < deadline:
             for page in self.context.pages:
                 if not page.is_closed() and suffix in page.url:
-                    page.wait_for_load_state("networkidle")
+                    # CDP can attach while a file-backed Electron page is
+                    # loading and miss earlier request events. Its network-idle
+                    # bookkeeping can then stall after the page has rendered.
+                    # Check the document itself; callers also await their UI
+                    # elements and IPC state before making assertions.
+                    page.wait_for_function("document.readyState === 'complete'")
                     assert "/app.asar/src/renderer/" in unquote(page.url).replace("\\", "/"), page.url
                     assert self.resources.as_posix().lower() in unquote(page.url).lower(), page.url
                     return page
