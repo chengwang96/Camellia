@@ -7,15 +7,21 @@ const assert = require('node:assert/strict');
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function main() {
   if (process.versions.electron) {
-    const { app, BrowserWindow } = require('electron');
+    const electron = require('./hidden-electron-windows.cjs')(require('electron'));
+    const { app, BrowserWindow } = electron;
+    const Module = require('node:module'), loadModule = Module._load;
+    Module._load = function (id, ...args) {
+      if (id === 'electron') return electron;
+      return loadModule.call(this, id, ...args);
+    };
     const root = process.env.RUNTIME_UPDATES_QA_ROOT;
+    app.setPath('appData', root);
     app.setPath('userData', path.join(root, 'app')); app.disableHardwareAcceleration();
     const errors = [];
     app.on('web-contents-created', (_event, wc) => {
       wc.on('preload-error', (_event, _file, error) => errors.push(error.message));
       wc.on('console-message', event => { if (event.level === 'error') errors.push(event.message); });
     });
-    app.on('browser-window-created', (_event, window) => { window.show = () => {}; window.hide(); });
     require('../src/main/main'); await app.whenReady();
     async function wait(check, label) {
       const deadline = Date.now() + 90000;

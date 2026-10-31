@@ -32,7 +32,13 @@ async function main() {
     return;
   }
 
-  const { app, BrowserWindow } = require('electron');
+  const electron = require('./hidden-electron-windows.cjs')(require('electron'));
+  const { app, BrowserWindow } = electron;
+  const Module = require('node:module'), loadModule = Module._load;
+  Module._load = function (id, ...args) {
+    if (id === 'electron') return electron;
+    return loadModule.call(this, id, ...args);
+  };
   const root = process.env.ARCHIVED_QA_ROOT;
   const home = path.join(root, 'home');
   const userData = path.join(root, 'app');
@@ -44,7 +50,6 @@ async function main() {
     wc.on('preload-error', (_event2, _file, error) => errors.push(error.message));
     wc.on('console-message', event => { if (event.level === 'error') errors.push(event.message); });
   });
-  app.on('browser-window-created', (_event, window) => { window.show = () => {}; window.hide(); });
 
   // Seed one archived legacy Claude session and one archived shared conversation.
   const legacyId = 'legacy-archived-1';

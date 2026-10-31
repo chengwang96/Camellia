@@ -31,7 +31,13 @@ async function main() {
     }
     return;
   }
-  const { app, BrowserWindow } = require('electron');
+  const electron = require('./hidden-electron-windows.cjs')(require('electron'));
+  const { app, BrowserWindow } = electron;
+  const Module = require('node:module'), loadModule = Module._load;
+  Module._load = function (id, ...args) {
+    if (id === 'electron') return electron;
+    return loadModule.call(this, id, ...args);
+  };
   process.on('uncaughtException', error => { console.error(error); app.exit(1); });
   const root = process.env.SETTINGS_CLOSE_ROOT;
   app.setPath('appData', root);
@@ -40,10 +46,6 @@ async function main() {
   fs.writeFileSync(path.join(userData, 'desktop-config.json'), JSON.stringify({ firstRunComplete: true, mode: 'home', port: 0 }));
   app.setPath('userData', userData);
   app.disableHardwareAcceleration();
-  app.on('browser-window-created', (_event, window) => {
-    window.show = () => {}; window.focus = () => {};
-    window.webContents.setBackgroundThrottling(false);
-  });
   require('../src/main/main');
   await app.whenReady();
   async function waitFor(check) {

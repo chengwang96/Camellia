@@ -8,7 +8,8 @@ const childProcess = require('node:child_process');
 
 async function main() {
   if (process.versions.electron) {
-    const { app, BrowserWindow, dialog, session } = require('electron');
+    const electron = require('./hidden-electron-windows.cjs')(require('electron'));
+    const { app, BrowserWindow, dialog, session } = electron;
     const fromPartition = session.fromPartition.bind(session);
     session.fromPartition = (name, ...args) => name === 'camellia-system-proxy-detector'
       ? { setProxy: async () => {}, resolveProxy: async () => 'PROXY 127.0.0.1:18899' } : fromPartition(name, ...args);
@@ -27,7 +28,6 @@ async function main() {
       return { response: replies.shift() };
     };
     app.on('browser-window-created', (_event, window) => {
-      window.show = () => {}; window.hide();
       window.webContents.on('preload-error', (_event, _file, error) => errors.push(error.message));
     });
     childProcess.spawn = (exe, args, options) => { downloads.push({ exe, args, env: options.env }); throw new Error('Offline download fixture'); };
@@ -35,8 +35,9 @@ async function main() {
     const runtimeModule = require(path.join(resources, 'app.asar/src/main/runtime-manager.js'));
     const createRuntimeManager = runtimeModule.createRuntimeManager;
     runtimeModule.createRuntimeManager = options => createRuntimeManager({ ...options, discoverLocal: false });
+    const packagedRequire = require('node:module').createRequire(entry);
     require('node:vm').runInNewContext(fs.readFileSync(entry, 'utf8'), {
-      require: require('node:module').createRequire(entry), module: { exports: {} },
+      require: id => id === 'electron' ? electron : packagedRequire(id), module: { exports: {} },
       __dirname: path.dirname(entry), __filename: entry, process: runtimeProcess,
       Buffer, URL, console, setTimeout, clearTimeout, setInterval, clearInterval,
     }, { filename: entry });
