@@ -7,7 +7,7 @@ with sync_playwright() as playwright:
     page = browser.new_page(viewport={"width": 1180, "height": 820}, reduced_motion="reduce")
     errors = []
     page.on("pageerror", lambda error: errors.append(str(error)))
-    page.add_init_script("""
+    bridge = """
       window.deviceCalls = []; window.savedPreferences = {}; window.hiddenModels = {};
       const empty = { ok: true, result: {}, engines: [], providers: [], models: [], config: { providers: [], usage: {}, active: {} }, state: {} };
       window.dshDesktop = new Proxy({}, { get: (_target, name) => {
@@ -49,7 +49,8 @@ with sync_playwright() as playwright:
           } };
         return () => Promise.resolve({ ...empty });
       } });
-    """)
+    """
+    page.add_init_script(bridge)
     page.goto((root / "src/renderer/settings/api-settings.html").as_uri() + "?page=models")
     page.wait_for_load_state("networkidle")
     expect(page.locator('#pageTitle')).to_have_text('Model Settings')
@@ -249,6 +250,54 @@ with sync_playwright() as playwright:
                     box = card.bounding_box()
                     assert box['width'] > 45 and box['x'] + box['width'] <= width
                 page.screenshot(path=str(output / f'settings-{language}-{theme}-{width}.png'))
+    # Slow router, quota and model reads must not hold General preferences or
+    # navigation hostage. Hidden pages should not start those account reads.
+    startup = browser.new_page(viewport={"width": 1180, "height": 820})
+    startup.on("pageerror", lambda error: errors.append(str(error)))
+    # Playwright does not guarantee ordering between separate init scripts.
+    startup.add_init_script(bridge + """
+      window.settingsCalls = []; window.accountReads = [];
+      const desktop = window.dshDesktop;
+      window.dshDesktop = new Proxy(desktop, { get: (target, name) => {
+        if (name === 'onProviderInsights') return listener => { window.pushInsights = listener; };
+        const method = target[name];
+        if (typeof method !== 'function' || String(name).startsWith('on')) return method;
+        return (...args) => {
+          settingsCalls.push(name);
+          if (name === 'apiRouterGetState') return new Promise(resolve => {
+            window.releaseRouter = async () => resolve(await method(...args));
+          });
+          if (name === 'providerInsights') return new Promise(resolve => { window.releaseInsights = resolve; });
+          if (String(name).endsWith('AccountState')) return new Promise(resolve => {
+            accountReads.push(async () => resolve(await method(...args)));
+          });
+          return method(...args);
+        };
+      } });
+    """)
+    startup.goto((root / "src/renderer/settings/api-settings.html").as_uri())
+    startup.wait_for_load_state("networkidle")
+    expect(startup.locator('#dataPath')).to_have_text('/test-profile/camellia')
+    expect(startup.locator('[data-theme-choice=system]')).to_have_attribute('aria-pressed', 'true')
+    assert startup.evaluate("!settingsCalls.some(name => name === 'providerInsights' || name.endsWith('AccountState'))")
+    expect(startup.locator('#balanceChart')).to_be_empty()
+    expect(startup.locator('#subscriptionModels')).to_be_empty()
+    startup.locator('[data-view=providers]').click()
+    startup.locator('[data-view=usage]').click()
+    startup.locator('[data-view=providers]').click()
+    assert startup.evaluate("settingsCalls.filter(name => name === 'providerInsights').length") == 1
+    startup.evaluate('releaseRouter()')
+    expect(startup.locator('#providers')).to_contain_text('Add your first provider')
+    # A push that arrives during the initial quota read is newer than its reply.
+    startup.evaluate("pushInsights({ok:true,providers:{newer:{supported:true}},keys:{}})")
+    startup.evaluate("releaseInsights({ok:true,providers:{},keys:{}})")
+    assert startup.evaluate('!!insight.providers.newer')
+    startup.locator('[data-view=models]').click()
+    assert startup.evaluate('accountReads.length') == 4
+    startup.locator('[data-view=general]').click()
+    expect(startup.locator('#generalPage')).to_be_visible()
+    expect(startup.locator('#dataPath')).to_have_text('/test-profile/camellia')
+    startup.close()
     assert not errors, errors
     browser.close()
 print("Settings page: model and general groups, quick-switch saves, bilingual responsive layout and CLI device navigation passed")

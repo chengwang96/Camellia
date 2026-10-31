@@ -31,8 +31,11 @@ function harness({ beforeSave = async () => {}, insights = async () => ({ ok: tr
         stored = normalizeConfig(snapshot, stored);
         return { ok: true, state: publicState(stored) };
       }, providerInsights: insights,
-    } }, showLive() {}, updateKeyStats() {}, renderRoutes() {}, renderProviders() {}, renderKeys() {}, renderModelChips() {}, renderWebToolsSettings() {} };
-  vm.runInNewContext(source.slice(0, source.indexOf('function setView(')) + `
+    } }, showLive() {}, updateKeyStats() {}, renderBalances() {}, renderRoutes() {}, renderProviders() {}, renderKeys() {}, renderModelChips() {}, renderWebToolsSettings() {} };
+  // Include the shared insights handler used after a successful save; DOM
+  // rendering stays stubbed while its state/revision updates run unchanged.
+  const insightsSource = source.slice(source.indexOf('function applyProviderInsights('), source.indexOf('async function loadProviderInsights('));
+  vm.runInNewContext(source.slice(0, source.indexOf('function setView(')) + insightsSource + `
     module.exports = { initialize(state) { live = structuredClone(state); config = structuredClone(state); rememberSavedModels(); },
       get config() { return config; }, get dirty() { return isDirty(); }, draftComplete, edited, flushSave, assertClean };
   `, sandbox);

@@ -40,6 +40,7 @@ const titles = {
   models: "Model Settings",
 };
 let config, live, presets = [], insight = { providers: {}, keys: {} }, selected = null, view = 'general';
+let insightsLoaded = false, insightsPending = null, insightsRevision = 0;
 let balanceKey = null, usageData = [];
 let catalog = [], catalogSelected = new Set(), catalogProvider = null;
 let statusTimer;
@@ -131,7 +132,7 @@ async function saveProviders(explicit) {
         syncMaskedKeys(snapshot);
       }
       const data = await api.providerInsights().catch(error => ({ ok: false, error: error.message }));
-      if (data.ok) insight = data;
+      if (data.ok) applyProviderInsights(data);
       else warning = warning || data.error;
     } while (isDirty());
     if (current()?.type === 'qclaw') renderKeys();
@@ -205,7 +206,8 @@ function setView(next, engine, focus) {
   window.mobileAccessUI.setVisible(next === 'mobile');
   window.cliDevicesUI?.setVisible(next === 'devices');
   if (next === 'usage' && live) { fillUsageFilters(); renderUsage(); }
-  if ((next === 'providers' || next === 'subscriptions') && live) renderBalances();
+  if (next === 'providers' || next === 'usage') void loadProviderInsights();
+  if (next === 'providers' && live) renderBalances();
   if (next === 'subscriptions') void engineUI.accountsPage(focus || engine);
   if (next === 'engines') {
     void engineUI.select(engine || engineUI.selected());
@@ -575,6 +577,7 @@ function accountCard(account, selected = false) {
     ${info.error ? `<p class="error">${esc(t(info.error))}${latest ? ' ' + esc(t('The last successful result is shown below.')) : ''}</p>` : ''}</${subscriptionId ? 'div' : 'button'}>`;
 }
 function renderBalances() {
+  if (view !== 'providers' || !live) return;
   const all = accountsList().filter(account => !account.subscriptionId);
   fillSelect($('balanceProvider'), [...new Map(all.map(a => [a.providerId, a.provider])).entries()], "All providers");
   const query = $('balanceSearch').value.trim().toLowerCase();
@@ -605,7 +608,7 @@ async function refreshBalances(payload = {}) {
   try {
     if (!payload.subscriptionId) await assertClean(); $('refreshBalances').disabled = true; $('kimiUsage').disabled = true; status("Querying balances and quotas…");
     const result = await api.providerRefresh(payload.subscriptionId ? payload : { ...payload, apiOnly: true }); if (!result.ok) throw new Error(result.error);
-    insight = result; renderBalances(); updateKeyStats();
+    applyProviderInsights(result);
     const refreshed = payload.subscriptionId
       ? (insight.subscriptions || []).filter(account => account.id === payload.subscriptionId).map(account => account.info)
       : Object.values(insight.keys);
@@ -683,7 +686,7 @@ $('editor').onclick = async e => {
       if (!key && p.type !== 'qclaw') throw new Error("Add a key to validate with first");
       button.disabled = true; status(`Validating ${model}…`);
       const result = await api.providerVerify({ providerId: p.id, keyId: key?.id, model });
-      if (result.state) insight = result.state;
+      if (result.state) applyProviderInsights(result.state);
       updateKeyStats(); if (!result.ok) throw new Error(result.error);
       status(`Validation succeeded for ${model}. Select other models to validate them separately.`);
     }
@@ -691,7 +694,7 @@ $('editor').onclick = async e => {
       await assertClean(); const model = $('verifyModel').value; if (!model) throw new Error("Add and select a model first");
       button.disabled = true; status(`Validating ${model}…`);
       const result = await api.providerVerify({ providerId: p.id, keyId: d.verify, model });
-      if (result.state) insight = result.state;
+      if (result.state) applyProviderInsights(result.state);
       updateKeyStats(); if (!result.ok) throw new Error(result.error);
       status(`Validation succeeded for ${model}. Select other models to validate them separately.`);
     }
@@ -1436,12 +1439,55 @@ $('detectSystemProxy').onclick = async () => {
     }
   } finally { $('detectSystemProxy').disabled = false; }
 };
-async function refresh(initial = false) {
+function applyProviderInsights(state) {
+  insight = state; insightsLoaded = true; insightsRevision++;
+  if (!config) return;
+  updateKeyStats(); renderBalances();
+  if (!isDirty() && !current()) renderProviders();
+  if (view === 'usage') { fillUsageFilters(); renderUsage(); }
+}
+async function loadProviderInsights() {
+  if (insightsLoaded) return;
+  if (insightsPending) return insightsPending;
+  const revision = insightsRevision;
+  insightsPending = (async () => {
+    try {
+      const details = await api.providerInsights();
+      if (revision !== insightsRevision) return; // A newer pushed state wins.
+      if (!details.ok) throw new Error(details.error);
+      applyProviderInsights(details);
+    } catch (error) { status(error.message, true); }
+    finally { insightsPending = null; }
+  })();
+  return insightsPending;
+}
+async function refreshPreferences() {
   try {
-    const [state, details] = await Promise.all([api.apiRouterGetState(), api.providerInsights()]);
+    const preferences = await api.workbenchSettings();
+    if (!preferences.ok) throw new Error(preferences.error);
+    $('language').value = preferences.language || 'en';
+    $('theme').value = preferences.theme; syncThemeChoices(); $('autoRefreshBalances').checked = preferences.autoRefreshBalances; $('closeToTray').checked = !!preferences.closeToTray;
+    $('antigravityAutoRefresh').checked = preferences.subscriptionAutoRefresh?.antigravity !== false;
+    $('chatContentWidth').value = preferences.chatContentWidth || 'standard';
+    $('memoryDirectory').value = preferences.memoryDirectory || '';
+    $('accountRefreshMinutes').value = String(preferences.accountRefreshMinutes || 15);
+    $('conversationMode').value = preferences.conversations?.mode || 'direct'; $('conversationWarn').checked = !!preferences.conversations?.warnOnSwitch;
+    $('conversationOriginSetting').checked = !!preferences.conversations?.showOrigin;
+    $('conversationSessionTtl').value = String(preferences.conversations?.sessionTtlMinutes ?? 30);
+    $('conversationSessionLimit').value = String(preferences.conversations?.sessionLimit ?? 4);
+    $('dataPath').textContent = preferences.dataPath; $('version').textContent = 'v' + preferences.version;
+    renderDataDirectory(preferences.dataDirectory);
+    renderPluginCacheMaintenance(preferences.pluginCacheMaintenance);
+  } catch (error) { status(error.message, true); }
+}
+async function refresh(initial = false) {
+  // General preferences must stay usable even when router/account queries are
+  // slow or unavailable. Account models are loaded only by the Models page.
+  const preferences = initial ? refreshPreferences() : null;
+  try {
+    const state = await api.apiRouterGetState();
     if (!state.ok) throw new Error(state.error);
     live = state; presets = state.presets || presets;
-    if (details.ok) insight = details;
     if (initial || !isDirty()) {
       config = structuredClone(live); $('enabled').checked = config.enabled; $('port').value = config.port;
       renderRoutingSettings();
@@ -1454,26 +1500,8 @@ async function refresh(initial = false) {
       renderEditor();
     }
     showLive(); renderBalances(); if (view === 'usage') { fillUsageFilters(); renderUsage(); } if (view === 'archived') void renderArchived();
-    if (!isDirty()) status(details.ok ? '' : details.error, !details.ok);
-    if (initial) {
-      const preferences = await api.workbenchSettings();
-      if (!preferences.ok) throw new Error(preferences.error);
-      $('language').value = preferences.language || 'en';
-      $('theme').value = preferences.theme; syncThemeChoices(); $('autoRefreshBalances').checked = preferences.autoRefreshBalances; $('closeToTray').checked = !!preferences.closeToTray;
-      $('antigravityAutoRefresh').checked = preferences.subscriptionAutoRefresh?.antigravity !== false;
-      $('chatContentWidth').value = preferences.chatContentWidth || 'standard';
-      $('memoryDirectory').value = preferences.memoryDirectory || '';
-      $('accountRefreshMinutes').value = String(preferences.accountRefreshMinutes || 15);
-      $('conversationMode').value = preferences.conversations?.mode || 'direct'; $('conversationWarn').checked = !!preferences.conversations?.warnOnSwitch;
-      $('conversationOriginSetting').checked = !!preferences.conversations?.showOrigin;
-      $('conversationSessionTtl').value = String(preferences.conversations?.sessionTtlMinutes ?? 30);
-      $('conversationSessionLimit').value = String(preferences.conversations?.sessionLimit ?? 4);
-      $('dataPath').textContent = preferences.dataPath; $('version').textContent = 'v' + preferences.version;
-      renderDataDirectory(preferences.dataDirectory);
-      renderPluginCacheMaintenance(preferences.pluginCacheMaintenance);
-      await renderModelSettings(preferences);
-    }
   } catch (e) { status(e.message, true); }
+  await preferences;
 }
 let storagePreview = null, storageBusy = false;
 let pluginCacheState = null;
@@ -1694,11 +1722,7 @@ api.onApiRouterState(state => {
   if (view === 'usage') { fillUsageFilters(); renderUsage(); }
   if (!isDirty() && !current()) renderProviders();
 });
-api.onProviderInsights(state => {
-  insight = state; if (!config) return;
-  updateKeyStats(); renderBalances();
-  if (!isDirty() && !current()) renderProviders();
-});
+api.onProviderInsights(applyProviderInsights);
 let chartLayoutWidth = 0, chartLayoutFrame;
 new ResizeObserver(() => {
   const width = document.querySelector('.scroll-content').clientWidth;
@@ -1708,7 +1732,7 @@ new ResizeObserver(() => {
   chartLayoutFrame = requestAnimationFrame(() => {
     if (!live) return;
     if (view === 'usage') renderUsage();
-    if (view === 'providers' || view === 'subscriptions') renderBalances();
+    if (view === 'providers') renderBalances();
   });
 }).observe(document.querySelector('.scroll-content'));
 navigateSettings(Object.fromEntries(new URLSearchParams(location.search)));
@@ -1732,6 +1756,6 @@ window.addEventListener('camellia:language', () => {
   if (!dataMigrationBusy) renderPluginCacheMaintenance(pluginCacheState);
   if (!live) return;
   if (view === 'usage') { fillUsageFilters(); renderUsage(); }
-  if (view === 'providers' || view === 'subscriptions') renderBalances();
+  if (view === 'providers') renderBalances();
   if (view === 'archived') void renderArchived();
 });

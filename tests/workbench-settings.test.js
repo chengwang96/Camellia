@@ -6,6 +6,29 @@ const path = require('node:path');
 const vm = require('node:vm');
 const { createHarness } = require('./claude-harness.cjs');
 
+test('settings reads one config snapshot per request and observes later disk changes', () => {
+  const harness = createHarness();
+  const file = path.join(harness.userData, 'desktop-config.json');
+  const read = fs.readFileSync;
+  let reads = 0;
+  try {
+    fs.writeFileSync(file, JSON.stringify({ theme: 'dark', closeToTray: true }));
+    fs.readFileSync = function (target, ...args) {
+      if (target === file) reads++;
+      return read.call(this, target, ...args);
+    };
+    const first = harness.call('workbench-settings');
+    assert.equal(first.theme, 'dark');
+    assert.equal(first.closeToTray, true);
+    assert.equal(reads, 1, 'fields must share one read rather than reparse session metadata');
+    fs.writeFileSync(file, JSON.stringify({ theme: 'light', closeToTray: false }));
+    const second = harness.call('workbench-settings');
+    assert.equal(second.theme, 'light');
+    assert.equal(second.closeToTray, false);
+    assert.equal(reads, 2, 'each new request must still see external updates');
+  } finally { fs.readFileSync = read; harness.cleanup(); }
+});
+
 test('global memory validates a user folder, persists across restart and partial saves, and clears', () => {
   const first = createHarness();
   try {

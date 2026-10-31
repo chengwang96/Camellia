@@ -264,8 +264,8 @@ function normalizeComputerName(value) {
   if (typeof value !== 'string') return '';
   return value.replace(/[\x00-\x1f\x7f-\x9f]/g, '').trim().slice(0, 80);
 }
-function computerName() {
-  return normalizeComputerName(loadConfig().computerName) || normalizeComputerName(os.hostname()) || 'Camellia desktop';
+function computerName(config = loadConfig()) {
+  return normalizeComputerName(config.computerName) || normalizeComputerName(os.hostname()) || 'Camellia desktop';
 }
 function uiText(text) { return translate(text, normalizeLanguage(loadConfig().language)); }
 
@@ -563,18 +563,18 @@ let providerInsights = null, balanceRefreshTimer = null;
 // route pool reads reported balances and quota windows on this interval, and
 // the Insights panel refreshes its balances on the same schedule.
 const ACCOUNT_REFRESH_MINUTES = [5, 15, 30, 60];
-function accountRefreshMinutes() {
-  const value = Number(loadConfig().accountRefreshMinutes);
+function accountRefreshMinutes(config = loadConfig()) {
+  const value = Number(config.accountRefreshMinutes);
   return ACCOUNT_REFRESH_MINUTES.includes(value) ? value : 15;
 }
-function accountRefreshEnabled() { return loadConfig().autoRefreshBalances !== false; }
+function accountRefreshEnabled(config = loadConfig()) { return config.autoRefreshBalances !== false; }
 // A per-engine exception to the global cadence. Antigravity's background quota
 // probe makes the official CLI perform its own Google sign-in when the stored
 // credential read is slow, so a user may keep balance refreshes for every other
 // provider while leaving Antigravity alone. The manual refresh button and an
 // explicit engine check never consult this.
-function subscriptionAutoRefreshEnabled(engine) {
-  return loadConfig().subscriptionAutoRefresh?.[engine] !== false;
+function subscriptionAutoRefreshEnabled(engine, config = loadConfig()) {
+  return config.subscriptionAutoRefresh?.[engine] !== false;
 }
 
 // The middle conversation column is readable at its standard width; a wider or
@@ -1941,20 +1941,25 @@ if (!gotSingleInstanceLock) {
   })) ipcMain.handle('dsh:' + channel, async (_event, payload) => {
     try { return await handler(payload); } catch (e) { return { ok: false, error: e.message }; }
   });
-  ipcMain.handle('dsh:workbench-settings', () => ({ ok: true, language: normalizeLanguage(loadConfig().language), theme: loadConfig().theme || 'system',
-    conversations: conversationPreferences(loadConfig()), autoRefreshBalances: accountRefreshEnabled(), accountRefreshMinutes: accountRefreshMinutes(),
-    subscriptionAutoRefresh: { antigravity: subscriptionAutoRefreshEnabled('antigravity'), codex: subscriptionAutoRefreshEnabled('codex'), kimi: subscriptionAutoRefreshEnabled('kimi') },
-    closeToTray: loadConfig().closeToTray === true,
-    memoryDirectory: loadConfig().memoryDirectory || '',
-    quickSwitchModels: loadConfig().quickSwitchModels || {},
-    quickSwitchConnections: loadConfig().quickSwitchConnections || {},
-    quickSwitchLevels: loadConfig().quickSwitchLevels || {},
-    hiddenSubscriptionModels: loadConfig().hiddenSubscriptionModels || {},
-    chatContentWidth: normalizeChatContentWidth(loadConfig().chatContentWidth),
-    computerName: computerName(), dataPath: app.getPath('userData'), version: app.getVersion(),
-    pluginCacheMaintenance: pluginCacheMaintenanceStatus(app.getPath('userData')),
-    dataDirectory: { ...dataDirectoryStatus({ appData: appDataDirectory, dataDir: app.getPath('userData') }),
-      migrationError: lastDirectoryMigration?.error || null } }));
+  ipcMain.handle('dsh:workbench-settings', () => {
+    // Session metadata grows with conversation history. Read and parse it once
+    // per request, rather than once for every field in the settings response.
+    const config = loadConfig();
+    return { ok: true, language: normalizeLanguage(config.language), theme: config.theme || 'system',
+      conversations: conversationPreferences(config), autoRefreshBalances: accountRefreshEnabled(config), accountRefreshMinutes: accountRefreshMinutes(config),
+      subscriptionAutoRefresh: { antigravity: subscriptionAutoRefreshEnabled('antigravity', config), codex: subscriptionAutoRefreshEnabled('codex', config), kimi: subscriptionAutoRefreshEnabled('kimi', config) },
+      closeToTray: config.closeToTray === true,
+      memoryDirectory: config.memoryDirectory || '',
+      quickSwitchModels: config.quickSwitchModels || {},
+      quickSwitchConnections: config.quickSwitchConnections || {},
+      quickSwitchLevels: config.quickSwitchLevels || {},
+      hiddenSubscriptionModels: config.hiddenSubscriptionModels || {},
+      chatContentWidth: normalizeChatContentWidth(config.chatContentWidth),
+      computerName: computerName(config), dataPath: app.getPath('userData'), version: app.getVersion(),
+      pluginCacheMaintenance: pluginCacheMaintenanceStatus(app.getPath('userData')),
+      dataDirectory: { ...dataDirectoryStatus({ appData: appDataDirectory, dataDir: app.getPath('userData') }),
+        migrationError: lastDirectoryMigration?.error || null } };
+  });
   ipcMain.handle('dsh:workbench-save-settings', (_event, payload) => {
     try {
       // The router's quota probe follows only its own switch and cadence:
