@@ -212,7 +212,7 @@ class Application:
             for page in self.context.pages:
                 self.observe(page)
             self.home = self.wait_page("home/home.html")
-            self.home.wait_for_function("typeof window.dshDesktop?.workbenchSettings === 'function'")
+            assert self.home.evaluate("typeof window.dshDesktop?.workbenchSettings === 'function'")
             state = ipc(self.home, "workbenchSettings")
             assert Path(state["dataPath"]).resolve() == self.profile.resolve(), state
             settings = ipc(self.home, "getSettings")
@@ -271,9 +271,10 @@ class Application:
                     # CDP can attach while a file-backed Electron page is
                     # loading and miss earlier request events. Its network-idle
                     # bookkeeping can then stall after the page has rendered.
-                    # Check the document itself; callers also await their UI
-                    # elements and IPC state before making assertions.
-                    page.wait_for_function("document.readyState === 'complete'")
+                    # Await the document's load event, which also avoids
+                    # wait_for_function's eval on pages with a strict CSP.
+                    # Callers additionally await their UI elements/IPC state.
+                    page.wait_for_load_state("load")
                     assert "/app.asar/src/renderer/" in unquote(page.url).replace("\\", "/"), page.url
                     assert self.resources.as_posix().lower() in unquote(page.url).lower(), page.url
                     return page
