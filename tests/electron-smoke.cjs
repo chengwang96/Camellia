@@ -12,16 +12,7 @@ async function main() {
     const electron = require('electron');
     // Keep test windows hidden even when production code calls show()/focus().
     // Inputs below go directly to isolated webContents, never to the desktop.
-    const testElectron = Object.create(electron);
-    const NativeBrowserWindow = electron.BrowserWindow;
-    Object.defineProperty(testElectron, 'BrowserWindow', { value: class BrowserWindow extends NativeBrowserWindow {
-      constructor(options) {
-        // Ordinary hidden Windows windows can stop animation frames even with
-        // backgroundThrottling disabled. Give headless QA a real compositor;
-        // app.disableHardwareAcceleration() below selects software rendering.
-        super({ ...options, show: false, webPreferences: { ...options.webPreferences, offscreen: true } });
-      }
-    } });
+    const testElectron = require('./hidden-electron-windows.cjs')(electron);
     const Module = require('node:module'), loadModule = Module._load;
     const antigravityModule = require('../src/engines/antigravity');
     const googleCredentialClears = [];
@@ -159,10 +150,6 @@ async function main() {
     const errors = [];
     app.on('browser-window-created', (_event, window) => {
       diag('DIAG window created: ' + window.getTitle() + ' id=' + window.id);
-      // Production creates these windows hidden. Suppress showing them without
-      // calling hide(), so backdrop animation frames remain available to QA.
-      window.show = () => {}; window.showInactive = () => {}; window.focus = () => {};
-      window.webContents.setBackgroundThrottling(false);
       window.webContents.on('preload-error', (_event, _path, error) => errors.push(error.message));
       window.webContents.on('console-message', (event) => { if (event.level === 'error') errors.push(event.message); });
     });
