@@ -13,6 +13,15 @@ async function main() {
     // Keep test windows hidden even when production code calls show()/focus().
     // Inputs below go directly to isolated webContents, never to the desktop.
     const testElectron = Object.create(electron);
+    const NativeBrowserWindow = electron.BrowserWindow;
+    Object.defineProperty(testElectron, 'BrowserWindow', { value: class BrowserWindow extends NativeBrowserWindow {
+      constructor(options) {
+        // Ordinary hidden Windows windows can stop animation frames even with
+        // backgroundThrottling disabled. Give headless QA a real compositor;
+        // app.disableHardwareAcceleration() below selects software rendering.
+        super({ ...options, show: false, webPreferences: { ...options.webPreferences, offscreen: true } });
+      }
+    } });
     const Module = require('node:module'), loadModule = Module._load;
     const antigravityModule = require('../src/engines/antigravity');
     const googleCredentialClears = [];
