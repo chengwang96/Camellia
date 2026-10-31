@@ -387,7 +387,7 @@ def run_scenario(playwright, executable, resources, output, scenario, shortcut, 
             home.locator("#openConfig").click()
             settings = application.wait_page("settings/api-settings.html")
             expect(settings.locator("#generalPage")).to_be_visible()
-            settings.locator("#theme").select_option("dark")
+            settings.locator('[data-theme-choice="dark"]').click()
             wait_value(settings, "workbenchSettings", lambda state: state["theme"] == "dark")
             settings.locator('[data-view="data"]').click()
             expect(settings.locator("#dataPath")).to_have_text(str(profile))
@@ -415,7 +415,8 @@ def run_scenario(playwright, executable, resources, output, scenario, shortcut, 
             result["runtime"] = {key: runtime.get(key) for key in ["file", "version", "status", "source"]}
             result["checks"].append("real Grok Build download with bundled Node/npm; other engines remain uninstalled")
             application.screenshot(settings, "runtime")
-            settings.close()
+            with settings.expect_event("close"):
+                settings.locator("#closeSettings").click()
             home.locator("#enterGrok").click()
             chat = application.wait_page("chat/claude.html")
             expect(chat.locator("body > .app > .main #input")).to_be_visible()
