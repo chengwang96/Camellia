@@ -47,10 +47,11 @@ test('Codex title uses its owner account without rewriting native config or inhe
   const native = 'developer_instructions = "native"\n[mcp_servers."server.with.dots"]\ncommand = "node"\n';
   fs.writeFileSync(path.join(source, 'config.toml'), native);
   const launch = codexTitleSpec({ spec: { exe: 'codex', env: { ...process.env, CODEX_HOME: source,
-    OPENAI_API_KEY: 'must-not-inherit', CAMELLIA_NETWORK_MODE: 'proxy', HTTPS_PROXY: 'http://127.0.0.1:7890' } }, root: output, model: 'gpt-6-astra' });
+    OPENAI_API_KEY: 'must-not-inherit', CAMELLIA_NETWORK_MODE: 'proxy', CAMELLIA_SUBSCRIPTION_PROXY: 'http://127.0.0.1:7890',
+    HTTPS_PROXY: 'http://127.0.0.1:7890' } }, root: output, model: 'gpt-6-astra' });
   assert.equal(launch.env.CODEX_HOME, source);
   assert.equal(launch.env.OPENAI_API_KEY, undefined);
-  assert.equal(launch.env.HTTPS_PROXY, 'http://127.0.0.1:7890/');
+  assert.equal(new URL(launch.env.HTTPS_PROXY).href, 'http://127.0.0.1:7890/');
   assert.equal(fs.readFileSync(path.join(source, 'config.toml'), 'utf8'), native);
   const mcpArg = launch.args.find(value => value.startsWith('mcp_servers='));
   assert.equal(TOML.parse(mcpArg).mcp_servers['server.with.dots'].enabled, false);
