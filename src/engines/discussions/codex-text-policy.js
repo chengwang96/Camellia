@@ -21,13 +21,8 @@ const DISABLED = ('apps artifact auth_elicitation browser_use browser_use_extern
   + 'tool_call_mcp_elicitation tool_suggest unified_exec unified_exec_tty view_image workspace_dependencies worktrees '
   + 'enable_request_compression unbounded_connection_retries').split(' ');
 
-function codexTextSpec({ runtime, home, cwd, model, contextWindow, connection, route, inherited = process.env }) {
+function codexTextConfig({ home, model, instructions = INSTRUCTIONS }) {
   fs.mkdirSync(home, { recursive: true });
-  const env = isolatedEnvironment(path.join(home, 'profile'), process.execPath, inherited);
-  // Retain only the app's network selection, never inherited extension/auth
-  // environment. codexEnvironment resolves the subscription proxy normally.
-  for (const [key, value] of Object.entries(inherited)) if (/^(?:https?_proxy|all_proxy|no_proxy|CAMELLIA_NETWORK_MODE|CAMELLIA_.*PROXY.*)$/i.test(key)) env[key] = value;
-  if (env.SystemRoot && env.SYSTEMROOT) delete env.SYSTEMROOT;
   const config = { cli_auth_credentials_store: 'file', approval_policy: 'never', sandbox_mode: 'read-only',
     web_search: 'disabled', project_doc_max_bytes: 0, features: { ...Object.fromEntries(DISABLED.map(key => [key, false])), skip_host_skill_discovery: true },
     tools: { update_plan: { enabled: false }, experimental_request_user_input: { enabled: false } },
@@ -36,13 +31,24 @@ function codexTextSpec({ runtime, home, cwd, model, contextWindow, connection, r
   if (!catalog.models.some(entry => entry.slug === model)) catalog.models.push({ ...catalog.models[0], slug: model, display_name: model });
   for (const entry of catalog.models) {
     entry.apply_patch_tool_type = null; entry.experimental_supported_tools = []; delete entry.tool_mode;
+    entry.multi_agent_version = null; entry.multi_agent_reasoning_effort = null;
     entry.include_skills_usage_instructions = false; entry.include_plugin_usage_instructions = false; entry.include_apps_usage_instructions = false;
-    entry.model_messages = { instructions_template: INSTRUCTIONS };
+    entry.model_messages = { instructions_template: instructions };
   }
   config.model_catalog_json = path.join(home, 'discussion-models.json');
   writeModelCatalog(config.model_catalog_json, catalog);
+  return config;
+}
+
+function codexTextSpec({ runtime, home, cwd, model, contextWindow, connection, route, inherited = process.env }) {
+  const env = isolatedEnvironment(path.join(home, 'profile'), process.execPath, inherited);
+  // Retain only the app's network selection, never inherited extension/auth
+  // environment. codexEnvironment resolves the subscription proxy normally.
+  for (const [key, value] of Object.entries(inherited)) if (/^(?:https?_proxy|all_proxy|no_proxy|CAMELLIA_NETWORK_MODE|CAMELLIA_.*PROXY.*)$/i.test(key)) env[key] = value;
+  if (env.SystemRoot && env.SYSTEMROOT) delete env.SYSTEMROOT;
+  const config = codexTextConfig({ home, model });
   fs.writeFileSync(path.join(home, 'config.toml'), TOML.stringify(config));
   return { ...codexSpawnSpec({ runtime, home, cwd, model, contextWindow, connection, route, env }), discussionInstructions: INSTRUCTIONS };
 }
 
-module.exports = { codexTextSpec, POLICY };
+module.exports = { codexTextSpec, codexTextConfig, POLICY };

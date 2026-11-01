@@ -35,6 +35,12 @@ Existing sessions retain their execution directory. Create a new
 session to use another workspace. Removing a sidebar workspace retains all
 sessions, their original execution directories and files.
 
+For subscription sessions, the ACP bridge also exposes Kimi's native title
+service. Camellia keeps an immediate provisional title, then adopts the
+model-generated native title after the first turn. This path uses the signed-in
+Kimi account and does not require an API route; if native generation is
+unavailable, the shared API-route naming fallback still applies.
+
 Runtime permission IDs follow the engine toggles: `default` = manual, `plan` =
 planning, `yolo` = ask when needed, `auto` = never ask. The workbench follows
 the engine and CLI flag behavior. Thinking controls appear only when ACP advertises

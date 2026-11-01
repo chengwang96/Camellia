@@ -84,6 +84,19 @@ test('append updates only the new index record and retains cached immutable mess
   assert.equal(h.history.metrics.rebuilds, 1);
 });
 
+test('fork persists the copied transcript in one batch', t => {
+  const { root, manager, conversation: c } = managerFixture(t);
+  const rows = Array.from({ length: 1200 }, (_, i) => ({ seq: i + 1, role: i % 2 ? 'assistant' : 'user', text: 'message ' + i }));
+  fs.writeFileSync(path.join(root, c.id + '.jsonl'), rows.map(row => JSON.stringify(row) + '\n').join(''));
+  c.seq = rows.length; manager.save(c); manager.historyStore.ensure(c.id);
+  const append = fs.appendFileSync;
+  let writes = 0;
+  t.mock.method(fs, 'appendFileSync', (file, ...args) => { writes++; return append(file, ...args); });
+  const child = manager.fork('codex', { sessionId: c.id });
+  assert.equal(writes, 1);
+  assert.deepEqual(manager.messages(child).map(row => row.text), rows.map(row => row.text));
+});
+
 test('deleting a large conversation reads no message bodies and yields during file cleanup', async t => {
   const { root, manager, conversation: c } = managerFixture(t);
   const file = path.join(root, c.id + '.jsonl');

@@ -3756,6 +3756,75 @@ test('a slow title request never delays sending and can improve the provisional 
   harness.finish('codex'); await run.done;
 });
 
+for (const engine of ['kimi', 'codex', 'antigravity', 'grok']) {
+  test(engine + ': subscription titles use the native engine after the first turn instead of requiring an API route', async t => {
+    const apiCalls = [], nativeCalls = [];
+    const harness = fixture(t, { generateTitle: async message => { apiCalls.push(message); return ''; } });
+    harness.drivers[engine].settings = () => ({ connection: 'subscription', model: engine + '-subscription' });
+    harness.drivers[engine].generateTitle = async ({ prompt, conversation, settings }) => {
+      nativeCalls.push({ prompt, conversation: conversation.id, connection: settings.connection });
+      return '  订阅原生标题。 ';
+    };
+    const run = await harness.manager.send(engine, { prompt: '为订阅会话生成一个标题' });
+    assert.equal(harness.manager.get(run.sessionId).title, '为订阅会话生成一个标题');
+    assert.deepEqual(nativeCalls, []);
+    assert.deepEqual(apiCalls, []);
+
+    harness.finish(engine);
+    await run.done;
+    await harness.flush();
+    assert.equal(nativeCalls.length, 1);
+    assert.equal(nativeCalls[0].conversation, run.sessionId);
+    assert.equal(nativeCalls[0].connection, 'subscription');
+    assert.deepEqual(apiCalls, []);
+    assert.equal(harness.manager.get(run.sessionId).title, '订阅原生标题');
+    assert.equal(harness.manager.get(run.sessionId).titleSource, 'model');
+    assert.ok(harness.events.some(event => event.type === 'conversation:title' && event.title === '订阅原生标题'));
+  });
+
+  test(engine + ': subscription titles fall back to API routes when native generation is unavailable', async t => {
+    const apiCalls = [];
+    const harness = fixture(t, { generateTitle: async message => { apiCalls.push(message); return 'API 后备标题'; } });
+    harness.drivers[engine].settings = () => ({ connection: 'subscription', model: engine + '-subscription' });
+    harness.drivers[engine].generateTitle = async () => '';
+    const run = await harness.manager.send(engine, { prompt: '订阅标题失败时回退 API' });
+    harness.finish(engine);
+    await run.done;
+    await harness.flush();
+    assert.deepEqual(apiCalls, ['订阅标题失败时回退 API']);
+    assert.equal(harness.manager.get(run.sessionId).title, 'API 后备标题');
+    assert.equal(harness.manager.get(run.sessionId).titleSource, 'model');
+  });
+
+  test(engine + ': a manual rename during the first subscription turn prevents deferred native naming', async t => {
+    const nativeCalls = [];
+    const harness = fixture(t, { generateTitle: async () => 'API title' });
+    harness.drivers[engine].settings = () => ({ connection: 'subscription', model: engine + '-subscription' });
+    harness.drivers[engine].generateTitle = async () => { nativeCalls.push('called'); return '原生标题'; };
+    const run = await harness.manager.send(engine, { prompt: 'First subscription request' });
+    await harness.manager.command(engine, 'rename-session', { id: run.sessionId, title: '手动标题' });
+    harness.finish(engine);
+    await run.done;
+    await harness.flush();
+    assert.deepEqual(nativeCalls, []);
+    assert.equal(harness.manager.workspaces.sessionMeta().titles[run.sessionId], '手动标题');
+  });
+
+  test(engine + ': a manual rename while the native title request is pending discards its late result', async t => {
+    let resolveTitle;
+    const harness = fixture(t);
+    harness.drivers[engine].settings = () => ({ connection: 'subscription', model: engine + '-subscription' });
+    harness.drivers[engine].generateTitle = () => new Promise(resolve => { resolveTitle = resolve; });
+    const run = await harness.manager.send(engine, { prompt: 'First subscription request' });
+    harness.finish(engine); await run.done; await harness.flush();
+    assert.equal(typeof resolveTitle, 'function');
+    await harness.manager.command(engine, 'rename-session', { id: run.sessionId, title: '已手动命名' });
+    resolveTitle('迟到的模型标题'); await harness.flush();
+    assert.equal(harness.manager.workspaces.sessionMeta().titles[run.sessionId], '已手动命名');
+    assert.equal(harness.events.some(event => event.type === 'conversation:title' && event.title === '迟到的模型标题'), false);
+  });
+}
+
 test('attachment-only first turns name the visible file without exposing its path or hidden prompt', async t => {
   for (const engine of ENGINES) {
     const calls = [], harness = fixture(t, { generateTitle: async message => { calls.push(message); return ''; } });
@@ -4057,6 +4126,36 @@ test('each engine continues a shared goal in the same conversation and recognize
     assert.ok(f.goal.view().verified);
     assert.equal(f.goal.timer, null);
   }
+});
+
+test('goal verification stays out of user conversation lists while it runs', async t => {
+  const h = fixture(t);
+  const started = await h.manager.command('codex', 'goal-start', { objective: 'Finish' });
+  const goal = h.manager.goalFor(started.sessionId);
+  goal.drive(); await h.flush();
+  h.finish('codex', 'success', '<goal:complete>');
+  await h.flush();
+  const verifierId = h.sent.at(-1).opts.conversationId;
+  assert.notEqual(verifierId, started.sessionId);
+  assert.equal(h.manager.get(verifierId).title, 'Goal verification');
+
+  const desktop = await h.manager.list('codex');
+  assert.deepEqual(desktop.sessions.map(session => session.id), [started.sessionId]);
+  assert.equal(desktop.pagination.recent.total, 1);
+  const { RemoteReadModel } = require('../src/main/remote/read-model');
+  const remote = new RemoteReadModel(h.manager).list({ allWorkspaces: true });
+  assert.deepEqual(remote.conversations.map(session => session.id), [started.sessionId]);
+  assert.deepEqual(h.manager.listAttachableConversations().sessions.map(session => session.id), [started.sessionId]);
+  const { callConversationTool } = require('../src/engines/conversation-control');
+  const toolSessions = callConversationTool(h.manager, started.sessionId, 'camellia_conversation_sessions', { archived: false }, {});
+  assert.deepEqual(toolSessions.conversations.map(session => session.id), [started.sessionId]);
+  const toolSearch = callConversationTool(h.manager, started.sessionId, 'camellia_conversation_search', { query: 'independent verifier', limit: 20 }, {});
+  assert.deepEqual(toolSearch.results, []);
+
+  h.finish('codex', 'success', '<verify:pass> checked');
+  await h.flush();
+  assert.equal(goal.view().phase, 'complete');
+  assert.equal(h.manager.items.has(verifierId), false);
 });
 
 test('goal lifecycle actions cancel and purge only their own verifier for every engine', async t => {

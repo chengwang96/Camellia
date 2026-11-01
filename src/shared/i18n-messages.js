@@ -897,8 +897,6 @@
   "Choose a workspace for this session": "为此会话选择工作区",
   "Standalone session without a workspace": "不属于工作区的独立会话",
   "Conversation engine": "会话引擎",
-  "Choose how to continue in another engine": "选择如何在另一个引擎中继续",
-  "Switch options": "切换选项",
   "Stop handoff": "停止交接",
   "Goal mode": "目标模式",
   "Goal mode (Ctrl/Cmd+G)": "目标模式（Ctrl/Cmd+G）",

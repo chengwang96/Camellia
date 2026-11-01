@@ -240,11 +240,13 @@ class ConversationHistory {
       throw error;
     }
   }
-  append(id, row) {
+  append(id, row) { this.appendAll(id, [row]); }
+  appendAll(id, rows) {
+    if (!rows.length) return;
     const value = this.ensure(id), file = this.file(id), before = stat(file);
-    const text = JSON.stringify(row);
-    appendText(file, text + '\n');
-    this.metrics.appends++;
+    const serialized = rows.map(row => JSON.stringify(row));
+    appendText(file, serialized.join('\n') + '\n');
+    this.metrics.appends += rows.length;
     // Index writes are disposable; their failure cannot turn an already saved
     // user message or reply into a failed conversation commit.
     try {
@@ -253,10 +255,16 @@ class ConversationHistory {
       this.checkIndex(value.index);
       const fd = openSync(value.index, 'r+');
       const previousCount = value.count;
+      let revised = false;
       try {
-        const length = Buffer.byteLength(text);
-        this.add(fd, value, row, before?.size || 0, length);
-        if (row.role === 'revision') { this.forget(id); value.generation = randomUUID(); }
+        let offset = before?.size || 0;
+        for (let i = 0; i < rows.length; i++) {
+          const length = Buffer.byteLength(serialized[i]);
+          this.add(fd, value, rows[i], offset, length);
+          offset += length + 1;
+          if (rows[i].role === 'revision') revised = true;
+        }
+        if (revised) { this.forget(id); value.generation = randomUUID(); }
         const source = stat(file); value.source = signature(source); value.size = source.size;
         fs.ftruncateSync(fd, HEADER + value.count * RECORD); this.header(fd, value);
         value.indexStamp = signature(fs.fstatSync(fd));

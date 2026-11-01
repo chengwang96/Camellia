@@ -41,6 +41,23 @@ async function camelliaForkUndo(server, params) {
     throw error;
   }
 }
+function camelliaTitleParams(params) {
+  if (!params || typeof params.sessionId !== "string" || params.sessionId.length === 0)
+    throw RequestError$1.invalidParams(params, "sessionId is required");
+  return { sessionId: params.sessionId, force: params.force === true };
+}
+async function camelliaGenerateTitle(server, params) {
+  await server.ensureAuthed();
+  if (!server.getSession(params.sessionId)) throw RequestError$1.invalidParams(params, "Session must be loaded");
+  const session = server.klient.session(params.sessionId);
+  const title = await session.generateTitle({
+    force: params.force,
+    source: "first_turn"
+  });
+  if (typeof title === "string" && title.length > 0) return { title };
+  const metadata = await session.get();
+  return { title: metadata?.titleKind === "generated" && typeof metadata.title === "string" ? metadata.title : "" };
+}
 `;
 
 function patchKimiHistory(source) {
@@ -61,7 +78,8 @@ function patchKimiHistory(source) {
   };
 ` + owner).replace(anchor, handlers + '\n' + anchor).replace(chain, chain
     + '.onRequest("session/camellia_history_boundary", camelliaHistoryParams, ctx => camelliaHistoryState(getServer(), ctx.params))'
-    + '.onRequest("session/camellia_fork_undo", camelliaHistoryParams, ctx => camelliaForkUndo(getServer(), ctx.params))');
+    + '.onRequest("session/camellia_fork_undo", camelliaHistoryParams, ctx => camelliaForkUndo(getServer(), ctx.params))'
+    + '.onRequest("session/camellia_generate_title", camelliaTitleParams, ctx => camelliaGenerateTitle(getServer(), ctx.params))');
 }
 
 const cache = new Map();

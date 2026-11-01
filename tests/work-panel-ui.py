@@ -64,6 +64,14 @@ def exercise_design(browser, theme, language, width, height):
     children = [child, waiting, finished]
     page.evaluate('tasks => deliverChild(tasks)', children)
     expect(page.locator('#workPanel')).to_be_hidden()
+    for selector in ('#conversationActions', '#workPanelToggle'):
+        metrics = page.locator(selector).evaluate('''node => {
+          const button = getComputedStyle(node), icon = getComputedStyle(node.querySelector('svg'));
+          return {width:button.width, height:button.height, radius:button.borderRadius,
+                  border:button.borderTopWidth, iconWidth:icon.width, iconHeight:icon.height};
+        }''')
+        assert metrics == {'width':'32px', 'height':'32px', 'radius':'8px', 'border':'0px',
+                           'iconWidth':'19px', 'iconHeight':'19px'}, (selector, metrics)
     page.locator('#workPanelToggle').click()
     expect(page.locator('#workPanel .work-task')).to_have_count(3)
     expect(page.locator('#workPanelCount')).to_have_text('3')

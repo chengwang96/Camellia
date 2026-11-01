@@ -92,7 +92,7 @@ async function main() {
       grok: { connection: 'api', apiModel: 'fork-fixture', permissionMode: 'full' },
       antigravity: { connection: 'api', model: 'fork-fixture', permissionMode: 'full' },
       dshChat: { model: 'fork-fixture', permissionMode: 'full' } };
-    const runtimeManager = createRuntimeManager({ root: appRoot, installRoot: path.join(process.env.APPDATA || '', 'camellia'), node: process.execPath });
+    const runtimeManager = createRuntimeManager({ root: appRoot, installRoot: path.join(root, 'runtime-installs'), node: process.execPath, discoverLocal: false });
     const runtimes = () => runtimeManager;
     const env = isolatedEnvironment(path.join(root, 'isolated-home'), process.execPath);
     const common = { dataDir: root, loadConfig: () => config, saveConfig: patch => { config = { ...config, ...patch }; },
@@ -109,8 +109,8 @@ async function main() {
     const claude = { sessions: claudePool, history: claudeHistory, nativeCompaction: true, nativeAutoCompaction: true, nativeEditing: true,
       settings: () => ({ model: 'fork-fixture', connection: 'api', permissionMode: 'full', contextWindow: 131072 }),
       saveSettings: patch => patch,
-      forkNative({ sessionId, snapshotFile, boundary }) {
-        snapshotTranscript(claudeHistory.find(sessionId), snapshotFile);
+      async forkNative({ sessionId, snapshotFile, boundary }) {
+        await snapshotTranscript(claudeHistory.find(sessionId), snapshotFile);
         return { pendingNativeFork: { sessionId, ...(boundary?.resumeSessionAt ? { resumeSessionAt: boundary.resumeSessionAt } : {}) } };
       },
       ensure(opts) {

@@ -63,6 +63,7 @@ with sync_playwright() as p:
             page.add_init_script(bridge)
             page.goto((repo/'src/renderer/chat/claude.html').as_uri()+f'?harness={engine}', wait_until='networkidle')
             page.wait_for_function('uiReady')
+            expect(page.locator('#handoffBtn')).to_have_count(0)
             assert page.locator('.logo-icon img').evaluate('(img) => img.complete && img.naturalWidth > 0'), engine
             empty = page.locator('#inputCard').bounding_box()
             page.locator('[data-sid="shared-fixture"]').click()
@@ -113,15 +114,13 @@ with sync_playwright() as p:
             expect(page.locator('#switchDialog')).not_to_be_visible()
             page.wait_for_function('window.switches.filter(call => !call.navigate).length === 1 && !loadingSession && !switchingEngine')
             assert page.evaluate('switches.find(call => !call.navigate).sessionId') == 'shared-fixture'
-            page.evaluate('fixturePreferences.warnOnSwitch = true')
+            page.evaluate('fixturePreferences.warnOnSwitch = true; fixturePreferences.mode = "markdown"')
             page.select_option('#engineSwitch', 'dsh' if engine != 'dsh' else 'claude')
             expect(page.locator('#switchDialog')).to_be_visible()
-            page.locator('#switchCancel').click()
-            assert page.evaluate('window.switches.filter(call => !call.navigate).length') == 1
-            page.locator('#handoffBtn').click()
             expect(page.locator('#switchMethod')).to_have_value('markdown')
             page.screenshot(path=str(preview/f'handoff-{theme}.png'))
             page.locator('#switchCancel').click()
+            assert page.evaluate('window.switches.filter(call => !call.navigate).length') == 1
             page.evaluate('fixturePreferences.showOrigin=true; openHistorySession("shared-fixture")')
             expect(page.locator('#conversationOrigin')).to_be_visible()
             page.locator('#input').fill('Unsent notes for the shared task')
@@ -628,7 +627,6 @@ with sync_playwright() as p:
         expect(page.locator('#chat')).to_contain_text('Streaming Task A')
         expect(page.locator('#newSessionBtn')).to_be_enabled()
         expect(page.locator('#engineSwitch')).to_be_disabled()
-        expect(page.locator('#handoffBtn')).to_be_disabled()
         page.evaluate('navigateHarness("kimi")')
         assert page.evaluate('actions.filter(a=>a.action==="switch").length') == 0
         page.locator('#input').fill('Draft for A')
@@ -1082,7 +1080,7 @@ with sync_playwright() as p:
     page.close()
     # The model pill stays usable while a response runs: the running turn is
     # unaffected and the change is saved for the next message, including picks
-    # across subscription and API groups. The harness and handoff stay locked.
+    # across subscription and API groups. The harness stays locked.
     running_bridge = r"""(() => {
       let settings = {model:'gpt-account',permissionMode:'default',connection:'subscription'};
       window.actions = [];
@@ -1117,7 +1115,6 @@ with sync_playwright() as p:
     page.wait_for_function('running || conversationActivity')
     expect(page.locator('#modelPill')).to_be_enabled()
     expect(page.locator('#engineSwitch')).to_be_disabled()
-    expect(page.locator('#handoffBtn')).to_be_disabled()
     # A model picked during the run is saved (not rejected) and the running turn
     # is left untouched; the selection applies to the next message.
     page.locator('#modelPill').click()

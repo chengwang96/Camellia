@@ -283,7 +283,7 @@ function createCodex({ dataDir, loadConfig, saveConfig, getRoute, getModels = ()
     if (settings.connection !== 'subscription') {
       const targetHome = path.join(home, 'api', 'conversations', conversationId);
       await copyCodexState(sourceHome, targetHome);
-      copyCodexRollouts(sourceHome, targetHome);
+      await copyCodexRollouts(sourceHome, targetHome);
       const snapshot = path.join(targetHome, path.relative(sourceHome, forkSourcePath));
       forkSourcePath = snapshot;
     }
@@ -469,6 +469,10 @@ function createCodex({ dataDir, loadConfig, saveConfig, getRoute, getModels = ()
   return { get session() { return sessions.legacy; },
     get active() { return Boolean(sessions.active || [...accountEntries.values()].some(entry => entry.client && !entry.client.dead)); },
     home, goal, settings, saveSettings, handlers, ensureSession, forkNative, history, sessions, workspaces, accountState, syncAccountSelection,
+    generateTitle: ({ conversation, prompt }) => {
+      const session = sessions.get({ conversationId: conversation.id });
+      return session && !session.dead ? session.generateTitle(prompt) : '';
+    },
     async shutdown() {
       await Promise.allSettled([...wakeClients].map(client => client.shutdown()));
       await sessions.shutdown();

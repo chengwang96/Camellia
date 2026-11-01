@@ -98,6 +98,10 @@ function createEngineDrivers({ root, dataDir, loadConfig, saveConfig, onEvent, g
   }
   const kimi = { sessions: kimiPool, history: kimiHistory, settings: kimiSettings, nativeCompaction: true, nativeAutoCompaction: true,
     nativeEditing: () => nativeEditingSupported('kimi', runtimes.locate('kimi')?.version),
+    generateTitle({ conversation }) {
+      const session = kimiPool.get({ conversationId: conversation.id });
+      return session && !session.dead ? session.generateTitle() : '';
+    },
     async forkNative(options) {
       const result = await forkKimiNative({ ...options, ensureSource: kimi.ensure,
         targetHome: options.settings.connection === 'subscription' ? null : path.join(dataDir, 'kimi-api', options.conversationId) });
@@ -128,10 +132,10 @@ function createEngineDrivers({ root, dataDir, loadConfig, saveConfig, onEvent, g
   };
   const claude = { sessions: claudePool, history: claudeHistory, nativeCompaction: true, nativeAutoCompaction: true,
     nativeEditing: () => nativeEditingSupported('claude', runtimes.locate('claude')?.version),
-    forkNative({ sessionId, snapshotFile, boundary }) {
+    async forkNative({ sessionId, snapshotFile, boundary }) {
       const source = claudeHistory.find(sessionId);
       if (!source) return null;
-      snapshotTranscript(source, snapshotFile);
+      await snapshotTranscript(source, snapshotFile);
       return { pendingNativeFork: { sessionId, ...(boundary?.resumeSessionAt ? { resumeSessionAt: boundary.resumeSessionAt } : {}) } };
     },
     settings() { const saved = loadConfig().claude || {}; return { permissionMode: 'ask', connection: 'api', ...saved, model: saved[`${saved.connection || 'api'}Model`] || saved.model || '' }; },
@@ -192,9 +196,9 @@ function createEngineDrivers({ root, dataDir, loadConfig, saveConfig, onEvent, g
     shutdown: async () => { await grok.shutdown(); await grokAccount.shutdown(); } }, codex: { sessions: codex.sessions, history: codex.history, settings: codex.settings, saveSettings: codex.saveSettings, ensure: codex.ensureSession,
     subscriptionAccounts: () => codex.accountState(),
     resetCredits: { preview: payload => codex.handlers['account-reset-preview'](payload), consume: payload => codex.handlers['account-reset-consume'](payload) },
-    forkNative: codex.forkNative, nativeCompaction: true, nativeEditing: true, shutdown: () => codex.shutdown() }, kimi, claude };
+    generateTitle: codex.generateTitle, forkNative: codex.forkNative, nativeCompaction: true, nativeEditing: true, shutdown: () => codex.shutdown() }, kimi, claude };
   drivers.antigravity = { sessions: antigravity.sessions, history: antigravity.history, settings: antigravity.settings, saveSettings: antigravity.saveSettings,
-    ensure: antigravity.ensureSession, forkNative: antigravity.forkNative, nativeAutoCompaction: true, shutdown: () => antigravity.shutdown() };
+    ensure: antigravity.ensureSession, generateTitle: antigravity.generateTitle, forkNative: antigravity.forkNative, nativeAutoCompaction: true, shutdown: () => antigravity.shutdown() };
   require('../engines/discussions/native-access').installDiscussionGuards({ dataDir, drivers: {
     codex, antigravity, dsh, grok,
     claude: { sessions: claudePool, history: claudeHistory }, kimi: { sessions: kimiPool, history: kimiHistory },

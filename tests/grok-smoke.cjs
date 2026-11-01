@@ -104,6 +104,7 @@ async function run() {
     assert.ok(events.some(e => e.type === 'gui:tool' && e.status === 'completed'));
     assert.ok(events.some(e => e.type === 'stream_event' && e.event.delta?.type === 'thinking_delta'));
     const sourceId = session.sessionId;
+    assert.equal(await session.generateTitle(), 'Grok integration fixture', 'Read the real runtime generated title after its asynchronous summary request');
     assert.equal((await turn('GROK_SMOKE write written.txt')).subtype, 'success');
     assert.equal(fs.readFileSync(written, 'utf8'), 'grok-wrote-7391');
     assert.equal(permissionCount, 0, 'Full mode must not ask for native tool approval');

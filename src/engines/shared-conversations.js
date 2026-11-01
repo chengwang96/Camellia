@@ -236,7 +236,7 @@ class SharedConversations {
       this.items.set(item.id, item);
     }
     this.history = {
-      list: async () => [...this.items.values()].map(c => ({ id: c.id, file: this.file(c.id), mtimeMs: c.updatedAt })),
+      list: async () => [...this.items.values()].filter(c => !c.internal).map(c => ({ id: c.id, file: this.file(c.id), mtimeMs: c.updatedAt })),
       find: id => this.items.has(id) ? this.file(id) : null,
       head: file => this.head(path.basename(file, '.json')),
       readHead: async file => this.head(path.basename(file, '.json')),
@@ -508,7 +508,7 @@ class SharedConversations {
     const c = this.get(id);
     const engine = this.goals.get(id)?.goal?.engine || c.currentEngine;
     const settings = this.settings(engine, id);
-    const v = this.create(engine, c.workspaceId, 'Goal verification', c.cwd);
+    const v = this.create(engine, c.workspaceId, 'Goal verification', c.cwd, { internal: true });
     const cancel = () => { void this.cancel({ sessionId: v.id }).catch(error => this.log(`goal: verifier cancellation failed: ${error.message}`)); };
     signal?.addEventListener('abort', cancel, { once: true });
     try {
@@ -568,7 +568,26 @@ class SharedConversations {
     return (c.title === 'New session' || c.titleSource === 'message')
       && !this.workspaces.sessionMeta().titles[c.id];
   }
-  async titleFromFirstMessage(c) {
+  titleConnection(engine, c, settings) {
+    return settings?.connection || this.settings(engine, c.id).connection;
+  }
+  titleUsesTurn(engine, c, settings) {
+    return this.titleConnection(engine, c, settings) === 'subscription'
+      && typeof this.drivers[engine]?.generateTitle === 'function';
+  }
+  async generateConversationTitle(c, engine, prompt, settings) {
+    if (this.titleConnection(engine, c, settings) === 'subscription'
+        && typeof this.drivers[engine]?.generateTitle === 'function') {
+      try {
+        const title = shortTitle(await this.drivers[engine].generateTitle({ prompt, conversation: c, settings }));
+        if (title) return title;
+      } catch (error) {
+        this.log(`conversation title: ${engine} subscription generation failed: ${error.message}`);
+      }
+    }
+    return shortTitle(await this.generateTitle(prompt, c.apiModel));
+  }
+  async titleFromFirstMessage(c, { defer = false, engine = c.currentEngine, settings } = {}) {
     let prompt = '', requested = false;
     try {
       if (!this.items.has(c.id) || !this.needsTitle(c)) return;
@@ -584,9 +603,10 @@ class SharedConversations {
         catch (error) { Object.assign(c, previous); throw error; }
         this.onEvent({ type: 'conversation:title', session_id: c.id, title: provisional });
       }
+      if (defer) return;
       if (this.titleRequests.has(c.id)) return;
       this.titleRequests.add(c.id); requested = true;
-      const title = shortTitle(await this.generateTitle(prompt, c.apiModel));
+      const title = await this.generateConversationTitle(c, engine, prompt, settings);
       if (!title || !this.items.has(c.id)) return;
       const current = this.get(c.id);
       if (!this.needsTitle(current) || this.firstTitleMessage(current) !== prompt) return;
@@ -747,11 +767,14 @@ class SharedConversations {
   }
   messages(c) { return this.rows(c, { mask: HISTORY_FLAGS.visible })
     .map(r => legacyRecoveryError(r) ? { ...r, runResult: { subtype: 'error', is_error: true, result: r.text } } : r); }
-  append(c, row) {
-    const entry = { ...row, seq: c.seq + 1, at: Date.now() };
-    this.historyStore.append(c.id, entry);
-    c.seq = entry.seq;
-    return entry;
+  append(c, row) { return this.appendAll(c, [row])[0]; }
+  appendAll(c, rows) {
+    const entries = rows.map((row, index) => ({ ...row, seq: c.seq + index + 1, at: Date.now() }));
+    if (entries.length) {
+      this.historyStore.appendAll(c.id, entries);
+      c.seq = entries.at(-1).seq;
+    }
+    return entries;
   }
   // Replace the logical history wholesale (manual sync from the source app).
   // Native sessions no longer match and are retired; one backup is kept.
@@ -765,11 +788,12 @@ class SharedConversations {
     c.segments = {};
     this.save(c);
   }
-  create(engine, workspaceId, title = 'New session', cwd) {
+  create(engine, workspaceId, title = 'New session', cwd, { internal = false } = {}) {
     this.validateEngine(engine);
     const context = this.workspaces.resolveContext({}, { workspaceId });
     const c = { id: randomUUID(), origin: engine, currentEngine: engine, title, cwd: cwd || context.cwd,
-      workspaceId: workspaceId || null, createdAt: Date.now(), updatedAt: this.stamp(), seq: 0, segments: {}, handoffs: [], engineSettings: {} };
+      workspaceId: workspaceId || null, createdAt: Date.now(), updatedAt: this.stamp(), seq: 0, segments: {}, handoffs: [], engineSettings: {},
+      ...(internal ? { internal: true } : {}) };
     const selected = this.settings(engine);
     c.engineSettings[engine] = conversationSettings(selected);
     if (selected.connection !== 'subscription' && selected.model) c.apiModel = selected.model;
@@ -806,8 +830,9 @@ class SharedConversations {
     // Native IDs belong to their original conversation. Reusing parked IDs in
     // a branch would let a later model switch modify the source conversation.
     conversation.modelSessions = {};
-    const sequences = new Map();
-    for (const row of this.historyRows(source, { mask: HISTORY_FLAGS.public, before: boundary })) sequences.set(row.seq, this.append(conversation, row).seq);
+    const rows = [...this.historyRows(source, { mask: HISTORY_FLAGS.public, before: boundary })];
+    const entries = this.appendAll(conversation, rows), sequences = new Map();
+    for (let i = 0; i < rows.length; i++) sequences.set(rows[i].seq, entries[i].seq);
     conversation.subagents = require('../shared/subagents').forkTasks(source.subagents, boundary)
       .filter(task => sequences.has(task.userSeq)).map(task => ({ ...task, userSeq: sequences.get(task.userSeq) }));
     this.save(conversation);
@@ -932,7 +957,7 @@ class SharedConversations {
   listAttachableConversations(query = '', excludeId = null) {
     const term = String(query || '').trim().toLocaleLowerCase().slice(0, 100);
     const meta = this.workspaces.sessionMeta();
-    const sessions = [...this.items.values()].filter(c => c.id !== excludeId && !meta.archived[c.id])
+    const sessions = [...this.items.values()].filter(c => !c.internal && c.id !== excludeId && !meta.archived[c.id])
       .map(c => ({ id: c.id, title: meta.titles[c.id] || c.title, engine: c.currentEngine,
         cwd: c.cwd, updatedAt: c.updatedAt, interrupted: Boolean(c.interrupted) }))
       .filter(c => !term || [c.title, c.cwd, c.engine].some(value => String(value || '').toLocaleLowerCase().includes(term)))
@@ -1429,8 +1454,9 @@ class SharedConversations {
     // A failed title request can recover on a later send or revision.
     const needsTitle = !internal && !continuation && this.needsTitle(c)
       && (String(payload.displayText ?? payload.prompt ?? '').trim() || payload.attachments?.length);
+    const deferredTitle = needsTitle && this.titleUsesTurn(engine, c, settings);
     const nativeEditEligible = !internal && (Boolean(nativeEdit || nativeFork) || !edit && !(promptOverride == null ? replayContext : this.contextEstimate(c, engine)));
-    const a = continuation || { c, engine, internal, ephemeral, scheduledTaskId, nativeEditEligible, goalContinuation: Boolean(facade), goalUserPrompt, prompt: payload.prompt || '', promptSuffix, attachments: payload.attachments || [], events: [], permissions: new Map(), tools: new Set(), eventSeq: 0, text: '', assistant: [], startedAt: Date.now(),
+    const a = continuation || { c, engine, internal, ephemeral, scheduledTaskId, nativeEditEligible, titleDeferred: deferredTitle, goalContinuation: Boolean(facade), goalUserPrompt, prompt: payload.prompt || '', promptSuffix, attachments: payload.attachments || [], events: [], permissions: new Map(), tools: new Set(), eventSeq: 0, text: '', assistant: [], startedAt: Date.now(),
       nativeEditReplayFromSeq: checkpoint?.replayFromSeq,
       // Only evaluated if the native session turns out to be unavailable: the
       // stored transcript replaces whatever the missing native thread carried.
@@ -1470,7 +1496,7 @@ class SharedConversations {
       if (!internal && !continuation) this.workspaces.promoteSession(c.id, [...this.items.values()]
         .sort((first, second) => second.updatedAt - first.updatedAt || first.id.localeCompare(second.id)).map(conversation => conversation.id));
       if (needsTitle) {
-        void this.titleFromFirstMessage(c);
+        void this.titleFromFirstMessage(c, { defer: deferredTitle, engine, settings });
       }
       this.publishActivity(c.id);
       if (!internal && !continuation) this.onEvent({ type: 'conversation:started', session_id: c.id, engine, runId: a.facade.gen,
@@ -1855,6 +1881,10 @@ class SharedConversations {
       a.facade.running = false; this.active.delete(c.id);
       if (!a.internal && c.interrupted) this.remoteQueue?.pause(c.id);
       a.finished = true;
+      if (a.titleDeferred && !a.cancelled && event.subtype !== 'stopped') {
+        a.titleDeferred = false;
+        void this.titleFromFirstMessage(c, { engine, settings: a.contextSettings });
+      }
       for (const abort of a.webCalls || []) abort.abort();
       if (!a.internal) this.goals.get(c.id)?.handleResult({ ...event, result: event.result || text, goalReport: a.goalReport, ignoreGoalMarkers: a.goalRevised });
       const finalText = a.internal && Array.isArray(event.outputBlocks)

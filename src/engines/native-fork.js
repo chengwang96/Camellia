@@ -13,33 +13,33 @@ function nativePath(value) {
 
 // Copy a fixed, complete JSONL prefix. A source may keep appending while an
 // active conversation forks at an earlier native boundary.
-function snapshotTranscript(source, destination) {
-  const input = fs.openSync(source, 'r');
+async function snapshotTranscript(source, destination) {
+  const input = await fs.promises.open(source, 'r');
   let output;
   try {
-    const size = fs.fstatSync(input).size;
-    fs.mkdirSync(path.dirname(destination), { recursive: true });
-    output = fs.openSync(destination, 'wx');
+    const { size } = await input.stat();
+    await fs.promises.mkdir(path.dirname(destination), { recursive: true });
+    output = await fs.promises.open(destination, 'wx');
     const buffer = Buffer.alloc(64 * 1024);
     let position = 0, complete = 0;
     while (position < size) {
-      const count = fs.readSync(input, buffer, 0, Math.min(buffer.length, size - position), position);
+      const { bytesRead: count } = await input.read(buffer, 0, Math.min(buffer.length, size - position), position);
       if (!count) throw new Error('The source transcript changed while creating a fork');
       let written = 0;
       while (written < count) {
-        const size = fs.writeSync(output, buffer, written, count - written);
-        if (!size) throw new Error('Could not complete the native transcript snapshot');
-        written += size;
+        const { bytesWritten } = await output.write(buffer, written, count - written);
+        if (!bytesWritten) throw new Error('Could not complete the native transcript snapshot');
+        written += bytesWritten;
       }
       const newline = buffer.subarray(0, count).lastIndexOf(10);
       if (newline >= 0) complete = position + newline + 1;
       position += count;
     }
-    fs.ftruncateSync(output, complete);
+    await output.truncate(complete);
     if (!complete) throw new Error('The source transcript has no complete native history');
   } finally {
-    fs.closeSync(input);
-    if (output !== undefined) fs.closeSync(output);
+    try { await input.close(); }
+    finally { if (output) await output.close(); }
   }
 }
 
@@ -76,16 +76,18 @@ async function copyCodexState(sourceHome, targetHome) {
   }
 }
 
-function copyCodexRollouts(sourceHome, home) {
-  const copy = (directory, target) => {
-    if (!fs.existsSync(directory)) return;
-    for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
-      if (entry.isDirectory()) copy(path.join(directory, entry.name), path.join(target, entry.name));
+async function copyCodexRollouts(sourceHome, home) {
+  const copy = async (directory, target) => {
+    let entries;
+    try { entries = await fs.promises.readdir(directory, { withFileTypes: true }); }
+    catch (error) { if (error.code === 'ENOENT') return; throw error; }
+    for (const entry of entries) {
+      if (entry.isDirectory()) await copy(path.join(directory, entry.name), path.join(target, entry.name));
       else if (entry.isFile() && entry.name.endsWith('.jsonl'))
-        snapshotTranscript(path.join(directory, entry.name), path.join(target, entry.name));
+        await snapshotTranscript(path.join(directory, entry.name), path.join(target, entry.name));
     }
   };
-  for (const directory of ['sessions', 'archived_sessions']) copy(path.join(sourceHome, directory), path.join(home, directory));
+  for (const directory of ['sessions', 'archived_sessions']) await copy(path.join(sourceHome, directory), path.join(home, directory));
   const { DatabaseSync } = require('node:sqlite');
   for (const name of fs.readdirSync(home).filter(name => /^state_\d+\.sqlite$/.test(name))) {
     const database = new DatabaseSync(path.join(home, name));

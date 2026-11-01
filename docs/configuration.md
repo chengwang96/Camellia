@@ -281,7 +281,16 @@ Archiving the open conversation continues at its neighbor in the same workspace,
 
 The sidebar indicates background work and pending approvals. Opening another conversation restores its stream, draft, model and goal; stop and approval actions remain scoped to that conversation. Conversations in the same workspace still share its files, and concurrent API requests share provider limits.
 
-New conversations are named automatically from their first message. Naming tries the conversation's own model first, then the workbench default model, then up to one other model with a configured route; account-only models are skipped because no route can reach them. The generated title is short, keeps the message's language, and appears in the header and sidebar as soon as it is ready; renaming a conversation always wins over the automatic title. Naming is advisory: it runs at the same time as the reply, never blocks or fails the first turn, shares no history with the conversation, and never starts a route cooldown or counts as a failed request in **Usage**. When every candidate is unavailable the conversation keeps `New session` and the reason is written to the log.
+New conversations are named automatically from their first message. A readable provisional title appears immediately. Subscription naming runs after the first turn and does not require an API route for these engines:
+
+| Subscription engine | Model-generated title |
+| --- | --- |
+| Kimi | Calls the official native title service |
+| Codex | Sends a separate, text-only request with the conversation's model and account; its temporary thread is not saved in native history |
+| Antigravity | Reads the official CLI's generated conversation summary through its authenticated local interface |
+| Grok | Waits for the native generated title in that account's session metadata; the summary model follows the selected subscription model |
+
+Title generation can consume subscription quota. Codex's auxiliary request has no tools and does not append messages to the user's conversation. An API-route title remains the fallback when subscription generation is unavailable. API naming tries the conversation's own model first, then the workbench default model, then up to one other model with a configured route. The generated title is at most 20 characters, keeps the message's language, and appears in the header and sidebar as soon as it is ready. Manual renames always win, including while a title request is pending; stale results for revised or deleted messages are discarded. Naming never blocks or fails the first turn, starts a route cooldown, or counts as a failed request in **Usage**. When generation is unavailable the conversation keeps the readable provisional title and the reason is written to the log.
 
 ## Data locations
 

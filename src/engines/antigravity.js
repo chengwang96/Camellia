@@ -45,6 +45,14 @@ function subscriptionSpawnSpec({ runtime, home, env, proxyUrl, model = '', effor
 }
 const sessionConnection = id => id.startsWith('agy-') ? 'subscription' : 'api';
 
+class AntigravitySession extends AcpSession {
+  async generateTitle() {
+    if (this.dead || this.settings.connection !== 'subscription' || !this.sessionId) return '';
+    const result = await this.request('session/camellia_generate_title', { sessionId: this.sessionId }, 60000);
+    return typeof result?.title === 'string' ? result.title : '';
+  }
+}
+
 function createAntigravity({ dataDir, cliSettingsFile, node, openLogin, loadConfig, saveConfig, getRoute, getModels, runtimes, environment = () => process.env, python = () => null, onEvent, onGoal, onAccount = () => {}, createUsageMeter = () => null, isBusy = () => false, clearCredentials, log }) {
   const sessions = new SessionPool();
   let generation = 0;
@@ -130,7 +138,7 @@ function createAntigravity({ dataDir, cliSettingsFile, node, openLogin, loadConf
       : antigravitySpawnSpec({ runtime, home, route: getRoute(), env: environment(),
         python: sharedPython?.file ? sharedPython : null, config: readJson(path.join(home, 'settings.json'), {}) });
     const previousClosed = current?.shutdown();
-    const next = new AcpSession({ name: 'Antigravity', gen: ++generation, settings: selected, opts,
+    const next = new AntigravitySession({ name: 'Antigravity', gen: ++generation, settings: selected, opts,
       exe: discussion ? spec.exe : subscription ? node() : runtime.file, spec, spawn: discussion?.spawn || spawn, log, history: discussion ? discussionHistory : history,
       usageMeter: createUsageMeter('antigravity', { settings: selected }),
       onEvent: event => { if (sessions.get(opts) === next) onEvent({ ...event, conversationId: opts.conversationId }); },
@@ -219,6 +227,10 @@ function createAntigravity({ dataDir, cliSettingsFile, node, openLogin, loadConf
     'goal-complete': () => goal.setPhase('complete'), 'goal-clear': () => goal.clear({ interrupt: false }),
   };
   return { get session() { return sessions.legacy; }, home, goal, settings, saveSettings, handlers, ensureSession, forkNative, history, sessions, workspaces,
+    generateTitle: ({ conversation }) => {
+      const session = sessions.get({ conversationId: conversation.id });
+      return session && !session.dead ? session.generateTitle() : '';
+    },
     nativeStorageDirectory(id) {
       if (sessionConnection(id) === 'api') return path.join(home, 'sessions', id, 'native');
       const env = environment();
@@ -228,4 +240,4 @@ function createAntigravity({ dataDir, cliSettingsFile, node, openLogin, loadConf
     async shutdown() { await sessions.shutdown(); } };
 }
 
-module.exports = { createAntigravity, antigravitySpawnSpec, subscriptionSpawnSpec };
+module.exports = { createAntigravity, AntigravitySession, antigravitySpawnSpec, subscriptionSpawnSpec };

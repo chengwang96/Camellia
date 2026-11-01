@@ -1,7 +1,6 @@
 'use strict';
 
 const http = require('node:http');
-const https = require('node:https');
 const fs = require('node:fs');
 const { createHash } = require('node:crypto');
 const { modelId, modelRoutes, normalizeConfig, loadConfig, writeConfig, publicState, DEFAULT_PORT, PRESETS } = require('./api-router-config');
@@ -15,6 +14,7 @@ const { routedModelId } = require('../shared/codex-tool-model');
 const { canonicalModelId } = require('../shared/model-names');
 const { accountCapability, queryAccount } = require('./provider-accounts');
 const { createModelDiscovery } = require('./model-discovery');
+const apiTransport = require('./api-transport');
 
 function retryDelay(headers = {}, now = Date.now()) {
   const value = headers['retry-after'];
@@ -402,8 +402,7 @@ function startApiRouter({ configPath, log = () => {}, onState = () => {}, onCont
       };
       const cancel = () => { if (!downstream.writableEnded) { upstream?.destroy(); finish({ cancelled: true }); } };
       downstream.on('close', cancel);
-      const transport = url.protocol === 'http:' ? http : https;
-      upstream = transport.request(url, { method: 'POST', headers }, response => {
+      upstream = apiTransport.request(url, { method: 'POST', headers }, response => {
         const status = response.statusCode || 502;
         const isSSE = /text\/event-stream/i.test(response.headers['content-type'] || '');
         if (status >= 400 || !isSSE || !body.stream) {

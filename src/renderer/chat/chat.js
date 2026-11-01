@@ -3671,7 +3671,6 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     // that restart the engine process, still wait for the turn to stop.
     $('engineSwitch').disabled = locked;
     $('engineSwitch').title = locked ? 'Available when this conversation stops working' : 'Switch chat mode';
-    $('handoffBtn').disabled = locked;
     $('modelPill').disabled = loadingSession || switchingEngine || sending;
     renderFastMode();
     $('selPermission').disabled = locked;
@@ -3794,6 +3793,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     updateConversationControls();
     updateSendEnabled();
     sidebar.updateLabel();
+    setStatus('Forking session…');
     try {
       await window.CamelliaI18n.ready;
       const title = window.CamelliaI18n.t('Fork of {0}').replace('{0}', () => s.title);
@@ -4338,10 +4338,9 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
 
   window.CamelliaChatModeSelect.populate($('engineSwitch'), harnessId);
   $('engineSwitch').disabled = false;
-  $('handoffBtn').hidden = false;
   async function switchConversation(target, mode) {
     if (switchingEngine || conversationBusy() || sending || loadingSession) { setStatus('Available when this conversation stops working'); return; }
-    switchingEngine = true; $('engineSwitch').disabled = true; $('handoffBtn').disabled = true; $('handoffStop').hidden = false; input.disabled = true;
+    switchingEngine = true; $('engineSwitch').disabled = true; $('handoffStop').hidden = false; input.disabled = true;
     saveDraft();
     setStatus('Preparing conversation…');
     try {
@@ -4368,11 +4367,11 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     } catch (error) { setStatus(error.message); }
     finally { switchingEngine = false; updateConversationControls(); $('engineSwitch').value = harnessId; $('handoffStop').hidden = true; input.disabled = loadingSession; }
   }
-  async function switchOptions(target, force = false) {
+  async function switchOptions(target) {
     if (conversationBusy() || sending || loadingSession) { setStatus('Available when this conversation stops working'); return; }
     const settings = await window.dshDesktop.workbenchSettings(); conversationPrefs = settings.conversations || conversationPrefs;
-    if (force || conversationPrefs.warnOnSwitch && context.sessionId) {
-      $('switchTarget').value = target; $('switchMethod').value = force ? 'markdown' : conversationPrefs.mode; $('switchDialog').showModal();
+    if (conversationPrefs.warnOnSwitch && context.sessionId) {
+      $('switchTarget').value = target; $('switchMethod').value = conversationPrefs.mode; $('switchDialog').showModal();
     } else await switchConversation(target, conversationPrefs.mode);
   }
   async function openDiscussions(navigation) {
@@ -4452,7 +4451,6 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
   };
   window.dshDesktop.onHarnessNavigate?.(target => { if (discussionVisible) void navigateFromDiscussion(target); else if (target !== harnessId) void switchOptions(target); });
   window.dshDesktop.onDiscussionNavigate?.(openDiscussions);
-  $('handoffBtn').onclick = () => void switchOptions(harnessId, true);
   $('switchCancel').onclick = () => $('switchDialog').close();
   $('switchConfirm').onclick = () => { $('switchDialog').close(); void switchConversation($('switchTarget').value, $('switchMethod').value); };
   $('handoffStop').onclick = () => void chatApi.cancel({ sessionId: context.sessionId });

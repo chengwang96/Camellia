@@ -152,7 +152,16 @@
     max-width: 40%;
   }
   .main { position: relative; }
-  .header-icon { width: 34px; padding: 0; position: relative; font-size: 21px; border-color: transparent; }
+  .header-actions { display: flex; align-items: center; flex: none; gap: 4px; }
+  .header-pill.header-icon {
+    position: relative; width: 32px; height: 32px; min-height: 32px; padding: 0;
+    border: 0; border-radius: 8px; background: transparent;
+    color: var(--dsw-alias-label-secondary);
+  }
+  .header-pill.header-icon svg { width: 19px; height: 19px; }
+  .header-pill.header-icon:not(:disabled):hover, .header-pill.header-icon[aria-expanded="true"] {
+    background: var(--dsw-alias-interactive-bg-hover); color: var(--dsw-alias-label-primary);
+  }
   .work-panel { position: absolute; z-index: 35; top: var(--work-panel-top, 66px); right: 16px; width: min(400px, calc(100% - 24px)); max-height: min(50%, calc(100% - var(--work-panel-top, 66px) - 12px)); display: flex; flex-direction: column; border: 1px solid var(--dsw-alias-border-l2); border-radius: 16px; background: var(--dsw-alias-bg-layer-1); box-shadow: var(--dsw-shadow-lv3); overflow: hidden; }
   .work-panel[hidden] { display: none; }
   .work-panel-header { display: flex; flex-shrink: 0; align-items: center; justify-content: space-between; gap: 12px; min-height: 56px; padding: 10px 14px 10px 18px; border-bottom: 1px solid var(--dsw-alias-border-l2); font: var(--f-s-14); }
@@ -1195,7 +1204,7 @@
 .status-row .status-line { margin-top: 0; }
 .conversation-origin { padding: 8px 24px; color: var(--dsw-alias-label-tertiary); font-size: 12px; }
 .conversation-origin[hidden] { display: none; }
-#handoffStop[hidden], #handoffBtn[hidden] { display: none; }
+#handoffStop[hidden] { display: none; }
 .session-origin { display: block; font-size: 11px; color: var(--dsw-alias-label-tertiary); }
 .handoff-notice { margin: 18px 0; font-size: 12px; color: var(--dsw-alias-label-tertiary); }
 .history-earlier { display: block; margin: 12px auto; padding: 8px 14px; border: 0; border-radius: 8px; background: transparent; color: var(--dsw-static-deepseek-500); cursor: pointer; }

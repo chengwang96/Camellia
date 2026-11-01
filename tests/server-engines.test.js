@@ -40,6 +40,10 @@ test('server drivers keep isolated native homes and enable only implemented engi
     for (const method of ['settings', 'saveSettings', 'ensure', 'shutdown']) assert.equal(typeof driver[method], 'function');
   }
   assert.equal(system.drivers.grok.history.root, path.join(root, 'grok-history'));
+  for (const engine of ['kimi', 'codex', 'antigravity', 'grok']) {
+    assert.equal(typeof system.drivers[engine].generateTitle, 'function');
+    assert.equal(await system.drivers[engine].generateTitle({ conversation: { id: 'not-running' }, prompt: 'Title' }), '');
+  }
   assert.equal(system.drivers.grok.settings().connection, 'api');
   system.drivers.grok.saveSettings({ connection: 'subscription' });
   system.drivers.grok.saveSettings({ model: 'grok-test-model', thinkingBudget: 'high' });

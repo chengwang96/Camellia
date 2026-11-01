@@ -70,6 +70,47 @@ async function fixture(t, respond, makeProviders, options = {}) {
   return {router,requests,file,post,url};
 }
 
+test('API transport honors proxy bypass rules and never proxies local HTTP providers', () => {
+  const { proxyFor } = require('../src/api/api-transport');
+  const url = new URL('https://api.example.com/v1/chat/completions');
+  assert.equal(proxyFor(url, { HTTPS_PROXY: 'http://proxy.test:7890', NO_PROXY: '' }), 'http://proxy.test:7890');
+  assert.equal(proxyFor(url, { HTTPS_PROXY: 'http://proxy.test:7890', NO_PROXY: '.example.com' }), '');
+  assert.equal(proxyFor(url, { HTTPS_PROXY: 'http://proxy.test:7890', NO_PROXY: '*' }), '');
+  assert.equal(proxyFor(url, { HTTPS_PROXY: 'http://proxy.test:7890', NO_PROXY: 'api.example.com:8443' }), 'http://proxy.test:7890');
+  assert.equal(proxyFor(url, { HTTPS_PROXY: 'http://proxy.test:7890', NO_PROXY: 'api.example.com:443' }), '');
+  assert.equal(proxyFor(new URL('https://[::1]/v1'), { HTTPS_PROXY: 'http://proxy.test:7890', NO_PROXY: '::1' }), '');
+  assert.equal(proxyFor(new URL('http://127.0.0.1:8788/v1'), { HTTP_PROXY: 'http://proxy.test:7890', NO_PROXY: '' }), '');
+  assert.equal(proxyFor(url, { https_proxy: 'http://lower.test:7890', HTTPS_PROXY: 'http://upper.test:7890' }), 'http://lower.test:7890');
+});
+
+test('router uses the current HTTPS proxy through CONNECT instead of a stale direct transport', async t => {
+  const names = ['HTTP_PROXY', 'http_proxy', 'HTTPS_PROXY', 'https_proxy', 'NO_PROXY', 'no_proxy'];
+  const previous = Object.fromEntries(names.map(name => [name, process.env[name]]));
+  t.after(() => {
+    for (const name of names) {
+      if (previous[name] === undefined) delete process.env[name];
+      else process.env[name] = previous[name];
+    }
+  });
+  const tunnels = [];
+  const proxy = http.createServer();
+  proxy.on('connect', (request, socket) => {
+    tunnels.push(request.url);
+    socket.end('HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\n\r\n');
+  });
+  proxy.listen(0, '127.0.0.1'); await once(proxy, 'listening');
+  t.after(async () => { proxy.closeAllConnections(); await new Promise(resolve => proxy.close(resolve)); });
+  const harness = await fixture(t, () => assert.fail('A proxied HTTPS provider must not be contacted directly'),
+    () => [provider('proxied', 'https://upstream.invalid/v1')]);
+  const proxyUrl = `http://127.0.0.1:${proxy.address().port}`;
+  for (const name of ['HTTP_PROXY', 'http_proxy', 'HTTPS_PROXY', 'https_proxy']) process.env[name] = proxyUrl;
+  process.env.NO_PROXY = ''; process.env.no_proxy = '';
+  const response = await harness.post({});
+  assert.equal(response.status, 503);
+  assert.deepEqual(tunnels, ['upstream.invalid:443']);
+  assert.equal(harness.requests.length, 0);
+});
+
 test('startup and saved routes automatically discover, publish and persist thinking metadata without inference', async t => {
   let calls = 0;
   const thinking = { values: [false, 'low', 'high', 'max'], default: 'high' };

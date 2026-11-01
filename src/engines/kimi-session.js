@@ -16,6 +16,17 @@ class KimiSession extends AcpSession {
     const boundary = await this.request('session/camellia_history_boundary', { sessionId: this.sessionId });
     return matchesPrompt(boundary.text, prompt) ? nativeEditOptions('kimi', boundary) : null;
   }
+
+  async generateTitle() {
+    if (!this.spec.nativeHistory || this.running || this.dead || !this.sessionId) return '';
+    await (this.ready ||= this.open());
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const result = await this.request('session/camellia_generate_title', { sessionId: this.sessionId }, 45000);
+      if (typeof result?.title === 'string' && result.title.trim()) return result.title;
+      if (attempt < 2) await new Promise(resolve => setTimeout(resolve, 750 * (attempt + 1)));
+    }
+    return '';
+  }
 }
 
 const MANAGED_PROVIDER = 'managed:kimi-code';

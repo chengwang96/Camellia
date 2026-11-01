@@ -142,6 +142,16 @@ with sync_playwright() as playwright:
         "els => els.map(el => el.dataset.view)")
     assert views == ["subscriptions", "providers", "usage", "general", "data", "network", "engines",
                      "models", "archived", "mobile", "devices"], views
+    nav = page.locator(".settings-nav nav")
+    page.set_viewport_size({"width": 1180, "height": 520})
+    assert nav.evaluate("el => el.scrollHeight > el.clientHeight")
+    assert nav.evaluate("el => getComputedStyle(el).scrollbarWidth") == "none"
+    assert nav.evaluate("el => getComputedStyle(el, '::-webkit-scrollbar').display") == "none"
+    nav.hover()
+    page.mouse.wheel(0, 600)
+    page.wait_for_function("() => document.querySelector('.settings-nav nav').scrollTop > 0")
+    nav.evaluate("el => el.scrollTop = 0")
+    page.set_viewport_size({"width": 1180, "height": 820})
     # Appearance cards share the existing save path and restore saved state.
     page.locator('[data-view=general]').click()
     expect(page.locator('[data-theme-choice][aria-pressed=true]')).to_have_attribute('data-theme-choice', 'system')

@@ -243,7 +243,7 @@ function createHeadlessHost({ dataDir, executable, keyFile, hostname = 'camellia
           }
           if (['state', 'start', 'login', 'stop', 'logout', 'invite', 'approve', 'reject', 'revoke'].includes(action)) return await remote.command(action, payload);
           if (action === 'workspaces') return { ok: true, result: manager.workspaces.sessionMeta().workspaces };
-          if (action === 'conversations') return { ok: true, result: [...manager.items.values()].map(item => reader.summary(item)) };
+          if (action === 'conversations') return { ok: true, result: [...manager.items.values()].filter(item => !item.internal).map(item => reader.summary(item)) };
           if (action === 'delete-conversation') {
             const id = typeof payload.id === 'string' ? payload.id : '';
             if (!manager.items.has(id)) throw new Error('Conversation not found; refresh the list');

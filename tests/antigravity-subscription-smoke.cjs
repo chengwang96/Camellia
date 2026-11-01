@@ -7,9 +7,8 @@ const os = require('node:os');
 const http = require('node:http');
 const assert = require('node:assert/strict');
 const { spawn } = require('node:child_process');
-const { AcpSession } = require('../src/engines/acp-session');
 const { ClaudeHistory } = require('../src/engines/claude-history');
-const { subscriptionSpawnSpec } = require('../src/engines/antigravity');
+const { subscriptionSpawnSpec, AntigravitySession } = require('../src/engines/antigravity');
 const { locateAntigravityCli } = require('../src/main/antigravity-cli-runtime');
 const { parseModels, groupModels, runCli } = require('../src/engines/antigravity/subscription');
 
@@ -39,7 +38,7 @@ async function run() {
       let parts = [{ text: 'Google CLI fixture reply.' }];
       if (mainRequest && /GOOGLE SMOKE (write|deny|review stop|discussion member)/.test(prompt) && !hasResponse) {
         const tool = declarations.find(tool => tool.name === 'write_to_file');
-        assert.ok(tool, 'The official write tool must be present');
+        assert.ok(tool, 'The official write tool must be present: ' + declarations.map(tool => tool.name).join(', '));
         parts = [{ functionCall: { name: tool.name, args: { TargetFile: path.join(cwd, prompt.includes('review stop') ? 'stopped.txt' : prompt.includes('discussion member') ? 'discussion-plan.txt' : prompt.includes('deny') ? 'denied.txt' : 'written.txt'),
           CodeContent: 'written-by-official-cli', Overwrite: false, Description: 'Local test file', toolAction: 'Testing file edits', toolSummary: 'Write a fixture' } }, thoughtSignature: Buffer.from('fixture-signature').toString('base64') }];
       }
@@ -61,8 +60,8 @@ async function run() {
     // production subscription spec has removed inherited API credentials.
     assert.equal(spec.env.GEMINI_API_KEY, undefined);
     Object.assign(spec.env, fixtureEnv);
-    session = new AcpSession({ name: 'Antigravity CLI', gen: ++generation,
-      settings: { cwd, model: selected.id, thinkingBudget: selected.defaultReasoningEffort || '', permissionMode }, opts,
+    session = new AntigravitySession({ name: 'Antigravity CLI', gen: ++generation,
+      settings: { cwd, model: selected.id, thinkingBudget: selected.defaultReasoningEffort || '', permissionMode, connection: 'subscription' }, opts,
       usageMeter: require('../src/engines/subscription-meter').createSubscriptionMeter({ engine: 'antigravity', model: selected.id, record: row => usageRecords.push(row) }),
       exe: process.execPath, spec, spawn, history, log: message => errors.push(message), onEvent: event => { events.push(event); if (event.type === 'gui:permission') permission?.(event); },
       onSessionId() {}, onResult: result => complete?.(result) });
@@ -91,6 +90,11 @@ async function run() {
     const first = await send('GOOGLE SMOKE hello');
     assert.equal(first.subtype, 'success', JSON.stringify(first) + errors.join('\n'));
     assert.match(first.session_id, /^agy-/); assert.match(first.result, /Google CLI fixture reply/);
+    assert.equal(await session.generateTitle(), 'Google CLI fixture reply.', 'The real CLI exposes its model-generated native summary as a title');
+    if (process.argv.includes('--title-only')) {
+      console.log('PASS: Official Antigravity CLI ' + runtime.version + ' exposes a model-generated native title over ACP. Local endpoint only.');
+      return;
+    }
     const second = await send('GOOGLE SMOKE again');
     assert.equal(second.subtype, 'success', JSON.stringify(second) + errors.join('\n'));
     assert.equal(second.session_id, first.session_id);

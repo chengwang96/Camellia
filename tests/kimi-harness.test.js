@@ -5,6 +5,17 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { createHarness } = require('./claude-harness.cjs');
 const { readJson, writeJson } = require('../src/shared/json-store');
+const { patchKimiHistory } = require('../src/engines/kimi-native-history');
+
+test('the verified Kimi runtime bridge exposes native title generation over ACP', () => {
+  const runtime = path.join(__dirname, '..', 'runtimes', 'kimi', 'node_modules', '@moonshot-ai', 'kimi-code', 'dist', 'main.mjs');
+  if (!fs.existsSync(runtime)) return;
+  const patched = patchKimiHistory(fs.readFileSync(runtime, 'utf8'));
+  assert.ok(patched);
+  assert.match(patched, /session\/camellia_generate_title/);
+  assert.match(patched, /\.generateTitle\(\{/);
+  assert.match(patched, /source: "first_turn"/);
+});
 
 test('Kimi settings are isolated from Claude and cannot override centrally managed credentials', async () => {
   const h = createHarness();

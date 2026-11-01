@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const { CodexClient } = require('./codex-client');
 const { StreamingSession } = require('./streaming-session');
 const { validSessionId } = require('./claude-history');
+const { CodexTitles } = require('./codex-title');
 
 const PERMISSIONS = {
   default: { approvalPolicy: 'untrusted', sandbox: 'workspace-write' },
@@ -30,6 +31,7 @@ class CodexSession extends StreamingSession {
         onNotification: (method, params) => this.notify(method, params),
         onRequest: request => this.requestApproval(request),
         onClose: error => {
+          this.titles?.close(error);
           this.dead = true; clearTimeout(this.childTimer);
           for (const [id, task] of this.children) this.childUpdate(id, { canReply: false, canStop: false, approvals: [],
             ...(['starting', 'running', 'waiting'].includes(task.status) ? { status: 'unavailable' } : {}) });
@@ -39,6 +41,11 @@ class CodexSession extends StreamingSession {
       return this.client.ready;
     });
     this.starting.catch(() => {});
+  }
+  async generateTitle(prompt) {
+    if (this.dead || this.settings.connection !== 'subscription' || !this.sessionId) return '';
+    this.titles ||= new CodexTitles({ spec: this.spec, model: this.spec.model || this.settings.model, spawnProcess: this.spawn, log: this.log });
+    return this.titles.generate(prompt);
   }
   async open() {
     await this.starting;
@@ -369,12 +376,13 @@ class CodexSession extends StreamingSession {
     clearTimeout(this.cancelTimer); this.cancelTimer = setTimeout(() => this.kill(), 8000);
   }
   kill() {
+    const titleClosed = this.titles?.close(new Error('Codex session stopped'));
     this.dead = true;
     clearTimeout(this.childTimer);
     for (const id of this.children.keys()) this.childUpdate(id, { canReply: false, canStop: false,
       ...(['starting', 'running', 'waiting'].includes(this.children.get(id).status) ? { status: 'unavailable' } : {}) });
     this.finish({ subtype: this.cancelled ? 'stopped' : 'error', is_error: !this.cancelled, result: 'Codex process stopped' });
-    return this.client?.shutdown();
+    return Promise.all([this.client?.shutdown(), titleClosed]);
   }
   async shutdown() { if (this.running) this.cancelled = true; await this.kill(); await this.usageMeter?.flush(); }
   childUpdate(id, update) {

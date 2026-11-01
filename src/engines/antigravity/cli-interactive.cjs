@@ -142,6 +142,21 @@ class InteractiveCli {
   async prepare() {
     return this.preparing ||= this.start().catch(async error => { await this.stop(); throw error; });
   }
+  async generateTitle({ attempts = 60, delayTitle = ms => delay(ms) } = {}) {
+    if (!this.session?.conversationId || this.closed) return { title: '' };
+    // The CLI generates its own summary with the signed-in Google account.
+    // It can reach the local index shortly after the turn becomes idle.
+    const deadline = Date.now() + 45000;
+    for (let attempt = 0; attempt < attempts && !this.closed && Date.now() < deadline; attempt++) {
+      const { trajectorySummaries } = await this.rpc('GetAllCascadeTrajectories', {}, AbortSignal.timeout(5000));
+      const summary = trajectorySummaries?.[this.session.conversationId];
+      const title = [summary?.summary, summary?.title].find(value => typeof value === 'string' && value.trim()
+        && !/^(?:new (?:session|conversation|chat)|starting a conversation|untitled)$/i.test(value.trim()));
+      if (title) return { title };
+      if (attempt + 1 < attempts) await delayTitle(750);
+    }
+    return { title: '' };
+  }
   async start() {
     if (this.closed) throw new Error('Antigravity session closed');
     const folder = path.join(this.config.home, 'cli-runtime'); fs.mkdirSync(folder, { recursive: true });
@@ -435,6 +450,7 @@ class InteractiveCli {
       this.mode = params.modeId; return {};
     }
     if (method === 'session/camellia_prepare') return this.prepare();
+    if (method === 'session/camellia_generate_title') return this.generateTitle();
     if (method === 'session/prompt') return this.prompt(params.prompt);
     if (method === 'session/camellia_subagent_cancel') {
       const task = this.children.get(params.taskId);

@@ -39,6 +39,7 @@ function grokSpawnSpec({ runtime, home, model, connection = 'api', route, contex
   fs.mkdirSync(home, { recursive: true });
   if (process.platform === 'win32') home = fs.realpathSync.native(home);
   const merged = { ...nativeConfig(home), ...config };
+  if (connection === 'subscription') merged.models = { ...merged.models, session_summary: model };
   if (connection !== 'subscription') {
     merged.models = { ...merged.models, default: 'camellia', session_summary: 'camellia' };
     merged.model = { ...merged.model, camellia: {
@@ -57,6 +58,18 @@ function grokSpawnSpec({ runtime, home, model, connection = 'api', route, contex
 }
 
 class GrokSession extends AcpSession {
+  async generateTitle(_prompt, { attempts = 60, delay = ms => new Promise(resolve => setTimeout(resolve, ms)) } = {}) {
+    if (this.dead || !this.sessionId) return '';
+    // Native generation starts asynchronously after the first prompt. Read
+    // only this account's session metadata, never a truncated user-message preview.
+    for (let attempt = 0; attempt < attempts && !this.dead; attempt++) {
+      const file = grokUpdatesFile(this.spec.env.GROK_HOME, this.sessionId);
+      const summary = file && readJson(path.join(path.dirname(file), 'summary.json'), {});
+      if (summary?.title_is_manual !== true && typeof summary?.generated_title === 'string' && summary.generated_title.trim()) return summary.generated_title;
+      if (attempt + 1 < attempts) await delay(750);
+    }
+    return '';
+  }
   async editBoundary(prompt) {
     await (this.ready ||= this.open());
     return grokEditBoundary(grokUpdatesFile(this.spec.env.GROK_HOME, this.sessionId), prompt);
@@ -249,6 +262,10 @@ function createGrokChat({ dataDir, loadConfig, saveConfig, getRoute, getModels, 
     } finally { if (!session.dead) await session.shutdown(); }
   }
   return { home, history, settings, saveSettings, ensure, forkNative, sessions, nativeAutoCompaction: true,
+    generateTitle: ({ conversation, prompt }) => {
+      const session = sessions.get({ conversationId: conversation.id });
+      return session && !session.dead ? session.generateTitle(prompt) : '';
+    },
     get session() { return sessions.legacy; }, shutdown: () => sessions.shutdown() };
 }
 

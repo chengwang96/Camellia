@@ -20,27 +20,44 @@ function fixture(t) {
   return { root, source, target };
 }
 
-test('native transcript snapshots retain complete Unicode records and exclude a partial tail', t => {
+test('native transcript snapshots retain complete Unicode records and exclude a partial tail', async t => {
   const { source, target } = fixture(t), input = path.join(source, 'history.jsonl'), output = path.join(target, 'history.jsonl');
   const complete = JSON.stringify({ text: '中文\u2028🧪\u2029history' }) + '\n';
   fs.writeFileSync(input, complete + '{"incomplete":');
-  snapshotTranscript(input, output);
+  await snapshotTranscript(input, output);
   assert.equal(fs.readFileSync(output, 'utf8'), complete);
   assert.equal(fs.readFileSync(input, 'utf8'), complete + '{"incomplete":');
 });
 
-test('native transcript snapshots do not absorb source appends during copying', t => {
+test('native transcript snapshots yield to the event loop', async t => {
+  const { source, target } = fixture(t), input = path.join(source, 'history.jsonl'), output = path.join(target, 'history.jsonl');
+  fs.writeFileSync(input, '{"kept":"history"}\n');
+  let ticked = false;
+  const pending = snapshotTranscript(input, output);
+  setImmediate(() => { ticked = true; });
+  await pending;
+  assert.equal(ticked, true);
+});
+
+test('native transcript snapshots do not absorb source appends during copying', async t => {
   const { source, target } = fixture(t), input = path.join(source, 'history.jsonl'), output = path.join(target, 'history.jsonl');
   const complete = JSON.stringify({ text: 'a'.repeat(130000) }) + '\n';
   fs.writeFileSync(input, complete);
-  const read = fs.readSync;
+  const open = fs.promises.open;
   let appended = false;
-  t.mock.method(fs, 'readSync', (...args) => {
-    const result = read(...args);
-    if (!appended) { appended = true; fs.appendFileSync(input, '{"later":"parent continuation"}\n'); }
-    return result;
+  t.mock.method(fs.promises, 'open', async (...args) => {
+    const handle = await open(...args);
+    if (args[0] === input) {
+      const read = handle.read.bind(handle);
+      t.mock.method(handle, 'read', async (...readArgs) => {
+        const result = await read(...readArgs);
+        if (!appended) { appended = true; fs.appendFileSync(input, '{"later":"parent continuation"}\n'); }
+        return result;
+      });
+    }
+    return handle;
   });
-  snapshotTranscript(input, output);
+  await snapshotTranscript(input, output);
   assert.equal(fs.readFileSync(output, 'utf8'), complete);
   assert.match(fs.readFileSync(input, 'utf8'), /parent continuation/);
 });
@@ -59,7 +76,7 @@ test('Codex native state backups include committed WAL history but exclude crede
   for (const name of ['auth.json', 'config.toml', 'goals_1.sqlite', 'queue_1.sqlite']) fs.writeFileSync(path.join(source, name), 'must not copy');
   await copyCodexState(source, target);
   const childPath = path.join(target, 'sessions', 'rollout-source.jsonl');
-  copyCodexRollouts(source, target);
+  await copyCodexRollouts(source, target);
   const child = new DatabaseSync(path.join(target, 'state_5.sqlite'));
   const childHistory = new DatabaseSync(path.join(target, 'thread_history_1.sqlite'));
   try {

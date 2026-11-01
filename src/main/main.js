@@ -1241,14 +1241,18 @@ sharedConversations = new SharedConversations({ dir: path.join(app.getPath('user
   webTools: require('../api/web-tools').createWebTools({ getConfig: readOllamaProxyConfig }),
   drivers: {
     claude: { sessions: claudeSessions, history: claudeHistory, settings: claudeSettings, saveSettings: saveClaudeSettings, ensure: opts => ensureClaudeSession({ ...claudeSettings(), ...opts.settings }, opts), nativeCompaction: true, nativeAutoCompaction: true,
-      forkNative: ({ sessionId, snapshotFile, boundary }) => {
+      forkNative: async ({ sessionId, snapshotFile, boundary }) => {
         const source = claudeHistory.find(sessionId);
         if (!source) return null;
-        require('../engines/native-fork').snapshotTranscript(source, snapshotFile);
+        await require('../engines/native-fork').snapshotTranscript(source, snapshotFile);
         return { pendingNativeFork: { sessionId, ...(boundary?.resumeSessionAt ? { resumeSessionAt: boundary.resumeSessionAt } : {}) } };
       },
       nativeEditing: () => nativeEditingSupported('claude', runtimes().locate('claude')?.version) },
     kimi: { sessions: kimiSessions, history: kimiHistory, settings: kimiSettings, saveSettings: saveKimiSettings, subscriptionAccounts: () => kimiAccount.state(), ensure: opts => ensureKimiSession({ ...kimiSettings(opts.sessionId), ...opts.settings }, opts), nativeCompaction: true, nativeAutoCompaction: true,
+      generateTitle: ({ conversation }) => {
+        const session = kimiSessions.get({ conversationId: conversation.id });
+        return session && !session.dead ? session.generateTitle() : '';
+      },
       nativeEditing: () => nativeEditingSupported('kimi', runtimes().locate('kimi')?.version),
       forkNative: async options => {
         const fork = await require('../engines/kimi-session').forkKimiNative({ ...options,
@@ -1260,8 +1264,8 @@ sharedConversations = new SharedConversations({ dir: path.join(app.getPath('user
       } },
     codex: { sessions: codex.sessions, history: codex.history, settings: codex.settings, saveSettings: codex.saveSettings, subscriptionAccounts: () => codex.accountState(), syncSubscriptionAccount: codex.syncAccountSelection,
       resetCredits: { preview: payload => codex.handlers['account-reset-preview'](payload), consume: payload => codex.handlers['account-reset-consume'](payload) },
-      ensure: codex.ensureSession, forkNative: codex.forkNative, nativeCompaction: true, nativeEditing: true },
-    antigravity: { sessions: antigravity.sessions, history: antigravity.history, settings: antigravity.settings, saveSettings: antigravity.saveSettings, ensure: antigravity.ensureSession, forkNative: antigravity.forkNative, nativeAutoCompaction: true },
+      ensure: codex.ensureSession, generateTitle: codex.generateTitle, forkNative: codex.forkNative, nativeCompaction: true, nativeEditing: true },
+    antigravity: { sessions: antigravity.sessions, history: antigravity.history, settings: antigravity.settings, saveSettings: antigravity.saveSettings, ensure: antigravity.ensureSession, generateTitle: antigravity.generateTitle, forkNative: antigravity.forkNative, nativeAutoCompaction: true },
     dsh: dshChat,
     grok: { ...grokChat, subscriptionAccounts: () => grokAccount.state(),
       nativeEditing: () => nativeEditingSupported('grok', runtimes().locate('grok')?.version) },

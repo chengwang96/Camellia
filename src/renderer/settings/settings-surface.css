@@ -28,7 +28,8 @@ html[data-settings-window] :is(.page-head, .settings-brand) { -webkit-app-region
   background: transparent;
 }
 .settings-brand { padding: 0 12px 24px; font-size: 18px; font-weight: 500; line-height: 28px; }
-.settings-nav nav { gap: 4px; }
+.settings-nav nav { gap: 4px; scrollbar-width: none; }
+.settings-nav nav::-webkit-scrollbar { display: none; }
 .settings-nav nav button { min-height: 42px; padding: 10px 12px; border-radius: 12px; font-weight: 400; }
 .settings-nav .nav-icon { width: 20px; height: 20px; flex-basis: 20px; color: inherit; }
 .settings-nav nav button.active { font-weight: 400; }

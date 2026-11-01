@@ -39,6 +39,7 @@ test('Grok subscription sessions apply native MCP settings without adding an API
   assert.equal(config.mcp_servers.fixture.command, 'node');
   assert.deepEqual(config.mcp_servers.fixture.args, ['fixture.js']);
   assert.equal(config.model?.camellia, undefined);
+  assert.equal(config.models.session_summary, 'grok-4.7');
   assert.equal(spec.authMethod, 'cached_token');
   assert.equal(spec.modelValue, 'grok-4.7');
   assert.equal(spec.env.XAI_API_KEY, undefined);

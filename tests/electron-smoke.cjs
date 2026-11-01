@@ -531,10 +531,7 @@ async function main() {
     for (const layout of layouts) for (const state of ['empty', 'active']) for (const key of ['x', 'y', 'width', 'height']) assert.ok(Math.abs(layout[state][key] - layouts[0][state][key]) < 1, `${layout.engine} ${state} ${key} differs: ${JSON.stringify(layouts)}`);
     const preferences = await home.webContents.executeJavaScript('window.dshDesktop.workbenchSettings()');
     assert.deepEqual(preferences.conversations, { mode: 'direct', warnOnSwitch: false, showOrigin: false, sessionTtlMinutes: 30, sessionLimit: 4 });
-    await home.webContents.executeJavaScript("document.querySelector('#handoffBtn').click()");
-    await waitWindow("document.querySelector('#switchDialog')?.open");
-    assert.equal(await home.webContents.executeJavaScript("document.querySelector('#switchMethod').value"), 'markdown');
-    await home.webContents.executeJavaScript("document.querySelector('#switchCancel').click()");
+    assert.equal(await home.webContents.executeJavaScript("document.querySelector('#handoffBtn')"), null);
     diag('PASS composer alignment: five engines, start pages and active conversations');
     await home.webContents.executeJavaScript('window.dshDesktop.conversationCommand({engine:"codex",action:"save-settings",payload:{connection:"api"}})');
     await home.webContents.executeJavaScript('openHistorySession("switch-fixture-a")');

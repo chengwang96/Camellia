@@ -34,7 +34,7 @@ function deviceView(manager, meta, conversation, archived = false) {
 function deviceConversations(manager, { archived = false } = {}) {
   const meta = manager.workspaces.sessionMeta();
   return [...manager.items.values()]
-    .filter(conversation => archived || !meta.archived[conversation.id])
+    .filter(conversation => !conversation.internal && (archived || !meta.archived[conversation.id]))
     .map(conversation => deviceView(manager, meta, conversation, Boolean(meta.archived[conversation.id])))
     .sort((first, second) => second.updated_at - first.updated_at || first.id.localeCompare(second.id));
 }
@@ -55,7 +55,7 @@ function searchTranscripts(manager, query, limit) {
   const meta = manager.workspaces.sessionMeta();
   const results = [];
   const candidates = [...manager.items.values()]
-    .filter(conversation => !meta.archived[conversation.id])
+    .filter(conversation => !conversation.internal && !meta.archived[conversation.id])
     .sort((first, second) => second.updatedAt - first.updatedAt || first.id.localeCompare(second.id));
   for (const conversation of candidates) {
     const all = manager.messages(conversation);

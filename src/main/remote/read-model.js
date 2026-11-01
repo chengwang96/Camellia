@@ -117,6 +117,7 @@ class RemoteReadModel {
     return this.manager.workspaces.sessionMeta().workspaces.map(({ id, name }) => ({ id, name }));
   }
   allowed(device, conversation, meta = this.manager.workspaces.sessionMeta(), includeArchived = false) {
+    if (conversation.internal) return false;
     const workspaceId = meta.sessionWorkspace[conversation.id];
     if (meta.archived[conversation.id] && !includeArchived) return false;
     if (!workspaceId) return device.allWorkspaces === true || device.includeUnassigned === true;
