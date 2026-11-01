@@ -4044,8 +4044,53 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
             const body = div.querySelector('.turn-body');
             body.innerHTML = '';
             body.processBlocks = [];
-            const outputBlocks = Array.isArray(m.outputBlocks) ? m.outputBlocks : [{ phase: 'final_answer', text: m.text }];
-            for (const block of outputBlocks.filter(block => block.text && (!resultOnly || block.phase !== 'final_answer'))) {
+            const process = Array.isArray(m.process) ? m.process : [];
+            let finalText = process.length ? m.mobileText ?? m.text : m.text;
+            if (process.length && runResult?.result && typeof finalText === 'string') {
+              // Terminal mobile text includes the status already shown by the
+              // result chip, and may fall back to prose archived in process.
+              const suffix = '\n\n' + runResult.result;
+              if (finalText === runResult.result) finalText = '';
+              else if (finalText.endsWith(suffix)) finalText = finalText.slice(0, -suffix.length);
+              const progress = process.filter(block => block.type === 'text').map(block => block.text || '');
+              if (finalText === progress.join('\n\n') || finalText === progress.join('')) finalText = '';
+            }
+            const outputBlocks = Array.isArray(m.outputBlocks) ? m.outputBlocks
+              : [{ phase: 'final_answer', text: finalText }];
+            // Saved process entries already contain the chronological progress,
+            // reasoning and tools. outputBlocks also repeats that progress, so
+            // use only its full final answers when restoring a saved process.
+            const historyBlocks = process.length
+              ? [...process.map(block => ({ ...block, phase: 'commentary' })), ...outputBlocks.filter(block => block.phase === 'final_answer')]
+              : outputBlocks;
+            for (const block of historyBlocks) {
+              if (block.type === 'tool') {
+                const card = window.CamelliaChatControls.makeToolCard(block.title || 'Tool', block.input, openFilePreview);
+                const unfinished = !['completed', 'failed', 'cancelled'].includes(block.status);
+                const output = block.text || (unfinished ? runResult?.subtype === 'stopped'
+                  ? 'Stopped before a tool result was received.' : 'No tool result was received before the response ended.' : '');
+                card.setOutput(output, unfinished || block.status === 'failed' || block.status === 'cancelled');
+                body.processBlocks.push(card.el);
+                body.appendChild(card.el);
+                continue;
+              }
+              if (block.type === 'thinking') {
+                if (block.text?.trim()) {
+                  const think = buildThinkBlock('Completed', false, false);
+                  think.querySelector('.think-body').textContent = block.text;
+                  body.processBlocks.push(think);
+                  body.appendChild(think);
+                }
+                continue;
+              }
+              if (!block.text || resultOnly && block.phase === 'final_answer') continue;
+              if (block.type === 'plan') {
+                const plan = document.createElement('div'); plan.className = 'md';
+                plan.dataset.phase = 'commentary'; plan.textContent = block.text;
+                body.processBlocks.push(plan);
+                body.appendChild(plan);
+                continue;
+              }
               const { body: text, thinking } = splitThinking(block.text);
               if (thinking.trim()) {
                 const think = buildThinkBlock('Completed', false, false);

@@ -61,6 +61,13 @@ async function main() {
       if (!window.webContents.isLoading() && await window.webContents.executeJavaScript('!!document.getElementById("openConfig")')) return window;
     }
   });
+  async function clickBackdrop() {
+    await waitFor(() => home.webContents.executeJavaScript('!!document.querySelector(".settings-window-backdrop:not([hidden])")'));
+    for (const type of ['mouseDown', 'mouseUp']) {
+      home.webContents.sendInputEvent({ type, x: 8, y: 80, button: 'left', clickCount: 1 });
+    }
+  }
+  const ownerFocusListeners = home.listenerCount('focus');
   for (let attempt = 0; attempt < 3; attempt++) {
     await home.webContents.executeJavaScript("window.dshDesktop.openSettingsWindow({ page: 'devices' })");
     const settings = await waitFor(async () => {
@@ -72,9 +79,19 @@ async function main() {
     const state = await settings.webContents.executeJavaScript("window.dshDesktop.camelliaDevices.call('state')");
     assert.equal(state.ok, true, state.error);
     const contents = settings.webContents;
-    settings.close();
+    assert.equal(settings.isModal(), false, 'the backdrop owner can receive clicks');
+    assert.equal(home.isEnabled(), true);
+    // Controls and focus loss to another app/dialog must leave Settings open.
+    await contents.executeJavaScript('document.querySelector("#pageTitle").click()');
+    settings.emit('blur');
+    assert.equal(settings.isDestroyed(), false);
+    if (attempt === 0) await contents.executeJavaScript('document.getElementById("closeSettings").click()');
+    else if (attempt === 1) await clickBackdrop();
+    else home.emit('focus'); // Activation through the native owner caption.
     await waitFor(() => settings.isDestroyed());
     assert.equal(contents.isDestroyed(), true);
+    await waitFor(() => home.webContents.executeJavaScript('!!document.querySelector(".settings-window-backdrop[hidden]")'));
+    assert.equal(home.listenerCount('focus'), ownerFocusListeners, 'dismissal listener is removed on close');
     const servers = await home.webContents.executeJavaScript('window.dshDesktop.listCliServers()');
     assert.equal(servers.ok, true, servers.error);
   }
@@ -132,7 +149,7 @@ async function main() {
     await window.flushApiSettings();
     fill('#pName', 'Edited immediately before closing');
   })()`);
-  await settings.webContents.executeJavaScript('document.getElementById("closeSettings").click()');
+  await clickBackdrop();
   await waitFor(() => settings.isDestroyed());
   let state = await home.webContents.executeJavaScript('window.dshDesktop.apiRouterGetState()');
   assert.equal(state.providers[0].name, 'Edited immediately before closing');
@@ -150,9 +167,10 @@ async function main() {
     const input = document.getElementById('pUrl'); input.value = 'https://';
     input.dispatchEvent(new Event('input', { bubbles: true }));
   })()`);
-  await reopened.webContents.executeJavaScript('document.getElementById("closeSettings").click()');
+  await clickBackdrop();
   await waitFor(() => reopened.webContents.executeJavaScript('document.getElementById("status").classList.contains("error")'));
   assert.equal(reopened.isDestroyed(), false, 'invalid API settings keep the window open');
+  assert.equal(await home.webContents.executeJavaScript('document.querySelector(".settings-window-backdrop").hidden'), false);
   state = await home.webContents.executeJavaScript('window.dshDesktop.apiRouterGetState()');
   assert.equal(state.providers[0].baseUrl, 'http://127.0.0.1:19099/v1');
   await reopened.webContents.executeJavaScript(`(() => {

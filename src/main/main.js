@@ -1479,8 +1479,8 @@ function flushSettingsWindow() {
 }
 
 function setSettingsBackdrop(owner, visible) {
-  // Prepare the native caption before creating/showing a modal can disable its
-  // owner. Wait for the matching renderer frame before revealing Settings.
+  // Prepare the native caption and wait for the matching renderer frame before
+  // revealing Settings.
   windowChrome.setDimmed(owner, visible);
   const contents = liveWebContents(owner);
   if (!contents) return Promise.resolve();
@@ -1514,8 +1514,7 @@ function openSettingsWindow(target = {}) {
   if (owner && !owner.isVisible()) owner.show();
   const opening = settingsOpening = { target };
   void (async () => {
-    // Yield before BrowserWindow construction as well: creating a modal can
-    // block native painting while the renderer is already drawing its mask.
+    // Yield before BrowserWindow construction so the backdrop can paint first.
     await setSettingsBackdrop(owner, true);
     if (appQuitting || (owner && owner.isDestroyed())) {
       settingsOpening = null;
@@ -1528,7 +1527,8 @@ function openSettingsWindow(target = {}) {
       ...bounds,
       minWidth: Math.min(760, bounds.width),
       minHeight: Math.min(620, bounds.height),
-      ...(owner ? { parent: owner, modal: true } : { center: true }),
+      // Keep the owner interactive so its backdrop can dismiss Settings.
+      ...(owner ? { parent: owner } : { center: true }),
       // The renderer paints the rounded panel and close control. Keep the
       // existing isolated settings renderer and its save-before-close lifecycle.
       frame: false,
@@ -1557,11 +1557,18 @@ function openSettingsWindow(target = {}) {
     const settingsContents = settingsWindow.webContents;
     settingsWindow.setMenu(null);
     const closingWindow = settingsWindow;
+    const dismissSettings = () => {
+      // Includes activation through the owner's native caption. Losing focus
+      // to another application or a settings-owned dialog does not dismiss it.
+      if (settingsShowReady && !closingWindow.isDestroyed()) closingWindow.close();
+    };
+    owner?.on('focus', dismissSettings);
     settingsWindow.on('close', event => {
       if (settingsCloseReady) return;
       event.preventDefault();
       void flushSettingsWindow().then(saved => {
-        if (!saved || closingWindow.isDestroyed()) return;
+        if (closingWindow.isDestroyed()) return;
+        if (!saved) { closingWindow.focus(); return; }
         settingsCloseReady = true;
         closingWindow.close();
       });
@@ -1576,6 +1583,7 @@ function openSettingsWindow(target = {}) {
       settingsWindow.show();
     });
     settingsWindow.on('closed', () => {
+      owner?.removeListener('focus', dismissSettings);
       const nativeContents = liveWebContents(nativeSettingsView);
       settingsWindow = null; settingsShowReady = false;
       nativeSettingsView = null; nativeSettingsLoad = null;
@@ -1666,8 +1674,10 @@ if (!gotSingleInstanceLock) {
   });
 
   ipcMain.handle('dsh:close-settings-window', event => {
-    const contents = settingsWindow?.webContents;
-    if (!contents || event.sender !== contents || event.senderFrame !== contents.mainFrame) return { ok: false };
+    const contents = event.sender;
+    if (!settingsWindow || settingsWindow.isDestroyed()
+      || (contents !== settingsWindow.webContents && contents !== mainWindow?.webContents)
+      || event.senderFrame !== contents.mainFrame) return { ok: false };
     settingsWindow.close();
     return { ok: true };
   });

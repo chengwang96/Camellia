@@ -64,7 +64,7 @@ with sync_playwright() as playwright:
         page.evaluate("changeLanguage('zh-CN')")
         expect(process.locator('summary')).to_contain_text('执行过程')
         page.screenshot(path=str(preview / f'execution-process-{theme}.png'))
-        process.locator('summary').click()
+        turn.locator('button.completion-label').click()
         expect(process.locator('.md')).to_have_text(['First progress', 'Latest progress'])
         page.evaluate("""() => {
           emit({type:'conversation:started',prompt:'Interrupted inspection',userSeq:4});
@@ -244,7 +244,7 @@ with sync_playwright() as playwright:
         expect(next_turn.locator('.turn-body > .md')).to_have_text('Next answer')
         expect(previous_native.locator('.think')).to_have_count(1)
         expect(previous_native.locator('.think-body')).to_have_text('Newest native reasoning')
-        next_turn.locator('summary').click()
+        next_turn.locator('button.completion-label').click()
         next_turn.locator('.think-head').click()
         expect(next_turn.locator('.think-body')).to_be_visible()
         next_turn.screenshot(path=str(preview / f'execution-process-latest-{theme}.png'))

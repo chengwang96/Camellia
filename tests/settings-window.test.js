@@ -10,12 +10,13 @@ const { settingsWindowSize, settingsWindowBounds, createSettingsWindowSizeCache 
 const main = fs.readFileSync(path.join(__dirname, '../src/main/main.js'), 'utf8').replace(/\r\n/g, '\n');
 const openSettings = /function openSettingsWindow\(target = \{\}\) \{([\s\S]*?)\n\}\n\nfunction createMainWindow/.exec(main)[1];
 
-test('settings opens hidden as a frameless modal panel and is positioned before it is shown', () => {
+test('settings opens hidden as a frameless child panel with an interactive owner and is positioned before it is shown', () => {
   assert.match(openSettings, /new BrowserWindow\(\{/);
   assert.match(openSettings, /const preferredSize = settingsWindowSizes\.size;/);
   assert.doesNotMatch(openSettings, /settingsWindowSize\(|getPrimaryDisplay\(/);
   assert.match(openSettings, /\n\s+show: false,\n/);
-  assert.match(openSettings, /parent: owner, modal: true/);
+  assert.match(openSettings, /parent: owner/);
+  assert.doesNotMatch(openSettings, /modal: true/);
   assert.match(openSettings, /frame: false/);
   assert.match(openSettings, /transparent: true/);
   assert.match(openSettings, /settingsWindow\.once\('ready-to-show', \(\) => \{[\s\S]*?settingsWindow\.setBounds\([\s\S]*?settingsWindow\.show\(\);/);

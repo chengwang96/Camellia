@@ -35,7 +35,8 @@ html[data-settings-window] :is(.page-head, .settings-brand) { -webkit-app-region
 .nav-divider { margin: 6px 12px; }
 .page-head { padding: 30px 36px 24px; }
 .page-head h1 { margin: 0; font-size: 20px; line-height: 28px; font-weight: 600; letter-spacing: 0; }
-.scroll-content { padding: 0 36px 40px; }
+.scroll-content { padding: 0 36px 40px; scrollbar-width: none; }
+.scroll-content::-webkit-scrollbar { display: none; }
 .page { width: 100%; }
 #generalPage, #dataPage { max-width: 1080px; }
 .settings-main h2 { font-weight: 500; }

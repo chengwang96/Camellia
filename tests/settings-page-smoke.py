@@ -245,6 +245,13 @@ with sync_playwright() as playwright:
             for width in [1180, 850, 390, 320]:
                 page.set_viewport_size({'width': width, 'height': 900})
                 page.locator('.scroll-content').evaluate('el => el.scrollTop = 0')
+                assert page.locator('.scroll-content').evaluate('el => getComputedStyle(el).scrollbarWidth') == 'none'
+                page.locator('.scroll-content').hover()
+                page.mouse.wheel(0, 600)
+                page.wait_for_function('() => document.querySelector(".scroll-content").scrollTop > 0')
+                page.locator('#checkAppUpdate').scroll_into_view_if_needed()
+                expect(page.locator('#checkAppUpdate')).to_be_in_viewport()
+                page.locator('.scroll-content').evaluate('el => el.scrollTop = 0')
                 assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
                 for card in page.locator('[data-theme-choice]').all():
                     box = card.bounding_box()

@@ -71,6 +71,10 @@ with sync_playwright() as p:
       const backdropApi = {
         onSettingsOverlay: callback => { window.updateBackdrop = callback; },
         settingsOverlay: () => new Promise(resolve => { window.initialBackdrop = resolve; }),
+        closeSettingsWindow: async () => {
+          window.dismissalCalls = (window.dismissalCalls || 0) + 1;
+          if (window.closeOnDismissal) updateBackdrop(false);
+        },
       };
       window.dshDesktop = new Proxy(window.dshDesktop, {get:(target,name) => name in backdropApi ? backdropApi[name] : Reflect.get(target,name)});
     """)
@@ -79,6 +83,25 @@ with sync_playwright() as p:
     expect(page.locator('.settings-window-backdrop')).to_be_visible()
     page.evaluate('() => paintSettingsBackdrop()')
     expect(page.locator('.settings-window-backdrop')).to_be_visible()
+    page.evaluate("""() => {
+      window.workbenchClicks = 0;
+      document.addEventListener('click', () => workbenchClicks++);
+    }""")
+    page.locator('.settings-window-backdrop').click(position={'x': 8, 'y': 80})
+    assert page.evaluate('dismissalCalls') == 1
+    assert page.evaluate('workbenchClicks') == 0
+    # A failed save leaves the backdrop available for another dismissal attempt.
+    expect(page.locator('.settings-window-backdrop')).to_be_visible()
+    page.locator('.settings-window-backdrop').click(position={'x': 8, 'y': 80})
+    assert page.evaluate('dismissalCalls') == 2
+    # A successful close can hide the backdrop before the mouse is released.
+    # The rest of that click must still be consumed.
+    page.evaluate('window.closeOnDismissal = true')
+    page.mouse.move(8, 80)
+    page.mouse.down()
+    expect(page.locator('.settings-window-backdrop')).to_be_hidden()
+    page.mouse.up()
+    assert page.evaluate('workbenchClicks') == 0
     page.evaluate('() => updateBackdrop(false)')
     page.evaluate('() => paintSettingsBackdrop()')
     expect(page.locator('.settings-window-backdrop')).to_be_hidden()

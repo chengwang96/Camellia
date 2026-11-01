@@ -158,7 +158,7 @@ async function main() {
   })()`);
   assert.ok(layout.top <= 1 && layout.bottom <= layout.height + 1, JSON.stringify(layout));
   assert.equal(layout.radius, '24px'); assert.equal(layout.menus, 0); assert.equal(layout.close, true);
-  assert.equal(settings.getParentWindow(), home); assert.equal(settings.isModal(), true);
+  assert.equal(settings.getParentWindow(), home); assert.equal(settings.isModal(), false);
   assert.equal(settings.isResizable(), false); assert.equal(settings.isMaximizable(), false);
   assert.equal(settings.isMenuBarVisible(), false);
   const parentBounds = home.getContentBounds(), panelBounds = settings.getBounds();
@@ -166,7 +166,6 @@ async function main() {
   assert.ok(panelBounds.x + panelBounds.width <= parentBounds.x + parentBounds.width - 20);
   assert.ok(panelBounds.y + panelBounds.height <= parentBounds.y + parentBounds.height - 20);
   await wait(() => wc.executeJavaScript('!!document.querySelector(".settings-window-backdrop:not([hidden])")'), 'settings backdrop');
-  assert.deepEqual(await wc.executeJavaScript('dshDesktop.closeSettingsWindow()'), { ok: false }, 'parent cannot invoke the settings close control');
   // A nested settings dialog owns Escape; it must not close its parent window.
   await settings.webContents.executeJavaScript(`(() => {
     const dialog = document.querySelector('#addDialog'); dialog.showModal();

@@ -47,8 +47,9 @@
   }
 
   function toolSummary(name, inputData) {
-    if (!inputData || typeof inputData !== 'object') return '';
-    const c = inputData.command || inputData.CommandLine || inputData.file_path || inputData.TargetFile || inputData.AbsolutePath || inputData.pattern || inputData.path || inputData.description || '';
+    if (!inputData) return '';
+    const c = typeof inputData === 'string' ? inputData
+      : inputData.command || inputData.CommandLine || inputData.file_path || inputData.TargetFile || inputData.AbsolutePath || inputData.pattern || inputData.path || inputData.description || '';
     if (!c) return '';
     const line = String(c).split('\n')[0];
     return line.length > 90 ? line.slice(0, 90) + '…' : line;
@@ -90,7 +91,9 @@
         this.inputData = data;
         this.previewPath = previewableToolPath(this.name, data);
         this.summaryEl.textContent = toolSummary(this.name, data);
-        if (data && data.command) {
+        if (typeof data === 'string') {
+          this.inputEl.textContent = data;
+        } else if (data && data.command) {
           this.inputEl.textContent = data.command +
             Object.keys(data).filter((k) => k !== 'command')
               .map((k) => '\n' + k + ': ' + (typeof data[k] === 'string' ? data[k] : JSON.stringify(data[k]))).join('');

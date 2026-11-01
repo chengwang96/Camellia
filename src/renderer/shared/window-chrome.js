@@ -9,12 +9,22 @@
       if (!backdrop && visible === true) {
         backdrop = document.createElement('div'); backdrop.className = 'settings-window-backdrop';
         backdrop.setAttribute('aria-hidden', 'true'); document.body.appendChild(backdrop);
+        backdrop.addEventListener('pointerdown', event => {
+          // Keep the release/click on this element if saving closes Settings
+          // and hides the backdrop before the pointer is released.
+          backdrop.setPointerCapture(event.pointerId);
+          event.preventDefault();
+          event.stopPropagation();
+          void desktop.closeSettingsWindow();
+        });
+        // Consume the dismissal click without activating workbench controls.
+        backdrop.addEventListener('click', event => { event.preventDefault(); event.stopPropagation(); });
       }
       if (backdrop) backdrop.hidden = visible !== true;
     };
     desktop.onSettingsOverlay(visible => { receivedUpdate = true; dimWorkbench(visible); });
     void desktop.settingsOverlay().then(visible => { if (!receivedUpdate) dimWorkbench(visible); });
-    // The main process uses this acknowledgement to show the modal only after
+    // The main process uses this acknowledgement to show Settings only after
     // the backdrop has actually had a frame to paint. No fixed timeout is used.
     window.paintSettingsBackdrop = () => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
   }
