@@ -370,6 +370,7 @@ public struct RemoteMessage: Sendable, Identifiable, Hashable {
     public let textTruncated: Bool
     public let at: Int64
     public let process: [RemoteProcessEntry]
+    public let turnDetails: TurnDetails?
 
     public init(_ json: JSONObject) {
         seq = json.long("seq")
@@ -378,14 +379,16 @@ public struct RemoteMessage: Sendable, Identifiable, Hashable {
         textTruncated = json.bool("textTruncated")
         at = json.long("at")
         process = json.objects("process").map(RemoteProcessEntry.init)
+        turnDetails = json.object("turnDetails").map(TurnDetails.init)
     }
 
-    public init(seq: Int64, role: MessageRole, text: String, at: Int64, process: [RemoteProcessEntry] = [], truncated: Bool = false) {
+    public init(seq: Int64, role: MessageRole, text: String, at: Int64, process: [RemoteProcessEntry] = [], truncated: Bool = false, turnDetails: TurnDetails? = nil) {
         self.seq = seq
         self.role = role
         self.text = text
         self.at = at
         self.process = process
+        self.turnDetails = turnDetails
         textTruncated = truncated
     }
 

@@ -72,6 +72,21 @@ async function request(gateway, endpoint, { token, method = 'GET', payload, head
   return { status: response.status, body: await response.json() };
 }
 
+test('mobile snapshots and older pages retain recorded turn details without exposing settings', context => {
+  const { manager, reader, access, pair, visible } = fixture(context);
+  const device = access.authenticate(pair().token);
+  manager.append(visible, { role: 'assistant', text: 'Accounted reply',
+    turnMetrics: { duration_ms: 1500, model: 'historical-model', apiKey: 'private-key' },
+    usage: { input_tokens: 12, output_tokens: 3, cache_read_input_tokens: 0 } });
+  const snapshot = reader.snapshot(device, visible.id);
+  const row = snapshot.messages.find(row => row.text === 'Accounted reply');
+  assert.deepEqual(row.turnDetails, { state: 'complete', duration_ms: 1500, model: 'historical-model',
+    usage: { input_tokens: 12, output_tokens: 3, cache_read_input_tokens: 0 } });
+  assert.ok(!JSON.stringify(row).includes('private-key'));
+  assert.deepEqual(reader.snapshot(device, visible.id, row.seq + 1).messages.find(value => value.seq === row.seq).turnDetails, row.turnDetails);
+  assert.equal(snapshot.messages.find(row => row.text === 'World').turnDetails, undefined);
+});
+
 test('mobile queue accepts running turns, deduplicates and drains text and attachments in order without a phone connection', async context => {
   const { manager, commands, gateway, reader, access, pair, visible, hidden } = fixture(context);
   const credential = pair(), device = access.authenticate(credential.token);
@@ -1022,11 +1037,11 @@ test('phone artifact lists merge subtask deliveries by completion time rather th
   manager.append(visible, { role: 'assistant', text: '`shared.md` `main.md`' });
   visible.subagents = [
     { id: 'old-child', engine: 'codex', status: 'completed', userSeq: 1, updatedAt: now - 20,
-      title: 'Old result', artifacts: [{ path: 'shared.md' }] },
+      title: 'Old result', result: '`shared.md`', artifacts: [{ path: 'shared.md' }] },
     { id: 'late-child', engine: 'codex', status: 'completed', userSeq: 1, updatedAt: now + 10,
-      title: 'Finished last', artifacts: [{ path: 'child.md' }, { path: 'shared.md' }] },
+      title: 'Finished last', result: '`child.md` `shared.md`', artifacts: [{ path: 'child.md' }, { path: 'shared.md' }] },
     { id: 'middle-child', engine: 'codex', status: 'completed', userSeq: 2, updatedAt: now - 10,
-      title: 'Finished before the reply', artifacts: [{ path: 'middle.md' }] },
+      title: 'Finished before the reply', result: '`middle.md`', artifacts: [{ path: 'middle.md' }] },
   ];
   const device = access.authenticate(pair().token);
   const files = listArtifacts(reader, device, visible.id).artifacts;
@@ -1035,6 +1050,53 @@ test('phone artifact lists merge subtask deliveries by completion time rather th
   assert.equal(files[1].subagentId, 'late-child');
   assert.equal(files[1].seq, 1, 'Starting sequence remains intact in the existing mobile schema');
   assert.equal(files[2].source, 'Main conversation');
+});
+
+test('file-card selection resolves only its message reference, including same-name builds and older deliveries', async context => {
+  const { root, manager, gateway, visible, hidden, pair } = fixture(context);
+  for (const directory of ['old', 'new build', 'docs/design']) fs.mkdirSync(path.join(root, directory), { recursive: true });
+  fs.writeFileSync(path.join(root, 'old/phone.apk'), 'old-phone');
+  fs.writeFileSync(path.join(root, 'new build/phone.apk'), 'new-phone');
+  fs.writeFileSync(path.join(root, 'phone.apk'), 'workspace-phone');
+  fs.writeFileSync(path.join(root, 'docs/design/internal.md'), 'working notes');
+  manager.append(visible, { role: 'assistant', text: '[Earlier installer](old/phone.apk)' });
+  const older = manager.rows(visible).at(-1).seq;
+  manager.append(visible, { role: 'assistant', text: '`new build/` [Install](phone.apk)', artifacts: [{ path: 'docs/design/internal.md' }] });
+  const current = manager.rows(visible).at(-1).seq;
+  const token = pair().token;
+  await gateway.start('127.0.0.1', 0);
+  const base = `/v1/conversations/${visible.id}/artifacts`;
+  const select = (seq, reference) => base + '?offset=0&seq=' + seq + '&reference=' + encodeURIComponent(reference);
+  const listing = await request(gateway, base, { token });
+  assert.deepEqual(listing.body.artifacts.map(file => file.name), ['phone.apk', 'phone.apk'], 'internal edited documents are not deliveries');
+  const selected = await request(gateway, select(current, 'phone.apk'), { token });
+  assert.equal(selected.status, 200);
+  assert.equal(selected.body.artifacts.length, 1);
+  assert.equal(selected.body.nextOffset, null);
+  const file = selected.body.artifacts[0];
+  const response = await fetch(gateway.url + base + '/' + file.id, { headers: { Authorization: 'Bearer ' + token } });
+  assert.equal(await response.text(), 'new-phone', 'the selected path must not download the other same-name build');
+  const previous = await request(gateway, select(older, 'old/phone.apk'), { token });
+  assert.notEqual(previous.body.artifacts[0].id, file.id);
+  for (const [seq, reference] of [[current, 'old/phone.apk'], [older, 'phone.apk'], [current, 'docs/design/internal.md']]) {
+    assert.deepEqual((await request(gateway, select(seq, reference), { token })).body.artifacts, []);
+  }
+  assert.equal((await request(gateway, select(current, 'phone.apk').replace(visible.id, hidden.id), { token })).status, 404);
+  for (const query of ['?seq=1', '?reference=phone.apk', '?seq=0&reference=phone.apk', '?seq=-1&reference=phone.apk',
+    '?seq=1&reference=', '?seq=1&seq=2&reference=phone.apk', '?seq=1&reference=phone.apk&path=private', '?seq=1&reference=%00']) {
+    assert.equal((await request(gateway, base + query, { token })).status, 400, query);
+  }
+  manager.append(visible, { role: 'assistant', text: '`new build/` [Install again](phone.apk) [Design notes](docs/design/internal.md)' });
+  assert.equal((await request(gateway, select(current, 'phone.apk'), { token })).body.artifacts[0].id, file.id, 'later redelivery must not break earlier file cards');
+  assert.ok((await request(gateway, base, { token })).body.artifacts.some(file => file.name === 'internal.md'), 'explicit document deliveries remain downloadable');
+  fs.writeFileSync(path.join(root, 'found-notes.txt'), 'requested file-search result');
+  const found = require('../src/main/turn-artifacts').resolveArtifacts({ cwd: root, explicitPaths: ['found-notes.txt'] });
+  manager.append(visible, { role: 'assistant', text: 'Located the requested file.', artifacts: found });
+  assert.ok((await request(gateway, base, { token })).body.artifacts.some(file => file.name === 'found-notes.txt'), 'explicit file-search deliveries retain their provenance after indexing');
+  fs.unlinkSync(path.join(root, 'new build/phone.apk'));
+  assert.deepEqual((await request(gateway, select(current, 'phone.apk'), { token })).body.artifacts, [], 'a missing selected file must not fall back to another build');
+  fs.rmdirSync(path.join(root, 'new build'));
+  assert.deepEqual((await request(gateway, select(current, 'phone.apk'), { token })).body.artifacts, [], 'a missing output directory must not select the workspace copy');
 });
 
 test('artifact deliveries without timestamps retain reverse message order', context => {
@@ -1086,7 +1148,7 @@ test('APK links with leading Windows slashes appear in the phone list and downlo
   const route = `/v1/conversations/${visible.id}/artifacts`;
   const listing = await request(gateway, route, { token });
   assert.equal(listing.status, 200);
-  assert.deepEqual(listing.body.artifacts.map(file => file.name).sort(), [filename, 'README.md'].sort());
+  assert.deepEqual(listing.body.artifacts.map(file => file.name), [filename]);
   assert.ok(!JSON.stringify(listing.body).includes(root));
   const file = listing.body.artifacts.find(entry => entry.name === filename);
   assert.equal(file.kind, 'package');

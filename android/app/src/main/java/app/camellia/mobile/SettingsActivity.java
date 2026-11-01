@@ -138,7 +138,10 @@ public final class SettingsActivity extends Activity {
         shell(tr("通用", "General"));
         LinearLayout group = settingsStyle.group(content, "");
         preference(group, "language", tr("语言", "Language"), new String[]{tr("跟随系统", "System"), "简体中文", "English"}, new String[]{"system", "zh-CN", "en"});
-        preference(group, "theme", tr("外观", "Appearance"), new String[]{tr("跟随系统", "System"), tr("浅色", "Light"), tr("深色", "Dark")}, new String[]{"system", "light", "dark"});
+        settingsStyle.appearance(group, MobilePreferences.get(this, "theme"), tr("外观", "Appearance"),
+            new String[]{tr("跟随系统", "System"), tr("浅色", "Light"), tr("深色", "Dark")}, value -> {
+                MobilePreferences.set(this, "theme", value); recreate();
+            });
         preference(group, "enterMode", tr("键盘回车", "Enter key"),
             new String[]{tr("回车发送，长按换行", "Enter sends; hold for newline"), tr("回车换行，长按发送", "Enter inserts newline; hold to send"), tr("仅点击发送按钮", "Send button only")},
             new String[]{"send", "newline", "button"});

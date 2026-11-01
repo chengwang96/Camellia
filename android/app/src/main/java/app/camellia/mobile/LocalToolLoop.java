@@ -76,6 +76,7 @@ final class LocalToolLoop {
             String answer = client.chat(route, body, new LocalChatClient.Listener() {
                 public void onText(String text) { listener.onText(text); }
                 public void onThinking(String text) { listener.onThinking(text); }
+                public void onUsage(JSONObject usage) { listener.onUsage(usage); }
                 public void onResponse(JSONObject value) { response[0] = value; }
             });
             check(client, deadline);

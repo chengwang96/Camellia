@@ -13,6 +13,7 @@ public class MobileLayoutRefinementTest extends InstrumentationTestCase {
     private CredentialStore encrypted;
     private ComputerStore computers;
     private JSONObject first, second;
+    private String previousLanguage;
 
     @Override protected void setUp() throws Exception {
         super.setUp();
@@ -22,6 +23,7 @@ public class MobileLayoutRefinementTest extends InstrumentationTestCase {
         first = computer("http://100.64.0.11:43127", "Research laptop", "a");
         second = computer("http://100.64.0.12:43127", "Studio", "b");
         computers.save(second); computers.save(first);
+        previousLanguage = MobilePreferences.get(context, "language"); MobilePreferences.set(context, "language", "zh-CN");
         activity = (MainActivity) getInstrumentation().startActivitySync(new Intent(context, MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
         ui(() -> { invoke("stopNetwork"); field("store", computers); field("credentials", first); field("chinese", true); field("foreground", false); });
     }
@@ -31,7 +33,8 @@ public class MobileLayoutRefinementTest extends InstrumentationTestCase {
     }
 
     @Override protected void tearDown() throws Exception {
-        ui(() -> activity.finish()); getInstrumentation().waitForIdleSync(); encrypted.clear(); super.tearDown();
+        ui(() -> activity.finish()); getInstrumentation().waitForIdleSync(); encrypted.clear();
+        MobilePreferences.set(getInstrumentation().getTargetContext(), "language", previousLanguage); super.tearDown();
     }
 
     private interface Check { void run() throws Exception; }
@@ -162,6 +165,40 @@ public class MobileLayoutRefinementTest extends InstrumentationTestCase {
         });
     }
 
+    public void testRecordedTurnDetailsSurviveRefreshAndUseAnAccountingSheet() throws Exception {
+        ui(() -> {
+            detail(); field("displayedConversation", new JSONObject().put("id", "layout-chat"));
+            @SuppressWarnings("unchecked") java.util.Map<Long, JSONObject> history = (java.util.Map<Long, JSONObject>) field("history");
+            history.clear();
+            history.put(1L, new JSONObject().put("role", "user").put("seq", 1).put("text", "检查移动端布局").put("at", 1793545200000L));
+            history.put(2L, new JSONObject().put("role", "assistant").put("seq", 2).put("text", "已统一气泡和设置样式。").put("at", 1793545202000L)
+                .put("turnDetails", new JSONObject("{\"state\":\"complete\",\"model\":\"historical-model-with-a-long-name\",\"duration_ms\":61500,\"usage\":{\"input_tokens\":1000,\"cache_read_input_tokens\":7500,\"cache_creation_input_tokens\":1500,\"output_tokens\":2000}}")));
+            render(null);
+            View usage = root().findViewWithTag("turnUsage"); assertNotNull(usage);
+            assertTrue(((TextView) usage).getText().toString().contains("12K"));
+            render(null); assertSame("refresh must keep the same footer", usage, root().findViewWithTag("turnUsage"));
+        });
+        getInstrumentation().waitForIdleSync(); screenshot("design-chat-turn-details");
+        ui(() -> {
+            android.widget.LinearLayout footer = (android.widget.LinearLayout) root().findViewWithTag("turnUsage").getParent();
+            for (int index = 0; index < footer.getChildCount(); index++) {
+                View child = footer.getChildAt(index);
+                assertTrue("footer controls fit the available width", child.getLeft() >= 0 && child.getRight() <= footer.getWidth());
+            }
+        });
+        ui(() -> root().findViewWithTag("turnUsage").performClick());
+        getInstrumentation().waitForIdleSync(); screenshot("design-turn-usage-sheet");
+        ui(() -> {
+            TextView button = root().findViewWithTag("turnUsage");
+            var dialogField = button.getClass().getDeclaredField("dialog"); dialogField.setAccessible(true);
+            android.app.AlertDialog dialog = (android.app.AlertDialog) dialogField.get(button);
+            assertTrue(dialog.isShowing()); assertNotNull(dialog.getWindow().getDecorView().findViewWithTag("turnUsagePanel"));
+            dialog.dismiss();
+            @SuppressWarnings("unchecked") java.util.Map<Long, JSONObject> history = (java.util.Map<Long, JSONObject>) field("history");
+            history.get(2L).remove("turnDetails"); render(null); assertNull(root().findViewWithTag("turnUsage"));
+        });
+    }
+
     private int statusHeight(TextView status) {
         status.measure(View.MeasureSpec.makeMeasureSpec(280, View.MeasureSpec.EXACTLY), View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED));
         return status.getMeasuredHeight();
@@ -169,6 +206,8 @@ public class MobileLayoutRefinementTest extends InstrumentationTestCase {
 
     private void screenshot(String name) throws Exception {
         ui(() -> ((PageTransitions) field("pages")).finishTransition());
+        // Wait for the emulator compositor, not just the main-thread event queue.
+        android.os.SystemClock.sleep(800);
         getInstrumentation().waitForIdleSync();
         getInstrumentation().getUiAutomation().waitForIdle(150, 3000);
         android.graphics.Bitmap bitmap = getInstrumentation().getUiAutomation().takeScreenshot(); assertNotNull(bitmap);

@@ -2994,6 +2994,23 @@ test('periodic checks finish through the shared tool bridge on all five engines'
   }
 });
 
+test('artifact delivery uses the final answer and does not promote documents mentioned in commentary', async t => {
+  const harness = fixture(t), manager = harness.manager;
+  const conversation = manager.create('codex', undefined, 'File delivery', harness.root);
+  for (const file of ['notes.md', 'phone.apk']) fs.writeFileSync(path.join(harness.root, file), 'fixture');
+  const run = await manager.send('codex', { sessionId: conversation.id, prompt: 'Build the phone app' });
+  const session = harness.sent.at(-1).session;
+  for (const file of ['notes.md', 'phone.apk']) manager.capture('codex', { type: 'gui:tool', runId: session.gen,
+    id: file, name: 'write_file', input: { path: file }, status: 'completed' });
+  manager.capture('codex', { type: 'assistant', runId: session.gen, message: { content: [{ type: 'text', text: 'Updated `notes.md`.' }] } });
+  manager.capture('codex', { type: 'result', subtype: 'success', runId: session.gen, result: '[Install](phone.apk)', outputBlocks: [
+    { type: 'text', phase: 'commentary', text: 'Updated `notes.md`.' },
+    { type: 'text', phase: 'final_answer', text: '[Install](phone.apk)' },
+  ] });
+  await run.done;
+  assert.deepEqual(manager.rows(conversation).filter(row => row.role === 'assistant').at(-1).artifacts.map(file => file.name), ['phone.apk']);
+});
+
 test('turn artifacts survive restart, deduplicate references, and do not leak into the next turn', async t => {
   const harness = fixture(t);
   const run = await harness.manager.send('codex', { prompt: 'Create a report' });

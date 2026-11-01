@@ -21,7 +21,7 @@ extension ArtifactKind {
 /// reply streams would be a list of paths that do not exist yet.
 struct ArtifactCard: View {
     let names: [String]
-    let onOpen: () -> Void
+    let onOpen: (String) -> Void
 
     @Environment(\.locale) private var locale
 
@@ -59,10 +59,11 @@ struct ArtifactCard: View {
         .overlay(RoundedRectangle(cornerRadius: Palette.trackRadius, style: .continuous).stroke(Palette.separator, lineWidth: 1))
     }
 
-    private func row(_ name: String) -> some View {
+    private func row(_ reference: String) -> some View {
+        let name = ArtifactReferences.name(of: reference)
         let kind = ArtifactReferences.kind(of: name)
         let ext = ArtifactReferences.fileExtension(of: name)
-        return Button(action: onOpen) {
+        return Button { onOpen(reference) } label: {
             HStack(spacing: 10) {
                 Text(ext)
                     .font(.system(size: 10, weight: .bold))
@@ -96,7 +97,7 @@ struct ArtifactCard: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel(locale.identifier.lowercased().hasPrefix("zh")
-            ? "查看会话产物：\(name)" : "View conversation artifact: \(name)")
+            ? "查看文件：\(name)" : "View file: \(name)")
     }
 }
 
@@ -139,6 +140,7 @@ private struct ArtifactFilePicker: UIViewControllerRepresentable {
 /// rather than looking broken.
 struct ArtifactSheetView: View {
     @EnvironmentObject private var model: AppModel
+    var selection: ArtifactSelection? = nil
     let onClose: () -> Void
 
     @State private var export: ArtifactExport?
@@ -158,7 +160,7 @@ struct ArtifactSheetView: View {
                 .padding(.bottom, 12)
             HStack {
                 RoundBackButton(isPageBack: false, action: onClose)
-                Text("会话产物")
+                Text(LocalizedStringKey(selection == nil ? "会话产物" : "文件详情"))
                     .font(.system(size: Palette.textTitle, weight: .medium))
                     .foregroundColor(Palette.ink)
                     .frame(maxWidth: .infinity)
@@ -212,7 +214,7 @@ struct ArtifactSheetView: View {
         .padding(.bottom, 16)
         .background(RoundedRectangle(cornerRadius: Palette.sheetRadius, style: .continuous)
             .fill(Palette.grouped))
-        .onAppear { model.beginArtifactSheet() }
+        .onAppear { model.beginArtifactSheet(selection: selection) }
         .onDisappear {
             model.endArtifactSheet()
             downloadTransfer?.cancel()
@@ -241,7 +243,8 @@ struct ArtifactSheetView: View {
                 .padding(.horizontal, 8)
                 .padding(.vertical, 10)
         } else if model.artifacts.isEmpty {
-            Text("未找到可下载文件。只显示此会话引用且仍存在的产物（含在其他目录中生成的文件）；若刚生成，请关闭后重新打开，或更新并重启电脑端。")
+            Text(LocalizedStringKey(selection == nil ? "未找到可下载文件。只显示此会话引用且仍存在的产物（含在其他目录中生成的文件）；若刚生成，请关闭后重新打开，或更新并重启电脑端。"
+                : "此文件不可用，可能已被移动或删除。请更新并重启电脑端后重试。"))
                 .font(.system(size: Palette.textNote))
                 .foregroundColor(Palette.secondary)
                 .padding(.horizontal, 8)

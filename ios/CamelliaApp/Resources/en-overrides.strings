@@ -181,3 +181,12 @@
 "回复尚未成功保存，请重试保存。" = "Reply has not been saved. Please retry saving.";
 "重试保存" = "Retry saving";
 "分叉会话" = "Fork conversation";
+"用量" = "Usage";
+"本轮用量" = "Turn usage";
+"未缓存输入" = "Uncached input";
+"缓存读取" = "Cache read";
+"缓存写入" = "Cache write";
+"费用" = "Cost";
+"缓存命中率" = "Cache hit rate";
+"耗时" = "Elapsed";
+"输出" = "Output";

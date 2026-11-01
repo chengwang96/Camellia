@@ -75,7 +75,7 @@ final class SettingsStyle {
     }
 
     GradientDrawable fieldBackground(int border) {
-        GradientDrawable shape = new GradientDrawable(); shape.setColor(field); shape.setCornerRadius(dp(Palette.RADIUS_FIELD));
+        GradientDrawable shape = new GradientDrawable(); shape.setColor(field); shape.setCornerRadius(dp(Palette.RADIUS_SETTINGS_CONTROL));
         shape.setStroke(dp(1), border); return shape;
     }
 
@@ -110,7 +110,8 @@ final class SettingsStyle {
     }
 
     GradientDrawable cardBackground() {
-        GradientDrawable shape = new GradientDrawable(); shape.setColor(card); shape.setCornerRadius(dp(Palette.RADIUS_GROUP)); return shape;
+        GradientDrawable shape = new GradientDrawable(); shape.setColor(card); shape.setCornerRadius(dp(Palette.RADIUS_SETTINGS_CARD));
+        shape.setStroke(dp(1), palette.cardBorder); return shape;
     }
 
     LinearLayout header(String title, String backLabel, Runnable back) {
@@ -139,6 +140,45 @@ final class SettingsStyle {
         group.setBackground(cardBackground()); group.setClipToOutline(true); group.setTag("settingsGroup");
         LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, -2); params.setMargins(0, 0, 0, dp(14)); parent.addView(group, params);
         return group;
+    }
+
+    void appearance(LinearLayout group, String selected, String title, String[] labels,
+            java.util.function.Consumer<String> choose) {
+        separator(group);
+        LinearLayout section = new LinearLayout(context); section.setOrientation(LinearLayout.VERTICAL);
+        section.setPadding(dp(16), dp(14), dp(16), dp(16)); section.setTag("preference:theme");
+        TextView heading = label(title, Palette.TEXT_ROW_STRONG, ink);
+        section.addView(heading);
+        LinearLayout choices = new LinearLayout(context); choices.setPadding(0, dp(10), 0, 0);
+        String[] values = {"system", "light", "dark"};
+        String[] icons = {"computer", "appearance", "moon"};
+        for (int index = 0; index < values.length; index++) {
+            String value = values[index]; boolean active = value.equals(selected);
+            LinearLayout button = new LinearLayout(context); button.setOrientation(LinearLayout.VERTICAL);
+            button.setGravity(Gravity.CENTER); button.setMinimumHeight(dp(80)); button.setPadding(dp(4), dp(12), dp(4), dp(12));
+            button.setTag("appearance:" + value); button.setSelected(active); button.setFocusable(true);
+            button.setContentDescription(labels[index]);
+            button.setAccessibilityDelegate(new View.AccessibilityDelegate() {
+                @Override public void onInitializeAccessibilityNodeInfo(View view, android.view.accessibility.AccessibilityNodeInfo info) {
+                    super.onInitializeAccessibilityNodeInfo(view, info);
+                    info.setClassName("android.widget.RadioButton"); info.setCheckable(true); info.setChecked(view.isSelected());
+                }
+            });
+            GradientDrawable face = round(active ? palette.controlFill : card, Palette.RADIUS_SETTINGS_CARD);
+            face.setStroke(dp(1), active ? palette.selectedBorder : palette.cardBorder);
+            button.setBackground(new RippleDrawable(ColorStateList.valueOf(Palette.RIPPLE_ON_CARD), face,
+                round(Color.WHITE, Palette.RADIUS_SETTINGS_CARD)));
+            ImageView icon = new ImageView(context); icon.setImageDrawable(new LineIcon(icons[index], ink));
+            icon.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+            button.addView(icon, new LinearLayout.LayoutParams(dp(20), dp(20)));
+            TextView name = label(labels[index], Palette.TEXT_NOTE, ink); name.setGravity(Gravity.CENTER);
+            name.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+            LinearLayout.LayoutParams text = new LinearLayout.LayoutParams(-1, -2); text.topMargin = dp(6); button.addView(name, text);
+            button.setOnClickListener(view -> { if (!button.isSelected()) choose.accept(value); });
+            LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(0, -1, 1); if (index > 0) params.setMarginStart(dp(6));
+            choices.addView(button, params);
+        }
+        section.addView(choices); group.addView(section);
     }
 
     void row(LinearLayout group, String iconName, String title, String value, String tag, Runnable action) {
@@ -422,7 +462,7 @@ final class SettingsStyle {
     }
 
     void note(LinearLayout parent, String value) {
-        TextView note = new TextView(context); note.setText(value); note.setTextSize(Palette.TEXT_NOTE); note.setTextColor(secondary);
+        TextView note = new TextView(context); note.setText(value); note.setTextSize(Palette.TEXT_NOTE); note.setTextColor(palette.faint);
         note.setPadding(dp(16), 0, dp(16), dp(18)); note.setLineSpacing(dp(3), 1); parent.addView(note);
     }
 
@@ -451,16 +491,9 @@ final class SettingsStyle {
     android.widget.Switch toggle(LinearLayout group, String title, String description, String tag, boolean checked,
             android.widget.CompoundButton.OnCheckedChangeListener listener) {
         LinearLayout row = detailRow(group, title, description, ink);
-        android.widget.Switch toggle = new android.widget.Switch(context); toggle.setTag(tag); toggle.setShowText(false);
+        android.widget.Switch toggle = new SettingsToggle(context); toggle.setTag(tag);
         toggle.setContentDescription(title + ", " + description); toggle.setChecked(checked); toggle.setMinimumHeight(dp(48));
-        GradientDrawable thumb = new GradientDrawable(); thumb.setShape(GradientDrawable.OVAL); thumb.setColor(Color.WHITE); thumb.setSize(dp(24), dp(24));
-        toggle.setThumbDrawable(new android.graphics.drawable.InsetDrawable(thumb, dp(2)));
-        android.graphics.drawable.StateListDrawable track = new android.graphics.drawable.StateListDrawable();
-        GradientDrawable on = new GradientDrawable(); on.setColor(accent); on.setCornerRadius(dp(Palette.RADIUS_TRACK)); on.setSize(dp(48), dp(28));
-        GradientDrawable off = new GradientDrawable(); off.setColor(palette.trackOff); off.setCornerRadius(dp(Palette.RADIUS_TRACK)); off.setSize(dp(48), dp(28));
-        track.addState(new int[]{android.R.attr.state_checked}, on); track.addState(new int[]{}, off);
-        toggle.setTrackDrawable(track); toggle.setThumbTintList(null); toggle.setTrackTintList(null);
-        toggle.setSplitTrack(false); toggle.setSwitchMinWidth(dp(48)); toggle.setOnCheckedChangeListener(listener);
+        toggle.setOnCheckedChangeListener(listener);
         LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-2, -2); params.setMarginStart(dp(16)); row.addView(toggle, params);
         row.setOnClickListener(view -> toggle.setChecked(!toggle.isChecked())); return toggle;
     }

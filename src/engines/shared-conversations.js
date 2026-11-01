@@ -1707,7 +1707,9 @@ class SharedConversations {
     a.artifactCollector ||= collector();
     a.artifactCollector.capture(event);
     if (event.type === 'result') {
-      const text = a.assistant.length ? a.assistant.join('\n\n') : a.text || String(event.result || '');
+      const text = Array.isArray(event.outputBlocks)
+        ? event.outputBlocks.filter(block => block.phase === 'final_answer').map(block => block.text || '').join('\n\n')
+        : a.assistant.length ? a.assistant.join('\n\n') : a.text || String(event.result || '');
       // Files the model located with camellia_find_files join the turn's own
       // artifacts, so a search result is downloadable on both clients even
       // though the model may only paste some of the paths into its reply.

@@ -27,7 +27,7 @@ final class SettingsField extends LinearLayout {
         input.setPadding(style.dp(16), style.dp(14), style.dp(16), style.dp(14));
         input.setMinimumHeight(style.dp(52));
         input.setTextColor(settings.ink);
-        input.setHintTextColor(settings.secondary);
+        input.setHintTextColor(settings.palette().caption);
         input.setHighlightColor((style.accent & 0x00ffffff) | 0x33000000);
         addView(input, new LayoutParams(-1, -2));
         feedback = new TextView(getContext()); feedback.setTextSize(Palette.TEXT_NOTE); feedback.setTextColor(errorColor);

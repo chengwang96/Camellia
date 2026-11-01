@@ -75,6 +75,7 @@ struct LocalChatMessage: Identifiable, Equatable {
     var notice: String
     var at: Int64
     var state: String
+    var turnDetails: TurnDetails?
 
     var isUser: Bool { role == "user" }
 
@@ -91,6 +92,7 @@ struct LocalChatMessage: Identifiable, Equatable {
             && lhs.notice == rhs.notice
             && lhs.at == rhs.at
             && lhs.state == rhs.state
+            && lhs.turnDetails == rhs.turnDetails
             && (lhs.documents as NSArray).isEqual(to: rhs.documents)
             && (lhs.process as NSArray).isEqual(to: rhs.process)
     }
@@ -105,6 +107,7 @@ struct LocalChatMessage: Identifiable, Equatable {
         notice = raw["notice"] as? String ?? ""
         at = (raw["at"] as? NSNumber)?.int64Value ?? 0
         state = raw["state"] as? String ?? ""
+        turnDetails = JSONObject(raw["turnDetails"]).map(TurnDetails.init)
     }
 
     var dictionary: [String: Any] {
@@ -114,6 +117,7 @@ struct LocalChatMessage: Identifiable, Equatable {
         if !process.isEmpty { raw["process"] = process }
         if !notice.isEmpty { raw["notice"] = notice }
         if !state.isEmpty { raw["state"] = state }
+        if let turnDetails { raw["turnDetails"] = turnDetails.json }
         return raw
     }
 }
@@ -213,6 +217,8 @@ final class LocalChatModel: ObservableObject {
         let conversationId: String
         var text: String
         var process: [[String: Any]]
+        var finishedAt: Int64? = nil
+        var usage: [String: Int64]? = nil
     }
 
     private var client: LocalChatClient?
@@ -1080,7 +1086,8 @@ final class LocalChatModel: ObservableObject {
                 var next = Array(stored.prefix(replaceFrom))
                 next.append(user)
                 let runID = UUID().uuidString
-                next.append(["role": "assistant", "content": "", "state": "running", "at": sentAt, "runId": runID])
+                next.append(["role": "assistant", "content": "", "state": "running", "at": sentAt, "runId": runID,
+                             "turnDetails": ["model": prepared.route.model]])
                 let revision = self.nextDraftRevision()
                 let attachments = self.attachments
                 let commit = try await self.withStorage { store in
@@ -1329,6 +1336,13 @@ final class LocalChatModel: ObservableObject {
             },
             onTool: { [weak self] entry in
                 Task { @MainActor in self?.receiveTool(entry, ticket: ticket, id: id) }
+            },
+            onUsage: { [weak self] usage in
+                Task { @MainActor in
+                    guard let self, ticket == self.generation,
+                          var run = self.activeRun, run.conversationId == id else { return }
+                    run.usage = usage; self.activeRun = run
+                }
             })
         Task.detached(priority: .userInitiated) {
             let problem: String?
@@ -1416,6 +1430,7 @@ final class LocalChatModel: ObservableObject {
     private func finish(_ problem: String?, state: String, id: String, ticket: Int? = nil) {
         if let ticket, ticket != generation { return }
         guard !finishing, var run = activeRun, run.conversationId == id else { return }
+        if run.finishedAt == nil { run.finishedAt = LocalChatStore.nowMillis() }
         generation += 1
         client?.cancel()
         client = nil
@@ -1465,6 +1480,15 @@ final class LocalChatModel: ObservableObject {
                     turns[index]["content"] = run.text
                     if !run.process.isEmpty { turns[index]["process"] = run.process }
                     if let state { turns[index]["state"] = state }
+                    if let state {
+                        var details = turns[index]["turnDetails"] as? [String: Any] ?? [:]
+                        details["state"] = state
+                        if let usage = run.usage { details["usage"] = usage }
+                        if let at = (turns[index]["at"] as? NSNumber)?.int64Value {
+                            details["duration_ms"] = max(0, (run.finishedAt ?? at) - at)
+                        }
+                        turns[index]["turnDetails"] = details
+                    }
                     if let notice { turns[index]["notice"] = notice }
                     entry["messages"] = turns
                     entry["updatedAt"] = LocalChatStore.nowMillis()

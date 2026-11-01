@@ -226,8 +226,17 @@ class RemoteGateway {
     if (request.method !== 'GET') fail(405, 'Remote access is read-only');
     const artifact = /^\/v1\/conversations\/([a-f0-9-]{36})\/artifacts(?:\/([a-f0-9]{64}))?$/.exec(url.pathname);
     if (artifact) {
-      for (const key of url.searchParams.keys()) if (key !== 'offset' || artifact[2]) fail(400, 'Unsupported query parameter');
-      if (!artifact[2]) this.json(response, 200, listArtifacts(this.reader, device, artifact[1], number(url.searchParams.get('offset'), 0)));
+      for (const key of url.searchParams.keys()) {
+        if (!['offset', 'seq', 'reference'].includes(key) || artifact[2] || url.searchParams.getAll(key).length !== 1) fail(400, 'Unsupported query parameter');
+      }
+      let selection;
+      if (url.searchParams.has('seq') || url.searchParams.has('reference')) {
+        const seq = number(url.searchParams.get('seq'), 0);
+        const reference = url.searchParams.get('reference');
+        if (seq < 1 || !reference || reference.length > 4096 || /[\x00-\x1f\x7f]/.test(reference)) fail(400, 'Invalid artifact reference');
+        selection = { seq, reference };
+      }
+      if (!artifact[2]) this.json(response, 200, listArtifacts(this.reader, device, artifact[1], number(url.searchParams.get('offset'), 0), selection));
       else await this.download(response, device, artifact[1], artifact[2]);
       return;
     }

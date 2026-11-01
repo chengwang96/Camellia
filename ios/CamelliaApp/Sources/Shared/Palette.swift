@@ -1,37 +1,24 @@
 import SwiftUI
 import UIKit
 
-/// Android's palette, in the same five colours `ChatStyle` hard-codes.
-///
-/// These were the system semantic colours, on the argument that an iOS client
-/// should look iOS-native rather than be a port of another platform's palette.
-/// That is the wrong trade here: the two apps sit beside each other on the same
-/// desk driving the same computer, and the point of this client is that it is
-/// the same app on a different phone. A tint that differs (#4176E6 against the
-/// system's #007AFF) is the one difference nobody can stop noticing.
-///
-/// So the values are Android's, and they are still resolved per appearance
-/// rather than frozen — `UIColor`'s trait closure is what carries the light and
-/// dark pair, which keeps `Palette.background` a plain `Color` and means no
-/// screen has to know which appearance it is drawing in.
-///
-/// Kept in step with `android/.../ChatStyle.java`; the two lists are short
-/// enough to compare by eye.
+/// Desktop-aligned tokens, resolved per appearance for both native clients.
+/// Settings and chat retain semantic names; popup and sheet geometry remains
+/// touch-sized instead of borrowing desktop control dimensions.
 enum Palette {
     static let background = dynamic(light: 0xFFFFFF, dark: 0x151517)
     static let surface = dynamic(light: 0xF5F6F7, dark: 0x232324)
-    /// `SettingsStyle.background`: Android keeps a *second* palette for the
-    /// settings, computers and pairing pages, and it really is a second set of
-    /// values — a grey page under white cards, where the chat pages are white
-    /// under a hairline. Collapsing the two would leave one of the two screens
-    /// with a page it never has.
-    static let grouped = dynamic(light: 0xF5F5F5, dark: 0x151517)
+    /// A neutral page under outlined settings cards.
+    static let grouped = background
     static let raised = surface
     static let ink = dynamic(light: 0x0F1115, dark: 0xF9FAFB)
-    static let muted = dynamic(light: 0x61666B, dark: 0xADB2B8)
-    /// Android carries one muted tone and uses it for both ranks of secondary
-    /// text, so the third rank has nothing to be.
-    static let faint = muted
+    static let muted = dynamic(light: 0x61666B, dark: 0xCFD3D6)
+    /// Tertiary labels and placeholders have distinct contrast.
+    static let faint = dynamic(light: 0x81858C, dark: 0xADB2B8)
+    static let caption = dynamic(light: 0xADB2B8, dark: 0x81858C)
+    static let userBubble = dynamic(light: 0xEDF3FE, dark: 0x283142)
+    static let cardBorder = dynamic(light: 0xD6D6D8, dark: 0x424448)
+    static let controlFill = dynamic(light: 0xF5F6F7, dark: 0x292A2D)
+    static let selectedBorder = dynamic(light: 0xADB2B8, dark: 0x737981)
     static let accent = dynamic(light: 0x4176E6, dark: 0x679EFE)
     /// The outline used only by the two large choices on the home page.
     static let homeCardEdge = dynamic(light: 0xE6E8EB, dark: 0x34363A)
@@ -46,26 +33,20 @@ enum Palette {
 
     // MARK: - The settings palette
     //
-    // `SettingsStyle` keeps a *second* set of values for the settings, computers
-    // and pairing pages, and they are genuinely different from the chat pages'
-    // — a grey page under white cards where the chat pages are white under a
-    // hairline. These are here for the same reason `grouped` is: collapsing the
-    // two would leave one of the two screens with a page it never has.
-
     /// A card on one of those pages.
-    static let card = dynamic(light: 0xFFFFFF, dark: 0x232326)
+    static let card = dynamic(light: 0xFFFFFF, dark: 0x232324)
     /// Secondary text there.
-    static let secondary = dynamic(light: 0x75787E, dark: 0xABAEB5)
+    static let secondary = muted
     /// The line between two rows of one group.
     static let divider = dynamic(light: 0xECECEE, dark: 0x37373C)
     /// A field's own fill.
-    static let field = dynamic(light: 0xFFFFFF, dark: 0x303036)
+    static let field = controlFill
     /// A field's outline.
-    static let fieldBorder = dynamic(light: 0xB9BEC7, dark: 0x62626C)
+    static let fieldBorder = cardBorder
     /// Destructive actions and error text.
     static let error = dynamic(light: 0xB8323B, dark: 0xFF969A)
     /// The switch's off track: a light grey by day, a darker one at night.
-    static let trackOff = dynamic(light: 0xD1D3D8, dark: 0x505058)
+    static let trackOff = dynamic(light: 0xD9DCE0, dark: 0x54575D)
 
     // MARK: - Type scale
     //
@@ -108,6 +89,9 @@ enum Palette {
 
     /// A message bubble or a plain block.
     static let radius: CGFloat = 12
+    static let userBubbleRadius: CGFloat = 18
+    static let settingsCardRadius: CGFloat = 16
+    static let settingsControlRadius: CGFloat = 10
     /// A code block inside rendered Markdown.
     static let smallRadius: CGFloat = 8
     /// A settings card, a popup panel, a computer row's card.
@@ -145,7 +129,7 @@ enum Palette {
     /// trait closure, so a text view handed one still re-resolves when the
     /// appearance changes.
     static let inkUI = dynamicUI(light: 0x0F1115, dark: 0xF9FAFB)
-    static let mutedUI = dynamicUI(light: 0x61666B, dark: 0xADB2B8)
+    static let mutedUI = dynamicUI(light: 0x61666B, dark: 0xCFD3D6)
 
     /// One colour with an appearance-dependent value.
     private static func dynamic(light: Int, dark: Int) -> Color {

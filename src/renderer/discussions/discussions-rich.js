@@ -8,7 +8,7 @@ window.CamelliaDiscussionRich = { create({ getGroup, call, mutate, getAttachment
   const node = (tag, className, text) => { const el = document.createElement(tag); el.className = className || ''; if (text !== undefined) el.textContent = text; return el; };
   const action = (label, run, className = 'btn-secondary') => { const b = node('button', className, t(label)); b.type = 'button'; b.onclick = () => Promise.resolve(run()).catch(error); return b; };
   async function openToolFile(filePath) {
-    const result = await desktop.resolveArtifacts({ paths: [filePath], cwd: getGroup()?.cwd });
+    const result = await desktop.resolveArtifacts({ explicitPaths: [filePath], cwd: getGroup()?.cwd });
     return preview.openFilePreview(result.files?.[0]?.path || filePath);
   }
   function attachments(row, files, removable = false) {
@@ -184,7 +184,7 @@ window.CamelliaDiscussionRich = { create({ getGroup, call, mutate, getAttachment
     const link = event.target.closest('a'); if (!link) return;
     const href = link.getAttribute('href') || ''; if (/^https?:/i.test(href) || href.startsWith('#')) return;
     event.preventDefault();
-    void desktop.resolveArtifacts({ paths: [href], cwd: getGroup()?.cwd }).then(result => {
+    void desktop.resolveArtifacts({ explicitPaths: [href], cwd: getGroup()?.cwd }).then(result => {
       if (result.files?.length) return preview.openFilePreview(result.files[0].path);
     }).catch(error);
   });

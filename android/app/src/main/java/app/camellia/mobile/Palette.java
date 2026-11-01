@@ -4,28 +4,9 @@ import android.content.Context;
 import android.content.res.Configuration;
 import android.graphics.Color;
 
-/**
- * The app's design tokens, in one place.
- *
- * <p>Until this existed the colours lived in two constructors — five in
- * {@link ChatStyle} and nine in {@link SettingsStyle} — with the corner radii,
- * type scale and ripple alphas spelled out at each use site. That is three
- * places to change to move one colour, and it had already drifted: the switch
- * track in {@code SettingsStyle.toggle} pinned the light {@code #4176E6} in both
- * appearances because it could not ask which one it was in, and worked the
- * other half of the question out by comparing the background against a literal
- * {@code #F5F5F5}.
- *
- * <p>So this class owns the values and the two style classes read them. It does
- * not change any of them: the point of the page-by-page work that follows is to
- * fill in and even out what these pages already look like, and a refactor that
- * quietly restyled half the app would make every screenshot taken afterwards
- * ambiguous. The values are what the app has always drawn.
- *
- * <p>Two palettes, not one, because the app really does have two: the chat
- * pages are a light surface under a hairline, the settings and pairing pages
- * are a grey page under white cards. Collapsing them would leave one of the two
- * screens with a page it has never had.
+/** Desktop-aligned light/dark tokens shared by native chat and settings.
+ * Settings keep their own semantic names, while card/control radii stay
+ * separate from the larger touch popups and bottom sheets.
  */
 final class Palette {
 
@@ -36,8 +17,9 @@ final class Palette {
     final int surface;
     /** Primary text. */
     final int ink;
-    /** Secondary text, and the only rank of it there is. */
-    final int muted;
+    /** Secondary, tertiary and placeholder text, respectively. */
+    final int muted, faint, caption;
+    final int userBubble, cardBorder, controlFill, selectedBorder;
     /** The hairline around a floating bar, and the dock's own edge. */
     final int separator;
 
@@ -59,7 +41,7 @@ final class Palette {
     /** Readable status text; the brighter ONLINE dot is too light for small labels. */
     final int success, warning;
 
-    /** Both palettes' accent. The one value they genuinely share. */
+    /** Business accent shared with desktop. */
     final int accent;
 
     // ── Colour: the back button's own pair ────────────────────────────────
@@ -78,6 +60,9 @@ final class Palette {
     // ── Corner radii ───────────────────────────────────────────────────────
     /** A bubble or a card: {@code ChatStyle.rounded()}. */
     static final int RADIUS_CARD = 12;
+    static final int RADIUS_USER_BUBBLE = 18;
+    static final int RADIUS_SETTINGS_CARD = 16;
+    static final int RADIUS_SETTINGS_CONTROL = 10;
     /** A floating bar or a search field: {@code ChatStyle.capsule()}. */
     static final int RADIUS_CAPSULE = 28;
     /** A settings card, a popup panel, a computer row's card. */
@@ -181,15 +166,21 @@ final class Palette {
         background = color(dark, "#151517", "#FFFFFF");
         surface = color(dark, "#232324", "#F5F6F7");
         ink = color(dark, "#F9FAFB", "#0F1115");
-        muted = color(dark, "#ADB2B8", "#61666B");
+        muted = color(dark, "#CFD3D6", "#61666B");
+        faint = color(dark, "#ADB2B8", "#81858C");
+        caption = color(dark, "#81858C", "#ADB2B8");
+        userBubble = color(dark, "#283142", "#EDF3FE");
+        cardBorder = color(dark, "#424448", "#D6D6D8");
+        controlFill = color(dark, "#292A2D", "#F5F6F7");
+        selectedBorder = color(dark, "#737981", "#ADB2B8");
         separator = color(dark, "#3B3B40", "#ECEEF1");
 
-        grouped = color(dark, "#151517", "#F5F5F5");
-        card = color(dark, "#232326", "#FFFFFF");
-        secondary = color(dark, "#ABAEB5", "#75787E");
+        grouped = background;
+        card = color(dark, "#232324", "#FFFFFF");
+        secondary = muted;
         divider = color(dark, "#37373C", "#ECECEE");
-        field = color(dark, "#303036", "#FFFFFF");
-        fieldBorder = color(dark, "#62626C", "#B9BEC7");
+        field = controlFill;
+        fieldBorder = cardBorder;
         error = color(dark, "#FF969A", "#B8323B");
         success = color(dark, "#7DDDA5", "#187644");
         warning = color(dark, "#EAC56D", "#8A5A12");
@@ -199,7 +190,7 @@ final class Palette {
         raisedFace = color(dark, "#29292D", "#FFFFFF");
         raisedEdge = color(dark, "#3A3A40", "#F3F3F5");
 
-        trackOff = color(dark, "#505058", "#D1D3D8");
+        trackOff = color(dark, "#54575D", "#D9DCE0");
     }
 
     /** The home screen's card outline, which has no name of its own. */

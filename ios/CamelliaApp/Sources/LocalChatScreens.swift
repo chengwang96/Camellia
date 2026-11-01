@@ -951,7 +951,7 @@ private struct LocalChatMessageRow: View {
 
     var body: some View {
         VStack(alignment: message.isUser ? .trailing : .leading, spacing: 6) {
-            if !message.process.isEmpty { processDisclosure }
+            if !message.process.isEmpty || message.turnDetails?.completed == true { processDisclosure }
             content
             if !message.notice.isEmpty {
                 StatusLine(text: message.notice, tone: .bad)
@@ -965,14 +965,30 @@ private struct LocalChatMessageRow: View {
 
     @ViewBuilder
     private var processDisclosure: some View {
-        Button { showProcess.toggle() } label: {
-            HStack(spacing: 6) {
-                Image(systemName: showProcess ? "chevron.down" : "chevron.right").font(.caption2)
-                Text("\(message.process.count) 个步骤").font(.caption)
+        if let details = message.turnDetails, details.completed {
+            Button { showProcess.toggle() } label: {
+                HStack {
+                    TurnCompletionLabel(details: details)
+                    Spacer(minLength: 0)
+                    if !message.process.isEmpty {
+                        MobileLineIcon(name: showProcess ? "down" : "right", size: 18)
+                            .foregroundColor(Palette.faint)
+                    }
+                }
             }
-            .foregroundColor(Palette.muted)
+            .buttonStyle(.plain)
+            .disabled(message.process.isEmpty)
+            Rectangle().fill(Palette.separator).frame(height: 1)
+        } else {
+            Button { showProcess.toggle() } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: showProcess ? "chevron.down" : "chevron.right").font(.caption2)
+                    Text("\(message.process.count) 个步骤").font(.caption)
+                }
+                .foregroundColor(Palette.muted)
+            }
+            .buttonStyle(.plain)
         }
-        .buttonStyle(.plain)
         if showProcess {
             LocalChatProcessView(entries: message.process)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -989,8 +1005,8 @@ private struct LocalChatMessageRow: View {
                         .foregroundColor(Palette.ink)
                         .lineSpacing(Palette.chatLineSpacing)
                         .padding(12)
-                        .background(RoundedRectangle(cornerRadius: Palette.radius, style: .continuous)
-                            .fill(Palette.surface))
+                        .background(RoundedRectangle(cornerRadius: Palette.userBubbleRadius, style: .continuous)
+                            .fill(Palette.userBubble))
                 }
                 if !message.images.isEmpty { attachments }
             }
@@ -1046,6 +1062,9 @@ private struct LocalChatMessageRow: View {
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("复制")
+            }
+            if !message.isUser, let details = message.turnDetails, details.hasUsage {
+                TurnUsageButton(details: details)
             }
             if message.at > 0 {
                 Text(time(message.at)).font(.caption2).foregroundColor(Palette.faint)
@@ -1521,7 +1540,7 @@ private struct LocalChatToolsPanel: View {
                         .foregroundColor(Palette.muted)
                 }
             }
-            .toggleStyle(SwitchToggleStyle(tint: Palette.accent))
+            .toggleStyle(SettingsToggleStyle())
             .padding(.horizontal, 18)
             .padding(.vertical, 16)
             .background(RoundedRectangle(cornerRadius: Palette.groupRadius).fill(Palette.surface))

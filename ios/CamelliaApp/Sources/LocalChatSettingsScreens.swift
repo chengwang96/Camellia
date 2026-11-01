@@ -120,7 +120,7 @@ struct ProviderSettingsView: View {
                     .foregroundColor(Palette.ink)
                     .padding(.horizontal, 20)
                     .frame(minHeight: 48)
-                    .background(RoundedRectangle(cornerRadius: Palette.fieldRadius, style: .continuous)
+                    .background(RoundedRectangle(cornerRadius: Palette.settingsControlRadius, style: .continuous)
                         .fill(Palette.field))
                     .padding(.top, 20)
             }
@@ -304,7 +304,7 @@ private struct ProviderCard: View {
                     }
                 }
             }
-            .toggleStyle(SwitchToggleStyle(tint: Palette.accent))
+            .toggleStyle(SettingsToggleStyle())
             .padding(.horizontal, 16)
             .padding(.vertical, 13)
             SettingsDivider()
@@ -428,9 +428,9 @@ private struct ProviderEditorView: View {
                             .foregroundColor(Palette.ink)
                             .padding(.horizontal, 16)
                             .frame(minHeight: 52)
-                            .background(RoundedRectangle(cornerRadius: Palette.fieldRadius, style: .continuous)
+                            .background(RoundedRectangle(cornerRadius: Palette.settingsControlRadius, style: .continuous)
                                 .fill(Palette.field))
-                            .overlay(RoundedRectangle(cornerRadius: Palette.fieldRadius, style: .continuous)
+                            .overlay(RoundedRectangle(cornerRadius: Palette.settingsControlRadius, style: .continuous)
                                 .stroke(Palette.fieldBorder, lineWidth: 1))
                         }
                         .buttonStyle(.plain)
@@ -451,7 +451,7 @@ private struct ProviderEditorView: View {
                                                 .foregroundColor(Palette.secondary)
                                         }
                                     }
-                                    .toggleStyle(SwitchToggleStyle(tint: Palette.accent))
+                                    .toggleStyle(SettingsToggleStyle())
                                     .padding(.horizontal, 16)
                                     .frame(minHeight: 58)
                                 }
@@ -476,9 +476,9 @@ private struct ProviderEditorView: View {
                             .accessibilityLabel(Text("模型（每行一个 ID，或 别名=上游模型）"))
                             .frame(minHeight: 120, maxHeight: 180)
                             .padding(10)
-                            .background(RoundedRectangle(cornerRadius: Palette.fieldRadius, style: .continuous)
+                            .background(RoundedRectangle(cornerRadius: Palette.settingsControlRadius, style: .continuous)
                                 .fill(Palette.field))
-                            .overlay(RoundedRectangle(cornerRadius: Palette.fieldRadius, style: .continuous)
+                            .overlay(RoundedRectangle(cornerRadius: Palette.settingsControlRadius, style: .continuous)
                                 .stroke(Palette.fieldBorder, lineWidth: 1))
 
                         if !failure.isEmpty {
@@ -557,9 +557,9 @@ private struct ProviderEditorView: View {
             .disableAutocorrection(true)
             .padding(.horizontal, 16)
             .frame(minHeight: 52)
-            .background(RoundedRectangle(cornerRadius: Palette.fieldRadius, style: .continuous)
+            .background(RoundedRectangle(cornerRadius: Palette.settingsControlRadius, style: .continuous)
                 .fill(Palette.field))
-            .overlay(RoundedRectangle(cornerRadius: Palette.fieldRadius, style: .continuous)
+            .overlay(RoundedRectangle(cornerRadius: Palette.settingsControlRadius, style: .continuous)
                 .stroke(Palette.fieldBorder, lineWidth: 1))
     }
 
@@ -720,9 +720,9 @@ private struct SecureKeyLines: View {
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .frame(height: min(maximumHeight, max(minimumHeight, CGFloat(keys.count) * 24 + 24)))
-        .background(RoundedRectangle(cornerRadius: Palette.fieldRadius, style: .continuous)
+        .background(RoundedRectangle(cornerRadius: Palette.settingsControlRadius, style: .continuous)
             .fill(Palette.field))
-        .overlay(RoundedRectangle(cornerRadius: Palette.fieldRadius, style: .continuous)
+        .overlay(RoundedRectangle(cornerRadius: Palette.settingsControlRadius, style: .continuous)
             .stroke(Palette.fieldBorder, lineWidth: 1))
         .onChange(of: focusedLine) { focusChanged($0 != nil) }
     }
@@ -873,9 +873,9 @@ struct ConfigImportView: View {
                             .accessibilityLabel(Text("JSON"))
                             .frame(height: 180)
                             .padding(10)
-                            .background(RoundedRectangle(cornerRadius: Palette.fieldRadius, style: .continuous)
+                            .background(RoundedRectangle(cornerRadius: Palette.settingsControlRadius, style: .continuous)
                                 .fill(Palette.field))
-                            .overlay(RoundedRectangle(cornerRadius: Palette.fieldRadius, style: .continuous)
+                            .overlay(RoundedRectangle(cornerRadius: Palette.settingsControlRadius, style: .continuous)
                                 .stroke(Palette.fieldBorder, lineWidth: 1))
 
                         if let failure {

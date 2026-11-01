@@ -22,7 +22,7 @@ final class ArtifactMessageView extends LinearLayout {
     private final boolean chinese;
     private final int border;
 
-    ArtifactMessageView(Context context, List<String> names, boolean chinese, Runnable open) {
+    ArtifactMessageView(Context context, List<String> names, boolean chinese, java.util.function.Consumer<String> open) {
         super(context);
         this.chinese = chinese;
         style = new ChatStyle(context);
@@ -78,14 +78,15 @@ final class ArtifactMessageView extends LinearLayout {
         parent.addView(line, new LinearLayout.LayoutParams(-1, style.dp(1)));
     }
 
-    private LinearLayout fileRow(String name, Runnable open) {
+    private LinearLayout fileRow(String reference, java.util.function.Consumer<String> open) {
+        String name = ArtifactReferences.name(reference);
         String kind = kind(name), extension = extension(name);
         LinearLayout row = new LinearLayout(getContext()); row.setGravity(Gravity.CENTER_VERTICAL);
         row.setPadding(style.dp(12), style.dp(12), style.dp(12), style.dp(12));
         row.setTag("artifactRow:" + name);
         LinearLayout file = new LinearLayout(getContext()); file.setGravity(Gravity.CENTER_VERTICAL);
-        file.setFocusable(true); file.setBackground(ripple()); file.setOnClickListener(view -> open.run());
-        file.setContentDescription(name + " · " + category(kind) + " · " + tr("查看会话产物", "View conversation files"));
+        file.setFocusable(true); file.setBackground(ripple()); file.setOnClickListener(view -> open.accept(reference));
+        file.setContentDescription(name + " · " + category(kind) + " · " + tr("查看文件", "View file"));
         row.addView(file, new LinearLayout.LayoutParams(0, -2, 1));
         int color = kind.equals("pdf") ? 0xffed5362 : kind.equals("spreadsheet") ? 0xff29875c
             : kind.equals("presentation") ? 0xffc86b31 : kind.equals("package") ? 0xff3b6fd4 : style.accent;
@@ -104,8 +105,8 @@ final class ArtifactMessageView extends LinearLayout {
         action.setMinHeight(style.dp(48)); action.setPadding(style.dp(10), style.dp(8), style.dp(10), style.dp(8));
         action.setBackground(new RippleDrawable(ColorStateList.valueOf(Palette.RIPPLE_ON_PAGE), shape(Color.TRANSPARENT, 9, true), shape(Color.WHITE, 9, false)));
         action.setTag("artifactAction:" + name); action.setFocusable(true);
-        action.setContentDescription(tr("查看会话产物：", "View conversation files: ") + name);
-        action.setOnClickListener(view -> open.run());
+        action.setContentDescription(tr("查看文件：", "View file: ") + name);
+        action.setOnClickListener(view -> open.accept(reference));
         LinearLayout.LayoutParams actionParams = new LinearLayout.LayoutParams(-2, -2); actionParams.setMarginStart(style.dp(8)); row.addView(action, actionParams);
         return row;
     }

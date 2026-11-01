@@ -1,5 +1,7 @@
 # Settings surface
 
+The native Android/iOS alignment is documented in [Mobile desktop design alignment](mobile-surfaces.md).
+
 Camellia's settings use the design language of the user's DeepSeek Harness screenshots: a continuous neutral surface, an unfilled navigation rail with soft selected rows, generous setting spacing, outlined cards and three icon-over-label appearance choices. The desktop settings window is a frameless rounded panel over a dimmed workbench, with a custom close button; see [window-chrome.md](window-chrome.md) for its window lifecycle and validation.
 
 The public repository includes both the Electron desktop shell (`apps/desktop`) and the shared settings UI. Inspected revision: `ce7073d51254c26cd63b22a60835b8f948deb447` (2026-10-31).

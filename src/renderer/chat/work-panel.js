@@ -187,7 +187,8 @@ window.createWorkPanel = ({ context, setStatus, openFilePreview, shouldFollow })
     const ticket = ++fileTicket, generation = epoch, sessionId = context.sessionId;
     for (const task of tasks) if (task.status === 'completed' && (task.artifacts?.length || task.result)) {
       try {
-        const result = await window.dshDesktop.resolveArtifacts({ sessionId: task.managedConversationId || sessionId, paths: task.artifacts?.map(file => file.path) || [], text: task.result });
+        const result = await window.dshDesktop.resolveArtifacts({ sessionId: task.managedConversationId || sessionId, paths: task.artifacts?.map(file => file.path) || [],
+          explicitPaths: task.artifacts?.filter(file => file.explicitDelivery).map(file => file.path), text: task.result });
         if (epoch !== generation || fileTicket !== ticket || context.sessionId !== sessionId) return;
         if (result.ok) for (const file of result.files) addFile(file, task.title);
       } catch {}

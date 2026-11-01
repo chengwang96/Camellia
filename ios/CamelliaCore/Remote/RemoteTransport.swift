@@ -28,6 +28,7 @@ public protocol RemoteTransport: AnyObject {
     func command(_ action: String, conversationId: String?, payload: [String: Any]) throws -> CommandResult
     func commandReceipt(requestId: String) throws -> CommandResult?
     func artifacts(conversationId: String, offset: Int64) throws -> RemoteArtifactPage
+    func artifacts(conversationId: String, offset: Int64, selection: ArtifactSelection?) throws -> RemoteArtifactPage
     func apiKeys() throws -> [String: Any]
     func markRead(conversationId: String, lastReplyAt: Int64) throws -> JSONObject
     func artifact(conversationId: String, hash: String, expectedSize: Int64) throws -> Data
@@ -37,6 +38,11 @@ public protocol RemoteTransport: AnyObject {
 }
 
 public extension RemoteTransport {
+    func artifacts(conversationId: String, offset: Int64, selection: ArtifactSelection?) throws -> RemoteArtifactPage {
+        guard selection == nil else { throw EndpointError.unsupportedPath }
+        return try artifacts(conversationId: conversationId, offset: offset)
+    }
+
     func conversations(offset: Int, limit: Int, query: String) throws -> RemoteListPage {
         try conversations(offset: offset)
     }

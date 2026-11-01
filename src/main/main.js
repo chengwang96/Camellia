@@ -2720,7 +2720,7 @@ if (!gotSingleInstanceLock) {
     try {
       const sessionCwd = payload?.sessionId ? sharedConversations.get(payload.sessionId).cwd : '';
       const cwd = sessionCwd || payload?.cwd || '';
-      return { ok: true, files: resolveArtifacts({ paths: payload?.paths, text: payload?.text, cwd, roots: payload?.roots }) };
+      return { ok: true, files: resolveArtifacts({ paths: payload?.paths, explicitPaths: payload?.explicitPaths, text: payload?.text, cwd, roots: payload?.roots }) };
     } catch (error) { return { ok: false, error: error?.message || String(error) }; }
   });
 

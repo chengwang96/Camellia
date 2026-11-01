@@ -102,6 +102,11 @@ public final class RemoteApi {
         RemoteArtifactPage(try json("/v1/conversations/\(conversationId)/artifacts?offset=\(offset)"))
     }
 
+    public func artifacts(conversationId: String, offset: Int64, selection: ArtifactSelection?) throws -> RemoteArtifactPage {
+        guard let selection else { return try artifacts(conversationId: conversationId, offset: offset) }
+        return RemoteArtifactPage(try json(selection.path(conversationId: conversationId, offset: offset)))
+    }
+
     /// The desktop's provider configuration, in the local-chat export shape.
     ///
     /// The one endpoint that does not answer with a remote snapshot: it is the

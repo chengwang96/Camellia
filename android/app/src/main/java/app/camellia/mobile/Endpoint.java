@@ -36,6 +36,7 @@ public final class Endpoint {
             return URI.create(origin + path);
         }
         if (path.matches("/v1/conversations/[a-f0-9-]{36}/read")) return URI.create(origin + path);
+        if (path.matches("/v1/conversations/[a-f0-9-]{36}/artifacts\\?offset=\\d{1,12}&seq=[1-9][0-9]{0,11}&reference=(?:[A-Za-z0-9._*+-]|%[a-fA-F0-9]{2})+")) return URI.create(origin + path);
         if (path.matches("/v1/discussions/[a-f0-9-]{36}/artifacts(?:/[a-f0-9]{64}|\\?offset=\\d{1,12})?")) return URI.create(origin + path);
         if (path.matches("/v1/discussions(?:\\?(?:offset)=\\d{1,12}|/(?:catalog|events|commands(?:/[a-f0-9-]{36})?|[a-f0-9-]{36}(?:/events|\\?before=\\d{1,12})?))?")) {
             return URI.create(origin + path);

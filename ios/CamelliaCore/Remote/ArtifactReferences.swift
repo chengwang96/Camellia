@@ -49,15 +49,25 @@ public enum ArtifactKind: String, Sendable {
 /// Ported from `ArtifactReferences.java`. The desktop does not tell the phone
 /// which files a message produced, so the phone reads them out of the prose:
 /// a backtick-quoted path or the target of a markdown link, kept only when it
-/// ends in an extension worth downloading, and reduced to its base name. Being
-/// wrong here is cheap — a name that does not exist simply finds nothing when
-/// the artifact panel is opened — which is why the rule is deliberately
-/// permissive about where the path came from and strict only about what it ends
-/// with.
+/// ends in an extension worth downloading. Keep the full reference for opening
+/// a particular file; the basename alone cannot distinguish two build folders.
+public struct ArtifactSelection: Sendable, Hashable {
+    public let seq: Int64
+    public let reference: String
+
+    public init(seq: Int64, reference: String) { self.seq = seq; self.reference = reference }
+
+    public func path(conversationId: String, offset: Int64 = 0) -> String {
+        let allowed = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._*-")
+        let encoded = reference.addingPercentEncoding(withAllowedCharacters: allowed) ?? ""
+        return "/v1/conversations/\(conversationId)/artifacts?offset=\(offset)&seq=\(seq)&reference=\(encoded)"
+    }
+}
+
 public enum ArtifactReferences {
     /// `\`path\`` or `[text](path)` / `![alt](path)`, with or without the
     /// angle brackets markdown allows around a target.
-    private static let referencePattern = "`([^`\\n]+)`|!?\\[[^\\]\\n]*\\]\\(<?([^\\n]+?)>?\\)"
+    private static let referencePattern = #"!?\[[^\]\n]*\]\(<?((?:[^()\n]|\([^()\n]*\))+?)>?\)|`([^`\n]+)`"#
     /// Fenced code is stripped first: a path inside a code block is being shown
     /// as an example far more often than it is a file the answer made.
     private static let fencePattern = "```.*?(?:```|$)"
@@ -74,6 +84,16 @@ public enum ArtifactReferences {
     /// Bounded at a hundred the way Android bounds it: a message that mentions
     /// a thousand paths is a message whose list is not worth building.
     public static func names(from text: String, limit: Int = 100) -> [String] {
+        var seen = Set<String>()
+        return paths(from: text, limit: limit).map { Self.name(of: $0) }.filter { seen.insert($0).inserted }
+    }
+
+    public static func name(of path: String) -> String {
+        let decoded = path.removingPercentEncoding ?? path
+        return decoded.replacingOccurrences(of: "\\", with: "/").components(separatedBy: "/").last ?? ""
+    }
+
+    public static func paths(from text: String, limit: Int = 100) -> [String] {
         let body = stripFences(text)
         guard let expression = reference else { return [] }
         let full = NSRange(body.startIndex..<body.endIndex, in: body)
@@ -85,15 +105,17 @@ public enum ArtifactReferences {
             // Either capture group can be the empty one; exactly one is set per
             // match, which is how the two alternatives share a pass.
             let quoted = capture(match, 1, in: body) ?? capture(match, 2, in: body)
-            guard let path = quoted?.trimmingCharacters(in: .whitespacesAndNewlines), !path.isEmpty else { return }
+            guard let quoted else { return }
+            let path = quoted.replacingOccurrences(of: #"\s+"[^"]*"$"#, with: "", options: .regularExpression)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !path.isEmpty else { return }
             guard !matches(scheme, path) else { return }
             guard matches(extension_, path) else { return }
             // A Windows path arrives with backslashes and is still a path.
-            let slashed = path.replacingOccurrences(of: "\\", with: "/")
-            let name = slashed.components(separatedBy: "/").last ?? ""
+            let name = Self.name(of: path)
             guard !name.isEmpty, name.count <= 200 else { return }
-            guard seen.insert(name).inserted else { return }
-            result.append(name)
+            guard seen.insert(path).inserted else { return }
+            result.append(path)
             if result.count >= limit { stop.pointee = true }
         }
         return result

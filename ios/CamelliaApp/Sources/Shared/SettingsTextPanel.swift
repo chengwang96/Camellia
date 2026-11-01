@@ -38,9 +38,9 @@ struct SettingsTextPanel: View {
                 .onSubmit { focused = false }
                 .padding(.horizontal, 16)
                 .frame(minHeight: 54)
-                .background(RoundedRectangle(cornerRadius: Palette.fieldRadius, style: .continuous)
+                .background(RoundedRectangle(cornerRadius: Palette.settingsControlRadius, style: .continuous)
                     .fill(Palette.field))
-                .overlay(RoundedRectangle(cornerRadius: Palette.fieldRadius, style: .continuous)
+                .overlay(RoundedRectangle(cornerRadius: Palette.settingsControlRadius, style: .continuous)
                     .stroke(error == nil ? Palette.fieldBorder : Palette.error, lineWidth: 1))
                 .accessibilityLabel(Text(LocalizedStringKey(placeholder)))
                 .onChange(of: text) { _ in error = nil }

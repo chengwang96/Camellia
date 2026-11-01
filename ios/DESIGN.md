@@ -4,12 +4,9 @@
 
 ## 颜色
 
-两套色板，各有其值，不是一套的错版：
+Chat and settings now follow the desktop neutral surface (2026-11-01). `grouped` shares the page base; `cardBorder` outlines settings cards and `controlFill` fills their controls. `userBubble` is soft blue in both appearances. `muted`, `faint` and `caption` are separate secondary, tertiary and placeholder tones. The mobile popup glass and touch targets remain native.
 
-- **聊天页**（`background` / `surface` / `ink` / `muted` / `separator`）—— 白底细线
-- **设置与配对页**（`grouped` / `card` / `secondary` / `divider` / `field` / `fieldBorder` / `error`）—— 灰底白卡
-
-`accent` 两边共用。`raisedFace` / `raisedEdge` 是返回键圆盘自己的那一对，与 `separator` 看着像但不是一档：它圈的是凸起按钮，不是区域。
+Settings cards use `settingsCardRadius` (16), controls use `settingsControlRadius` (10), and user bubbles use `userBubbleRadius` (18). Existing popup/sheet radii retain their distinct roles.
 
 ## 字号
 

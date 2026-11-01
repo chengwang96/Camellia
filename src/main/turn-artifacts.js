@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { fileURLToPath } = require('node:url');
 const { previewKind } = require('./file-preview');
-const { textPaths, documentFormat } = require('../shared/turn-artifacts');
+const { textPaths } = require('../shared/turn-artifacts');
 
 function describeArtifact(resolved, explicit) {
   const kind = previewKind(resolved);
@@ -13,8 +13,9 @@ function describeArtifact(resolved, explicit) {
   if (kind === 'text' && (/\.(?:test|spec)\.[^.]+$/i.test(resolved)
     || /^(?:package(?:-lock)?\.json|tsconfig(?:\.[^.]+)?\.json|[^.]+\.config\.[^.]+|\.env(?:\..+)?|\.gitignore)$/i.test(path.basename(resolved))
     || ['log', 'lock'].includes(extension))) return null;
-  if (kind === 'text' && !explicit && !documentFormat({ extension })
-    && !['txt', 'csv', 'tsv', 'rst', 'tex'].includes(extension)) return null;
+  // Editing a document or source file is not a delivery. Text files must be
+  // referenced in the final answer or explicitly supplied by a delivery tool.
+  if (kind === 'text' && !explicit) return null;
   const stat = fs.statSync(resolved);
   if (!stat.isFile()) return null;
   // Native resolution also expands Windows 8.3 aliases (for example RUNNER~1
@@ -22,7 +23,8 @@ function describeArtifact(resolved, explicit) {
   const canonical = fs.realpathSync.native(resolved);
   return { canonical, kind,
     file: { path: resolved, canonicalPath: canonical, name: path.basename(resolved), kind,
-      extension: path.extname(resolved).slice(1).toUpperCase(), size: stat.size } };
+      extension: path.extname(resolved).slice(1).toUpperCase(), size: stat.size,
+      ...(explicit ? { explicitDelivery: true } : {}) } };
 }
 
 // A network (UNC) or Windows device path never belongs to a local deliverable,
@@ -64,11 +66,17 @@ function mentionedDirectories(candidates, bases) {
     if (typeof candidate !== 'string' || !candidate.trim()) continue;
     let targets = [];
     try { targets = targetsFor(candidate, bases); } catch {}
+    let found = false;
     for (const target of targets) {
       try {
-        if (!directories.includes(target) && fs.statSync(target).isDirectory()) directories.push(target);
+        if (fs.statSync(target).isDirectory()) {
+          found = true;
+          if (!directories.includes(target)) directories.push(target);
+        }
       } catch {}
     }
+    // An explicitly named folder still owns its files after it is removed.
+    if (!found && /[\\/]$/.test(candidate.trim()) && targets.length) directories.push(targets[0]);
   }
   return directories;
 }
@@ -101,24 +109,29 @@ function usableRoots(values) {
 // `explicitPaths` are files the caller already decided are deliverables (a
 // file search the user asked for, for example), so they bypass the noise
 // filter that keeps edited source and configuration out of a normal turn.
-function resolveArtifacts({ paths = [], explicitPaths = [], text = '', cwd = '', roots = [] } = {}) {
+function resolveArtifacts({ paths = [], explicitPaths = [], text = '', cwd = '', roots = [], reference } = {}) {
   const files = new Map();
   const references = textPaths(text).filter(candidate => !/(?:#L\d+(?:C\d+)?|:\d+(?::\d+)?)$/.test(candidate));
+  if (reference !== undefined && !references.includes(reference)) return [];
   const candidates = [...paths.slice(0, 100).map(candidate => ({ candidate, explicit: false })),
     ...explicitPaths.slice(0, 100).map(candidate => ({ candidate, explicit: true })),
     ...references.map(candidate => ({ candidate, explicit: true }))];
   const rootsAndCwd = usableRoots([cwd, ...roots]);
   // A folder the reply names itself is the strongest evidence of where its files
-  // live, so it outranks a directory only inferred from a command's arguments,
-  // which can still hold an older copy of the same file name (a template source,
-  // for example). The conversation workspace keeps its place at the front.
-  const named = mentionedDirectories(candidates.map(entry => entry.candidate), rootsAndCwd);
+  // live. Bare names stay in that folder instead of falling back to an older
+  // copy in the workspace or a directory inferred from a command.
+  const named = mentionedDirectories(references, rootsAndCwd);
   const bases = [cwd, ...named, ...rootsAndCwd.slice(1)].filter((base, index, list) => list.indexOf(base) === index);
   for (const { candidate, explicit } of candidates) {
+    if (reference !== undefined && candidate !== reference) continue;
     if (typeof candidate !== 'string' || !candidate.trim()) continue;
     let targets = [];
     try {
-      targets = targetsFor(candidate, bases);
+      let decoded = candidate.trim();
+      try { decoded = decodeURIComponent(decoded); } catch {}
+      const referenceBases = named.length && references.includes(candidate) && !/[\\/:]/.test(decoded)
+        ? named.slice(0, 1) : bases;
+      targets = targetsFor(candidate, referenceBases);
     } catch {}
     for (const target of targets) {
       try {

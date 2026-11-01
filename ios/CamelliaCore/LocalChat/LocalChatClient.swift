@@ -57,15 +57,18 @@ public struct LocalChatListener {
     /// uses. Never called for a streamed reply.
     public var onResponse: (JSONObject) -> Void
     public var onTool: ([String: Any]) -> Void
+    public var onUsage: ([String: Int64]) -> Void
 
     public init(onText: @escaping (String) -> Void = { _ in },
                 onThinking: @escaping (String) -> Void = { _ in },
                 onResponse: @escaping (JSONObject) -> Void = { _ in },
-                onTool: @escaping ([String: Any]) -> Void = { _ in }) {
+                onTool: @escaping ([String: Any]) -> Void = { _ in },
+                onUsage: @escaping ([String: Int64]) -> Void = { _ in }) {
         self.onText = onText
         self.onThinking = onThinking
         self.onResponse = onResponse
         self.onTool = onTool
+        self.onUsage = onUsage
     }
 }
 
@@ -101,6 +104,7 @@ public final class LocalChatClient: @unchecked Sendable {
     private var _cancelled = false
     private var _executor: LocalToolExecuting?
     private var timeoutToken = UUID()
+    private var turnUsage = LocalTurnUsage()
 
     public init(transport: LocalChatTransporting = URLSessionChatTransport()) {
         self.transport = transport
@@ -242,6 +246,7 @@ public final class LocalChatClient: @unchecked Sendable {
                 + LocalChatHTTPError.redact(source, keys: []))
         }
         listener.onResponse(reply)
+        listener.onUsage(turnUsage.add(LocalTurnUsage.normalize(reply.object("usage"), anthropic: route.isAnthropic)))
         if route.isAnthropic {
             let reasoning = reply.objects("content")
                 .filter { $0.text("type") == "thinking" }
@@ -292,6 +297,7 @@ public final class LocalChatClient: @unchecked Sendable {
         var replyLength = 0
         var line: [UInt8] = []
         var completed = false
+        var reportedUsage: [String: Any] = [:]
         // Android starts at zero so the first event is visible immediately;
         // only subsequent events are throttled to 80 ms.
         var lastUpdate: UInt64 = 0
@@ -326,6 +332,9 @@ public final class LocalChatClient: @unchecked Sendable {
                     throw LocalChatError.unsupportedFormat
                 }
                 let chunk = JSONObject(dictionary: object)
+                if let usage = chunk.object("usage") ?? chunk.object("message")?.object("usage") {
+                    reportedUsage.merge(usage.raw) { _, latest in latest }
+                }
                 if chunk.has("error") || chunk.text("type") == "error" {
                     let detail = LocalChatHTTPError.redact(data, keys: [])
                     throw LocalChatError.streamError(
@@ -384,6 +393,7 @@ public final class LocalChatClient: @unchecked Sendable {
         listener.onThinking(thinking)
         listener.onText(text)
         if !completed { throw LocalChatError.interrupted }
+        listener.onUsage(turnUsage.add(LocalTurnUsage.normalize(JSONObject(dictionary: reportedUsage), anthropic: wireProtocol == "anthropic")))
         if text.isEmpty { throw LocalChatError.noText }
         return text
     }
@@ -511,7 +521,8 @@ public final class LocalChatClient: @unchecked Sendable {
             let answer = try await chat(route: route, body: body, listener: LocalChatListener(
                 onText: listener.onText,
                 onThinking: listener.onThinking,
-                onResponse: { response = $0 }))
+                onResponse: { response = $0 },
+                onUsage: listener.onUsage))
             try check(deadline)
 
             guard let response else { throw LocalToolError.requiresJSON }

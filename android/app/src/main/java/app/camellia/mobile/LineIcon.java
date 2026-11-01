@@ -67,6 +67,10 @@ final class LineIcon extends Drawable {
             case "archive":
                 canvas.drawRoundRect(3, 3, 21, 8, 1.5f, 1.5f, paint); path.moveTo(5, 8); path.lineTo(5, 21); path.lineTo(19, 21); path.lineTo(19, 8);
                 path.moveTo(9, 12); path.lineTo(15, 12); canvas.drawPath(path, paint); break;
+            case "moon":
+                path.moveTo(20.8f, 14.4f); path.cubicTo(13, 18, 6, 11, 9.6f, 3.2f);
+                path.cubicTo(-1, 6, 2, 23, 14, 21); path.quadTo(19, 20, 20.8f, 14.4f);
+                canvas.drawPath(path, paint); break;
             case "appearance":
                 canvas.drawCircle(12, 12, 4, paint);
                 for (int index = 0; index < 8; index++) {

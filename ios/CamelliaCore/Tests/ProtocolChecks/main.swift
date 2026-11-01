@@ -6580,6 +6580,50 @@ do {
     session.shutdown()
 } catch { failures.append("remote list queries: \(error)") }
 
+// MARK: - Recorded turn details
+do {
+    let detail = TurnDetails(JSONObject(dictionary: ["state": "complete", "model": "historical-model", "duration_ms": 61500,
+        "usage": ["input_tokens": 1000, "cache_read_input_tokens": 7500, "cache_creation_input_tokens": 1500, "output_tokens": 2000]]))
+    checkEqual(detail.total, 12000, "turn accounting counts each bucket once")
+    checkEqual(detail.cacheHit, 75, "cache hit denominator includes cache writes")
+    checkEqual(detail.elapsed, "1m 2s", "elapsed time matches desktop rounding")
+    checkEqual(TurnDetails(JSONObject(dictionary: detail.json)), detail, "stored accounting survives a round trip")
+    let message = RemoteMessage(JSONObject(dictionary: ["seq": 5, "role": "assistant", "text": "Reply", "turnDetails": detail.json]))
+    checkEqual(message.turnDetails, detail, "remote messages preserve their own accounting")
+    let unknown = TurnDetails(JSONObject(dictionary: ["usage": ["input_tokens": 20, "output_tokens": 5]]))
+    checkEqual(unknown.total, 25, "unknown cache does not affect the token total")
+    checkEqual(unknown.cacheHit, nil, "unknown cache does not become a zero hit rate")
+    let invalid = TurnDetails(JSONObject(dictionary: ["state": "stopped", "duration_ms": -1,
+        "usage": ["input_tokens": "100", "output_tokens": true, "cache_read_input_tokens": -1, "cache_creation_input_tokens": 0.5]]))
+    check(!invalid.hasUsage && !invalid.completed && invalid.duration == nil, "invalid counts and stopped runs do not claim success")
+    let zero = TurnDetails(JSONObject(dictionary: ["usage": ["input_tokens": 0, "cache_read_input_tokens": 0]]))
+    check(zero.hasUsage && zero.cacheHit == 0, "explicit zero usage is still reported")
+    let wire = LocalTurnUsage.normalize(JSONObject(dictionary: ["prompt_tokens": 100, "completion_tokens": 20,
+        "prompt_tokens_details": ["cached_tokens": 75]]), anthropic: false)
+    checkEqual(wire["input_tokens"], 25, "local OpenAI input excludes reported cache reads")
+    var aggregate = LocalTurnUsage()
+    _ = aggregate.add(wire)
+    let combined = aggregate.add(["input_tokens": 5, "output_tokens": 10])
+    checkEqual(combined["input_tokens"], 30, "local tool round accounting accumulates once per response")
+    checkEqual(combined["cache_read_input_tokens"], nil, "missing round cache data keeps the total unknown")
+    check(aggregate.add([:]).isEmpty, "unreported usage is never claimed as a partial total")
+}
+
+// MARK: - Selected artifact references
+do {
+    let text = "[New](<new build/phone (release).apk>) [Old](old/phone.apk) `docs/design.md:12`"
+    checkEqual(ArtifactReferences.paths(from: text), ["new build/phone (release).apk", "old/phone.apk"], "file cards preserve full references")
+    checkEqual(ArtifactReferences.paths(from: "`old/phone.apk` `new/phone.apk` `old/phone.apk`"), ["old/phone.apk", "new/phone.apk"], "same basenames remain separate selections")
+    let selection = ArtifactSelection(seq: 17, reference: "new build/phone (release).apk")
+    let endpoint = try Endpoint("http://100.64.0.1:43127")
+    let path = selection.path(conversationId: "12345678-1234-1234-1234-123456789abc")
+    check(path.contains("&seq=17&reference=new%20build%2Fphone%20%28release%29.apk"), "selection encodes spaces, directories and parentheses")
+    check(endpoint.isAllowed(path: path), "selected artifact queries are allowlisted")
+    for suffix in ["&extra=1", "#fragment", "&reference=other.apk"] {
+        check(!endpoint.isAllowed(path: path + suffix), "selected artifact query rejects added parameters")
+    }
+} catch { failures.append("selected artifact references: \(error)") }
+
 // MARK: - Report
 if failures.isEmpty {
     print("PASS: all \(checks) protocol checks passed")

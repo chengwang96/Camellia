@@ -144,7 +144,7 @@ test('edited source and configuration are not deliverables unless explicitly lin
   for (const file of paths) fs.writeFileSync(path.join(cwd, file), 'fixture');
   const result = resolveArtifacts({ cwd, paths, text: '`main.js:12` [test](main.test.js#L3) [script](helper.py)' });
   assert.deepEqual(sortArtifacts(result).map(file => file.name), [
-    'report.md', 'page.html', 'figure.png', 'video.mp4', 'slides.pptx', 'data.csv', 'notes.txt', 'helper.py',
+    'figure.png', 'video.mp4', 'slides.pptx', 'helper.py',
   ]);
   assert.deepEqual(resolveArtifacts({ cwd, paths: ['main.js', 'package.json', 'debug.log'] }), []);
   assert.deepEqual(resolveArtifacts({ cwd, text: '`main.test.js` `package.json` `debug.log`' }), []);
@@ -163,10 +163,39 @@ test('built application packages stay deliverables instead of being discarded as
   }
   const result = resolveArtifacts({ cwd, paths: ['android/README.md'], text: '- `dist/Camellia-Android-0.3.27-debug.apk`' });
   assert.deepEqual(sortArtifacts(result).map(file => [file.name, file.kind]), [
-    ['Camellia-Android-0.3.27-debug.apk', 'package'], ['README.md', 'text'],
+    ['Camellia-Android-0.3.27-debug.apk', 'package'],
   ]);
   assert.equal(sortArtifacts(result)[0].extension, 'APK');
   assert.equal(result.find(file => file.kind === 'package').path, apk);
+});
+
+test('editing documents alone does not deliver them, while explicit text deliveries remain available', t => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'camellia-document-delivery-'));
+  t.after(() => removeTree(cwd));
+  const paths = ['internal.md', 'notes.txt', 'report.csv', 'page.html'];
+  for (const file of paths) fs.writeFileSync(path.join(cwd, file), 'fixture');
+  assert.deepEqual(resolveArtifacts({ cwd, paths, text: 'Finished the work.' }), []);
+  assert.deepEqual(resolveArtifacts({ cwd, paths, text: '[Report](internal.md)' }).map(file => file.name), ['internal.md']);
+  assert.deepEqual(resolveArtifacts({ cwd, explicitPaths: paths }).map(file => file.name), paths);
+});
+
+test('one file reference retains its own directory and the reply named output folder', t => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'camellia-artifact-selection-'));
+  t.after(() => removeTree(cwd));
+  for (const directory of ['old', 'new build']) {
+    fs.mkdirSync(path.join(cwd, directory));
+    fs.writeFileSync(path.join(cwd, directory, 'phone.apk'), directory);
+  }
+  fs.writeFileSync(path.join(cwd, 'phone.apk'), 'workspace copy');
+  const text = '`new build/` [Install](phone.apk) [Older](old/phone.apk)';
+  const options = { cwd, roots: [path.join(cwd, 'old')], text, reference: 'phone.apk' };
+  assert.equal(resolveArtifacts(options)[0].path, path.join(cwd, 'new build/phone.apk'));
+  assert.equal(resolveArtifacts({ cwd, text, reference: 'old/phone.apk' })[0].path, path.join(cwd, 'old/phone.apk'));
+  assert.deepEqual(resolveArtifacts({ cwd, text, paths: ['new build/phone.apk'], reference: 'new build/phone.apk' }), [], 'selection must be a reply reference');
+  fs.unlinkSync(path.join(cwd, 'new build/phone.apk'));
+  assert.deepEqual(resolveArtifacts(options), [], 'a missing selected build must not fall back to the workspace or another tool directory');
+  fs.rmdirSync(path.join(cwd, 'new build'));
+  assert.deepEqual(resolveArtifacts(options), [], 'removing the output directory must not change the selected file identity');
 });
 
 test('Windows Markdown drive paths accept a leading slash without losing deliverables', { skip: process.platform !== 'win32' }, t => {

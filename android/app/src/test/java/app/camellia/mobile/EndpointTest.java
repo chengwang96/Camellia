@@ -4,6 +4,15 @@ import org.junit.Test;
 import static org.junit.Assert.*;
 
 public class EndpointTest {
+    @Test public void selectedFileQueriesKeepTheMessageAndEncodedReferenceTogether() {
+        Endpoint endpoint = new Endpoint("http://100.64.0.1:43127");
+        String base = "/v1/conversations/12345678-1234-1234-1234-123456789abc/artifacts?offset=0";
+        String query = "&seq=12&reference=dist%2Fnew+build%2Fphone.apk";
+        assertEquals(base + query, endpoint.uri(base + query).getRawPath() + "?" + endpoint.uri(base + query).getRawQuery());
+        for (String invalid : new String[]{"&seq=0&reference=a.apk", "&seq=-1&reference=a.apk", "&seq=1", "&reference=a.apk", query + "&extra=1", "&seq=1&reference=%GG", query + "#part"}) {
+            assertThrows(IllegalArgumentException.class, () -> endpoint.uri(base + invalid));
+        }
+    }
     @Test public void allowsOnlyTheExactDesktopRestartEndpoint() {
         Endpoint endpoint = new Endpoint("http://100.64.0.1:43127");
         assertEquals("/v1/desktop/restart", endpoint.uri("/v1/desktop/restart").getPath());

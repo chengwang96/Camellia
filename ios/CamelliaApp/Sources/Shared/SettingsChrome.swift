@@ -1,5 +1,73 @@
 import SwiftUI
 
+struct SettingsToggleStyle: ToggleStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        Button { configuration.isOn.toggle() } label: {
+            HStack {
+                configuration.label
+                Spacer(minLength: 12)
+                RoundedRectangle(cornerRadius: 14)
+                    .fill(configuration.isOn ? Palette.ink : Palette.trackOff)
+                    .frame(width: 48, height: 28)
+                    .overlay(Circle().fill(configuration.isOn ? Palette.grouped : Color.white)
+                        .frame(width: 24, height: 24)
+                        .offset(x: configuration.isOn ? 10 : -10))
+                    .frame(minHeight: 48)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityElement(children: .combine)
+        .accessibilityValue(configuration.isOn ? Text("已开启") : Text("已关闭"))
+    }
+}
+
+/// The same three icon-over-label choices as desktop, with phone-sized targets.
+struct SettingsAppearanceChoices: View {
+    @Binding var selection: AppTheme
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("外观")
+                .font(.system(size: Palette.textRowStrong))
+            HStack(alignment: .top, spacing: 6) {
+                ForEach(AppTheme.allCases, id: \.self) { theme in
+                    Button { selection = theme } label: {
+                        VStack(spacing: 6) {
+                            MobileLineIcon(name: icon(theme), size: 20)
+                            Text(LocalizedStringKey(theme.label))
+                                .font(.system(size: Palette.textNote))
+                                .multilineTextAlignment(.center)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        .frame(maxWidth: .infinity, minHeight: 56)
+                        .padding(.horizontal, 4)
+                        .padding(.vertical, 12)
+                        .background(RoundedRectangle(cornerRadius: Palette.settingsCardRadius)
+                            .fill(selection == theme ? Palette.controlFill : Palette.card))
+                        .overlay(RoundedRectangle(cornerRadius: Palette.settingsCardRadius)
+                            .strokeBorder(selection == theme ? Palette.selectedBorder : Palette.cardBorder, lineWidth: 1))
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityAddTraits(selection == theme ? [.isSelected] : [])
+                    .accessibilityIdentifier("appearance:" + theme.rawValue)
+                }
+            }
+        }
+        .foregroundColor(Palette.ink)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 14)
+    }
+
+    private func icon(_ theme: AppTheme) -> String {
+        switch theme {
+        case .system: return "computer"
+        case .light: return "appearance"
+        case .dark: return "moon"
+        }
+    }
+}
+
 /// The grouped-card vocabulary used by Android's settings, computer and
 /// pairing pages. Keeping it in one place prevents those pages from drifting
 /// back to unrelated `Form` defaults.
@@ -10,9 +78,11 @@ struct SettingsCard<Content: View>: View {
 
     var body: some View {
         VStack(spacing: 0) { content }
-            .background(RoundedRectangle(cornerRadius: Palette.groupRadius, style: .continuous)
+            .background(RoundedRectangle(cornerRadius: Palette.settingsCardRadius, style: .continuous)
                 .fill(Palette.card))
-            .clipShape(RoundedRectangle(cornerRadius: Palette.groupRadius, style: .continuous))
+            .clipShape(RoundedRectangle(cornerRadius: Palette.settingsCardRadius, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: Palette.settingsCardRadius, style: .continuous)
+                .strokeBorder(Palette.cardBorder, lineWidth: 1))
             .padding(.bottom, 14)
     }
 }
@@ -98,7 +168,7 @@ struct SettingsNote: View {
     var body: some View {
         Text(LocalizedStringKey(text))
             .font(.system(size: Palette.textNote))
-            .foregroundColor(Palette.secondary)
+            .foregroundColor(Palette.faint)
             .lineSpacing(2)
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, 8)

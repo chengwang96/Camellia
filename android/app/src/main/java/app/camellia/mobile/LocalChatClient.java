@@ -18,11 +18,13 @@ final class LocalChatClient {
         default void onThinking(String text) {}
         default void onResponse(JSONObject response) {}
         default void onTool(JSONObject entry) {}
+        default void onUsage(JSONObject usage) {}
     }
     private volatile HttpURLConnection connection;
     private volatile boolean cancelled;
     private volatile LocalToolLoop.Executor tools;
     private static final int LIMIT = 2 * 1024 * 1024;
+    private final LocalTurnUsage turnUsage = new LocalTurnUsage();
 
     void cancel() {
         cancelled = true;
@@ -154,6 +156,7 @@ final class LocalChatClient {
                 if (response.has("error")) throw new IOException("API 返回错误 / API error: "
                     + LocalChatHttpError.redact(response.toString(), java.util.Collections.emptyList()));
                 listener.onResponse(response);
+                listener.onUsage(turnUsage.add(LocalTurnUsage.normalize(response.optJSONObject("usage"), route.protocol.equals("anthropic"))));
                 if (route.protocol.equals("anthropic")) {
                     JSONArray blocks = response.optJSONArray("content"); StringBuilder reasoning = new StringBuilder();
                     if (blocks != null) for (int index = 0; index < blocks.length(); index++) {
@@ -198,6 +201,7 @@ final class LocalChatClient {
     private String stream(BufferedReader reader, String protocol, Listener listener) throws Exception {
         StringBuilder text = new StringBuilder(), thinking = new StringBuilder(), event = new StringBuilder(), line = new StringBuilder();
         boolean completed = false;
+        JSONObject reportedUsage = new JSONObject();
         long lastUpdate = 0;
         int character;
         while ((character = reader.read()) != -1) {
@@ -213,6 +217,12 @@ final class LocalChatClient {
                 String data = event.toString().trim(); event.setLength(0);
                 if (data.equals("[DONE]")) { completed = true; break; }
                 JSONObject chunk = new JSONObject(data);
+                JSONObject usage = chunk.optJSONObject("usage");
+                JSONObject envelope = chunk.optJSONObject("message");
+                if (usage == null && envelope != null) usage = envelope.optJSONObject("usage");
+                if (usage != null) for (java.util.Iterator<String> keys = usage.keys(); keys.hasNext();) {
+                    String key = keys.next(); reportedUsage.put(key, usage.get(key));
+                }
                 if (chunk.has("error") || chunk.optString("type").equals("error")) {
                     String detail = LocalChatHttpError.redact(chunk.toString(), java.util.Collections.emptyList());
                     throw new IOException("API 返回错误，已保留部分回复 / API stream error; partial reply kept"
@@ -249,6 +259,7 @@ final class LocalChatClient {
         if (cancelled) throw new IOException("Cancelled");
         listener.onThinking(thinking.toString()); listener.onText(text.toString());
         if (!completed) throw new IOException("回复连接中断，未自动重发 / Reply interrupted; not automatically resent");
+        listener.onUsage(turnUsage.add(LocalTurnUsage.normalize(reportedUsage, protocol.equals("anthropic"))));
         if (text.length() == 0) throw new IOException("API 未返回文字 / API returned no text");
         return text.toString();
     }

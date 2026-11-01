@@ -1041,6 +1041,7 @@ struct ConversationDetailView: View {
     /// Android's disc.
     @Environment(\.dismiss) private var dismiss
     @State private var showArtifacts = false
+    @State private var artifactSelection: ArtifactSelection?
     @State private var showAttachPanel = false
     @State private var showCamera = false
     @State private var showImages = false
@@ -1089,7 +1090,10 @@ struct ConversationDetailView: View {
                             MessageView(row: row,
                                         editable: canEdit(row),
                                         onEdit: { model.beginEdit(row.id) },
-                                        onOpenArtifacts: { showArtifacts = true })
+                                        onOpenArtifacts: { reference in
+                                            artifactSelection = ArtifactSelection(seq: row.id, reference: reference)
+                                            showArtifacts = true
+                                        })
                                 .id(row.id)
                             if row.message.role == .user {
                                 let tasks = model.transcript.subagents.filter { $0.userSeq == row.id }
@@ -1226,7 +1230,7 @@ struct ConversationDetailView: View {
                     ZStack(alignment: .bottom) {
                         Color.black.opacity(0.28).contentShape(Rectangle())
                             .onTapGesture { showArtifacts = false }
-                        ArtifactSheetView(onClose: { showArtifacts = false })
+                        ArtifactSheetView(selection: artifactSelection, onClose: { showArtifacts = false })
                             .environmentObject(model)
                             .frame(width: min(560, geometry.size.width - 24),
                                    height: min(660, geometry.size.height * 0.83))
@@ -1395,7 +1399,7 @@ struct ConversationDetailView: View {
         case .camera: showCamera = true
         case .photos: showImages = true
         case .files: showDocuments = true
-        case .artifacts: showArtifacts = true
+        case .artifacts: artifactSelection = nil; showArtifacts = true
         case .permission: remotePopup = .permissions
         }
     }
@@ -1508,7 +1512,7 @@ private struct MessageView: View {
     let row: RenderedMessage
     let editable: Bool
     let onEdit: () -> Void
-    let onOpenArtifacts: () -> Void
+    let onOpenArtifacts: (String) -> Void
 
     var body: some View {
         VStack(alignment: row.message.role == .user ? .trailing : .leading, spacing: 6) {
@@ -1517,8 +1521,8 @@ private struct MessageView: View {
                     .font(.system(size: Palette.textSmall))
                     .foregroundColor(Palette.accent)
             }
-            if row.message.role != .user && !row.process.isEmpty {
-                ProcessView(entries: row.process)
+            if row.message.role != .user && (!row.process.isEmpty || row.message.turnDetails?.completed == true) {
+                ProcessView(entries: row.process, details: row.message.turnDetails)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
             Group {
@@ -1550,16 +1554,16 @@ private struct MessageView: View {
             // naming files it has not written yet, so listing them would offer
             // a download of something that does not exist.
             if row.message.role != .user, !row.message.text.isEmpty {
-                let files = ArtifactReferences.names(from: row.message.text)
+                let files = ArtifactReferences.paths(from: row.message.text)
                 if !files.isEmpty {
                     ArtifactCard(names: files, onOpen: onOpenArtifacts)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(.top, 8)
                 }
             }
-            if !row.message.text.isEmpty {
+            if !row.message.text.isEmpty || row.message.turnDetails?.hasUsage == true {
                 RemoteMessageFooter(text: row.message.text, at: row.message.at,
-                                    user: row.message.role == .user)
+                                    user: row.message.role == .user, details: row.message.turnDetails)
             }
         }
         .frame(maxWidth: .infinity, alignment: row.message.role == .user ? .trailing : .leading)
@@ -1586,8 +1590,8 @@ private struct MessageView: View {
                 .lineSpacing(Palette.chatLineSpacing)
         }
         .padding(EdgeInsets(top: 8, leading: 14, bottom: 12, trailing: 14))
-        .background(RoundedRectangle(cornerRadius: Palette.radius, style: .continuous)
-            .fill(Palette.surface))
+        .background(RoundedRectangle(cornerRadius: Palette.userBubbleRadius, style: .continuous)
+            .fill(Palette.userBubble))
     }
 }
 
@@ -1625,6 +1629,7 @@ private struct RemoteMessageFooter: View {
     let text: String
     let at: Int64
     let user: Bool
+    var details: TurnDetails? = nil
 
     var body: some View {
         HStack(spacing: 0) {
@@ -1637,10 +1642,11 @@ private struct RemoteMessageFooter: View {
             }
             .buttonStyle(.plain)
             .accessibilityLabel("复制消息")
+            if !user, let details, details.hasUsage { TurnUsageButton(details: details) }
             if at > 0 {
                 Text(time)
                     .font(.system(size: Palette.textSmall))
-                    .foregroundColor(Palette.muted)
+                    .foregroundColor(Palette.faint)
             }
             if !user { Spacer(minLength: 0) }
         }
@@ -1700,8 +1706,8 @@ private struct PendingView: View {
                     .font(.body)
                     .foregroundColor(Palette.ink)
                     .padding(EdgeInsets(top: 8, leading: 14, bottom: 12, trailing: 14))
-                    .background(RoundedRectangle(cornerRadius: Palette.radius, style: .continuous)
-                        .fill(Palette.surface))
+                    .background(RoundedRectangle(cornerRadius: Palette.userBubbleRadius, style: .continuous)
+                        .fill(Palette.userBubble))
                     .frame(maxWidth: .infinity, alignment: .trailing)
                     .padding(.leading, Palette.userInset)
                 if !value.isEmpty {
@@ -1901,12 +1907,12 @@ struct RemoteFeedbackFixtureView: View {
                 MessageView(row: RenderedMessage(
                     message: RemoteMessage(seq: 1, role: .user,
                                            text: "Repeat prompt", at: at), process: []),
-                    editable: true, onEdit: { editTaps += 1 }, onOpenArtifacts: {})
+                    editable: true, onEdit: { editTaps += 1 }, onOpenArtifacts: { _ in })
                 MessageView(row: RenderedMessage(
                     message: RemoteMessage(seq: 2, role: .assistant,
                                            text: "Final answer after the tool call.", at: at,
                                            process: process, truncated: true), process: process),
-                    editable: false, onEdit: {}, onOpenArtifacts: {})
+                    editable: false, onEdit: {}, onOpenArtifacts: { _ in })
                 LiveView(live: live, process: live.process)
                 PendingView(state: .sending(""), at: at, legacyImage: true,
                             chinese: false, showBubble: true,
@@ -1932,11 +1938,13 @@ struct RemoteFeedbackFixtureView: View {
 struct ProcessView: View {
     let entries: [RemoteProcessEntry]
     let live: Bool
+    let details: TurnDetails?
     @State private var expanded = false
 
-    init(entries: [RemoteProcessEntry], live: Bool = false) {
+    init(entries: [RemoteProcessEntry], live: Bool = false, details: TurnDetails? = nil) {
         self.entries = entries
         self.live = live
+        self.details = details
     }
 
     private var onlyThinking: Bool {
@@ -1949,33 +1957,44 @@ struct ProcessView: View {
     }
 
     private var toolCount: Int { entries.filter { $0.type == "tool" }.count }
+    private var completed: Bool { !live && details?.completed == true }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             Button { expanded.toggle() } label: {
                 HStack(spacing: 10) {
-                    Text("◇")
-                        .font(.system(size: 19))
-                    HStack(spacing: 0) {
-                        Text(LocalizedStringKey(caption))
-                        if toolCount > 0 {
-                            Text(verbatim: " · \(toolCount)")
-                            Text(LocalizedStringKey(" 次工具调用"))
-                        }
+                    if !completed {
+                        Text("◇").font(.system(size: 19))
                     }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    Image(systemName: expanded ? "chevron.down" : "chevron.right")
-                        .font(.system(size: 14))
-                        .frame(width: 18, height: 18)
+                    if completed, let details {
+                        TurnCompletionLabel(details: details)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    } else {
+                        HStack(spacing: 0) {
+                            Text(LocalizedStringKey(caption))
+                            if toolCount > 0 {
+                                Text(verbatim: " · \(toolCount)")
+                                Text(LocalizedStringKey(" 次工具调用"))
+                            }
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    if !entries.isEmpty {
+                        Image(systemName: expanded ? "chevron.down" : "chevron.right")
+                            .font(.system(size: 14))
+                            .frame(width: 18, height: 18)
+                    }
                 }
                 .font(.system(size: Palette.textBody))
                 .foregroundColor(Palette.muted)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
+                .padding(.horizontal, completed ? 0 : 12)
+                .padding(.vertical, completed ? 0 : 8)
                 .frame(minHeight: 48)
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .disabled(entries.isEmpty)
+            if completed { Rectangle().fill(Palette.separator).frame(height: 1) }
             if expanded {
                 VStack(alignment: .leading, spacing: 0) {
                     ForEach(Array(entries.enumerated()), id: \.offset) { pair in
@@ -1990,7 +2009,7 @@ struct ProcessView: View {
         .background(RoundedRectangle(cornerRadius: Palette.smallRadius, style: .continuous)
             .fill(Palette.background))
         .overlay(RoundedRectangle(cornerRadius: Palette.smallRadius, style: .continuous)
-            .stroke(Palette.separator, lineWidth: 1))
+            .stroke(completed ? Color.clear : Palette.separator, lineWidth: 1))
     }
 }
 

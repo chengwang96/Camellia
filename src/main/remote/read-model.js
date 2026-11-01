@@ -4,6 +4,7 @@ const { fail } = require('./access');
 const { createHash } = require('node:crypto');
 const { approval } = require('./commands');
 const { projectOutput, cleanProcess } = require('../../shared/mobile-output');
+const { mobileTurnDetails } = require('../../shared/mobile-turn-details');
 const { settingsView } = require('./settings');
 const { latestFilePreview } = require('./conversation-preview');
 const { MAX_COUNT: MAX_ATTACHMENTS } = require('./attachments');
@@ -64,7 +65,9 @@ function message(row) {
     .slice(0, MAX_ATTACHMENTS).map(file => ({ name: file.name.replace(/[\\/\x00-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]/g, '_').slice(0, 180), isImage: file.isImage === true }));
   const compaction = row.role === 'notice' && row.compaction
     ? compactionView({ ...row.compaction, state: row.compaction.state || 'completed', engine: row.engine, seq: row.seq }) : null;
+  const turnDetails = mobileTurnDetails(row);
   return { seq: row.seq, role: row.role, engine: row.engine, at: row.at, ...text(value), ...(compaction ? { compaction } : {}),
+    ...(turnDetails ? { turnDetails } : {}),
     ...(process.length ? { process } : {}), ...(attachedFiles.length ? { attachedFiles } : {}) };
 }
 

@@ -104,7 +104,7 @@ class RemoteDiscussions {
         const generated = delivery?.status === 'completed' ? (delivery.tools || [])
           .filter(t => t.status === 'completed' && /write|edit|create|save|output|export|patch/i.test(t.name))
           .flatMap(t => [t.input?.file_path, t.input?.TargetFile, t.input?.path, t.input?.output_path].filter(p => typeof p === 'string').map(path => ({ path }))) : [];
-        return [{ ...message, role: 'assistant', text: message.role === 'assistant' ? message.text : '', artifacts: [...attached, ...generated] }];
+        return [{ ...message, role: 'assistant', text: message.role === 'assistant' ? message.text : '', artifacts: generated, explicitArtifacts: attached }];
       }) },
     };
   }

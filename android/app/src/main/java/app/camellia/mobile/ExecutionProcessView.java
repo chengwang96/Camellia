@@ -31,7 +31,8 @@ final class ExecutionProcessView extends LinearLayout {
     private final String key;
     private final State state;
     private final LinearLayout body, header;
-    private final TextView caption;
+    private final TextView caption, icon;
+    private final View rule;
     private final ImageView arrow;
     private JSONArray entries = new JSONArray();
     private boolean expanded;
@@ -44,12 +45,15 @@ final class ExecutionProcessView extends LinearLayout {
         LayoutParams params = new LayoutParams(-1, -2); params.setMargins(0, 0, 0, style.dp(14)); setLayoutParams(params);
         header = new LinearLayout(context); header.setGravity(Gravity.CENTER_VERTICAL); header.setMinimumHeight(style.dp(48));
         header.setPadding(style.dp(12), style.dp(8), style.dp(12), style.dp(8)); header.setFocusable(true); header.setTag("processToggle:" + key);
-        TextView icon = label("◇", 19); icon.setPadding(0, 0, style.dp(10), 0); header.addView(icon);
+        icon = label("◇", 19); icon.setPadding(0, 0, style.dp(10), 0); header.addView(icon);
         caption = label("", 14); header.addView(caption, new LayoutParams(0, -2, 1));
         arrow = new ImageView(context); header.addView(arrow, new LayoutParams(style.dp(18), style.dp(18)));
-        addView(header); body = new LinearLayout(context); body.setOrientation(VERTICAL); body.setPadding(style.dp(14), 0, style.dp(14), style.dp(12));
+        addView(header);
+        rule = new View(context); rule.setBackgroundColor(Palette.of(context).separator); rule.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+        addView(rule, new LayoutParams(-1, Math.max(1, style.dp(1)))); rule.setVisibility(GONE);
+        body = new LinearLayout(context); body.setOrientation(VERTICAL); body.setPadding(style.dp(14), 0, style.dp(14), style.dp(12));
         body.setTag("processBody:" + key); addView(body);
-        header.setOnClickListener(view -> { expanded = !expanded; state.set(key, expanded); renderBody(); });
+        header.setOnClickListener(view -> { if (entries.length() == 0) return; expanded = !expanded; state.set(key, expanded); renderBody(); });
     }
 
     private String tr(String zh, String en) { return chinese ? zh : en; }
@@ -58,6 +62,10 @@ final class ExecutionProcessView extends LinearLayout {
     }
 
     void update(JSONArray process, boolean live) {
+        update(process, live, null);
+    }
+
+    void update(JSONArray process, boolean live, TurnDetails details) {
         entries = process == null ? new JSONArray() : process;
         expanded = state.open(key, live);
         int tools = 0; boolean onlyThinking = entries.length() > 0;
@@ -69,12 +77,22 @@ final class ExecutionProcessView extends LinearLayout {
         String title = onlyThinking ? live ? tr("正在思考", "Thinking") : tr("思考已完成", "Thinking completed")
             : live ? tr("执行过程 · 进行中", "Execution process · Running") : tr("执行过程", "Execution process");
         String summary = title + (tools > 0 ? " · " + tools + tr(" 次工具调用", " tool calls") : ""); caption.setText(summary);
-        setVisibility(entries.length() == 0 ? GONE : VISIBLE); renderBody();
+        boolean completed = !live && details != null && details.completed();
+        if (completed) caption.setText(details.duration == null ? getContext().getString(R.string.turn_completed)
+            : getContext().getString(R.string.turn_completion_elapsed, details.elapsed()));
+        icon.setVisibility(completed ? GONE : VISIBLE); rule.setVisibility(completed ? VISIBLE : GONE);
+        header.setPadding(completed ? 0 : style.dp(12), style.dp(8), completed ? 0 : style.dp(12), style.dp(8));
+        header.setClickable(entries.length() > 0); header.setFocusable(entries.length() > 0);
+        caption.setTextColor(completed ? style.faint : style.muted);
+        if (completed) setBackgroundColor(android.graphics.Color.TRANSPARENT);
+        else { GradientDrawable border = style.rounded(style.background); border.setStroke(style.dp(1), ModelPickerPopup.blend(style.background, style.muted, .22f)); setBackground(border); }
+        setVisibility(entries.length() == 0 && !completed ? GONE : VISIBLE); renderBody();
     }
 
     private void renderBody() {
         arrow.setImageDrawable(new LineIcon(expanded ? "down" : "right", style.muted));
-        header.setContentDescription(caption.getText() + (expanded ? tr("，收起", ", collapse") : tr("，展开", ", expand")));
+        arrow.setVisibility(entries.length() == 0 ? GONE : VISIBLE);
+        header.setContentDescription(caption.getText() + (entries.length() == 0 ? "" : expanded ? tr("，收起", ", collapse") : tr("，展开", ", expand")));
         body.setVisibility(expanded ? VISIBLE : GONE); body.removeAllViews();
         if (!expanded) return;
         for (int index = 0; index < entries.length(); index++) {

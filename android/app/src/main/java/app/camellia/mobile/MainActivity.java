@@ -2675,7 +2675,7 @@ public final class MainActivity extends Activity {
             if (compaction != null) { addCompaction(key, compaction); continue; }
             JSONArray process = row.optJSONArray("process");
             if (role.equals("assistant") && (process == null || process.length() == 0)) process = pendingProcess;
-            addMessage(key, label, row.optString("text"), role.equals("user"), row.optBoolean("textTruncated"), process, false, "turn:" + turn, row.optLong("at"), row.optLong("seq"));
+            addMessage(key, label, row.optString("text"), role.equals("user"), row.optBoolean("textTruncated"), process, false, "turn:" + turn, row.optLong("at"), row.optLong("seq"), row.optJSONObject("turnDetails"));
             if (role.equals("user")) addSubtasks(turn, retained);
             if (role.equals("assistant")) pendingProcess = new JSONArray();
         }
@@ -2892,7 +2892,10 @@ public final class MainActivity extends Activity {
     }
 
     private void addMessage(String key, String label, String value, boolean user, boolean truncated, JSONArray process, boolean live, String turn, long at, long seq) {
-        if (!user) { addReply(key, value, truncated, process, live, turn, at, label.equals("Camellia")); return; }
+        addMessage(key, label, value, user, truncated, process, live, turn, at, seq, null);
+    }
+    private void addMessage(String key, String label, String value, boolean user, boolean truncated, JSONArray process, boolean live, String turn, long at, long seq, JSONObject details) {
+        if (!user) { addReply(key, value, truncated, process, live, turn, at, seq, label.equals("Camellia"), details); return; }
         long latestUserSeq = -1;
         for (JSONObject row : history.values()) if (row.optString("role").equals("user")) latestUserSeq = row.optLong("seq");
         boolean editable = !live && !truncated && seq > 0 && seq == latestUserSeq;
@@ -2923,7 +2926,7 @@ public final class MainActivity extends Activity {
         String turn, artifactText = "";
         long at, run;
     }
-    private void addReply(String key, String value, boolean truncated, JSONArray process, boolean live, String turn, long at, boolean assistant) {
+    private void addReply(String key, String value, boolean truncated, JSONArray process, boolean live, String turn, long at, long seq, boolean assistant, JSONObject details) {
         long run = live && lastLive != null ? lastLive.optLong("runId") : 0;
         ReplyMessage binding = replyMessages.get(key);
         if (binding != null && live && binding.run != run) { binding.body.dispose(); replyMessages.remove(key); binding = null; }
@@ -2947,19 +2950,19 @@ public final class MainActivity extends Activity {
             binding.at = at;
             if (live) binding.body.update(value, false); else binding.body.history(value);
         }
-        binding.run = run; binding.process.update(process, live);
-        binding.process.setVisibility(process != null && process.length() > 0 ? View.VISIBLE : View.GONE);
+        binding.run = run; binding.process.update(process, live, new TurnDetails(details));
+        TurnUsage.bind(binding.wrapper, live ? null : details, chinese);
         binding.truncated.setVisibility(truncated ? View.VISIBLE : View.GONE);
         binding.waiting.setVisibility(value.isEmpty() && (process == null || process.length() == 0) ? View.VISIBLE : View.GONE);
         binding.body.setVisibility(value.isEmpty() ? View.GONE : View.VISIBLE); binding.body.update(value, !live);
-        binding.wrapper.findViewWithTag("messageFooter").setVisibility(value.isEmpty() ? View.GONE : View.VISIBLE);
+        binding.wrapper.findViewWithTag("messageFooter").setVisibility(value.isEmpty() && !new TurnDetails(details).hasUsage() ? View.GONE : View.VISIBLE);
         if (binding.at != at) { binding.at = at; chatStyle.updateMessageTimestamp(binding.wrapper, at, chinese); }
         if (!live && !value.equals(binding.artifactText)) {
             binding.artifactText = value; binding.artifacts.removeAllViews();
-            java.util.List<String> files = ArtifactReferences.names(value);
+            java.util.List<String> files = ArtifactReferences.paths(value);
             if (!files.isEmpty()) {
                 ArtifactMessageView download = new ArtifactMessageView(this, files, chinese,
-                    () -> artifactDownloads.show(credentials.optString("address"), credentials.optString("token"), conversationId));
+                    reference -> artifactDownloads.showFile(credentials.optString("address"), credentials.optString("token"), conversationId, seq, reference));
                 download.setTag("messageArtifacts:" + key);
                 LinearLayout.LayoutParams layout = new LinearLayout.LayoutParams(-1, -2); layout.topMargin = dp(18); binding.artifacts.addView(download, layout);
             }

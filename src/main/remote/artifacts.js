@@ -10,7 +10,7 @@ function identity(conversation, canonical, stat) {
   return createHash('sha256').update(JSON.stringify([conversation.id, canonical, stat.size, stat.mtimeMs, stat.dev, stat.ino])).digest('hex');
 }
 
-function files(reader, device, conversationId) {
+function files(reader, device, conversationId, selection) {
   const conversation = reader.conversation(device, conversationId);
   const rows = reader.manager.rows ? reader.manager.rows(conversation) : reader.manager.messages(conversation);
   const result = new Map();
@@ -43,9 +43,13 @@ function files(reader, device, conversationId) {
   turns.sort((first, second) => (second.row.at || 0) - (first.row.at || 0)
     || (second.row.seq || 0) - (first.row.seq || 0));
   for (const { row, roots, cwd, managedConversationId } of turns) {
+    if (selection && (row.seq !== selection.seq || row.subagentId)) continue;
     const paths = Array.isArray(row.artifacts) ? row.artifacts.map(file => file?.path).filter(file => typeof file === 'string') : [];
+    const explicitPaths = [...(Array.isArray(row.explicitArtifacts) ? row.explicitArtifacts : []),
+      ...(Array.isArray(row.artifacts) ? row.artifacts.filter(file => file?.explicitDelivery === true) : [])]
+      .map(file => file?.path).filter(file => typeof file === 'string');
     const text = Array.isArray(row.outputBlocks) ? row.outputBlocks.filter(block => block.phase === 'final_answer').map(block => block.text || '').join('\n') : row.text;
-    for (const file of resolveArtifacts({ paths, text, cwd, roots })) {
+    for (const file of resolveArtifacts({ paths, explicitPaths, text, cwd, roots, reference: selection?.reference })) {
       try {
         const canonical = fs.realpathSync.native(file.path);
         const key = process.platform === 'win32' ? canonical.toLowerCase() : canonical;
@@ -61,8 +65,8 @@ function files(reader, device, conversationId) {
   return [...result.values()];
 }
 
-function listArtifacts(reader, device, conversationId, offset = 0) {
-  const entries = files(reader, device, conversationId);
+function listArtifacts(reader, device, conversationId, offset = 0, selection) {
+  const entries = files(reader, device, conversationId, selection);
   return { artifacts: entries.slice(offset, offset + 100).map(({ canonical, managedConversationId, ...file }) => file),
     nextOffset: entries.length > offset + 100 ? offset + 100 : null };
 }

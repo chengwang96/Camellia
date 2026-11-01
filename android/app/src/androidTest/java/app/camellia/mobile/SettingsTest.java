@@ -73,13 +73,25 @@ public class SettingsTest extends InstrumentationTestCase {
             MobilePreferences.set(context, "theme", theme); MobilePreferences.set(context, "language", "zh-CN");
             Activity activity = launch("general");
             try {
-                for (String key : new String[]{"language", "theme", "enterMode"}) {
+                ui(() -> {
+                    for (String value : new String[]{"system", "light", "dark"}) {
+                        View button = root(activity).findViewWithTag("appearance:" + value);
+                        assertNotNull(button);
+                        android.view.accessibility.AccessibilityNodeInfo info = button.createAccessibilityNodeInfo();
+                        assertTrue(info.isCheckable()); assertEquals(value.equals(theme), info.isChecked());
+                        assertTrue(info.isClickable()); info.recycle();
+                        assertTrue(button.getHeight() >= Math.round(48 * activity.getResources().getDisplayMetrics().density));
+                        assertTrue(button.getLeft() >= 0); assertTrue(button.getRight() <= ((View) button.getParent()).getWidth());
+                    }
+                });
+                capture(activity, "settings-appearance-" + theme);
+                for (String key : new String[]{"language", "enterMode"}) {
                     ui(() -> root(activity).findViewWithTag("preference:" + key).performClick());
                     ui(() -> {
                         AlertDialog sheet = dialog(activity); View decor = sheet.getWindow().getDecorView();
                         View panel = decor.findViewWithTag("settingsChoicePanel"); assertNotNull(panel);
                         assertEquals(new SettingsStyle(activity).background, ((android.graphics.drawable.GradientDrawable) panel.getBackground()).getColor().getDefaultColor());
-                        int selected = key.equals("language") ? 1 : key.equals("theme") ? (theme.equals("dark") ? 2 : 1) : 0;
+                        int selected = key.equals("language") ? 1 : 0;
                         View row = decor.findViewWithTag("settingsChoice:" + selected);
                         android.view.accessibility.AccessibilityNodeInfo info = row.createAccessibilityNodeInfo();
                         assertTrue(info.isCheckable()); assertTrue(info.isChecked()); assertTrue(info.isClickable()); info.recycle();
@@ -372,9 +384,7 @@ public class SettingsTest extends InstrumentationTestCase {
         try {
             ui(() -> {
                 assertNotNull(root(general).findViewWithTag("preference:language"));
-                root(general).findViewWithTag("preference:theme").performClick();
-                assertTrue(dialog(general).getWindow().getDecorView().findViewWithTag("settingsChoice:2").isSelected());
-                dialog(general).dismiss();
+                assertTrue(root(general).findViewWithTag("appearance:dark").isSelected());
             });
         } finally { ui(general::finish); }
         Activity home = LocalChatFixture.start(getInstrumentation(), new Intent(context, MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));

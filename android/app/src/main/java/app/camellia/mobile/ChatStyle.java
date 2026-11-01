@@ -18,7 +18,7 @@ import java.util.Locale;
 import java.util.function.Supplier;
 
 final class ChatStyle {
-    final int background, surface, ink, muted, accent;
+    final int background, surface, ink, muted, faint, accent;
     private final Context context;
     private final Palette palette;
 
@@ -29,6 +29,7 @@ final class ChatStyle {
         surface = palette.surface;
         ink = palette.ink;
         muted = palette.muted;
+        faint = palette.faint;
         accent = palette.accent;
     }
 
@@ -141,7 +142,10 @@ final class ChatStyle {
     LinearLayout messageBlock(boolean user) {
         LinearLayout block = new LinearLayout(context); block.setOrientation(LinearLayout.VERTICAL);
         block.setPadding(user ? dp(14) : 0, dp(8), user ? dp(14) : 0, dp(12));
-        if (user) block.setBackground(rounded(surface));
+        if (user) {
+            GradientDrawable bubble = rounded(palette.userBubble);
+            bubble.setCornerRadius(dp(Palette.RADIUS_USER_BUBBLE)); block.setBackground(bubble);
+        }
         LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(user ? -2 : -1, -2);
         params.gravity = user ? android.view.Gravity.END : android.view.Gravity.START;
         params.setMargins(user ? dp(Palette.BUBBLE_INSET) : 0, dp(6), 0, dp(16)); block.setLayoutParams(params);
@@ -157,7 +161,7 @@ final class ChatStyle {
         bubbleParams.bottomMargin = 0; wrapper.addView(block);
         LinearLayout footer = new LinearLayout(context); footer.setGravity(Gravity.CENTER_VERTICAL);
         footer.setTag("messageFooter");
-        LinearLayout.LayoutParams footerParams = new LinearLayout.LayoutParams(-2, dp(48));
+        LinearLayout.LayoutParams footerParams = new LinearLayout.LayoutParams(user ? -2 : -1, dp(48));
         footerParams.gravity = user ? Gravity.END : Gravity.START; footerParams.bottomMargin = dp(18);
         String label = chinese ? "复制消息" : "Copy message";
         ImageButton copy = lineButton("copy", label, () -> {
@@ -167,7 +171,7 @@ final class ChatStyle {
             clipboard.setPrimaryClip(ClipData.newPlainText(label, value));
             if (android.os.Build.VERSION.SDK_INT < 33) Toast.makeText(context, chinese ? "已复制" : "Copied", Toast.LENGTH_SHORT).show();
         });
-        copy.setImageDrawable(new LineIcon("copy", muted)); copy.setTag("copyMessage");
+        copy.setImageDrawable(new LineIcon("copy", faint)); copy.setTag("copyMessage");
         copy.setPadding(dp(16), dp(16), dp(16), dp(16));
         footer.addView(copy, new LinearLayout.LayoutParams(dp(48), dp(48)));
         wrapper.addView(footer, footerParams); updateMessageTimestamp(wrapper, at, chinese); return wrapper;
@@ -178,7 +182,8 @@ final class ChatStyle {
         TextView time = wrapper.findViewWithTag("messageTimestamp");
         if (at <= 0) { if (time != null) footer.removeView(time); return; }
         if (time == null) {
-            time = new TextView(context); time.setTextColor(muted); time.setTextSize(Palette.TEXT_SMALL); time.setTag("messageTimestamp"); footer.addView(time);
+            time = new TextView(context); time.setTextColor(faint); time.setTextSize(Palette.TEXT_SMALL); time.setTag("messageTimestamp"); footer.addView(time);
+            time.setMaxLines(1); time.setEllipsize(android.text.TextUtils.TruncateAt.END);
         }
         time.setText(new SimpleDateFormat(chinese ? "M月d日 HH:mm" : "MMM d, HH:mm", chinese ? Locale.CHINA : Locale.ENGLISH).format(new Date(at)));
     }

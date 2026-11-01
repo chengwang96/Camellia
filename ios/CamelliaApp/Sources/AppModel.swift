@@ -194,6 +194,7 @@ final class AppModel: ObservableObject {
     @Published var artifactsMore = false
     private var artifactsNext: Int64 = -1
     private var artifactSheetOpen = false
+    private var artifactSelection: ArtifactSelection?
     private var artifactSheetGeneration = 0
 
     private var pendingAttachments: [RemoteAttachment] = []
@@ -3531,8 +3532,9 @@ final class AppModel: ObservableObject {
 
     // MARK: - Artifacts
 
-    func beginArtifactSheet() {
+    func beginArtifactSheet(selection: ArtifactSelection? = nil) {
         artifactSheetOpen = true
+        artifactSelection = selection
         artifacts = []
         artifactsMore = false
         artifactsNext = -1
@@ -3544,6 +3546,7 @@ final class AppModel: ObservableObject {
     func endArtifactSheet() {
         artifactSheetGeneration += 1
         artifactSheetOpen = false
+        artifactSelection = nil
         artifactsLoading = false
     }
 
@@ -3563,7 +3566,7 @@ final class AppModel: ObservableObject {
         artifactsLoading = true
         artifactsError = nil
         publish()
-        session.artifacts(conversationId: id, offset: offset) { [weak self] result in
+        session.artifacts(conversationId: id, offset: offset, selection: artifactSelection) { [weak self] result in
             guard let self else { return }
             guard self.artifactSheetOpen, self.artifactSheetGeneration == ticket,
                   self.openId == id else { return }

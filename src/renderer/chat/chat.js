@@ -1788,7 +1788,8 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       || sidebar.workspaces.find(workspace => workspace.id === context.workspaceId)?.path || '';
     try {
       const result = await window.dshDesktop.resolveArtifacts({ sessionId, cwd,
-        paths: files ? files.map(file => file.path) : paths, text, roots });
+        paths: files ? files.map(file => file.path) : paths,
+        explicitPaths: files?.filter(file => file.explicitDelivery).map(file => file.path), text, roots });
       if (!turn.isConnected || !result.ok || !result.files.length) return;
       const was = nearBottom();
       turn.querySelector('.turn-artifacts')?.remove();

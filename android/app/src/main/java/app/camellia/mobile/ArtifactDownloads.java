@@ -22,6 +22,7 @@ final class ArtifactDownloads {
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
     private final boolean chinese;
+    private final java.util.function.Function<String, RemoteApi> apiFactory;
     private RemoteApi client;
     private ArtifactSheet dialog;
     private android.app.AlertDialog imagePreview;
@@ -29,7 +30,12 @@ final class ArtifactDownloads {
     private int generation;
 
     ArtifactDownloads(Activity activity, Bundle saved) {
+        this(activity, saved, RemoteApi::new);
+    }
+
+    ArtifactDownloads(Activity activity, Bundle saved, java.util.function.Function<String, RemoteApi> apiFactory) {
         this.activity = activity;
+        this.apiFactory = apiFactory;
         style = new ChatStyle(activity);
         chinese = activity.getResources().getConfiguration().getLocales().get(0).getLanguage().equals("zh");
         try { if (saved != null && saved.containsKey("artifactSave")) pending = new JSONObject(saved.getString("artifactSave")); }
@@ -45,18 +51,25 @@ final class ArtifactDownloads {
     }
 
     void show(String address, String token, String conversation) {
-        show(address, token, conversation, false);
+        show(address, token, conversation, false, 0, null);
     }
-    void showDiscussion(String address, String token, String conversation) { show(address, token, conversation, true); }
+    void showFile(String address, String token, String conversation, long seq, String reference) {
+        show(address, token, conversation, false, seq, reference);
+    }
+    void showDiscussion(String address, String token, String conversation) { show(address, token, conversation, true, 0, null); }
     private boolean discussion;
-    private void show(String address, String token, String conversation, boolean discussion) {
+    private String selectedReference;
+    private long selectedSeq;
+    private void show(String address, String token, String conversation, boolean discussion, long seq, String reference) {
         stop();
         this.discussion = discussion;
+        selectedReference = reference; selectedSeq = seq;
         int ticket = generation;
-        RemoteApi request = new RemoteApi(address); client = request;
-        dialog = new ArtifactSheet(activity, tr("会话产物", "Conversation files"), tr("电脑上的成果，随身带走。", "Take your work with you."));
+        RemoteApi request = apiFactory.apply(address); client = request;
+        dialog = new ArtifactSheet(activity, reference == null ? tr("会话产物", "Conversation files") : tr("文件详情", "File details"),
+            reference == null ? tr("电脑上的成果，随身带走。", "Take your work with you.") : ArtifactReferences.name(reference));
         ArtifactSheet sheet = dialog;
-        if (!ArtifactDownloadService.snapshot().phase.equals("idle")) {
+        if (reference == null && !ArtifactDownloadService.snapshot().phase.equals("idle")) {
             LinearLayout task = sheet.style.group(sheet.content, tr("下载任务", "Download"));
             sheet.style.action(task, ArtifactDownloadService.snapshot().name, tr("查看进度与结果", "View progress and result"), "artifactCurrentTask", false, this::showProgress);
         }
@@ -72,7 +85,8 @@ final class ArtifactDownloads {
     private void loadPage(RemoteApi request, String address, String token, String conversation, long offset, int ticket,
                           LinearLayout rows, TextView status, TextView more) {
         more.setEnabled(false);
-        String route = "/v1/" + (discussion ? "discussions/" : "conversations/") + conversation + "/artifacts?offset=" + offset;
+        String route = "/v1/" + (discussion ? "discussions/" : "conversations/") + conversation + "/artifacts?offset=" + offset
+            + (selectedReference == null ? "" : "&seq=" + selectedSeq + "&reference=" + ArtifactReferences.query(selectedReference));
         worker.submit(() -> {
             try {
                 JSONObject result = request.json(route, token, null);
@@ -83,12 +97,13 @@ final class ArtifactDownloads {
                         JSONObject file = files.optJSONObject(index);
                         if (file == null) continue;
                         ArtifactSheet sheet = dialog;
-                        LinearLayout row = sheet.style.group(rows, ""); row.setPadding(style.dp(16), style.dp(16), style.dp(16), style.dp(14));
+                        LinearLayout row = sheet.style.group(rows, ""); row.setTag("artifactFile:" + file.optString("id")); row.setPadding(style.dp(16), style.dp(16), style.dp(16), style.dp(14));
                         TextView type = sheet.text(file.optString("extension") + "  ·  " + android.text.format.Formatter.formatFileSize(activity, file.optLong("size")), Palette.TEXT_SMALL, sheet.style.secondary);
                         row.addView(type);
                         TextView name = sheet.text(file.optString("name"), Palette.TEXT_ROW_STRONG, sheet.style.ink); name.setTypeface(android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.NORMAL));
                         name.setMaxLines(2); name.setEllipsize(android.text.TextUtils.TruncateAt.MIDDLE); name.setPadding(0, style.dp(8), 0, style.dp(16)); row.addView(name);
                         TextView download = sheet.action(tr("下载到手机", "Save to phone"), true, () -> choose(file, address, token, conversation));
+                        download.setTag("artifactDownload:" + file.optString("id"));
                         download.setContentDescription(file.optString("name") + " · " + download.getText());
                         row.addView(download);
                         if (java.util.Arrays.asList("png", "jpg", "jpeg", "webp", "gif", ".png", ".jpg", ".jpeg", ".webp", ".gif").contains(file.optString("extension").toLowerCase(java.util.Locale.ROOT)) && file.optLong("size") <= 32L * 1024 * 1024) {
@@ -96,7 +111,9 @@ final class ArtifactDownloads {
                             preview.setTag("artifactPreview:" + file.optString("id")); row.addView(preview);
                         }
                     }
-                    status.setText(rows.getChildCount() == 0 ? tr("未找到可下载文件。只显示此会话引用且仍存在的产物（含在其他目录中生成的文件）；若刚生成，请关闭后重新打开，或更新并重启电脑端。", "No downloadable files found. Only files this conversation referenced and that still exist are shown, including ones produced in another directory. Reopen this panel after generation, or update and restart the desktop.")
+                    status.setText(rows.getChildCount() == 0 ? selectedReference != null
+                        ? tr("此文件不可用，可能已被移动或删除。请更新并重启电脑端后重试。", "This file is unavailable. It may have been moved or deleted. Update and restart the desktop, then retry.")
+                        : tr("未找到可下载文件。只显示此会话引用且仍存在的产物（含在其他目录中生成的文件）；若刚生成，请关闭后重新打开，或更新并重启电脑端。", "No downloadable files found. Only files this conversation referenced and that still exist are shown, including ones produced in another directory. Reopen this panel after generation, or update and restart the desktop.")
                         : DownloadDirectory.selected(activity) != null
                             ? tr("保存到：", "Save to: ") + DownloadDirectory.label(activity)
                             : tr("选择保存位置后可切换应用或锁屏，下载会继续。", "Choose a save location, then switch apps or lock your phone. Downloads continue."));
@@ -108,7 +125,7 @@ final class ArtifactDownloads {
             } catch (Exception error) {
                 handler.post(() -> {
                     if (ticket != generation || activity.isDestroyed()) return;
-                    status.setText(error instanceof RemoteApi.Failure && ((RemoteApi.Failure) error).status == 404
+                    status.setText(error instanceof RemoteApi.Failure && (((RemoteApi.Failure) error).status == 404 || selectedReference != null && ((RemoteApi.Failure) error).status == 400)
                         ? tr("请更新并重启电脑端，或检查会话访问权限。", "Update and restart the desktop, or check conversation access.")
                         : RemoteApi.failureMessage(error, chinese));
                     more.setVisibility(View.VISIBLE); more.setEnabled(true); more.setText(tr("重试", "Retry"));
@@ -119,7 +136,11 @@ final class ArtifactDownloads {
     }
 
     private void choose(JSONObject file, String address, String token, String conversation) {
-        if (ArtifactDownloadService.snapshot().active()) { showProgress(); return; }
+        if (ArtifactDownloadService.snapshot().active()) {
+            if (selectedReference == null) showProgress();
+            else toast(tr("已有文件正在下载。可在会话产物中查看进度，完成或取消后再下载此文件。", "A file is already downloading. View its progress in Conversation files, then finish or cancel it before downloading this file."));
+            return;
+        }
         try {
             Uri directory = DownloadDirectory.selected(activity);
             if (directory != null && DownloadDirectory.hasPermission(activity, directory)) {

@@ -253,9 +253,9 @@ final class RemoteSession {
     }
 
     /// One page of the conversation's files.
-    func artifacts(conversationId: String, offset: Int64 = 0,
+    func artifacts(conversationId: String, offset: Int64 = 0, selection: ArtifactSelection? = nil,
                    completion: @escaping (Result<RemoteArtifactPage, Error>) -> Void) {
-        run { try self.transport.artifacts(conversationId: conversationId, offset: offset) }.deliver(completion)
+        run { try self.transport.artifacts(conversationId: conversationId, offset: offset, selection: selection) }.deliver(completion)
     }
 
     /// The desktop's provider bundle, for the local-chat half to adopt.

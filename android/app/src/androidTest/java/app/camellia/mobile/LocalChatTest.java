@@ -429,6 +429,29 @@ public class LocalChatTest extends InstrumentationTestCase {
         }
     }
 
+    public void testReportedUsageFollowsTheCompletedProviderResponse() throws Exception {
+        AtomicReference<JSONObject> recorded = new AtomicReference<>();
+        LocalChatClient.Listener listener = new LocalChatClient.Listener() {
+            public void onText(String text) {}
+            public void onUsage(JSONObject usage) { recorded.set(usage); }
+        };
+        String openai = "data: {\"choices\":[{\"delta\":{\"content\":\"Answer\"},\"finish_reason\":\"stop\"}]}\n\n"
+            + "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":100,\"completion_tokens\":20,\"prompt_tokens_details\":{\"cached_tokens\":75}}}\n\ndata: [DONE]\n\n";
+        try (MockApi api = new MockApi(200, "text/event-stream", openai)) {
+            new LocalChatClient().chat(route(api.url(), "openai"), request(), listener);
+            assertEquals(25, recorded.get().getLong("input_tokens")); assertEquals(75, recorded.get().getLong("cache_read_input_tokens"));
+            assertEquals(20, recorded.get().getLong("output_tokens"));
+        }
+        String anthropic = "data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":20,\"cache_read_input_tokens\":10,\"output_tokens\":0}}}\n\n"
+            + "data: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"Answer\"}}\n\n"
+            + "data: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":5}}\n\ndata: {\"type\":\"message_stop\"}\n\n";
+        try (MockApi api = new MockApi(200, "text/event-stream", anthropic)) {
+            new LocalChatClient().chat(route(api.url(), "anthropic"), request(), listener);
+            assertEquals(20, recorded.get().getLong("input_tokens")); assertEquals(10, recorded.get().getLong("cache_read_input_tokens"));
+            assertEquals(5, recorded.get().getLong("output_tokens"));
+        }
+    }
+
     public void testTruncatedStreamHttpErrorsAndCancel() throws Exception {
         AtomicReference<String> partial = new AtomicReference<>();
         try (MockApi api = new MockApi(200, "text/event-stream", "data: {\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}\n\n")) {

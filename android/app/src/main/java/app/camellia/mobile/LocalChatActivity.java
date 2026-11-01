@@ -918,6 +918,7 @@ public final class LocalChatActivity extends Activity {
             if (user && !message.optString("notice").isEmpty()) block.addView(text(message.optString("notice"), Palette.TEXT_SMALL, muted));
             binding.wrapper = chatStyle.messageWithFooter(block, user,
                 () -> message == runningReply ? latest : message.optString("content"), message.optLong("at"), chinese);
+            if (!user) TurnUsage.bind(binding.wrapper, message.optJSONObject("turnDetails"), chinese);
             messageBindings.put(message, binding); desired.add(binding.wrapper);
         }
         java.util.Iterator<java.util.Map.Entry<JSONObject, LocalMessage>> iterator = messageBindings.entrySet().iterator();
@@ -939,7 +940,8 @@ public final class LocalChatActivity extends Activity {
     private void updateMessage(LocalMessage binding, JSONObject message) {
         boolean live = message == runningReply;
         String value = live ? latest : message.optString("content");
-        binding.process.update(message.optJSONArray("process"), live);
+        binding.process.update(message.optJSONArray("process"), live, new TurnDetails(message.optJSONObject("turnDetails")));
+        TurnUsage.bind(binding.wrapper, live ? null : message.optJSONObject("turnDetails"), chinese);
         binding.waiting.setVisibility(live && value.isEmpty() ? View.VISIBLE : View.GONE);
         binding.notice.setText(message.optString("notice")); binding.notice.setVisibility(message.optString("notice").isEmpty() ? View.GONE : View.VISIBLE);
         binding.body.update(value, !live);
@@ -1064,6 +1066,7 @@ public final class LocalChatActivity extends Activity {
                         editingMessageIndex = -1; composer.setText(""); selectedImages.clear(); selectedDocuments.clear(); renderImages();
                         runningId = target; replyHandle = turn.reply;
                         runningReply = store.conversation(target).getJSONArray("messages").getJSONObject(turn.reply.position);
+                        runningReply.put("turnDetails", new JSONObject().put("model", route.model));
                         latest = ""; lastCheckpoint = System.currentTimeMillis();
                         LocalChatClient active = new LocalChatClient(LocalChatActivity.this); client = active;
                         JSONObject request = turn.request;
@@ -1072,6 +1075,16 @@ public final class LocalChatActivity extends Activity {
                 String problem = null;
                 try {
                     LocalChatClient.Listener listener = new LocalChatClient.Listener() {
+                        @Override public void onUsage(JSONObject usage) {
+                            handler.post(() -> {
+                                if (generation != ticket || runningReply == null) return;
+                                try {
+                                    JSONObject details = runningReply.optJSONObject("turnDetails");
+                                    if (details == null) details = new JSONObject();
+                                    details.put("usage", usage); runningReply.put("turnDetails", details);
+                                } catch (Exception error) { failure(error); }
+                            });
+                        }
                         @Override public void onThinking(String thinking) {
                             handler.post(() -> {
                                 if (generation != ticket) return;
@@ -1151,6 +1164,10 @@ public final class LocalChatActivity extends Activity {
                 if (entry.optString("status").equals("running")) entry.put("status", "cancelled");
             }
             runningReply.put("content", latest).put("state", state).put("notice", notice == null ? "" : notice);
+            JSONObject details = runningReply.optJSONObject("turnDetails");
+            if (details == null) details = new JSONObject();
+            details.put("state", state).put("duration_ms", Math.max(0, System.currentTimeMillis() - runningReply.optLong("at", System.currentTimeMillis())));
+            runningReply.put("turnDetails", details);
             store.checkpoint(replyHandle, runningReply, true, stored(value -> {}));
         } catch (Exception error) { storageFailure(error); }
         String finishedId = runningId; runningId = null; runningReply = null;

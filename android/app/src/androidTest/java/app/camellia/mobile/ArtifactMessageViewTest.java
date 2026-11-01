@@ -22,7 +22,7 @@ public class ArtifactMessageViewTest extends InstrumentationTestCase {
                     java.util.concurrent.atomic.AtomicInteger opens = new java.util.concurrent.atomic.AtomicInteger();
                     String name = "Camellia-Android-0.3.40-debug-with-a-long-file-name.apk";
                     ArtifactMessageView card = new ArtifactMessageView(context,
-                        List.of("研究报告.pdf", "数据.xlsx", "论文.docx", "说明.txt", name, "示意图.png"), true, opens::incrementAndGet);
+                        List.of("研究报告.pdf", "数据.xlsx", "论文.docx", "说明.txt", name, "示意图.png"), true, reference -> opens.incrementAndGet());
                     int width = Math.round(320 * context.getResources().getDisplayMetrics().density);
                     card.measure(View.MeasureSpec.makeMeasureSpec(width, View.MeasureSpec.EXACTLY), View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED));
                     card.layout(0, 0, width, card.getMeasuredHeight());

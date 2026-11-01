@@ -6,4 +6,7 @@
     <string name="qr_scan_denied">Camera permission is needed to scan. Allow it in system settings, or go back and enter the address and code manually.</string>
     <string name="qr_scan_failed">Unable to open the camera. Go back and enter the address and pairing code manually.</string>
     <string name="qr_scan_unrecognized">This is not a Camellia pairing QR code. Scan a new code generated on your computer.</string>
+    <string name="turn_usage_summary">Usage %1$s tok</string>
+    <string name="turn_completed">Completed</string>
+    <string name="turn_completion_elapsed">Completed · Elapsed %1$s</string>
 </resources>

@@ -16,28 +16,31 @@ App 的取值集中在一个类里：`app/src/main/java/app/camellia/mobile/Pale
 
 所以这一层只做收拢。取值要改的话，改在补齐那一页里改，并在 `PARITY` 式的地方写明理由。
 
-## 两套色板，不是一套
+## Desktop-aligned surfaces (2026-11-01)
 
-`ChatStyle` 与 `SettingsStyle` 各自是**一组真实不同的值**，不是同一组的错版：
+Chat and settings share the desktop neutral base. Settings use outlined cards and filled controls; popups keep their mobile glass and larger radii.
 
 | token | 用在哪 | 浅色 | 深色 |
 | --- | --- | --- | --- |
 | `background` | 聊天页底色 | `#FFFFFF` | `#151517` |
-| `surface` | 聊天页的块（自己的气泡、分组卡） | `#F5F6F7` | `#232324` |
+| `surface` | 聊天页通用块（用户气泡使用 `userBubble`） | `#F5F6F7` | `#232324` |
 | `ink` | 聊天页正文 | `#0F1115` | `#F9FAFB` |
-| `muted` | 聊天页次要文字 | `#61666B` | `#ADB2B8` |
+| `muted` | 聊天页次要文字 | `#61666B` | `#CFD3D6` |
 | `separator` | 悬浮栏的细边 | `#ECEEF1` | `#3B3B40` |
-| `grouped` | 设置/配对页底色 | `#F5F5F5` | `#151517` |
-| `card` | 那几页的卡片 | `#FFFFFF` | `#232326` |
-| `secondary` | 那几页的次要文字 | `#75787E` | `#ABAEB5` |
+| `grouped` | 设置/配对页底色 | `#FFFFFF` | `#151517` |
+| `card` | 那几页的卡片 | `#FFFFFF` | `#232324` |
+| `secondary` | 那几页的次要文字 | `#61666B` | `#CFD3D6` |
 | `divider` | 卡片内行间细线 | `#ECECEE` | `#37373C` |
-| `field` | 输入框底 | `#FFFFFF` | `#303036` |
-| `fieldBorder` | 输入框边 | `#B9BEC7` | `#62626C` |
+| `field` | 输入框底 | `#F5F6F7` | `#292A2D` |
+| `fieldBorder` | 输入框边 | `#D6D6D8` | `#424448` |
 | `error` | 破坏性操作、错误文字 | `#B8323B` | `#FF969A` |
+| `userBubble` | 用户气泡 | `#EDF3FE` | `#283142` |
+| `faint` | 三级文字 | `#81858C` | `#ADB2B8` |
+| `caption` | 占位文字 | `#ADB2B8` | `#81858C` |
 | `accent` | 两套共用 | `#4176E6` | `#679EFE` |
 | `raisedFace` | 返回键圆盘 | `#FFFFFF` | `#29292D` |
 | `raisedEdge` | 返回键圆盘的描边 | `#F3F3F5` | `#3A3A40` |
-| `trackOff` | 开关关态轨道 | `#D1D3D8` | `#505058` |
+| `trackOff` | 开关关态轨道 | `#D9DCE0` | `#54575D` |
 
 `raisedFace` / `raisedEdge` 与 `separator` 看着像，其实不是一档：它圈的是一个**凸起的按钮**，不是一片区域，两个外观下都比 divider 浅。
 
@@ -47,9 +50,12 @@ App 的取值集中在一个类里：`app/src/main/java/app/camellia/mobile/Pale
 
 | token | 值 | 用在哪 |
 | --- | --- | --- |
-| `RADIUS_CARD` | 12 | 消息气泡、通用块 |
+| `RADIUS_CARD` | 12 | 通用块 |
+| `RADIUS_USER_BUBBLE` | 18 | 用户气泡 |
+| `RADIUS_SETTINGS_CARD` | 16 | 设置卡片 |
+| `RADIUS_SETTINGS_CONTROL` | 10 | 设置输入框 |
 | `RADIUS_CAPSULE` | 28 | 悬浮栏、输入胶囊（不是真胶囊，是大圆角矩形） |
-| `RADIUS_GROUP` | 26 | 设置卡、弹层面板、电脑行卡 |
+| `RADIUS_GROUP` | 26 | 弹层面板 |
 | `RADIUS_SHEET` | 30 | 底部 sheet 的面板 |
 | `RADIUS_FIELD` | 18 | 输入框、选项行 |
 | `RADIUS_CODE` | 8 | Markdown 里的代码块 |

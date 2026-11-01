@@ -1151,7 +1151,7 @@ private struct GeneralSettingsView: View {
     @State private var folderError: String?
 
     private enum Choice {
-        case language, theme, enter
+        case language, enter
     }
 
     var body: some View {
@@ -1161,8 +1161,8 @@ private struct GeneralSettingsView: View {
                     preferenceRow(icon: "globe", title: "语言",
                                   value: model.preferences.language.label, choice: .language)
                     SettingsDivider()
-                    preferenceRow(icon: "sun.max", title: "外观",
-                                  value: model.preferences.theme.label, choice: .theme)
+                    SettingsAppearanceChoices(selection: Binding(get: { model.preferences.theme },
+                                                                 set: { model.setTheme($0) }))
                     SettingsDivider()
                     preferenceRow(icon: "slider.horizontal.3", title: "键盘回车",
                                   value: enterLabel(model.preferences.enterMode), choice: .enter)
@@ -1172,7 +1172,7 @@ private struct GeneralSettingsView: View {
                         SettingsRowLabel(icon: "", title: "震动效果", detail: "遵循系统触感设置",
                                          showsChevron: false)
                     }
-                    .toggleStyle(SwitchToggleStyle(tint: Palette.accent))
+                    .toggleStyle(SettingsToggleStyle())
                     .padding(.trailing, 16)
                 }
                 SettingsNote(text: "iOS 键盘没有统一的长按回车手势；需要稳定换行时，请选择回车换行并点击发送按钮。")
@@ -1213,7 +1213,7 @@ private struct GeneralSettingsView: View {
                                 .foregroundColor(Palette.secondary)
                         }
                     }
-                    .toggleStyle(SwitchToggleStyle(tint: Palette.accent))
+                    .toggleStyle(SettingsToggleStyle())
                     .padding(.horizontal, 16)
                     .padding(.vertical, 13)
                 }
@@ -1267,7 +1267,6 @@ private struct GeneralSettingsView: View {
     private func choiceTitle(_ choice: Choice) -> String {
         switch choice {
         case .language: return "语言"
-        case .theme: return "外观"
         case .enter: return "键盘回车"
         }
     }
@@ -1276,8 +1275,6 @@ private struct GeneralSettingsView: View {
         switch choice {
         case .language:
             return AppLanguage.allCases.map(\.label)
-        case .theme:
-            return AppTheme.allCases.map(\.label)
         case .enter:
             return EnterMode.allCases.map(enterLabel)
         }
@@ -1286,7 +1283,6 @@ private struct GeneralSettingsView: View {
     private func selectedIndex(_ choice: Choice) -> Int {
         switch choice {
         case .language: return AppLanguage.allCases.firstIndex(of: model.preferences.language) ?? 0
-        case .theme: return AppTheme.allCases.firstIndex(of: model.preferences.theme) ?? 0
         case .enter: return EnterMode.allCases.firstIndex(of: model.preferences.enterMode) ?? 0
         }
     }
@@ -1297,9 +1293,6 @@ private struct GeneralSettingsView: View {
         case .language:
             let value = AppLanguage.allCases[index]
             if value != model.preferences.language { model.setLanguage(value) }
-        case .theme:
-            let value = AppTheme.allCases[index]
-            if value != model.preferences.theme { model.setTheme(value) }
         case .enter:
             let value = EnterMode.allCases[index]
             if value != model.preferences.enterMode { model.setEnterMode(value) }
@@ -1350,7 +1343,7 @@ struct MobileAccessView: View {
                                 .foregroundColor(Palette.secondary)
                         }
                     }
-                    .toggleStyle(SwitchToggleStyle(tint: Palette.accent))
+                    .toggleStyle(SettingsToggleStyle())
                     .padding(.horizontal, 16)
                     .padding(.vertical, 18)
                     SettingsDivider(leading: 16)

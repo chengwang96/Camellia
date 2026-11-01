@@ -23,7 +23,7 @@ private struct MobileIconPath: Shape {
     let name: String
     static let names: Set<String> = ["pencil", "edit", "checkmark.circle", "select", "pin",
         "arrow.triangle.branch", "branch", "trash", "delete", "key", "archivebox", "archive",
-        "sun.max", "appearance", "globe", "language", "slider.horizontal.3", "gearshape", "settings",
+        "sun.max", "appearance", "moon", "globe", "language", "slider.horizontal.3", "gearshape", "settings",
         "chevron.left", "back", "chevron.right", "right", "chevron.down", "down", "xmark", "close",
         "magnifyingglass", "search", "folder", "checkmark", "check", "desktopcomputer", "computer",
         "iphone", "ipad", "phone", "doc", "file", "ellipsis", "more", "plus", "new",
@@ -44,6 +44,11 @@ private struct MobileIconPath: Shape {
                              cornerSize: CGSize(width: r, height: r))
         }
         switch name {
+        case "moon":
+            p.move(to: CGPoint(x: 20.8, y: 14.4))
+            p.addCurve(to: CGPoint(x: 9.6, y: 3.2), control1: CGPoint(x: 13, y: 18), control2: CGPoint(x: 6, y: 11))
+            p.addCurve(to: CGPoint(x: 14, y: 21), control1: CGPoint(x: -1, y: 6), control2: CGPoint(x: 2, y: 23))
+            p.addQuadCurve(to: CGPoint(x: 20.8, y: 14.4), control: CGPoint(x: 19, y: 20))
         case "pencil", "edit":
             line([(4,16),(16,4),(20,8),(8,20),(3,21)]); p.closeSubpath(); line([(14,6),(18,10)])
         case "checkmark.circle", "select":

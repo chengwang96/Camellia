@@ -7,6 +7,88 @@ import android.view.View;
 import org.json.JSONObject;
 
 public class ArtifactDownloadsTest extends InstrumentationTestCase {
+    public void testFileCardOpensOnlyItsReferenceAndAllFilesRemainsSeparate() throws Exception {
+        Activity activity = getInstrumentation().startActivitySync(new Intent(getInstrumentation().getTargetContext(), MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+        String conversation = "12345678-1234-1234-1234-123456789abc";
+        var downloadState = ArtifactDownloadService.class.getDeclaredField("state"); downloadState.setAccessible(true);
+        Object previousState = downloadState.get(null);
+        java.util.concurrent.atomic.AtomicReference<String> requested = new java.util.concurrent.atomic.AtomicReference<>();
+        ArtifactDownloads downloads = new ArtifactDownloads(activity, null, address -> new RemoteApi(address) {
+            @Override public JSONObject json(String path, String token, JSONObject payload) throws java.io.IOException {
+                requested.set(path);
+                try {
+                    JSONObject apk = new JSONObject().put("name", "phone.apk").put("id", "a".repeat(64)).put("size", 100).put("extension", "APK");
+                    JSONObject doc = new JSONObject().put("name", "report.md").put("id", "b".repeat(64)).put("size", 30).put("extension", "MD");
+                    org.json.JSONArray files = new org.json.JSONArray().put(apk);
+                    if (!path.contains("&reference=")) files.put(doc);
+                    return new JSONObject().put("artifacts", files).put("nextOffset", JSONObject.NULL);
+                } catch (Exception error) { throw new java.io.IOException(error); }
+            }
+        });
+        try {
+            getInstrumentation().runOnMainSync(() -> {
+                try {
+                    downloadState.set(null, new ArtifactDownloadService.State("unrelated.pdf", "http://100.64.0.1:43127", 1, 1, "completed", ""));
+                    var field = MainActivity.class.getDeclaredField("artifactDownloads"); field.setAccessible(true);
+                    ((ArtifactDownloads) field.get(activity)).close(); field.set(activity, downloads);
+                    var id = MainActivity.class.getDeclaredField("conversationId"); id.setAccessible(true); id.set(activity, conversation);
+                    var credentials = MainActivity.class.getDeclaredField("credentials"); credentials.setAccessible(true);
+                    credentials.set(activity, new JSONObject().put("address", "http://100.64.0.1:43127").put("token", "t".repeat(43)));
+                    var detail = MainActivity.class.getDeclaredMethod("detailScreen"); detail.setAccessible(true); detail.invoke(activity);
+                    var history = MainActivity.class.getDeclaredField("history"); history.setAccessible(true);
+                    @SuppressWarnings("unchecked") java.util.TreeMap<Long, JSONObject> rows = (java.util.TreeMap<Long, JSONObject>) history.get(activity);
+                    rows.clear(); rows.put(17L, new JSONObject().put("seq", 17).put("role", "assistant").put("text", "[Installer](<new build/phone.apk>)"));
+                    var render = MainActivity.class.getDeclaredMethod("renderMessages", JSONObject.class); render.setAccessible(true); render.invoke(activity, new Object[]{null});
+                    activity.getWindow().getDecorView().findViewWithTag("artifactAction:phone.apk").performClick();
+                } catch (Exception error) { throw new AssertionError(error); }
+            });
+            awaitFile(downloads, "a".repeat(64));
+            assertEquals("/v1/conversations/" + conversation + "/artifacts?offset=0&seq=17&reference=new+build%2Fphone.apk", requested.get());
+            screenshot(activity, "artifact-selected-file");
+            getInstrumentation().runOnMainSync(() -> {
+                try {
+                    ArtifactSheet sheet = artifactSheet(downloads);
+                    assertNull(sheet.getWindow().getDecorView().findViewWithTag("artifactFile:" + "b".repeat(64)));
+                    assertNull(sheet.getWindow().getDecorView().findViewWithTag("artifactCurrentTask"));
+                    downloadState.set(null, new ArtifactDownloadService.State("unrelated.pdf", "http://100.64.0.1:43127", 0, 10, "running", ""));
+                    sheet.getWindow().getDecorView().findViewWithTag("artifactDownload:" + "a".repeat(64)).performClick();
+                    assertSame("a different running download must not replace the selected file", sheet, artifactSheet(downloads));
+                    assertNull(sheet.getWindow().getDecorView().findViewWithTag("downloadPercent"));
+                    downloadState.set(null, new ArtifactDownloadService.State("unrelated.pdf", "http://100.64.0.1:43127", 1, 1, "completed", ""));
+                    downloads.stop(); downloads.show("http://100.64.0.1:43127", "t".repeat(43), conversation);
+                } catch (Exception error) { throw new AssertionError(error); }
+            });
+            awaitFile(downloads, "b".repeat(64));
+            assertEquals("/v1/conversations/" + conversation + "/artifacts?offset=0", requested.get());
+            screenshot(activity, "artifact-all-files");
+        } finally { downloadState.set(null, previousState); getInstrumentation().runOnMainSync(() -> { downloads.close(); activity.finish(); }); }
+    }
+
+    private void screenshot(Activity activity, String name) throws Exception {
+        android.os.SystemClock.sleep(600); getInstrumentation().waitForIdleSync();
+        android.graphics.Bitmap bitmap = getInstrumentation().getUiAutomation().takeScreenshot(); assertNotNull(bitmap);
+        try (var output = new java.io.FileOutputStream(new java.io.File(activity.getExternalFilesDir(null), name + ".png"))) {
+            bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, output);
+        } finally { bitmap.recycle(); }
+    }
+
+    private ArtifactSheet artifactSheet(ArtifactDownloads downloads) throws Exception {
+        var field = ArtifactDownloads.class.getDeclaredField("dialog"); field.setAccessible(true); return (ArtifactSheet) field.get(downloads);
+    }
+
+    private void awaitFile(ArtifactDownloads downloads, String id) throws Exception {
+        for (int attempt = 0; attempt < 60; attempt++) {
+            java.util.concurrent.atomic.AtomicBoolean found = new java.util.concurrent.atomic.AtomicBoolean();
+            getInstrumentation().runOnMainSync(() -> {
+                try { found.set(artifactSheet(downloads).getWindow().getDecorView().findViewWithTag("artifactFile:" + id) != null); }
+                catch (Exception error) { throw new AssertionError(error); }
+            });
+            if (found.get()) return;
+            android.os.SystemClock.sleep(50);
+        }
+        fail("The expected artifact did not load");
+    }
+
     public void testComputerSwitcherHasAccessibleTouchTarget() throws Exception {
         Activity activity = getInstrumentation().startActivitySync(new Intent(getInstrumentation().getTargetContext(), MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
         java.util.concurrent.atomic.AtomicReference<Throwable> failure = new java.util.concurrent.atomic.AtomicReference<>();
