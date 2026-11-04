@@ -1408,13 +1408,13 @@ test('engine compaction continues past five minutes while requests keep progress
   assert.match(fs.readFileSync(result.file, 'utf8'), /Complete working context/);
 });
 
-test('a stalled preparation releases the conversation at the whole-run safety limit', async context => {
+test('a stalled preparation releases the conversation at the inactivity safety limit', async context => {
   const h = fixture(context), manager = h.manager, c = manager.create('codex');
   manager.append(c, { role: 'user', text: 'Preserve this task' });
   manager.prepare = () => new Promise(() => {});
   context.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: Date.now() });
   const pending = manager.compact(c.id);
-  const rejected = assert.rejects(pending, /30-minute safety limit/);
+  const rejected = assert.rejects(pending, /30-minute inactivity safety limit/);
   context.mock.timers.tick(30 * 60 * 1000 + 1);
   await rejected;
   assert.equal(manager.busy(c.id), false);
@@ -1422,30 +1422,26 @@ test('a stalled preparation releases the conversation at the whole-run safety li
   assert.deepEqual(manager.rows(c).map(row => row.text), ['Preserve this task']);
 });
 
-test('the whole-run safety limit stops even a long sequence of healthy fragments', async context => {
+test('a long sequence of healthy engine fragments continues beyond thirty minutes', async context => {
   const h = fixture(context), manager = h.manager, c = manager.create('codex');
   c.engineSettings.codex = { connection: 'subscription', contextWindow: 6000 };
   for (let index = 0; index < 25; index++) manager.append(c, { role: 'tool', text: 'FRAGMENT_' + index + ' ' + 'x'.repeat(7000) });
   context.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: Date.now() });
-  const started = Date.now();
   const pending = manager.compact(c.id, { portable: true });
-  const rejected = assert.rejects(pending, /30-minute safety limit/);
   await h.flush();
   let completed = 0;
   while (manager.busy(c.id)) {
-    assert.ok(completed < 25, 'the safety limit must stop the run');
+    assert.ok(completed < 64, 'the bounded summary should finish');
     context.mock.timers.tick(110000);
-    if (Date.now() - started < 30 * 60 * 1000) {
-      h.finish('codex', 'success', 'Completed fragment ' + completed);
-      completed++;
-    }
+    h.finish('codex', 'success', 'Completed fragment ' + completed);
+    completed++;
     await h.flush();
   }
-  await rejected;
-  assert.ok(completed > 10, 'the run made steady progress before the safety limit');
-  assert.equal(c.lastCompaction.outcome, 'failed');
-  assert.ok(c.compactionRecovery.cache.length > 0);
-  assert.equal(manager.rows(c).some(row => row.file), false);
+  const result = await pending;
+  assert.ok(completed > 16, 'the run kept making progress beyond the old whole-run limit');
+  assert.equal(c.lastCompaction.outcome, 'completed');
+  assert.ok(c.lastCompaction.totalMs > 30 * 60 * 1000);
+  assert.ok(fs.existsSync(result.file));
 });
 
 test('a long edited history can finish more than 32 fast requests within five minutes', async context => {
@@ -1480,6 +1476,30 @@ test('a long edited history can finish more than 32 fast requests within five mi
   assert.equal(h.sent.filter(item => item.prompt.includes('REVISED_REQUEST')).length, 1);
   h.finish('codex'); await revised.done;
   assert.equal(manager.busy(c.id), false);
+});
+
+test('cross-engine revision uses a bounded local handoff instead of summarizing all prior tool history', async context => {
+  const h = fixture(context), manager = h.manager, c = manager.create('kimi');
+  manager.append(c, { role: 'user', text: 'ORIGINAL_GOAL' });
+  for (let index = 0; index < 4; index++) manager.append(c, { role: 'tool', text: 'PRIOR_TOOL_' + index + '_' + '中'.repeat(300000) });
+  const old = manager.append(c, { role: 'user', text: 'SUPERSEDED_REQUEST' });
+  manager.append(c, { role: 'tool', text: 'DISCARDED_TOOL' });
+  manager.append(c, { role: 'assistant', text: 'SUPERSEDED_REPLY' });
+  manager.save(c);
+  manager.compact = async () => { throw new Error('Whole-history compaction must not run'); };
+  const revised = await manager.send('codex', { sessionId: c.id, editSeq: old.seq, prompt: 'REVISED_REQUEST' });
+  const prompt = h.sent.at(-1).prompt;
+  assert.match(prompt, /locally exported Markdown handoff/);
+  assert.match(prompt, /REVISED_REQUEST/);
+  assert.doesNotMatch(prompt, /PRIOR_TOOL_|SUPERSEDED_|DISCARDED_|compact working context/);
+  const handoff = c.handoffs.at(-1);
+  assert.equal(handoff.from, 'kimi'); assert.equal(handoff.to, 'codex');
+  const transcript = fs.readFileSync(handoff.fullPath, 'utf8');
+  assert.match(transcript, /ORIGINAL_GOAL|PRIOR_TOOL_0/);
+  assert.doesNotMatch(transcript, /SUPERSEDED_|DISCARDED_/);
+  assert.ok(fs.readFileSync(handoff.file, 'utf8').length < 100000);
+  assert.equal(c.lastCompaction, undefined);
+  h.finish('codex'); await revised.done;
 });
 
 test('retrying an older engine checkpoint after restart reuses completed fragments without publishing partial history', async context => {
@@ -1635,10 +1655,9 @@ test('router compaction continues past five minutes across responsive batches', 
   assert.match(fs.readFileSync(result.file, 'utf8'), /Complete batch summary/);
 });
 
-test('router compaction aborts healthy outstanding batches at the whole-run safety limit', async context => {
-  const waiting = [], signals = [];
+test('router compaction continues healthy outstanding batches beyond thirty minutes', async context => {
+  const waiting = [];
   const h = fixture(context, { summarize: { available: () => true, run: ({ signal }) => new Promise((resolve, reject) => {
-    signals.push(signal);
     waiting.push(resolve);
     signal.addEventListener('abort', () => reject(signal.reason), { once: true });
   }) } });
@@ -1646,27 +1665,22 @@ test('router compaction aborts healthy outstanding batches at the whole-run safe
   c.engineSettings.kimi = { contextWindow: 6000 };
   for (let index = 0; index < 100; index++) manager.append(c, { role: 'tool', text: 'HISTORY_' + index + ' ' + 'x'.repeat(7000) });
   context.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: Date.now() });
-  const started = Date.now();
   const pending = manager.compact(c.id);
-  const rejected = assert.rejects(pending, /30-minute safety limit/);
   await h.flush();
   let batches = 0;
   while (manager.busy(c.id)) {
-    assert.ok(batches < 20, 'the safety limit must stop the run');
+    assert.ok(batches < 64, 'the bounded summary should finish');
     assert.ok(waiting.length > 0);
     context.mock.timers.tick(150000);
-    if (Date.now() - started < 30 * 60 * 1000) {
-      for (const resolve of waiting.splice(0)) resolve({ text: 'Completed batch fragment' });
-    }
+    for (const resolve of waiting.splice(0)) resolve({ text: 'Completed batch fragment' });
     await h.flush();
     batches++;
   }
-  await rejected;
-  assert.ok(batches > 10, 'the router kept making progress before the safety limit');
-  assert.ok(signals.every(signal => signal.aborted));
-  assert.equal(c.lastCompaction.outcome, 'failed');
-  assert.ok(c.compactionRecovery.cache.length > 0);
-  assert.equal(manager.rows(c).some(row => row.file), false);
+  const result = await pending;
+  assert.ok(batches > 12, 'the router kept making progress beyond the old whole-run limit');
+  assert.equal(c.lastCompaction.outcome, 'completed');
+  assert.ok(c.lastCompaction.totalMs > 30 * 60 * 1000);
+  assert.ok(fs.existsSync(result.file));
 });
 
 for (const changed of ['none', 'history', 'model', 'route', 'legacy']) test('router retry checks checkpoint identity: ' + changed, async context => {
@@ -2069,9 +2083,8 @@ test('a replayed history over the Codex input character cap compacts before send
   await (await run).done;
 });
 
-test('a Markdown handoff compacts a Codex replay over the input character cap first', async context => {
+test('a Markdown handoff exports oversized Codex history locally without compacting or replaying it', async context => {
   const harness = fixture(context);
-  const waitFor = async check => { for (let i = 0; i < 200 && !check(); i++) await new Promise(r => setImmediate(r)); };
   const first = await harness.manager.send('codex', { prompt: 'Remember the original task' });
   harness.finish('codex'); await first.done;
   const conversation = harness.manager.get(first.sessionId);
@@ -2079,22 +2092,19 @@ test('a Markdown handoff compacts a Codex replay over the input character cap fi
   harness.manager.append(conversation, { role: 'tool', text: 'Oversized tool output '.repeat(44000) });
   conversation.segments.codex.cursor = 0;
   harness.manager.save(conversation);
+  const sourceSends = harness.sent.length;
   const switching = harness.manager.switchEngine(conversation.id, 'kimi', 'markdown');
-  await waitFor(() => /compact working context/.test(harness.sent.at(-1)?.prompt || ''));
-  assert.ok(harness.sent.at(-1).prompt.length <= 1 << 20);
-  for (let attempt = 0; attempt < 16 && /compact working context/.test(harness.sent.at(-1).prompt); attempt++) {
-    harness.finish('codex', 'success', '## Summary of the oversized turn');
-    await harness.flush();
-  }
-  await waitFor(() => /self-contained Markdown handoff/.test(harness.sent.at(-1)?.prompt || ''));
-  assert.doesNotMatch(harness.sent.at(-1).prompt, /Oversized tool output/);
-  harness.finish('codex', 'success', '# Handoff\n\nA handoff.');
-  await waitFor(() => harness.sent.at(-1)?.engine === 'kimi');
+  await harness.flush();
+  assert.equal(harness.sent.length, sourceSends + 1);
+  assert.equal(harness.sent.at(-1).engine, 'kimi');
+  assert.doesNotMatch(harness.sent.at(-1).prompt, /Oversized tool output|compact working context/);
+  const handoff = conversation.handoffs.at(-1);
+  assert.match(fs.readFileSync(handoff.fullPath, 'utf8'), /Oversized tool output/);
+  assert.equal(conversation.lastCompaction, undefined);
   harness.finish('kimi', 'success', 'Acknowledged');
   const result = await switching;
   assert.equal(result.engine, 'kimi');
   assert.equal(harness.manager.get(conversation.id).currentEngine, 'kimi');
-  assert.ok(harness.manager.get(conversation.id).handoffs.at(-1).file);
 });
 
 test('pausing a goal during native overflow compaction interrupts it without advancing rounds', async context => {
@@ -2279,12 +2289,14 @@ for (const mode of ['sidebar', 'tool']) for (const first of ['source', 'fork']) 
   let manager = harness.manager;
   const source = manager.create('claude', null, 'Original');
   const file = path.join(harness.root, 'handoffs', 'shared.md');
+  const fullPath = path.join(harness.root, 'handoffs', 'shared.jsonl');
   const summary = path.join(harness.root, 'handoffs', 'summary.md');
   fs.mkdirSync(path.dirname(file));
   fs.writeFileSync(file, 'Important handoff');
+  fs.writeFileSync(fullPath, 'Important full transcript');
   fs.writeFileSync(summary, 'Important compacted context');
-  source.handoffs.push({ file, status: 'complete' });
-  manager.append(source, { role: 'notice', text: 'Markdown handoff', file });
+  source.handoffs.push({ file, fullPath, status: 'complete' });
+  manager.append(source, { role: 'notice', text: 'Markdown handoff', file, fullPath });
   manager.append(source, { role: 'notice', text: 'Context compacted: summary saved', file: summary });
   manager.save(source);
   const fork = mode === 'sidebar' ? manager.fork('claude', { sessionId: source.id })
@@ -2295,8 +2307,9 @@ for (const mode of ['sidebar', 'tool']) for (const first of ['source', 'fork']) 
   manager = harness.restart();
   await manager.purge(first === 'source' ? source.id : fork.id);
   assert.equal(fs.readFileSync(file, 'utf8'), 'Important handoff');
+  assert.equal(fs.readFileSync(fullPath, 'utf8'), 'Important full transcript');
   assert.equal(fs.readFileSync(summary, 'utf8'), 'Important compacted context');
-  assert.deepEqual([...manager.handoffFiles(manager.get(kept))].sort(), [file, summary].sort());
+  assert.deepEqual([...manager.handoffFiles(manager.get(kept))].sort(), [file, fullPath, summary].sort());
   assert.match(manager.compactionContext(manager.get(kept)), /Important compacted context/);
   const handlers = new Map(), opened = [];
   const main = fs.readFileSync(path.join(__dirname, '../src/main/main.js'), 'utf8');
@@ -2312,6 +2325,7 @@ for (const mode of ['sidebar', 'tool']) for (const first of ['source', 'fork']) 
   assert.deepEqual(opened, [file, summary]);
   await manager.purge(kept);
   assert.equal(fs.existsSync(file), false);
+  assert.equal(fs.existsSync(fullPath), false);
   assert.equal(fs.existsSync(summary), false);
 });
 
@@ -4270,8 +4284,8 @@ test('resuming a goal in another engine completes its Markdown handoff before ar
   await f.manager.command('claude', 'goal-pause', { sessionId: f.goal.goal.sessionId });
   const resumed = f.manager.command('kimi', 'goal-resume', { sessionId: f.goal.goal.sessionId });
   await new Promise(resolve => setImmediate(resolve));
-  f.finish('claude', 'success', '## Next\nRun the tests.');
-  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(f.sent.at(-1).engine, 'kimi');
+  assert.match(f.sent.at(-1).prompt, /locally exported Markdown handoff/);
   f.finish('kimi', 'success', 'Handoff received.');
   assert.equal((await resumed).ok, true);
   assert.equal(f.goal.view().armed, true);
@@ -4308,20 +4322,28 @@ test('each message keeps its harness attribution across switches and restart', a
   assert.deepEqual(f.manager.load('kimi', first.sessionId).messages.map(message => message.engine), expected);
   assert.deepEqual(f.restart().load('kimi', first.sessionId).messages.map(message => message.engine), expected);
 });
-test('Markdown handoff is generated by the source and a fresh target gets it automatically', async t => {
+test('Markdown handoff is exported locally and a fresh target gets it automatically', async t => {
   const f = fixture(t);
-  const first = await f.manager.send('claude', { prompt: 'Build an experiment' }); f.finish('claude');
+  const first = await f.manager.send('claude', { prompt: 'Build an experiment' });
+  f.finish('claude', 'success', 'Build completed. Validate it.'); await first.done;
+  const sourceSends = f.sent.length;
   const switching = f.manager.switchEngine(first.sessionId, 'kimi', 'markdown');
   await new Promise(resolve => setImmediate(resolve));
-  assert.equal(f.sent.at(-1).engine, 'claude'); assert.match(f.sent.at(-1).prompt, /self-contained Markdown/);
-  f.finish('claude', 'success', '## Goal\nBuild an experiment\n## Next\nValidate it.');
-  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(f.sent.length, sourceSends + 1);
   assert.equal(f.sent.at(-1).engine, 'kimi'); assert.equal(f.sent.at(-1).opts.sessionId, null);
-  assert.match(f.sent.at(-1).prompt, /Validate it/); f.finish('kimi'); await switching;
-  const c = f.manager.get(first.sessionId); assert.equal(c.handoffs[0].status, 'complete');
-  assert.match(fs.readFileSync(c.handoffs[0].file, 'utf8'), /Validate it/);
+  const c = f.manager.get(first.sessionId), handoff = c.handoffs[0];
+  assert.match(f.sent.at(-1).prompt, /locally exported Markdown handoff/);
+  assert.ok(f.sent.at(-1).prompt.includes(handoff.file));
+  assert.doesNotMatch(f.sent.at(-1).prompt, /Validate it/);
+  assert.match(fs.readFileSync(handoff.file, 'utf8'), /Build an experiment/);
+  assert.match(fs.readFileSync(handoff.fullPath, 'utf8'), /Validate it/);
+  f.finish('kimi'); await switching;
+  assert.equal(c.handoffs[0].status, 'complete');
   assert.equal(f.manager.messages(c).filter(m => m.role === 'user').length, 1);
-  assert.equal(f.restart().load('dsh', first.sessionId).origin, 'claude');
+  const restored = f.restart();
+  assert.equal(restored.load('dsh', first.sessionId).origin, 'claude');
+  assert.ok(restored.handoffFiles(restored.get(first.sessionId)).has(handoff.file));
+  assert.ok(restored.handoffFiles(restored.get(first.sessionId)).has(handoff.fullPath));
 });
 test('a working conversation locks its harness while other conversations run concurrently', async t => {
   const f = fixture(t), a = await f.manager.send('codex', { prompt: 'Work A' });
@@ -4344,11 +4366,10 @@ test('a working conversation locks its harness while other conversations run con
   assert.equal(f.manager.active.has(c.sessionId), true);
 });
 
-test('failed handoff keeps source selected and never starts the target', async t => {
-  const f = fixture(t); const first = await f.manager.send('claude', { prompt: 'work' }); f.finish('claude');
-  const switching = f.manager.switchEngine(first.sessionId, 'dsh', 'markdown');
-  const rejected = assert.rejects(switching, /handoff failed/);
-  await new Promise(resolve => setImmediate(resolve)); f.finish('claude', 'error', 'Network error'); await rejected;
+test('failed local export keeps source selected and never starts the target', async t => {
+  const f = fixture(t); const first = await f.manager.send('claude', { prompt: 'work' }); f.finish('claude'); await first.done;
+  f.manager.exportConversation = () => { throw new Error('Local export failed'); };
+  await assert.rejects(f.manager.switchEngine(first.sessionId, 'dsh', 'markdown'), /Local export failed/);
   assert.equal(f.manager.get(first.sessionId).currentEngine, 'claude'); assert.equal(f.sent.some(s => s.engine === 'dsh'), false);
 });
 test('long history is never silently truncated; restart does not replay an ambiguous request', async t => {
@@ -4364,17 +4385,17 @@ test('failed target initialization restores an existing native mapping and prese
   await f.manager.send('claude', { sessionId: first.sessionId, prompt: 'review' }); f.finish('claude');
   const switching = f.manager.switchEngine(first.sessionId, 'kimi', 'markdown');
   const rejected = assert.rejects(switching, /target engine/);
-  await new Promise(resolve => setImmediate(resolve)); f.finish('claude', 'success', '## Summary\nA handoff.');
   await new Promise(resolve => setImmediate(resolve)); f.finish('kimi', 'error', 'rejected'); await rejected;
   const c = f.manager.get(first.sessionId);
   assert.deepEqual(c.segments.kimi, original); assert.equal(c.currentEngine, 'claude');
   assert.equal(c.handoffs[0].status, 'failed'); assert.ok(fs.existsSync(c.handoffs[0].file));
+  assert.ok(fs.existsSync(c.handoffs[0].fullPath));
 });
 test('Markdown cancellation never starts the target and torn append recovery keeps the original tail', async t => {
   const f = fixture(t); const first = await f.manager.send('claude', { prompt: 'work' }); f.finish('claude');
   const switching = f.manager.switchEngine(first.sessionId, 'kimi', 'markdown');
   const rejected = assert.rejects(switching, /canceled/);
-  await new Promise(resolve => setImmediate(resolve)); await f.manager.command('claude', 'cancel', { sessionId: first.sessionId }); await rejected;
+  await f.manager.command('claude', 'cancel', { sessionId: first.sessionId }); await rejected;
   assert.equal(f.sent.some(s => s.engine === 'kimi'), false);
   const file = path.join(f.root, first.sessionId + '.jsonl'); fs.appendFileSync(file, '{"role":');
   const next = f.restart(); assert.equal(next.get(first.sessionId).interrupted, true);
@@ -6958,6 +6979,7 @@ test('a routable model compacts through parallel router summaries and starts no 
     [['map', 0, 2], ['map', 1, 2], ['map', 2, 2], ['reduce', 0, 1], ['reduce', 1, 1]]);
   assert.equal(conversation.lastCompaction.chunks.at(-1).summaryLimit, 12000);
   assert.ok(conversation.lastCompaction.chunks.every(chunk => chunk.totalMs >= 0 && chunk.outputChars > 0));
+  assert.ok(statuses.filter(value => value.compaction?.totalChunks).every(value => value.compaction.totalChunksKnown === false));
   assert.ok(statuses.some(value => value.compaction?.stage === 'summarizing'));
   assert.ok(statuses.some(value => value.compaction?.stage === 'saving'));
   const markdown = fs.readFileSync(result.file, 'utf8');
@@ -7240,64 +7262,44 @@ test('a timed-out destination summary uses a bounded local handoff on the short 
   harness.finish('kimi'); await next.done;
 });
 
-test('a Markdown handoff reuses native context despite an inflated archive estimate', async context => {
-  const h = await nativeFixture(context, async () => { throw new Error('Unnecessary native compaction'); });
-  const { manager, conversation: c } = h, nativeId = c.segments.codex.nativeId;
+test('a Markdown handoff exports locally despite an inflated archive estimate', async context => {
+  let attempts = 0;
+  const h = await nativeFixture(context, async () => { attempts++; throw new Error('Unnecessary native compaction'); });
+  const { manager, conversation: c } = h;
   manager.append(c, { role: 'tool', text: 'ARCHIVED_TOOL_OUTPUT '.repeat(50000) });
   c.segments.codex.cursor = c.seq; manager.save(c);
   assert.ok(manager.contextPressure(c, 'codex', manager.settings('codex', c.id)).used > 272000);
+  const sourceSends = h.sent.length;
   const switching = manager.switchEngine(c.id, 'kimi', 'markdown');
   await h.flush();
-  assert.match(h.sent.at(-1).prompt, /self-contained Markdown handoff/);
-  assert.doesNotMatch(h.sent.at(-1).prompt, /ARCHIVED_TOOL_OUTPUT|compact working context/);
-  assert.equal(h.sent.at(-1).opts.sessionId, nativeId);
-  h.finish('codex', 'success', 'Task and remaining steps');
-  await h.flush();
+  assert.equal(attempts, 0);
+  assert.equal(h.sent.length, sourceSends + 1);
   assert.equal(h.sent.at(-1).engine, 'kimi');
+  assert.match(h.sent.at(-1).prompt, /locally exported Markdown handoff/);
+  assert.doesNotMatch(h.sent.at(-1).prompt, /ARCHIVED_TOOL_OUTPUT|compact working context/);
+  assert.match(fs.readFileSync(c.handoffs.at(-1).fullPath, 'utf8'), /ARCHIVED_TOOL_OUTPUT/);
   h.finish('kimi', 'success', 'Acknowledged');
   assert.equal((await switching).engine, 'kimi');
-  assert.equal(h.sent.length, 3);
+  assert.equal(h.sent.length, sourceSends + 1);
 });
 
-test('a Markdown handoff overflow tries native compaction before summarizing the archive', async context => {
-  let attempts = 0;
-  const h = await nativeFixture(context, async () => { attempts++; return { ok: true }; });
-  const { manager, conversation: c } = h, nativeId = c.segments.codex.nativeId;
-  const switching = manager.switchEngine(c.id, 'kimi', 'markdown');
-  await h.flush();
-  h.finish('codex', 'error', 'context_length_exceeded');
-  await h.flush();
-  assert.equal(attempts, 1);
-  assert.match(h.sent.at(-1).prompt, /self-contained Markdown handoff/);
-  assert.doesNotMatch(h.sent.at(-1).prompt, /compact working context/);
-  assert.equal(h.sent.at(-1).opts.sessionId, nativeId);
-  assert.equal(c.lastCompaction.route, 'native');
-  assert.equal(c.lastCompaction.requests, 0);
-  h.finish('codex', 'success', 'Task checkpoint from the native session');
-  await h.flush();
-  h.finish('kimi', 'success', 'Received');
-  assert.equal((await switching).engine, 'kimi');
-});
-
-test('Markdown harness switching recovers once when the source handoff hits its native window', async context => {
+test('a Markdown handoff gives a short target the exported file instead of rejecting its context', async context => {
   let summaries = 0;
-  const harness = fixture(context, { summarize: { available: () => true,
-    run: async () => { summaries++; return { text: 'Source task checkpoint' }; } } });
+  const harness = fixture(context, { modelContextWindow: model => model === 'short' ? 1024 : 200000,
+    summarize: { available: () => true, run: async () => { summaries++; return { text: 'Unnecessary summary' }; } } });
   const manager = harness.manager;
   const first = await manager.send('codex', { prompt: 'Remember the task' });
   harness.finish('codex'); await first.done;
+  manager.saveSettings('kimi', { sessionId: first.sessionId, model: 'short' });
   const switching = manager.switchEngine(first.sessionId, 'kimi', 'markdown');
   await harness.flush();
-  harness.finish('codex', 'error', 'context_length_exceeded');
-  await harness.flush();
-  assert.ok(summaries > 0);
-  assert.match(harness.sent.at(-1).prompt, /Source task checkpoint/);
-  harness.finish('codex', 'success', 'Markdown handoff from source');
-  await harness.flush();
+  assert.equal(summaries, 0);
   assert.equal(harness.sent.at(-1).engine, 'kimi');
+  assert.ok(harness.sent.at(-1).prompt.length < 1024);
+  const handoff = manager.get(first.sessionId).handoffs.at(-1);
+  assert.ok(fs.existsSync(handoff.file)); assert.ok(fs.existsSync(handoff.fullPath));
   harness.finish('kimi', 'success', 'Received');
   assert.equal((await switching).engine, 'kimi');
-  assert.equal(manager.get(first.sessionId).lastCompaction.targetEngine, 'codex');
 });
 
 test('a target harness budgets its extra goal instructions before switching from a long model', async context => {
@@ -7337,37 +7339,23 @@ test('image input is reserved on a short harness and an oversized new message do
   assert.equal(manager.rows(conversation).length, rows);
 });
 
-for (const transport of ['router', 'engine']) test('Markdown handoff is shortened to the destination budget before the target starts via ' + transport, async context => {
-  const calls = [];
-  let finishSummary;
-  const harness = fixture(context, transport === 'router' ? { summarize: { available: () => true, run: options => {
-    calls.push(options);
-    return new Promise((resolve, reject) => {
-      finishSummary = () => resolve({ text: 'SHORT_HANDOFF' });
-      options.signal.addEventListener('abort', () => reject(options.signal.reason), { once: true });
-    });
-  } } } : {});
+test('Markdown handoff exports long non-ASCII history without a summary transport', async context => {
+  let summaries = 0;
+  const harness = fixture(context, { summarize: { available: () => true,
+    run: async () => { summaries++; return { text: 'SHORT_HANDOFF' }; } } });
   const manager = harness.manager;
-  const first = await manager.send('codex', { prompt: 'Task' }); harness.finish('codex'); await first.done;
+  const first = await manager.send('codex', { prompt: 'Task' });
+  harness.finish('codex', 'success', '中文'.repeat(7000)); await first.done;
   manager.saveSettings('kimi', { sessionId: first.sessionId, contextWindow: 8000 });
-  context.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: Date.now() });
   const pending = manager.switchEngine(first.sessionId, 'kimi', 'markdown');
   await harness.flush();
-  harness.finish('codex', 'success', '中文'.repeat(7000));
-  await harness.flush();
-  if (transport === 'router') assert.ok(calls.length);
-  else assert.match(harness.sent.at(-1).prompt, /Summarize|summarize/);
-  // Handoffs also use these helpers. They must retain the per-request timeout
-  // without a whole-run cutoff.
-  context.mock.timers.tick(1000);
-  if (transport === 'router') {
-    assert.equal(calls[0].signal.aborted, false);
-    finishSummary();
-  } else harness.finish('codex', 'success', 'SHORT_HANDOFF');
-  await harness.flush();
+  assert.equal(summaries, 0);
   assert.equal(harness.sent.at(-1).engine, 'kimi');
-  assert.match(harness.sent.at(-1).prompt, /SHORT_HANDOFF/);
+  assert.match(harness.sent.at(-1).prompt, /locally exported Markdown handoff/);
   assert.doesNotMatch(harness.sent.at(-1).prompt, /中文/);
+  const handoff = manager.get(first.sessionId).handoffs.at(-1);
+  assert.match(fs.readFileSync(handoff.file, 'utf8'), /中文/);
+  assert.match(fs.readFileSync(handoff.fullPath, 'utf8'), /中文/);
   harness.finish('kimi'); await pending;
 });
 

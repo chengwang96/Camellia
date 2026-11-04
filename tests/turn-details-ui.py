@@ -31,7 +31,7 @@ with sync_playwright() as p:
         page = browser.new_page(viewport={'width': width, 'height': 950}, color_scheme=theme, reduced_motion='reduce')
         page.on('pageerror', lambda error: errors.append(str(error)))
         page.add_init_script(bridge)
-        page.goto((repo / 'src/renderer/chat/claude.html').as_uri() + '?harness=codex&conversation=shared-fixture', wait_until='networkidle')
+        page.goto((repo / 'src/renderer/chat/workbench.html').as_uri() + '?harness=codex&conversation=shared-fixture', wait_until='networkidle')
         page.wait_for_function('uiReady && !loadingSession')
         page.evaluate('language => CamelliaI18n.setLanguage(language)', language)
         turn = page.locator('#chat .turn').last

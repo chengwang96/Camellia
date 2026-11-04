@@ -64,7 +64,7 @@ with sync_playwright() as playwright:
     errors = []
     page.on('pageerror', lambda event: errors.append(str(event)))
     page.add_init_script(bridge)
-    page.goto((repo / 'src/renderer/chat/claude.html').as_uri() + '?harness=codex', wait_until='networkidle')
+    page.goto((repo / 'src/renderer/chat/workbench.html').as_uri() + '?harness=codex', wait_until='networkidle')
     page.wait_for_function('uiReady')
     page.locator('[data-sid="failed"]').click()
     expect(page.locator('#chat .run-result.err')).to_contain_text(error)

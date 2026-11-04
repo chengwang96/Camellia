@@ -48,7 +48,7 @@ try:
         assert rpc('grokAccountState')['accounts'][1]['label'] == 'Work renamed'
         page.screenshot(path=str(repo / 'dist/ui-preview/grok-subscription-accounts.png'), full_page=True)
 
-        page.goto((repo / 'src/renderer/chat/claude.html').as_uri() + '?harness=grok', wait_until='networkidle')
+        page.goto((repo / 'src/renderer/chat/workbench.html').as_uri() + '?harness=grok', wait_until='networkidle')
         expect(page.locator('#modelPillName')).to_have_text('Grok Fixture')
         page.locator('#modelPill').click()
         page.locator('.pop-row').filter(has_text='Reasoning level').click()

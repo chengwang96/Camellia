@@ -189,7 +189,7 @@ test('unsupported discussion actions cross IPC with an actionable code and leave
 
 test('integrated workbench can operate discussions while foreign pages and subframes remain denied', async () => {
   let handler; const calls = [], navigations = [];
-  const page = path.resolve('src/renderer/discussions/discussions.html'), chatPage = path.resolve('src/renderer/chat/claude.html');
+  const page = path.resolve('src/renderer/discussions/discussions.html'), chatPage = path.resolve('src/renderer/chat/workbench.html');
   const frame = { url: pathToFileURL(chatPage).href + '?harness=codex' }, sender = { mainFrame: frame };
   const window = { isDestroyed: () => false, webContents: sender };
   registerDiscussionIpc({ ipcMain: { handle(_name, fn) { handler = fn; } }, page, chatPage, getWindow: () => window,

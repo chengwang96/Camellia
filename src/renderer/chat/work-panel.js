@@ -14,6 +14,7 @@ window.createWorkPanel = ({ context, setStatus, openFilePreview, shouldFollow })
     new ResizeObserver(place).observe(header); place();
   }
   const taskKey = task => task.engine + ':' + task.id;
+  const orderedTasks = items => [...items.filter(task => task.status !== 'completed'), ...items.filter(task => task.status === 'completed')];
   const fileKey = file => window.CamelliaArtifacts.artifactPath(file.canonicalPath || file.path, window.dshDesktop.platform);
   const addFile = (file, origin) => files.set({ ...file, origin }, window.dshDesktop.platform);
   const el = (tag, cls, text) => { const node = document.createElement(tag); node.className = cls; if (text != null) node.textContent = text; return node; };
@@ -197,6 +198,6 @@ window.createWorkPanel = ({ context, setStatus, openFilePreview, shouldFollow })
   }
   window.addEventListener('camellia:language', () => { render(); renderCards(); });
   return { reset() { epoch++; tasks = []; files.clear(); drafts.clear(); expanded.clear(); detailExpanded.clear(); scrollPositions.clear(); renderedView = null; selected = null; render(); },
-    update(value) { tasks = value || []; render(); renderCards(); void childFiles(); },
+    update(value) { tasks = orderedTasks(value || []); render(); renderCards(); void childFiles(); },
     artifacts(value) { for (const file of value || []) addFile(file, t('Main conversation')); render(); }, refreshCards: renderCards };
 };

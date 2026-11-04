@@ -82,7 +82,7 @@ async function runSummaryPipeline({ units, previous = '', budget, request, onPro
   // Count accepted fragments, including cache hits, rather than provider calls.
   // Retries do not finish a fragment; splitting replaces its one planned slot.
   // Merge work is planned after map answers exist and has its own phase total.
-  const counts = { map: { completedChunks: 0, totalChunks: 0 }, reduce: { completedChunks: 0, totalChunks: 0 } };
+  const counts = { map: { completedChunks: 0, totalChunks: 0, totalChunksKnown: false }, reduce: { completedChunks: 0, totalChunks: 0, totalChunksKnown: false } };
   const progress = (kind, completed = 0, planned = 0) => {
     checkActive();
     counts[kind].completedChunks += completed;

@@ -47,7 +47,7 @@ with sync_playwright() as playwright:
     errors = []
     page.on('pageerror', lambda error: errors.append(str(error)))
     page.add_init_script(bridge)
-    page.goto((repo / 'src/renderer/chat/claude.html').as_uri() + '?harness=codex', wait_until='networkidle')
+    page.goto((repo / 'src/renderer/chat/workbench.html').as_uri() + '?harness=codex', wait_until='networkidle')
     page.wait_for_function('uiReady')
     page.evaluate("openHistorySession('shared-fixture')")
     expect(page.locator('#chat > .msg-user, #chat > .turn')).to_have_count(100)

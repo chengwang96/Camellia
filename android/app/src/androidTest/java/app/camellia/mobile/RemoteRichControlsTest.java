@@ -180,6 +180,28 @@ public class RemoteRichControlsTest extends InstrumentationTestCase {
         });
     }
 
+    public void testCompactionProgressDoesNotPresentGrowingTotalsAsFinal() throws Exception {
+        ui(() -> {
+            for (boolean chinese : new boolean[] { false, true }) {
+                ContextCompactionView marker = new ContextCompactionView(activity, new ChatStyle(activity), chinese);
+                TextView status = marker.findViewWithTag("compactionStatus");
+                for (String phase : new String[] { "map", "reduce" }) {
+                    JSONObject progress = new JSONObject().put("state", "running").put("stage", "summarizing")
+                        .put("summaryPhase", phase).put("completedChunks", 2).put("totalChunks", 2).put("totalChunksKnown", false);
+                    marker.update(progress);
+                    String prefix = phase.equals("reduce") ? (chinese ? "正在合并摘要：已完成 " : "Merging summaries: ")
+                        : (chinese ? "正在总结上下文：已完成 " : "Summarizing context: ");
+                    String unknown = phase.equals("reduce") ? (chinese ? "2 块…" : "2 chunks completed…")
+                        : (chinese ? "2 块；正在扫描历史…" : "2 chunks completed; scanning history…");
+                    assertEquals(prefix + unknown, status.getText().toString());
+                    // Hosts without the new flag retain their known-total display.
+                    progress.remove("totalChunksKnown"); marker.update(progress);
+                    assertEquals(prefix + (chinese ? "2／2 块…" : "2/2 chunks completed…"), status.getText().toString());
+                }
+            }
+        });
+    }
+
     public void testCompactionClockKeepsLiveAnnouncementsOnStatusChanges() throws Exception {
         AtomicReference<ContextCompactionView> view = new AtomicReference<>();
         AtomicReference<String> initialStatus = new AtomicReference<>(), initialTime = new AtomicReference<>();

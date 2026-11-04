@@ -45,7 +45,7 @@ def exercise_design(browser, theme, language, width, height):
     errors = []
     page.on('pageerror', lambda error: errors.append(str(error)))
     page.add_init_script(bridge)
-    page.goto((repo / 'src/renderer/chat/claude.html').as_uri() + '?harness=codex', wait_until='networkidle')
+    page.goto((repo / 'src/renderer/chat/workbench.html').as_uri() + '?harness=codex', wait_until='networkidle')
     page.wait_for_function('uiReady')
     if not page.locator('[data-sid="shared-fixture"]').is_visible():
         page.locator('#workbenchSidebarToggle').click()
@@ -61,7 +61,7 @@ def exercise_design(browser, theme, language, width, height):
                'progress': '等待确认审核范围。' if chinese else 'Waiting for a scope decision.', 'history': []}
     finished = {**child, 'id': 'chandra', 'title': 'Chandrasekhar', 'status': 'completed', 'canStop': False,
                 'result': '核验已完成，报告已保存。' if chinese else 'Validation complete. Report saved.'}
-    children = [child, waiting, finished]
+    children = [finished, child, waiting]
     page.evaluate('tasks => deliverChild(tasks)', children)
     expect(page.locator('#workPanel')).to_be_hidden()
     for selector in ('#conversationActions', '#workPanelToggle'):
@@ -75,6 +75,9 @@ def exercise_design(browser, theme, language, width, height):
     page.locator('#workPanelToggle').click()
     expect(page.locator('#workPanel .work-task')).to_have_count(3)
     expect(page.locator('#workPanelCount')).to_have_text('3')
+    expected_order = ['Nash', 'Ramanujan', 'Chandrasekhar']
+    expect(page.locator('#workPanel .work-task-heading strong')).to_have_text(expected_order)
+    expect(page.locator('.subtask-turn-card .work-task-heading strong')).to_have_text(expected_order)
     expect(page.locator('#workPanel .work-task[data-state=completed] .work-task-preview')).to_have_text(finished['result'])
     output = repo / 'dist/ui-preview/work-panel-design'
     output.mkdir(parents=True, exist_ok=True)
@@ -200,7 +203,7 @@ def exercise_all_harnesses(browser):
     errors = []
     page.on('pageerror', lambda error: errors.append(str(error)))
     page.add_init_script(bridge)
-    page.goto((repo / 'src/renderer/chat/claude.html').as_uri() + '?harness=codex', wait_until='networkidle')
+    page.goto((repo / 'src/renderer/chat/workbench.html').as_uri() + '?harness=codex', wait_until='networkidle')
     page.wait_for_function('uiReady')
     page.locator('[data-sid="shared-fixture"]').click()
     engines = ['claude', 'codex', 'dsh', 'kimi', 'grok', 'antigravity']
@@ -236,7 +239,7 @@ with sync_playwright() as p:
         errors = []
         page.on('pageerror', lambda error: errors.append(str(error)))
         page.add_init_script(bridge)
-        page.goto((repo / 'src/renderer/chat/claude.html').as_uri() + '?harness=codex', wait_until='networkidle')
+        page.goto((repo / 'src/renderer/chat/workbench.html').as_uri() + '?harness=codex', wait_until='networkidle')
         page.wait_for_function('uiReady')
         page.locator('[data-sid="shared-fixture"]').click()
         expect(page.locator('#chat')).to_contain_text('Review sample 0')

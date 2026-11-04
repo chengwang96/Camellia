@@ -2,6 +2,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { nativeHistoryModule } = require('./native-history-module');
+const { patchKimiAcpTurns } = require('./kimi-acp-turns');
 
 // The official engine owns undo, including checkpoint/compaction validation
 // and derived-state reconciliation. Only expose that engine operation over
@@ -69,6 +70,8 @@ function patchKimiHistory(source) {
   if (source.split(anchor).length !== 2 || source.split(chain).length !== 2 || source.split(owner).length !== 2
       || !source.includes('async undoHistory(count = 1)') || !source.includes('function precheckUndo(history, count)')
       || !source.includes('async unstable_forkSession(params)')) return null;
+  source = patchKimiAcpTurns(source);
+  if (!source) return null;
   return source.replace(owner, `
   server.camelliaUndo = async sessionId => {
     const session = getLiveSessionById(core.accessor, sessionId);

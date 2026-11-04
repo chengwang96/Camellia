@@ -6,7 +6,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 
-const source = fs.readFileSync(path.join(__dirname, '../src/renderer/chat/claude-sidebar.js'), 'utf8');
+const source = fs.readFileSync(path.join(__dirname, '../src/renderer/chat/workbench-sidebar.js'), 'utf8');
 const archiveSource = source.slice(
   source.indexOf('  function sidebarGroupKey('),
   source.indexOf('  // ---------- local Codex desktop session import ----------'));

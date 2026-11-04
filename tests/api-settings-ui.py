@@ -224,7 +224,7 @@ try:
         # New models appear in Claude; workspace behavior is checked separately.
         claude=browser.new_page(viewport={'width':1320,'height':900});claude.expose_function('testRpc',rpc);claude.add_init_script(bridge)
         claude.on('pageerror',lambda e:errors.append(str(e)))
-        claude.goto((repo/'src/renderer/chat/claude.html').as_uri());claude.wait_for_load_state('networkidle')
+        claude.goto((repo/'src/renderer/chat/workbench.html').as_uri());claude.wait_for_load_state('networkidle')
         assert 'kimi-k3' in claude.evaluate('MODELS.map(m=>m.id)')
         assert 'kimi-k2.6' in claude.evaluate('MODELS.map(m=>m.id)')
         assert claude.evaluate('currentModel')==''

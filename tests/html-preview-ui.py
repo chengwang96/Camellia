@@ -35,7 +35,7 @@ with sync_playwright() as playwright:
         page.route('https://example.com/**', lambda route: (requests.append(route.request.url), route.abort()))
         page.on('popup', lambda popup: popups.append(popup))
         page.add_init_script('if (window === window.top) {\n' + bridge + '\n}')
-        page.goto((root / 'src/renderer/chat/claude.html').as_uri() + '?harness=codex&conversation=shared-fixture', wait_until='networkidle')
+        page.goto((root / 'src/renderer/chat/workbench.html').as_uri() + '?harness=codex&conversation=shared-fixture', wait_until='networkidle')
         page.wait_for_function('uiReady')
         page.locator('.artifact-file').click()
         frame = page.frame_locator('.file-preview-html')

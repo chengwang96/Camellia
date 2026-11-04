@@ -89,6 +89,32 @@ test('Kimi sends a selected effort to the native thinking control', async t => {
     { sessionId: '00000000-0000-4000-8000-000000000001', configId: 'thinking', value: 'max' });
 });
 
+test('Kimi empty turns are visible errors while text, tools and cancellation retain their outcomes', async t => {
+  for (const kind of ['empty', 'whitespace', 'thinking', 'queued', 'text', 'tool', 'cancelled', 'refusal']) {
+    const { session } = fixture(t);
+    session.ready = Promise.resolve(); session.sessionId = 'kimi-fixture'; session.spec.modeEngine = 'kimi';
+    session.request = async () => {
+      if (['whitespace', 'text', 'thinking'].includes(kind)) session.update({
+        sessionUpdate: kind === 'thinking' ? 'agent_thought_chunk' : 'agent_message_chunk',
+        content: { type: 'text', text: kind === 'whitespace' ? ' \n' : 'Working' },
+      });
+      if (kind === 'tool') session.update({ sessionUpdate: 'tool_call', toolCallId: 'read', title: 'Read', status: 'completed' });
+      if (kind === 'queued') session.update({ sessionUpdate: 'agent_message_chunk', _meta: { camelliaQueuedPrompt: true },
+        content: { type: 'text', text: 'This request is queued.' } });
+      return { stopReason: ['cancelled', 'refusal'].includes(kind) ? kind : 'end_turn' };
+    };
+    const done = new Promise(resolve => { session.onResult = resolve; });
+    session.sendUserMessage('Continue'); const result = await done;
+    if (['empty', 'whitespace', 'thinking', 'queued'].includes(kind)) {
+      assert.equal(result.subtype, 'empty_response'); assert.equal(result.is_error, true);
+      assert.match(result.result, /Kimi returned no reply/);
+    } else {
+      assert.equal(result.subtype, kind === 'cancelled' ? 'stopped' : kind === 'refusal' ? 'refusal' : 'success');
+      assert.equal(result.is_error, kind === 'refusal');
+    }
+  }
+});
+
 test('native preparation refuses a busy, closed or unrelated ACP engine', async t => {
   const { session } = fixture(t); let requests = 0;
   session.sessionId = 'existing'; session.request = async () => { requests++; };

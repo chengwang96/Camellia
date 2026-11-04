@@ -167,7 +167,7 @@ with tempfile.TemporaryDirectory(prefix='discussion-ui-', ignore_cleanup_errors=
                 page.wait_for_function('uiReady')
                 assert page.locator('#engineSwitch:visible option:not([hidden])').evaluate_all('(items)=>items.map(item=>item.value)') == modes
                 page.locator('#engineSwitch:visible').select_option(engine)
-                page.wait_for_url(f'**/chat/claude.html?harness={engine}')
+                page.wait_for_url(f'**/chat/workbench.html?harness={engine}')
                 page.wait_for_function('uiReady')
                 expect(page.locator('#engineSwitch:visible')).to_have_value(engine)
                 expect(page.locator('#engineSwitch:visible [value=discussions]')).to_have_count(0)
@@ -187,7 +187,7 @@ with tempfile.TemporaryDirectory(prefix='discussion-ui-', ignore_cleanup_errors=
                 expect(page.locator(':light(#sessionList)')).to_contain_text('Standalone sessions')
             # Return to an ordinary draft, then create/manage a group from its peer section.
             page.locator(':light(#newSessionBtn)').click()
-            page.wait_for_url('**/chat/claude.html?harness=grok')
+            page.wait_for_url('**/chat/workbench.html?harness=grok')
             page.wait_for_function('uiReady')
             expect(page.locator('#input')).to_have_value(last_chat_draft)
             page.locator('#newDiscussionBtn').click()
@@ -195,7 +195,7 @@ with tempfile.TemporaryDirectory(prefix='discussion-ui-', ignore_cleanup_errors=
             expect(page.locator('#groupDialog')).to_be_visible()
             page.locator('#groupDialog').press('Escape')
             page.locator(':light(#newSessionBtn)').click()
-            page.wait_for_url('**/chat/claude.html?harness=grok')
+            page.wait_for_url('**/chat/workbench.html?harness=grok')
             page.wait_for_function('uiReady')
             row = page.locator('#discussionSessions [data-group-id]').filter(has_text='首版范围评审')
             row.locator('.session-more').click()
@@ -305,7 +305,7 @@ with tempfile.TemporaryDirectory(prefix='discussion-ui-', ignore_cleanup_errors=
             expect(page.locator('.message.pending').last).to_contain_text('not verified')
             assert len(calls()) == count
             page.locator('.message.pending').last.get_by_role('button', name='Retry', exact=True).click()
-            expect(page.locator('.message.pending')).to_have_count(4)
+            expect(page.locator('.message.pending')).to_have_count(3)
             assert len(calls()) == count
 
             page.evaluate("window.CamelliaI18n.setLanguage('zh-CN')")

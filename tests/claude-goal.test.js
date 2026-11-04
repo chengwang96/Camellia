@@ -140,6 +140,17 @@ test('three consecutive execution errors block even when subtypes differ; resume
   assert.equal(h.timers.size, 1);
 });
 
+test('consecutive empty Kimi responses stop automatic continuations after three attempts', t => {
+  const h = setup(t); h.goal.start({ objective: 'Finish', engine: 'kimi' });
+  for (let round = 0; round < 3; round++) {
+    h.tick(); h.result({ subtype: 'empty_response', is_error: true, result: 'Kimi returned no reply or tool activity.' });
+  }
+  assert.equal(h.goal.view().phase, 'blocked'); assert.equal(h.goal.view().errorStreak, 3);
+  assert.equal(h.goal.view().blockedReason.code, 'repeated-errors');
+  assert.match(h.goal.view().blockedReason.message, /Kimi returned no reply/);
+  assert.equal(h.timers.size, 0); assert.equal(h.prompts.length, 3);
+});
+
 test('resuming a stopped goal can adopt the current turn once and preserve accumulated progress', t => {
   for (const phase of ['paused', 'blocked']) {
     const h = setup(t);

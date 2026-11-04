@@ -2389,9 +2389,12 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     const label = compactionLabel(compaction);
     const hasCounts = Number.isSafeInteger(compaction.completedChunks) && compaction.completedChunks >= 0
       && Number.isSafeInteger(compaction.totalChunks) && compaction.totalChunks > 0 && compaction.completedChunks <= compaction.totalChunks;
-    const progress = compaction.stage === 'summarizing' && hasCounts
-      ? (compaction.summaryPhase === 'reduce' ? 'Merging summaries: {0}/{1} chunks completed…' : 'Summarizing context: {0}/{1} chunks completed…')
-        .replace('{0}', compaction.completedChunks).replace('{1}', compaction.totalChunks)
+    const progress = compaction.stage === 'summarizing' && hasCounts && compaction.totalChunksKnown === false
+      ? (compaction.summaryPhase === 'reduce' ? 'Merging summaries: {0} chunks completed…' : 'Summarizing context: {0} chunks completed; scanning history…')
+        .replace('{0}', compaction.completedChunks)
+      : compaction.stage === 'summarizing' && hasCounts
+        ? (compaction.summaryPhase === 'reduce' ? 'Merging summaries: {0}/{1} chunks completed…' : 'Summarizing context: {0}/{1} chunks completed…')
+          .replace('{0}', compaction.completedChunks).replace('{1}', compaction.totalChunks)
       : compaction.stage === 'summarizing' && Number.isInteger(compaction.chunk)
         ? (compaction.finalChunk ? 'Summarizing context: chunk {0} (last)…' : 'Summarizing context: chunk {0}…').replace('{0}', compaction.chunk)
       : compaction.stage === 'saving' ? 'Saving compacted context…' : label;
@@ -4123,7 +4126,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     if (!context.sessionId || !loadedEngine || loadedEngine === harnessId) return;
     const hint = document.createElement('div');
     hint.className = 'switch-hint';
-    const mode = conversationPrefs.mode === 'markdown' ? 'Automatic Markdown handoff' : 'Continue directly';
+    const mode = conversationPrefs.mode === 'markdown' ? 'Markdown handoff' : 'Continue directly';
     const t = window.CamelliaI18n.t;
     hint.textContent = t('Last reply from {0} · Continuing with {1}: {2}').replace('{0}', ENGINE_SHORT_NAMES[loadedEngine] || loadedEngine)
       .replace('{1}', chatProfile.name).replace('{2}', t(mode));

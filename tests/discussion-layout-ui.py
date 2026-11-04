@@ -252,7 +252,7 @@ with sync_playwright() as p:
         for page in (normal, discussion):
             page.on('pageerror', lambda error: errors.append(str(error)))
             page.add_init_script(bridge)
-        normal.goto((repo / 'src/renderer/chat/claude.html').as_uri() + '?harness=codex', wait_until='networkidle')
+        normal.goto((repo / 'src/renderer/chat/workbench.html').as_uri() + '?harness=codex', wait_until='networkidle')
         normal.wait_for_function('uiReady')
         normal.locator('[data-sid="chat-fixture"]').click()
         expect(normal.locator('#chat')).to_contain_text('需要补充的验证')

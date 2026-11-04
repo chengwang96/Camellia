@@ -49,7 +49,7 @@ with sync_playwright() as playwright:
         errors = []
         page.on('pageerror', lambda error: errors.append(str(error)))
         page.add_init_script(bridge)
-        page.goto((repo / 'src/renderer/chat/claude.html').as_uri() + '?harness=' + engine, wait_until='networkidle')
+        page.goto((repo / 'src/renderer/chat/workbench.html').as_uri() + '?harness=' + engine, wait_until='networkidle')
         page.wait_for_function('uiReady')
 
         def model_menu():
@@ -178,7 +178,7 @@ with sync_playwright() as playwright:
         page.on('pageerror', lambda error: errors.append(str(error)))
         page.add_init_script(bridge)
         query = f'?harness=codex&fresh=1&account={account}' + ('&noRoutes=1' if late_routes else '')
-        page.goto((repo / 'src/renderer/chat/claude.html').as_uri() + query, wait_until='networkidle')
+        page.goto((repo / 'src/renderer/chat/workbench.html').as_uri() + query, wait_until='networkidle')
         page.wait_for_function('uiReady')
         if late_routes:
             expect(page.locator('#modelPillName')).to_contain_text('Connect ChatGPT')

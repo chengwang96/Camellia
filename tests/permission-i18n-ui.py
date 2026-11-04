@@ -35,7 +35,7 @@ try:
         page.on('pageerror', lambda e: errors.append(str(e)))
         page.expose_function('testRpc', rpc)
         page.add_init_script(bridge)
-        page.goto((repo / 'src/renderer/chat/claude.html').as_uri())
+        page.goto((repo / 'src/renderer/chat/workbench.html').as_uri())
         page.wait_for_load_state('networkidle')
         before = page.locator('#selPermission option').all_text_contents()
         page.evaluate("window.CamelliaI18n.setLanguage('zh-CN')")

@@ -97,7 +97,10 @@ final class ContextCompactionView extends LinearLayout {
                 if (completed >= 0 && total > 0 && completed <= total) {
                     boolean merging = value.optString("summaryPhase").equals("reduce");
                     status = (merging ? tr("正在合并摘要：已完成 ", "Merging summaries: ") : tr("正在总结上下文：已完成 ", "Summarizing context: "))
-                        + completed + tr("／", "/") + total + tr(" 块…", " chunks completed…");
+                        + completed;
+                    if (value.optBoolean("totalChunksKnown", true)) status += tr("／", "/") + total + tr(" 块…", " chunks completed…");
+                    else status += merging ? tr(" 块…", " chunks completed…")
+                        : tr(" 块；正在扫描历史…", " chunks completed; scanning history…");
                 } else if (value.optInt("chunk") > 0) {
                     String suffix = value.optBoolean("finalChunk") ? tr("（最后一块）", " (last)") : "";
                     status = tr("正在总结上下文：第 ", "Summarizing context: chunk ") + value.optInt("chunk") + tr(" 块", "") + suffix + "…";

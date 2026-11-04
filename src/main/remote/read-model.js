@@ -40,6 +40,7 @@ function compactionView(value) {
   for (const key of ['seq', 'afterSeq', 'chunk', 'durationMs', 'startedAt', 'elapsedMs', 'completedChunks', 'totalChunks']) {
     if (Number.isSafeInteger(value[key]) && value[key] >= 0) result[key] = value[key];
   }
+  if (typeof value.totalChunksKnown === 'boolean') result.totalChunksKnown = value.totalChunksKnown;
   // Reconnecting phones receive a current duration without depending on their
   // clock agreeing with the host. The phone advances it locally between events.
   if (result.state === 'running' && result.startedAt !== undefined)

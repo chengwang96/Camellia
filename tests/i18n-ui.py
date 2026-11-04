@@ -48,7 +48,7 @@ try:
             return page
         settings = open_page('settings/api-settings.html')
         home = open_page('home/home.html')
-        chat = open_page('chat/claude.html', '?new=1&workspace=' + workspace['id'])
+        chat = open_page('chat/workbench.html', '?new=1&workspace=' + workspace['id'])
         expect(home.locator('h1')).to_have_text('Start working')
         expect(chat.locator('.ws-name')).to_have_text('Settings')
         chat.locator('#input').fill('Settings / Ready / Keep this draft 原样保留')

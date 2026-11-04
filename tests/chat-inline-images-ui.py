@@ -21,7 +21,7 @@ with sync_playwright() as p:
     for theme in ['light','dark']:
         page=browser.new_page(viewport={'width':1100,'height':850})
         page.add_init_script(bridge)
-        page.goto((repo/'src/renderer/chat/claude.html').as_uri()+'?harness=codex&conversation=shared-fixture',wait_until='networkidle')
+        page.goto((repo/'src/renderer/chat/workbench.html').as_uri()+'?harness=codex&conversation=shared-fixture',wait_until='networkidle')
         page.wait_for_function('uiReady && !loadingSession')
         page.evaluate('theme=>document.documentElement.dataset.theme=theme',theme)
         img=page.locator('#chat img.chat-inline-image').first

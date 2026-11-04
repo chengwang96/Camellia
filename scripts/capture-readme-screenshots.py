@@ -75,7 +75,7 @@ def main():
         chat_errors = []
         chat.on("pageerror", lambda error: chat_errors.append(str(error)))
         chat.add_init_script(shared_chat_bridge())
-        chat.goto((ROOT / "src" / "renderer" / "chat" / "claude.html").as_uri() + "?harness=claude", wait_until="networkidle")
+        chat.goto((ROOT / "src" / "renderer" / "chat" / "workbench.html").as_uri() + "?harness=claude", wait_until="networkidle")
         chat.wait_for_timeout(1500)
         chat.locator('[data-sid="shared-fixture"]').click()
         chat.get_by_text("Refactor checklist").wait_for()

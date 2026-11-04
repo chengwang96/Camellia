@@ -1688,7 +1688,7 @@ test('remote compaction progress streams without usage data and keeps failure di
   const connection = await stream(gateway, visible.id, credential.token);
   await connection.next();
   const compaction = { state: 'running', stage: 'summarizing', chunk: 2, finalChunk: true,
-    summaryPhase: 'reduce', completedChunks: 1, totalChunks: 3, elapsedMs: 95000 };
+    summaryPhase: 'reduce', completedChunks: 1, totalChunks: 3, totalChunksKnown: false, elapsedMs: 95000 };
   manager.switching.set(visible.id, { target: 'codex', compaction });
   manager.onStatus({ sessionId: visible.id, compaction });
   let snapshot = await connection.next();
@@ -1700,6 +1700,7 @@ test('remote compaction progress streams without usage data and keeps failure di
   assert.ok(reconnected.elapsedMs >= 100000 && reconnected.elapsedMs < 102000);
   assert.equal(reconnected.completedChunks, 1);
   assert.equal(reconnected.totalChunks, 3);
+  assert.equal(reconnected.totalChunksKnown, false);
   manager.switching.delete(visible.id);
   manager.onStatus({ sessionId: visible.id, compaction: { state: 'failed' } });
   manager.onStatus({ sessionId: visible.id, text: '' });

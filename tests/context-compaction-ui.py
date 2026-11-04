@@ -39,17 +39,22 @@ with sync_playwright() as playwright:
         errors = []
         page.on('pageerror', lambda error: errors.append(str(error)))
         page.add_init_script(bridge)
-        page.goto((repo / 'src/renderer/chat/claude.html').as_uri() + '?harness=codex', wait_until='networkidle')
+        page.goto((repo / 'src/renderer/chat/workbench.html').as_uri() + '?harness=codex', wait_until='networkidle')
         page.wait_for_function('uiReady')
         page.locator('[data-sid="shared-fixture"]').click()
         expect(page.locator('#chat')).to_contain_text('Experiment review')
         page.clock.install()
+        # Installing a clock still lets wall time pass. Pause it so screenshots
+        # and browser actions cannot advance exact elapsed-time assertions.
+        page.clock.pause_at(page.evaluate('Date.now() + 60000'))
         page.evaluate("deliverStatus({sessionId:'shared-fixture',text:'Asking the engine to summarize the conversation…',compaction:{state:'running'}})")
         row = page.locator('.context-compaction')
         expect(row).to_be_visible()
         expect(row.locator('span[data-i18n]')).to_have_text('Compacting context…')
         expect(row.locator('.context-compaction-duration')).to_contain_text('Elapsed')
         expect(row).to_have_attribute('role', 'status')
+        page.evaluate("deliverStatus({sessionId:'shared-fixture',text:'Asking the engine to summarize the conversation…',compaction:{state:'running',stage:'summarizing',summaryPhase:'map',completedChunks:1,totalChunks:2,totalChunksKnown:false,startedAt:Date.now()-95000}})")
+        expect(row.locator('span[data-i18n]')).to_have_text('Summarizing context: 1 chunks completed; scanning history…')
         page.evaluate("deliverStatus({sessionId:'shared-fixture',text:'Asking the engine to summarize the conversation…',compaction:{state:'running',stage:'summarizing',summaryPhase:'map',completedChunks:1,totalChunks:4,startedAt:Date.now()-95000}})")
         expect(row.locator('span[data-i18n]')).to_have_text('Summarizing context: 1/4 chunks completed…')
         expect(row.locator('.context-compaction-duration')).to_have_text('Elapsed 1 minute 35 seconds')

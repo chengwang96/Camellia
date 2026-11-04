@@ -265,7 +265,7 @@ test('General exposes the conversation width selector and the chat column reads 
   const source = fs.readFileSync(path.join(__dirname, '../src/renderer/settings/api-settings.js'), 'utf8');
   assert.ok(source.includes("chatContentWidth: $('chatContentWidth').value"));
   assert.ok(source.includes("$('chatContentWidth').value = preferences.chatContentWidth"));
-  const css = fs.readFileSync(path.join(__dirname, '../src/renderer/chat/claude.css'), 'utf8');
+  const css = fs.readFileSync(path.join(__dirname, '../src/renderer/chat/workbench.css'), 'utf8');
   assert.match(css, /\.column \{ width: 100%; max-width: var\(--content-width\); margin: 0 auto; \}/);
 });
 

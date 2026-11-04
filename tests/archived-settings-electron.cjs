@@ -197,7 +197,7 @@ async function main() {
   assert.ok(fs.existsSync(draftAttachment)); assert.ok(fs.existsSync(recentAttachment));
   await run("window.CamelliaI18n.setLanguage('zh-CN')");
   assert.equal(await run("document.querySelector('#scanStorage').textContent"), '扫描可清理文件');
-  await homeWindow.loadFile(path.join(__dirname, '../src/renderer/chat/claude.html'), { query: { harness: 'claude' } });
+  await homeWindow.loadFile(path.join(__dirname, '../src/renderer/chat/workbench.html'), { query: { harness: 'claude' } });
   await wait(() => homeWindow.webContents.executeJavaScript('uiReady'), 'chat initialized');
   const queuedAttachment = path.join(attachmentDir, 'pasted-text-123-44444444-4444-4444-8444-444444444444.txt');
   fs.writeFileSync(queuedAttachment, 'queued attachment'); fs.utimesSync(queuedAttachment, old, old);

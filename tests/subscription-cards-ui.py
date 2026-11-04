@@ -27,7 +27,10 @@ window.dshDesktop=new Proxy({}, {get:(_,method)=>method.startsWith('on')?fn=>{ac
  if(method==='codexAccountState')return snapshot();
  if(method==='codexAccountSelect'){mockAccounts.forEach(a=>a.active=a.id===args[0]);return snapshot();}
  if(method==='codexAccountLabel'){mockAccounts.find(a=>a.id===args[0]).label=args[1];return snapshot();}
- if(method==='codexAccountRefresh'||method==='codexAccountWake')return {...snapshot(),wakeSent:method==='codexAccountWake'};
+ if(method==='codexAccountRefresh'||method==='codexAccountWake'){
+   if(method==='codexAccountRefresh'&&args[0]==='account-1'&&window.holdCodexRefresh)await new Promise(resolve=>window.finishCodexRefresh=resolve);
+   return {...snapshot(),wakeSent:method==='codexAccountWake'};
+ }
  if(method==='codexAccountRemove'){
    if(args[0]==='default')mockAccounts.find(a=>a.id==='default').signedIn=false;
    else mockAccounts=mockAccounts.filter(a=>a.id!==args[0]);
@@ -149,6 +152,23 @@ try:
         page.evaluate("mockAccounts[0].credits={balance:58453.6,hasCredits:true,unlimited:false}; accountListeners.onCodexAccount(accountSnapshot())")
         expect(cards.locator('[data-card-id=default] .subscription-credits strong')).to_have_text('58,453.60')
         assert_card_layout(cards)
+        quota_displays=page.evaluate("""() => {
+          const render = (engine, quotaWindows) => {
+            const container = document.createElement('div');
+            renderSubscriptionCards({container,state:{accounts:[{id:'quota',signedIn:true,quotaWindows}]},engine,manage:false});
+            return [...container.querySelectorAll('.subscription-meter strong')].map(element => element.textContent);
+          };
+          return {
+            codex:render('codex',[{label:'5h',usedPercent:25},{label:'7d',usedPercent:100}]),
+            kimi:render('kimi',[{label:'5-hour',usedPercent:25},{label:'Weekly',usedPercent:20},{label:'Monthly total',usedPercent:100}]),
+            grok:render('grok',[{label:'5-hour',usedPercent:25},{label:'Weekly included',usedPercent:20},{label:'Included usage',usedPercent:100}]),
+            antigravity:render('antigravity',[
+              {label:'Gemini Models · 5-hour',usedPercent:25},{label:'Gemini Models · Weekly',usedPercent:100},
+              {label:'Claude and GPT models · 5-hour',usedPercent:40},{label:'Claude and GPT models · Weekly',usedPercent:20}])
+          };
+        }""")
+        assert quota_displays == {'codex':['0%','0%'],'kimi':['0%','0%','0%'],'grok':['0%','0%','0%'],
+                                  'antigravity':['0%','0%','60%','80%']}, quota_displays
         google=page.locator('#googleAccountList')
         expect(google.locator('.subscription-card')).to_have_count(1)
         expect(google.locator('.subscription-credits')).to_have_count(0)
@@ -325,11 +345,26 @@ try:
         assert page.evaluate("calls.filter(c=>c.method==='antigravitySignOut').length")==3
         page.evaluate('mockGoogle=structuredClone(googleSignOutPreview);accountListeners.onAntigravityAccount(mockGoogle)')
         backup=cards.locator('[data-card-id="account-1"]')
-        backup.locator('[data-card-action=refresh]').click()
-        expect(cards.locator('[data-card-id=default]')).to_have_class('subscription-card active')
-        backup.locator('[data-card-action=wake]').click()
-        expect(cards.locator('[data-card-id=default]')).to_have_class('subscription-card active')
         primary=cards.locator('[data-card-id=default]')
+        other=cards.locator('[data-card-id="account-2"]')
+        page.evaluate('window.holdCodexRefresh=true')
+        backup.locator('[data-card-action=refresh]').click()
+        expect(backup.locator('[data-card-action]:enabled')).to_have_count(0)
+        expect(primary.locator('[data-card-action=refresh]')).to_be_enabled()
+        expect(other.locator('[data-card-action=refresh]')).to_be_enabled()
+        expect(page.locator('#codexAddAccount')).to_be_enabled()
+        expect(page.locator('#codexAccountStatus')).not_to_have_text('Connecting to Codex…')
+        other.locator('[data-card-action=refresh]').click()
+        expect(other.locator('[data-card-action=refresh]')).to_be_enabled()
+        assert page.evaluate("calls.filter(c=>c.method==='codexAccountRefresh'&&c.args[0]==='account-2').length") == 1
+        expect(backup.locator('[data-card-action=refresh]')).to_be_disabled()
+        page.evaluate('window.finishCodexRefresh();window.holdCodexRefresh=false')
+        expect(backup.locator('[data-card-action]:disabled')).to_have_count(0)
+        expect(primary.locator('[data-card-action=refresh]')).to_be_enabled()
+        expect(other.locator('[data-card-action=refresh]')).to_be_enabled()
+        expect(primary).to_have_class('subscription-card active')
+        backup.locator('[data-card-action=wake]').click()
+        expect(primary).to_have_class('subscription-card active')
         selection_calls=lambda:page.evaluate("calls.filter(c=>c.method==='codexAccountSelect').length")
         before=selection_calls()
         # Automatic selection arrives through the account broadcast, with no click.

@@ -4,7 +4,7 @@ from playwright.sync_api import expect, sync_playwright
 
 
 repo = Path(__file__).resolve().parents[1]
-url = (repo / 'src/renderer/chat/claude.html').as_uri()
+url = (repo / 'src/renderer/chat/workbench.html').as_uri()
 bridge = r"""(() => {
   const settingsFor = engine => ({model:engine+'-model',permissionMode:engine==='kimi'?'yolo':'default',
     connection:['codex','kimi'].includes(engine)?'subscription':'api'});

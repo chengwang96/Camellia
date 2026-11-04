@@ -88,7 +88,7 @@ with tempfile.TemporaryDirectory(prefix='desktop-math-', ignore_cleanup_errors=T
                 page.on('requestfailed', lambda request: failed_resources.append(request.url)
                         if 'katex' in request.url.lower() or 'markdown-math' in request.url else None)
                 page.set_viewport_size({'width': 1440, 'height': 1100})
-                page.goto((repo / 'src/renderer/chat/claude.html').as_uri() + '?harness=codex', wait_until='networkidle')
+                page.goto((repo / 'src/renderer/chat/workbench.html').as_uri() + '?harness=codex', wait_until='networkidle')
                 page.wait_for_function('uiReady')
                 for theme in ['light', 'dark']:
                     page.emulate_media(color_scheme=theme)

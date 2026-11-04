@@ -62,7 +62,7 @@ with sync_playwright() as p:
             page = browser.new_page(viewport={'width': width, 'height': 800}, color_scheme=theme)
             page.on('pageerror', lambda error: errors.append(str(error)))
             page.add_init_script(bridge)
-            url = (repo/'src/renderer/chat/claude.html').as_uri()+'?harness=codex&conversation=session-a'
+            url = (repo/'src/renderer/chat/workbench.html').as_uri()+'?harness=codex&conversation=session-a'
             page.goto(url, wait_until='networkidle')
             page.wait_for_function('uiReady && !loadingSession')
             toggle = page.locator('#fastModeToggle')
@@ -120,7 +120,7 @@ with sync_playwright() as p:
             expect(toggle).to_have_attribute('aria-pressed', 'false')
             toggle.click()
             expect(toggle).to_have_attribute('aria-pressed', 'true')
-            page.goto((repo/'src/renderer/chat/claude.html').as_uri()+'?harness=codex', wait_until='networkidle')
+            page.goto((repo/'src/renderer/chat/workbench.html').as_uri()+'?harness=codex', wait_until='networkidle')
             page.wait_for_function('uiReady && !loadingSession && context.sessionId===null')
             expect(toggle).to_have_attribute('aria-pressed', 'true')
             page.locator('#input').fill('Check fast mode')
@@ -136,7 +136,7 @@ with sync_playwright() as p:
             page = browser.new_page()
             page.on('pageerror', lambda error: errors.append(str(error)))
             page.add_init_script(bridge)
-            page.goto((repo/'src/renderer/chat/claude.html').as_uri()+f'?harness={engine}', wait_until='networkidle')
+            page.goto((repo/'src/renderer/chat/workbench.html').as_uri()+f'?harness={engine}', wait_until='networkidle')
             page.wait_for_function('uiReady')
             expect(page.locator('#fastModeToggle')).to_be_hidden()
             page.close()

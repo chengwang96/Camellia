@@ -424,7 +424,7 @@ def run_scenario(playwright, executable, resources, output, scenario, shortcut, 
             with settings.expect_event("close"):
                 settings.locator("#closeSettings").click()
             home.locator("#enterGrok").click()
-            chat = application.wait_page("chat/claude.html")
+            chat = application.wait_page("chat/workbench.html")
             expect(chat.locator("body > .app > .main #input")).to_be_visible()
             if scenario == "upgrade":
                 chat.locator("body > .app > #sidebar").get_by_text(OLD_TITLE, exact=True).click()
@@ -472,7 +472,7 @@ def run_scenario(playwright, executable, resources, output, scenario, shortcut, 
             result["launches"].append(application.evidence)
             assert ipc(application.home, "workbenchSettings")["theme"] == "dark"
             application.home.locator("#enterGrok").click()
-            chat = application.wait_page("chat/claude.html")
+            chat = application.wait_page("chat/workbench.html")
             chat.locator("body > .app > #sidebar").get_by_text(conversations[0]["title"], exact=True).click()
             expect(chat.locator("body > .app > .main #chat")).to_contain_text(PROMPT)
             expect(chat.locator("body > .app > .main #chat")).to_contain_text(REPLY)

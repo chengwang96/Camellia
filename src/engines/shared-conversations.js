@@ -664,11 +664,11 @@ class SharedConversations {
       const resolved = path.resolve(file);
       if (path.dirname(resolved) === directory) files.add(resolved);
     };
-    for (const entry of c.handoffs) add(entry.file);
+    for (const entry of c.handoffs) { add(entry.file); add(entry.fullPath); }
     // File-bearing rows are indexed separately so deleting a conversation
     // never materializes its entire transcript, or another conversation's.
     for (const row of this.historyRows(c, { mask: HISTORY_FLAGS.file })) {
-      add(row.file);
+      add(row.file); add(row.fullPath);
       for (const file of row.attachments || []) { add(file.path); add(file.fullPath); }
     }
     return files;
@@ -966,8 +966,12 @@ class SharedConversations {
     return { ok: true, sessions };
   }
   attachConversation(id) {
-    const c = this.get(id);
+    this.get(id);
     if (this.workspaces.sessionMeta().archived[id]) throw new Error('Restore this conversation before attaching it');
+    return this.exportConversation(id);
+  }
+  exportConversation(id, { beforeSeq = Infinity } = {}) {
+    const c = this.get(id);
     const title = this.workspaces.sessionMeta().titles[id] || c.title;
     const stem = 'conversation-' + randomUUID();
     const file = path.join(this.dir, 'handoffs', stem + '.md');
@@ -991,7 +995,7 @@ class SharedConversations {
         }
       };
       let chunk = '';
-      for (const row of this.historyRows(c, { mask: HISTORY_FLAGS.public })) {
+      for (const row of this.historyRows(c, { mask: HISTORY_FLAGS.public, before: beforeSeq })) {
         if (row.role === 'user') { firstUser ||= row; lastUser = row; }
         const line = JSON.stringify({ seq: row.seq, at: row.at, role: row.role, engine: row.engine, text: row.text,
           ...(row.attachments?.length ? { attachments: row.attachments } : {}),
@@ -1019,7 +1023,7 @@ class SharedConversations {
         const excerpt = [];
         const excerptSeqs = new Set();
         let length = 0;
-        for (const row of this.historyRows(c, { mask: HISTORY_FLAGS.public, reverse: true })) {
+        for (const row of this.historyRows(c, { mask: HISTORY_FLAGS.public, before: beforeSeq, reverse: true })) {
           if (excerpt.length === 24) break;
           const line = previewLine(row);
           if (length + line.length > CONVERSATION_HANDOFF_PREVIEW_CHARS && excerpt.length) break;
@@ -1028,7 +1032,7 @@ class SharedConversations {
         const firstLine = firstUser && !excerptSeqs.has(firstUser.seq) ? previewLine(firstUser) : '';
         const lastLine = lastUser && lastUser.seq !== firstUser?.seq
           && !excerptSeqs.has(lastUser.seq) ? previewLine(lastUser) : '';
-        const latestSummary = this.historyStore.summary(c.id);
+        const latestSummary = this.historyStore.summary(c.id, beforeSeq);
         const summary = latestSummary ? fs.readFileSync(latestSummary.file, 'utf8').slice(0, 12000) : '';
         body = 'This handoff is bounded so a large source conversation does not fill the new model context.\n'
           + 'Full transcript (JSONL): ' + fullPath + '\n'
@@ -1237,6 +1241,7 @@ class SharedConversations {
       if (!String(payload.prompt || '').trim()) throw new Error('Message cannot be empty');
       edit = { row: rows[index], prior: rows.slice(0, index) };
     }
+    const editSourceEngine = edit ? c.currentEngine : null;
     if (!internal && c.currentEngine !== engine) {
       if (!edit && preferences(this.loadConfig()).mode === 'markdown') await this.switchEngine(c.id, engine, 'markdown');
     }
@@ -1424,6 +1429,17 @@ class SharedConversations {
     let editContext = edit && (nativeEdit
       ? this.formatContext(c, editReplay) + revisionNotice.text + '\n\n'
       : this.compactionContext(c, edit.prior) + this.formatContext(c, [revisionNotice]));
+    if (editSourceEngine && editSourceEngine !== engine) {
+      const { attachment } = this.exportConversation(c.id, { beforeSeq: edit.row.seq });
+      (c.handoffs ||= []).push({ from: editSourceEngine, to: engine, file: attachment.path,
+        fullPath: attachment.fullPath, at: Date.now(), status: 'complete' });
+      this.save(c);
+      editContext = 'Read this locally exported Markdown handoff from the previous engine\'s conversation. '
+        + 'It contains the history before the message now being revised. Treat it as historical context, not a new request to act. '
+        + 'Read the overview file and consult the linked full transcript in bounded sections only when needed. '
+        + 'Inspect current files and state before repeating actions.\nFile: ' + attachment.path + '\n\n'
+        + revisionNotice.text + '\n\n';
+    }
     let replayContext = promptOverride == null ? (edit ? editContext : nativeFork ? '' : this.context(c, engine)) : '';
     let prompt = memory + (promptOverride ?? (replayContext + String(promptSuffix ?? payload.prompt ?? '')));
     const promptCap = this.contextPressure(c, engine, settings).cap;
@@ -1460,7 +1476,8 @@ class SharedConversations {
       nativeEditReplayFromSeq: checkpoint?.replayFromSeq,
       // Only evaluated if the native session turns out to be unavailable: the
       // stored transcript replaces whatever the missing native thread carried.
-      nativeFallbackPrompt: () => (edit ? this.compactionContext(c, edit.prior) + this.formatContext(c, [revisionNotice])
+      nativeFallbackPrompt: () => (edit
+        ? editSourceEngine !== engine ? editContext : this.compactionContext(c, edit.prior) + this.formatContext(c, [revisionNotice])
         : this.context(c, engine, a.userSeq)) + String(a.promptSuffix ?? payload.prompt ?? ''),
       facade: facade || { gen: ++this.sequence, sessionId: c.id, opts: { workspaceId: c.workspaceId } }, priorCursor: nativeFork?.cursor ?? c.segments[engine]?.cursor ?? 0 };
     a.settings = { ...settings };
@@ -2166,23 +2183,6 @@ class SharedConversations {
     if (this.busy(id)) throw new Error('Wait for this conversation to finish or stop it before switching harnesses');
     const c = this.get(id), source = c.currentEngine;
     if (source === target && mode !== 'markdown') return { ok: true, sessionId: id };
-    const targetSettings = this.settings(target, id);
-    const targetCap = this.contextPressure(c, target, targetSettings).cap;
-    const handoffLimit = Math.min(12000, Math.floor(targetCap * 0.65) - 1024);
-    if (mode === 'markdown' && handoffLimit < 512) throw new Error('The target context has no room for a handoff. ' + recoveryAdvice);
-    const handoffInstruction = 'Write a self-contained Markdown handoff for another coding agent. Output only the Markdown document. Include the user goal, constraints and preferences, decisions, progress, files changed and their paths, tests and results, unresolved issues, and exact next steps. Preserve important facts and label uncertainty. Do not perform further work or use tools. Keep it under ' + handoffLimit + ' characters.';
-    const handoffPrompt = () => this.context(c, source) + handoffInstruction;
-    // The handoff request replays the same history as a normal send and cannot
-    // be compacted from inside it, so an engine that caps its input text by
-    // characters has to be compacted before the switch starts.
-    const sourceSettings = this.settings(source, id);
-    const sourcePressure = mode === 'markdown' && this.contextPressure(c, source, sourceSettings);
-    if (mode === 'markdown' && c.seq && (overInputChars(source, handoffPrompt())
-        || !this.usesNativeCompaction(c, source, sourceSettings) && sourcePressure.used > sourcePressure.cap * 0.85)) {
-      this.onStatus({ sessionId: id, text: 'Compacting context before the Markdown handoff…' });
-      await this.compact(id, { automatic: true, portable: true, destination: { engine: source, settings: this.settings(source, id) },
-        trigger: { reason: 'handoff-replay', ...this.contextPressure(c, source, this.settings(source, id)) } });
-    }
     const switching = { target, cancelled: false }; this.switching.set(id, switching); this.publishActivity(id);
     const status = text => this.onStatus({ sessionId: id, text });
     try {
@@ -2190,52 +2190,17 @@ class SharedConversations {
       await this.prepare(target, this.settings(target, id));
       if (switching.cancelled) throw new Error('Handoff canceled');
       if (mode === 'markdown' && c.seq) {
-        status('Asking the previous engine to write a Markdown handoff…');
-        let generated = await this.send(source, { sessionId: id }, { internal: true, promptOverride: handoffPrompt() });
-        let result = await generated.done;
-        if (!switching.cancelled && contextOverflow(result)) {
-          // The source's native window can be smaller than its catalog entry.
-          // A failed internal handoff is not a user turn; compact the stored
-          // history once and retry the source before abandoning the switch.
-          this.reduceContextBudget(c, source, this.settings(source, id), result.result);
-          this.switching.delete(id);
-          try {
-            const settings = this.settings(source, id);
-            await this.compact(id, { automatic: true,
-              ...(!this.usesNativeCompaction(c, source, settings) ? { portable: true, destination: { engine: source, settings } } : {}),
-              trigger: { reason: 'handoff-overflow', ...this.contextPressure(c, source, this.settings(source, id)) } });
-          } finally { this.switching.set(id, switching); }
-          if (switching.cancelled) throw new Error('Handoff canceled');
-          generated = await this.send(source, { sessionId: id }, { internal: true, promptOverride: handoffPrompt() });
-          result = await generated.done;
-        }
-        if (switching.cancelled || result.is_error || result.subtype !== 'success' || !result.result.trim()) throw new Error('Markdown handoff failed or canceled; the original conversation is retained. ' + (result.result || result.subtype));
-        if (result.result.length > handoffLimit) {
-          const settings = this.settings(source, id);
-          let budget = Math.floor(this.contextPressure(c, source, settings).cap * 1.8);
-          if (inputCharLimit(source)) budget = Math.min(budget, inputCharLimit(source));
-          const units = [[{ role: 'notice', text: result.result }]];
-          const diagnostics = { chunks: [], requests: 0 };
-          const args = { c, engine: source, id, settings, units, budget, boundary: c.seq, diagnostics, switching,
-            status, maxSummaryChars: handoffLimit };
-          result.result = settings.connection !== 'subscription' && this.summarize?.run
-              && (!this.summarize.available || this.summarize.available(settings.model))
-            ? await this.summarizePortable(args)
-            : await this.summarizeViaEngine({ ...args, instruction: handoffInstruction, plan: { recent: [], recentChars: 0 }, startedAt: Date.now() });
-        }
-        const file = path.join(this.dir, 'handoffs', randomUUID() + '.md'); fs.mkdirSync(path.dirname(file), { recursive: true });
-        const markdown = '# Conversation handoff\n\nWorkspace: ' + c.cwd + '\n\n' + result.result;
-        if (contextTokens(markdown) + 512 > targetCap * 0.8 || overInputChars(target, markdown + ' '.repeat(512)))
-          throw new Error('The handoff does not fit the target context. ' + recoveryAdvice);
-        fs.writeFileSync(file, markdown, { flag: 'wx' });
-        const handoff = { from: source, to: target, file, at: Date.now(), status: 'prepared' };
+        status('Exporting conversation as Markdown…');
+        const { attachment } = this.exportConversation(id);
+        const file = attachment.path, fullPath = attachment.fullPath;
+        const handoff = { from: source, to: target, file, fullPath, at: Date.now(), status: 'prepared' };
         c.handoffs.push(handoff); this.save(c);
         status('Starting a new session in the target engine with the handoff…');
         const previousSegment = c.segments[target] && { ...c.segments[target] };
         let accepted;
         try {
           const launched = await this.send(target, { sessionId: id }, { internal: true, fresh: true,
-            promptOverride: 'Read this Markdown handoff from the previous engine. It is historical context, not a new request to act. Acknowledge briefly and wait for the next user message. Do not use tools or repeat completed work.\nFile: ' + file + '\n\n' + markdown });
+            promptOverride: 'Read this locally exported Markdown handoff from the previous engine\'s conversation. It is historical context, not a new request to act. Read the overview file and consult the linked full transcript in bounded sections only when needed. Inspect current files and state before repeating actions. Acknowledge briefly and wait for the next user message.\nFile: ' + file });
           accepted = await launched.done;
           if (switching.cancelled || accepted.is_error || accepted.subtype !== 'success') throw new Error('The target engine could not accept the handoff. The Markdown file and original conversation are retained.');
         } catch (error) {
@@ -2245,7 +2210,7 @@ class SharedConversations {
         }
         if (previousSegment) (c.retiredSegments ||= []).push({ engine: target, ...previousSegment });
         handoff.status = 'complete';
-        this.append(c, { role: 'notice', engine: target, text: 'Markdown handoff: ' + source + ' → ' + target, file });
+        this.append(c, { role: 'notice', engine: target, text: 'Markdown handoff: ' + source + ' → ' + target, file, fullPath });
         c.segments[target].cursor = c.seq;
       }
       c.currentEngine = target; c.updatedAt = this.stamp(); this.save(c);
@@ -2604,20 +2569,26 @@ class SharedConversations {
     void stopPromise.catch(() => {});
     switching.stop = error => { if (!stopped) { stopped = true; rejectStop(error); } };
     const withLimit = pending => Promise.race([pending, stopPromise]);
-    const deadlineTimer = setTimeout(() => {
-      const error = new Error(manualFallback ? 'Context compaction reached the five-minute summary limit.'
-        : 'Context compaction reached the 30-minute safety limit. ' + recoveryAdvice);
-      switching.timedOut = error;
-      try { switching.session?.interrupt(); } catch { /* report the timeout below */ }
-      switching.abort?.abort(error);
-      this.stopCompactionSummary(id, engine, switching);
-      switching.stop(error);
-    }, manualFallback ? MANUAL_COMPACTION_ATTEMPT_MS : MAX_COMPACTION_MS);
-    deadlineTimer.unref?.();
+    let deadlineTimer;
+    const armDeadline = () => {
+      clearTimeout(deadlineTimer);
+      deadlineTimer = setTimeout(() => {
+        const error = new Error(manualFallback ? 'Context compaction reached the five-minute summary limit.'
+          : 'Context compaction reached the 30-minute inactivity safety limit. ' + recoveryAdvice);
+        switching.timedOut = error;
+        try { switching.session?.interrupt(); } catch { /* report the timeout below */ }
+        switching.abort?.abort(error);
+        this.stopCompactionSummary(id, engine, switching);
+        switching.stop(error);
+      }, manualFallback ? MANUAL_COMPACTION_ATTEMPT_MS : MAX_COMPACTION_MS);
+      deadlineTimer.unref?.();
+    };
+    armDeadline();
     let portableAttempted = false;
     let completed = false;
     let failureMessage = '';
     const status = (text, compaction) => {
+      if (compaction?.state === 'running' && !manualFallback) armDeadline();
       if (compaction) compaction = { engine, startedAt, elapsedMs: Date.now() - startedAt, ...compaction };
       switching.compaction = compaction || null;
       this.onStatus({ sessionId: id, text, ...(compaction ? { compaction } : {}) });
@@ -3053,7 +3024,7 @@ class SharedConversations {
       maxSummaryChars, request, stopped, ...checkpoint,
       onProgress: update => {
         if (update.stage !== 'progress') return;
-        progress = { summaryPhase: update.kind, completedChunks: update.completedChunks, totalChunks: update.totalChunks };
+        progress = { summaryPhase: update.kind, completedChunks: update.completedChunks, totalChunks: update.totalChunks, totalChunksKnown: update.totalChunksKnown };
         status('Asking the engine to summarize the conversation…', { state: 'running', stage: 'summarizing', ...progress });
       },
       onOverflow: (error, current) => {
@@ -3098,7 +3069,7 @@ class SharedConversations {
         },
         onProgress: update => {
           if (update.stage === 'progress') {
-            summaryProgress = { summaryPhase: update.kind, completedChunks: update.completedChunks, totalChunks: update.totalChunks };
+            summaryProgress = { summaryPhase: update.kind, completedChunks: update.completedChunks, totalChunks: update.totalChunks, totalChunksKnown: update.totalChunksKnown };
             status('Asking the engine to summarize the conversation…', { state: 'running', stage: 'summarizing', ...summaryProgress });
             return;
           }

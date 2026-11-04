@@ -12,6 +12,9 @@ window.createEngineSettingsUI = ({ api, status, navigate }) => {
   let codexAccount = null, codexBusy = false;
   let kimiAccount = null, kimiBusy = false;
   let grokAccount = null, grokBusy = false;
+  const pendingAccountActions = new Set();
+  const accountKey = (engine, id) => `${engine}:${id}`;
+  const accountBusyFor = (engine, id) => pendingAccountActions.has(accountKey(engine, id));
   const t = text => window.CamelliaI18n.t(text);
   const codexReset = window.createCodexResetUI({ api, status,
     onState: result => { codexAccount = result; renderCodexAccount(); },
@@ -142,16 +145,21 @@ window.createEngineSettingsUI = ({ api, status, navigate }) => {
       onSignOut: () => void googleSignOut(),
       onLabel: (_, label) => void googleAccountAction(() => api.antigravityAccountLabel(label), 'Account note saved.') });
   }
-  async function accountAction(call, apply) {
-    if (codexBusy || kimiBusy || grokBusy || accountBusy) return;
-    codexBusy = true; kimiBusy = grokBusy = 'account'; renderConnection();
+  async function accountAction(engine, id, call, apply) {
+    const state = { codex: codexAccount, kimi: kimiAccount, grok: grokAccount }[engine];
+    const busy = { codex: codexBusy, kimi: kimiBusy, grok: grokBusy }[engine];
+    if (busy || state?.loginPending || state?.accounts?.some(account => account.loginPending)
+      || state?.accounts?.find(account => account.id === id)?.busy || accountBusyFor(engine, id)) return;
+    const key = accountKey(engine, id);
+    const render = { codex: renderCodexAccount, kimi: renderKimiAccount, grok: renderGrokAccount }[engine];
+    pendingAccountActions.add(key); render();
     try { const result = await call(); if (!result.ok) throw new Error(result.error); apply(result); }
     catch (error) { status(error.message, true); }
-    finally { codexBusy = false; kimiBusy = grokBusy = false; renderConnection(); }
+    finally { pendingAccountActions.delete(key); render(); }
   }
   function renderKimiAccount() {
     renderRotation('kimi', kimiAccount);
-    const preferences = accountPreferences('kimi'), pending = Boolean(kimiAccount?.loginPending), busy = kimiBusy || kimiAccount?.refreshing || kimiAccount?.signingOut || kimiAccount?.waking;
+    const preferences = accountPreferences('kimi'), pending = Boolean(kimiAccount?.loginPending), busy = kimiBusy;
     const hasAccounts = kimiAccount?.accounts?.some(account => account.signedIn);
     $('kimiSignIn').hidden = Boolean(hasAccounts);
     $('kimiAddAccount').hidden = !hasAccounts;
@@ -174,13 +182,13 @@ window.createEngineSettingsUI = ({ api, status, navigate }) => {
     $('kimiLoginExpiry').textContent = kimiAccount?.login?.expiresAt ? 'Code expires at ' + new Date(kimiAccount.login.expiresAt).toLocaleTimeString() : '';
     $('kimiOpenLogin').disabled = !kimiAccount?.login?.verificationUrl;
     renderAccountList({ containerId: 'kimiAccountList', state: kimiAccount && { ...kimiAccount, accounts: kimiAccount.accounts?.filter(account => account.signedIn) },
-      busy: Boolean(busy),
-      onRefresh: id => accountAction(() => api.kimiAccountRefresh(id), result => { kimiAccount = result; }),
-      onWake: id => accountAction(() => api.kimiAccountWake(id), result => { kimiAccount = result; status(t(result.warning || 'Greeting sent. Quota refreshed; reset time follows the provider.')); }),
-      onSignIn: id => accountAction(async () => { const selected = await api.kimiAccountSelect(id); if (!selected.ok) throw new Error(selected.error); await flushLoginPreferences('kimi'); return api.kimiSignIn(); }, result => { kimiAccount = result; }),
-      onSelect: id => accountAction(() => api.kimiAccountSelect(id), result => { kimiAccount = result; renderKimiAccount(); }),
-      onRemove: id => accountAction(() => api.kimiAccountRemove(id), result => { kimiAccount = result; renderKimiAccount(); }),
-      onLabel: (id, label) => accountAction(() => api.kimiAccountLabel(id, label), result => { kimiAccount = result; }) });
+      busy: id => Boolean(busy || accountBusyFor('kimi', id)),
+      onRefresh: id => accountAction('kimi', id, () => api.kimiAccountRefresh(id), result => { kimiAccount = result; }),
+      onWake: id => accountAction('kimi', id, () => api.kimiAccountWake(id), result => { kimiAccount = result; status(t(result.warning || 'Greeting sent. Quota refreshed; reset time follows the provider.')); }),
+      onSignIn: id => accountAction('kimi', id, async () => { const selected = await api.kimiAccountSelect(id); if (!selected.ok) throw new Error(selected.error); await flushLoginPreferences('kimi'); return api.kimiSignIn(); }, result => { kimiAccount = result; }),
+      onSelect: id => accountAction('kimi', id, () => api.kimiAccountSelect(id), result => { kimiAccount = result; renderKimiAccount(); }),
+      onRemove: id => accountAction('kimi', id, () => api.kimiAccountRemove(id), result => { kimiAccount = result; renderKimiAccount(); }),
+      onLabel: (id, label) => accountAction('kimi', id, () => api.kimiAccountLabel(id, label), result => { kimiAccount = result; }) });
   }
   async function loadKimiAccount() {
     const result = await api.kimiAccountState(); if (!result.ok) throw new Error(result.error);
@@ -188,7 +196,7 @@ window.createEngineSettingsUI = ({ api, status, navigate }) => {
   }
   function renderGrokAccount() {
     renderRotation('grok', grokAccount);
-    const pending = Boolean(grokAccount?.loginPending), busy = grokBusy || grokAccount?.refreshing || grokAccount?.signingOut;
+    const pending = Boolean(grokAccount?.loginPending), busy = grokBusy;
     const hasAccounts = grokAccount?.accounts?.some(account => account.signedIn);
     $('grokSignIn').hidden = Boolean(hasAccounts);
     $('grokAddAccount').hidden = !hasAccounts;
@@ -204,12 +212,12 @@ window.createEngineSettingsUI = ({ api, status, navigate }) => {
     $('grokUserCode').textContent = grokAccount?.login?.userCode || '';
     $('grokOpenLogin').disabled = !grokAccount?.login?.verificationUrl;
     renderAccountList({ containerId: 'grokAccountList', state: grokAccount && { ...grokAccount, accounts: grokAccount.accounts?.filter(account => account.signedIn) },
-      busy: Boolean(busy),
-      onRefresh: id => accountAction(() => api.grokAccountRefresh(id), result => { grokAccount = result; }),
-      onSignIn: id => accountAction(async () => { const selected = await api.grokAccountSelect(id); if (!selected.ok) throw new Error(selected.error); await flushLoginPreferences('grok'); return api.grokSignIn(); }, result => { grokAccount = result; }),
-      onSelect: id => accountAction(() => api.grokAccountSelect(id), result => { grokAccount = result; renderGrokAccount(); }),
-      onRemove: id => accountAction(() => api.grokAccountRemove(id), result => { grokAccount = result; renderGrokAccount(); }),
-      onLabel: (id, label) => accountAction(() => api.grokAccountLabel(id, label), result => { grokAccount = result; }) });
+      busy: id => Boolean(busy || accountBusyFor('grok', id)),
+      onRefresh: id => accountAction('grok', id, () => api.grokAccountRefresh(id), result => { grokAccount = result; }),
+      onSignIn: id => accountAction('grok', id, async () => { const selected = await api.grokAccountSelect(id); if (!selected.ok) throw new Error(selected.error); await flushLoginPreferences('grok'); return api.grokSignIn(); }, result => { grokAccount = result; }),
+      onSelect: id => accountAction('grok', id, () => api.grokAccountSelect(id), result => { grokAccount = result; renderGrokAccount(); }),
+      onRemove: id => accountAction('grok', id, () => api.grokAccountRemove(id), result => { grokAccount = result; renderGrokAccount(); }),
+      onLabel: (id, label) => accountAction('grok', id, () => api.grokAccountLabel(id, label), result => { grokAccount = result; }) });
   }
   async function loadGrokAccount() {
     const result = await api.grokAccountState(); if (!result.ok) throw new Error(result.error);
@@ -238,24 +246,25 @@ window.createEngineSettingsUI = ({ api, status, navigate }) => {
     $('codexQuotas').replaceChildren();
     const limits = codexAccount?.rateLimits;
     const buckets = limits?.primary || limits?.secondary ? { codex: limits } : limits || {};
-    for (const [name, limit] of Object.entries(buckets)) for (const window of [limit.primary, limit.secondary]) {
-      if (!window) continue;
+    const quotaWindows = Object.entries(buckets).flatMap(([name, limit]) => [limit.primary, limit.secondary]
+      .filter(quota => quota && typeof quota === 'object').map(quota => ({ ...quota, quotaGroup: name })));
+    for (const quota of window.cascadeSubscriptionQuota(quotaWindows)) {
       const row = document.createElement('div'), label = document.createElement('p'), progress = document.createElement('progress');
-      const remaining = Math.max(0, Math.min(100, 100 - window.usedPercent));
-      label.dataset.i18n = ''; label.textContent = name + ' · ' + (window.windowDurationMins >= 1440 ? Math.round(window.windowDurationMins / 1440) + ' days' : window.windowDurationMins + ' min') + ' · ' + remaining + '% remaining' + (window.resetsAt ? ' · Resets ' + new Date(window.resetsAt * 1000).toLocaleString() : '');
+      const remaining = Math.max(0, Math.min(100, 100 - quota.usedPercent));
+      label.dataset.i18n = ''; label.textContent = quota.quotaGroup + ' · ' + (quota.windowDurationMins >= 1440 ? Math.round(quota.windowDurationMins / 1440) + ' days' : quota.windowDurationMins + ' min') + ' · ' + remaining + '% remaining' + (quota.resetsAt ? ' · Resets ' + new Date(quota.resetsAt * 1000).toLocaleString() : '');
       progress.max = 100; progress.value = remaining; progress.setAttribute('aria-label', label.textContent);
       row.append(label, progress); $('codexQuotas').append(row);
     }
     if (account && !Object.keys(buckets).length) { const hint = document.createElement('p'); hint.className = 'hint'; hint.dataset.i18n = ''; hint.textContent = codexAccount.quotaError || 'Quota information is currently unavailable.'; $('codexQuotas').append(hint); }
     renderAccountList({ containerId: 'codexAccountList', state: codexAccount && { ...codexAccount, accounts: codexAccount.accounts?.filter(account => account.signedIn) },
-      busy: codexBusy,
-      onRefresh: id => accountAction(() => api.codexAccountRefresh(id), result => { codexAccount = result; }),
-      onReset: id => { if (!codexBusy && !kimiBusy && !accountBusy) void codexReset.open(id); },
-      onWake: id => accountAction(() => api.codexAccountWake(id), result => { codexAccount = result; status(t(result.warning || 'Greeting sent. Quota refreshed; reset time follows the provider.')); }),
-      onSignIn: id => accountAction(async () => { const selected = await api.codexAccountSelect(id); if (!selected.ok) throw new Error(selected.error); await flushLoginPreferences('codex'); return api.codexSignIn(); }, result => { codexAccount = result; }),
-      onSelect: id => accountAction(() => api.codexAccountSelect(id), result => { codexAccount = result; renderCodexAccount(); }),
-      onRemove: id => accountAction(() => api.codexAccountRemove(id), result => { codexAccount = result; renderCodexAccount(); }),
-      onLabel: (id, label) => accountAction(() => api.codexAccountLabel(id, label), result => { codexAccount = result; }) });
+      busy: id => Boolean(codexBusy || accountBusyFor('codex', id)),
+      onRefresh: id => accountAction('codex', id, () => api.codexAccountRefresh(id), result => { codexAccount = result; }),
+      onReset: id => { if (!codexBusy && !accountBusyFor('codex', id) && !codexAccount?.accounts?.find(account => account.id === id)?.busy) void codexReset.open(id); },
+      onWake: id => accountAction('codex', id, () => api.codexAccountWake(id), result => { codexAccount = result; status(t(result.warning || 'Greeting sent. Quota refreshed; reset time follows the provider.')); }),
+      onSignIn: id => accountAction('codex', id, async () => { const selected = await api.codexAccountSelect(id); if (!selected.ok) throw new Error(selected.error); await flushLoginPreferences('codex'); return api.codexSignIn(); }, result => { codexAccount = result; }),
+      onSelect: id => accountAction('codex', id, () => api.codexAccountSelect(id), result => { codexAccount = result; renderCodexAccount(); }),
+      onRemove: id => accountAction('codex', id, () => api.codexAccountRemove(id), result => { codexAccount = result; renderCodexAccount(); }),
+      onLabel: (id, label) => accountAction('codex', id, () => api.codexAccountLabel(id, label), result => { codexAccount = result; }) });
   }
   async function loadCodexAccount() {
     const result = await api.codexAccountState(); if (!result.ok) throw new Error(result.error);

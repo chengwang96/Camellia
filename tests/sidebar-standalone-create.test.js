@@ -6,7 +6,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 
-const source = fs.readFileSync(path.join(__dirname, '../src/renderer/chat/claude-sidebar.js'), 'utf8');
+const source = fs.readFileSync(path.join(__dirname, '../src/renderer/chat/workbench-sidebar.js'), 'utf8');
 const renderSource = source.slice(source.indexOf('  function sidebarButton('), source.indexOf('  function makeSessionItem('));
 const updateSource = source.slice(source.indexOf('  function updateWorkspaceLabel('), source.indexOf('  async function loadSessionHistory('));
 

@@ -222,7 +222,7 @@ async function main() {
   assert.equal(remote.isMenuBarVisible(), false);
   remote.close(); await wait(() => remote.isDestroyed(), 'mobile-access close');
 
-  await home.loadFile(path.join(__dirname, '../src/renderer/chat/claude.html'), { query: { harness: 'codex' } });
+  await home.loadFile(path.join(__dirname, '../src/renderer/chat/workbench.html'), { query: { harness: 'codex' } });
   await wait(() => wc.executeJavaScript('!!document.querySelector(".desktop-titlebar") && uiReady'), 'chat caption');
   assert.equal(await wc.executeJavaScript('Math.round(document.querySelector(".app").getBoundingClientRect().top)'), 40);
   const fits = await wc.executeJavaScript('document.querySelector("#inputCard").getBoundingClientRect().bottom <= innerHeight');

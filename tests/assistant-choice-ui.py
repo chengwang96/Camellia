@@ -17,7 +17,7 @@ for statement in source.body:
 bridge = scope['bridge']
 choice = ('你已有 Camellia Android 的 release keystore 吗？若有，请提供文件路径和别名；若没有，我可以在本机生成并配置。\n\n'
           '- 没有，请在本机生成（推荐）\n- 已有，稍后提供路径和别名')
-page_url = (repo / 'src/renderer/chat/claude.html').as_uri() + '?harness=codex&fixtureHarness=codex&conversation=shared-fixture'
+page_url = (repo / 'src/renderer/chat/workbench.html').as_uri() + '?harness=codex&fixtureHarness=codex&conversation=shared-fixture'
 
 with sync_playwright() as playwright:
     browser = playwright.chromium.launch(headless=True)

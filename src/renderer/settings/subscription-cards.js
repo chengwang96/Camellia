@@ -32,6 +32,39 @@ function confirmSubscriptionAccountRemoval(id, account, engine) {
   });
 }
 
+function subscriptionQuotaGroup(window) {
+  if (window.quotaGroup) return String(window.quotaGroup);
+  const label = String(window.label || ''), separator = label.lastIndexOf(' · ');
+  return separator < 0 ? '' : label.slice(0, separator);
+}
+
+function subscriptionQuotaPeriod(window) {
+  const text = `${window.id || ''} ${window.label || ''}`;
+  const duration = Number(window.windowDurationMins);
+  if (/\bmonthly\b|\bmonth(?:total|code)\b|\bincluded usage\b|每月|月额度/i.test(text) || Number.isFinite(duration) && duration >= 43200) return 'monthly';
+  if (/\bweekly\b|\b7\s*(?:d|days?)\b|每周|周额度/i.test(text) || Number.isFinite(duration) && duration >= 10080 && duration < 43200) return 'weekly';
+  if (/\b\d+(?:\.\d+)?\s*-?\s*(?:h|hrs?|hours?)\b|\bfive[- ]?hour\b|小时/i.test(text) || Number.isFinite(duration) && duration > 0 && duration < 10080) return 'hourly';
+  return '';
+}
+
+function cascadeSubscriptionQuota(windows) {
+  const rows = (windows || []).map(window => {
+    const remaining = typeof window.usedPercent === 'number' && Number.isFinite(window.usedPercent)
+      ? Math.max(0, Math.min(100, 100 - window.usedPercent))
+      : typeof window.remainingValue === 'number' && Number.isFinite(window.remainingValue) ? Math.max(0, window.remainingValue) : null;
+    return { window, group: subscriptionQuotaGroup(window), period: subscriptionQuotaPeriod(window), remaining };
+  });
+  const exhausted = period => new Set(rows.filter(row => row.period === period && row.remaining === 0).map(row => row.group));
+  const monthly = exhausted('monthly'), weekly = exhausted('weekly');
+  return rows.map(({ window, group, period }) => {
+    const inherited = period === 'hourly' ? monthly.has(group) || weekly.has(group) : period === 'weekly' && monthly.has(group);
+    if (!inherited) return window;
+    return { ...window, usedPercent: 100,
+      ...(typeof window.remainingValue === 'number' && Number.isFinite(window.remainingValue) ? { remainingValue: 0 } : {}) };
+  });
+}
+
+window.cascadeSubscriptionQuota = cascadeSubscriptionQuota;
 window.renderSubscriptionCards = ({ container, state, busy, engine, manage = true, onSelect, onRemove, onLabel, onRefresh, onVerify, onWake, onSignIn, onSignOut, signOutBusy = false, onReset }) => {
   container.setAttribute('role', 'group');
   const t = text => window.CamelliaI18n.t(text);
@@ -60,6 +93,7 @@ window.renderSubscriptionCards = ({ container, state, busy, engine, manage = tru
   // A meter turns amber below a quarter and red below a tenth so the card
   // reads at a glance instead of relying on the number alone.
   const level = remaining => remaining < 10 ? 'critical' : remaining < 25 ? 'low' : 'ok';
+  const busyFor = id => typeof busy === 'function' ? Boolean(busy(id)) : Boolean(busy);
   if (container.querySelector('.subscription-note:not([hidden])')) {
     // Keep the note draft and focus while a background switch updates selection.
     for (const card of container.querySelectorAll('.subscription-card')) {
@@ -69,13 +103,13 @@ window.renderSubscriptionCards = ({ container, state, busy, engine, manage = tru
       if (!account?.active) current?.remove();
       else if (!current) card.querySelector('.subscription-badges').insertAdjacentHTML('afterbegin', `<span class="subscription-current">${esc(t('Current'))}</span>`);
       const select = card.querySelector('[data-card-action="switch"]');
-      if (select) select.disabled = Boolean(busy || account?.active || !account?.signedIn || state?.accounts?.some(account => account.loginPending));
+      if (select) select.disabled = Boolean(busyFor(card.dataset.cardId) || account?.active || !account?.signedIn || state?.accounts?.some(account => account.loginPending));
     }
     return;
   }
   container.innerHTML = (state?.accounts || []).map(account => {
     const action = (name, label, disabled = false, hint = label) => `<button type="button" data-card-action="${name}" title="${esc(t(hint))}" aria-label="${esc(t(label))}" ${disabled ? 'disabled' : ''}>${icon(name)}</button>`;
-    const windows = account.quotaWindows || [];
+    const windows = cascadeSubscriptionQuota(account.quotaWindows);
     const quotas = windows.map(window => {
       const known = typeof window.usedPercent === 'number' && Number.isFinite(window.usedPercent);
       const remaining = known ? Math.max(0, Math.min(100, 100 - window.usedPercent)) : null;
@@ -134,7 +168,7 @@ window.renderSubscriptionCards = ({ container, state, busy, engine, manage = tru
     // remain available while waiting for the user to return from that CLI.
     for (const control of card.querySelectorAll('button, input')) {
       const prioritySignOut = typeof onSignOut === 'function' && control.dataset.cardAction === 'logout';
-      control.disabled ||= prioritySignOut ? signOutBusy : busy || manage && Boolean(state?.accounts?.some(a => a.loginPending));
+      control.disabled ||= prioritySignOut ? signOutBusy : busyFor(id) || manage && Boolean(state?.accounts?.some(a => a.loginPending));
     }
     card.querySelectorAll('[data-card-action]').forEach(button => { button.onclick = async () => {
       switch (button.dataset.cardAction) {

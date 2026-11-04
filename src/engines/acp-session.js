@@ -183,6 +183,7 @@ class AcpSession extends StreamingSession {
     this.tools.clear();
     this.cancelled = false;
     this.text = '';
+    this.hasReplyText = false;
     this.blockIndex = 0;
     this.activeBlock = null;
     this.startedAt = Date.now();
@@ -214,7 +215,14 @@ class AcpSession extends StreamingSession {
       if (this.childHistory) await this.childHistory.poll().catch(error => this.log('Kimi subtasks: ' + error.message));
       const stopped = this.cancelled || response.stopReason === 'cancelled';
       const failed = ['refusal', 'max_tokens', 'max_turn_requests'].includes(response.stopReason);
-      this.finish({ subtype: stopped ? 'stopped' : failed ? response.stopReason : 'success', is_error: failed, ...(response.usage ? { usage: response.usage } : {}) });
+      // A queued/no-launch acknowledgement is not a successful model reply.
+      // Keep tool-only work valid, but surface empty Kimi turns so Goal mode's
+      // bounded error retries cannot become an endless stream of blank turns.
+      const empty = !stopped && !failed && this.spec.modeEngine === 'kimi' && !this.hasReplyText && !this.tools.size;
+      this.finish({ subtype: stopped ? 'stopped' : failed ? response.stopReason : empty ? 'empty_response' : 'success',
+        is_error: failed || empty,
+        ...(empty ? { result: 'Kimi returned no reply or tool activity. The request may not have started; retry after its background work finishes.' } : {}),
+        ...(response.usage ? { usage: response.usage } : {}) });
     } catch (error) {
       this.finish({ subtype: this.cancelled ? 'stopped' : 'error', is_error: !this.cancelled, result: error.message });
       // A failed initialization cannot be reused. Prompt errors may be retried
@@ -298,7 +306,10 @@ class AcpSession extends StreamingSession {
       if (update.content.type !== 'text') return;
       const text = update.content.text;
       const type = kind === 'agent_message_chunk' ? 'text' : 'thinking';
-      if (type === 'text') this.text += text;
+      if (type === 'text') {
+        this.text += text;
+        if (!update._meta?.camelliaQueuedPrompt && text.trim()) this.hasReplyText = true;
+      }
       if (this.activeBlock?.type !== type) {
         this.endBlock();
         this.activeBlock = { type, index: this.blockIndex++ };

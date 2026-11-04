@@ -6,7 +6,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 
-const source = fs.readFileSync(path.join(__dirname, '../src/renderer/chat/claude-sidebar.js'), 'utf8');
+const source = fs.readFileSync(path.join(__dirname, '../src/renderer/chat/workbench-sidebar.js'), 'utf8');
 const itemSource = source.slice(source.indexOf('  function makeSessionItem(s)'), source.indexOf('  async function runMetaOp('));
 const buttonSource = source.slice(source.indexOf('  function sidebarButton('), source.indexOf('  function appendGroup('));
 

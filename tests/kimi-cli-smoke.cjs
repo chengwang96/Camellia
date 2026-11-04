@@ -39,7 +39,7 @@ async function run() {
   const denied = path.join(cwd, 'denied.txt');
   fs.writeFileSync(marker, 'kimi-read-marker-7391');
   const requests = [], events = [], logs = [];
-  let slowRequest;
+  let slowRequest, backgroundStarted, finishBackground, backgroundParentReplied = false;
   const server = http.createServer(async (req, res) => {
     if (require('./model-metadata-fixture.cjs')(req, res)) return;
     const chunks = []; for await (const chunk of req) chunks.push(chunk);
@@ -53,12 +53,22 @@ async function run() {
     const prompt = JSON.stringify(body.messages[lastUser].content);
     if (prompt.includes('SMOKE wait')) { slowRequest?.(); return; }
     const hasTool = body.messages.slice(lastUser).some(m => m.role === 'tool');
+    if (prompt.includes('SMOKE background') && hasTool) {
+      if (backgroundParentReplied) {
+        backgroundStarted?.();
+        await new Promise(resolve => { finishBackground = resolve; });
+      } else backgroundParentReplied = true;
+    }
     let tool;
     if (!hasTool) {
       if (prompt.includes('SMOKE read')) tool = { name: 'Read', arguments: JSON.stringify({ path: marker }) };
       if (prompt.includes('SMOKE write')) tool = { name: 'Write', arguments: JSON.stringify({ path: written, content: 'kimi-wrote-7391' }) };
       if (prompt.includes('SMOKE deny')) tool = { name: 'Write', arguments: JSON.stringify({ path: denied, content: 'must not write' }) };
       if (prompt.includes('SMOKE shell')) tool = { name: 'Bash', arguments: JSON.stringify({ command: 'pwd', description: 'Report this test workspace' }) };
+      if (prompt.includes('SMOKE background')) tool = { name: 'Bash', arguments: JSON.stringify({
+        command: 'while [ ! -f release-bg.txt ]; do sleep 0.1; done; echo KIMI_BACKGROUND_DONE',
+        description: 'Wait for the loopback background fixture', run_in_background: true,
+      }) };
     }
     const delta = tool ? { tool_calls: [{ index: 0, id: 'tool-' + requests.length, type: 'function', function: tool }] } : { content: 'Kimi smoke reply ' + requests.length };
     res.writeHead(200, { 'content-type': 'text/event-stream' });
@@ -159,6 +169,44 @@ async function run() {
     fs.writeFileSync(image, Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9ZQmcAAAAASUVORK5CYII=', 'base64'));
     assert.equal((await turn('SMOKE image attachment', [{ path: image, isImage: true }])).subtype, 'success');
     assert.match(JSON.stringify(requests.at(-1).body.messages), /data:image\/png;base64/);
+    // Native task completion starts a turn without an ACP prompt. Submit the
+    // next request while that turn is active: its launch is undefined/queued,
+    // but ACP must stay pending and deliver the queued turn's eventual reply.
+    for (const cancelQueued of [false, true]) {
+      fs.rmSync(path.join(cwd, 'release-bg.txt'), { force: true });
+      backgroundParentReplied = false;
+      const backgroundReached = new Promise(resolve => { backgroundStarted = resolve; });
+      assert.equal((await turn('SMOKE background')).subtype, 'success');
+      fs.writeFileSync(path.join(cwd, 'release-bg.txt'), 'release');
+      let reachedTimer;
+      try {
+        await Promise.race([backgroundReached, new Promise((_, reject) => {
+          reachedTimer = setTimeout(() => reject(new Error('Kimi background follow-up did not start')), 15000);
+        })]);
+      } finally { clearTimeout(reachedTimer); }
+      const updateIndex = events.length;
+      let queuedFinished = false;
+      const queuedPrompt = cancelQueued ? 'SMOKE cancel queued request' : 'SMOKE queued after background';
+      const queued = turn(queuedPrompt).then(value => { queuedFinished = true; return value; });
+      // Wait for the queued acknowledgement, rather than relying only on a
+      // sleep while the prompt might not have reached the native engine yet.
+      const queuedDeadline = Date.now() + 5000;
+      while (!events.slice(updateIndex).some(event => event.event?.delta?.text?.includes('this request is queued'))) {
+        assert.ok(Date.now() < queuedDeadline, 'Queued prompt was not acknowledged');
+        await new Promise(resolve => setTimeout(resolve, 20));
+      }
+      await new Promise(resolve => setTimeout(resolve, 100));
+      assert.equal(queuedFinished, false, 'A queued acknowledgement must not finish the ACP turn');
+      if (cancelQueued) {
+        session.interrupt();
+        assert.equal((await queued).subtype, 'stopped');
+      }
+      finishBackground(); finishBackground = undefined;
+      const queuedResult = cancelQueued ? await turn('SMOKE after cancelled queue') : await queued;
+      assert.equal(queuedResult.subtype, 'success'); assert.match(queuedResult.result, /Kimi smoke reply/);
+      assert.ok(events.slice(updateIndex).some(event => event.event?.delta?.type === 'text_delta'));
+      if (cancelQueued) assert.ok(!requests.some(row => JSON.stringify(row.body.messages).includes(queuedPrompt)), 'Cancelled queued prompt must never run later');
+    }
     assert.equal(requests.some(r => r.key === 'Bearer never-use'), false);
     const config = fs.readFileSync(path.join(home, 'config.toml'), 'utf8');
     assert.ok(!config.includes('local-working') && !config.includes('exhausted'));
@@ -173,8 +221,10 @@ async function run() {
     assert.ok(usage?.inputTokens > 0, 'The actual CLI journals must contain usage');
     assert.equal(usage.inputTokens, Object.values(routerUsage).reduce((sum, value) => sum + value.inputTokens, 0), 'Journal usage must equal the provider counts across resume/fork/cancel: ' + JSON.stringify({ turns: meteredTurns.map(row => ({ sessionId: row.sessionId, samples: row.samples, incomplete: row.incomplete })), logs }));
     assert.equal(usage.outputTokens, Object.values(routerUsage).reduce((sum, value) => sum + value.outputTokens, 0));
-    console.log(`PASS: real Kimi Code ${runtimeVersion} ACP, same-model quota failover, streamed thought/text, Read/Write/Bash, approve/deny, cancel, native resume/fork, isolated history and config. Local endpoints only.`);
+    console.log(`PASS: real Kimi Code ${runtimeVersion} ACP, same-model quota failover, streamed thought/text, Read/Write/Bash, approve/deny, cancel, native resume/fork, background follow-up with queued reply/cancel, isolated history and config. Local endpoints only.`);
   } finally {
+    fs.writeFileSync(path.join(cwd, 'release-bg.txt'), 'release');
+    finishBackground?.();
     await session?.shutdown();
     await router.stop();
     server.closeAllConnections();

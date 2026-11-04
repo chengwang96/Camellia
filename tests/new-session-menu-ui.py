@@ -51,7 +51,7 @@ try:
         page.on('pageerror', lambda error: errors.append(str(error)))
         page.expose_function('testRpc', rpc)
         page.add_init_script(bridge)
-        page.goto((repo / 'src/renderer/chat/claude.html').as_uri(), wait_until='networkidle')
+        page.goto((repo / 'src/renderer/chat/workbench.html').as_uri(), wait_until='networkidle')
         page.locator('section .ws-row .session-more').first.click()
         expect(page.locator('section #sessionCurrent')).to_be_visible()
         for selector in ['#sessionCurrent', '.session-item[data-history="1"]']:

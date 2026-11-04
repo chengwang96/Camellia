@@ -111,7 +111,7 @@ with tempfile.TemporaryDirectory(prefix='camellia-office-render-') as directory:
         errors = []
         page.on('pageerror', lambda error: errors.append(str(error)))
         page.add_init_script(bridge)
-        page.goto((root / 'src/renderer/chat/claude.html').as_uri() + '?harness=codex&conversation=shared-fixture', wait_until='networkidle')
+        page.goto((root / 'src/renderer/chat/workbench.html').as_uri() + '?harness=codex&conversation=shared-fixture', wait_until='networkidle')
         page.wait_for_function('uiReady')
         page.locator('.artifact-file').filter(has=page.get_by_text('report.docx', exact=True)).click()
         frame = page.frame_locator('.file-preview-office-document')

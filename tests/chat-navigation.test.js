@@ -25,7 +25,7 @@ function fixture(prepare = async () => {}) {
     log() {}, setMenu() {}, openSettingsWindow() {},
     loadMode: (...args) => loads.push(args),
     mainWindow: { isDestroyed: () => false, setTitle: title => titles.push(title),
-      webContents: { getURL: () => pathToFileURL(path.join(rendererRoot, 'chat/claude.html')).href + '?harness=codex' } },
+      webContents: { getURL: () => pathToFileURL(path.join(rendererRoot, 'chat/workbench.html')).href + '?harness=codex' } },
   };
   vm.createContext(state);
   vm.runInContext(source.slice(start, end), state);

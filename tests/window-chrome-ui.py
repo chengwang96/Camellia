@@ -31,7 +31,7 @@ with sync_playwright() as p:
         page.on('pageerror', lambda error: errors.append(str(error)))
         page.add_init_script(bridge)
         page.add_init_script(chrome)
-        page.goto((repo / 'src/renderer/chat/claude.html').as_uri() + '?harness=codex&conversation=shared-fixture', wait_until='networkidle')
+        page.goto((repo / 'src/renderer/chat/workbench.html').as_uri() + '?harness=codex&conversation=shared-fixture', wait_until='networkidle')
         page.wait_for_function('uiReady && !loadingSession')
         page.evaluate('theme => {chromeState.theme=theme; chromeChanged(chromeState);}', theme)
         bar = page.get_by_role('menubar')
@@ -78,7 +78,7 @@ with sync_playwright() as p:
       };
       window.dshDesktop = new Proxy(window.dshDesktop, {get:(target,name) => name in backdropApi ? backdropApi[name] : Reflect.get(target,name)});
     """)
-    page.goto((repo / 'src/renderer/chat/claude.html').as_uri() + '?harness=codex', wait_until='networkidle')
+    page.goto((repo / 'src/renderer/chat/workbench.html').as_uri() + '?harness=codex', wait_until='networkidle')
     page.evaluate('() => {updateBackdrop(true);initialBackdrop(false);}')
     expect(page.locator('.settings-window-backdrop')).to_be_visible()
     page.evaluate('() => paintSettingsBackdrop()')
@@ -108,7 +108,7 @@ with sync_playwright() as p:
     page.close()
     page = browser.new_page()
     page.add_init_script(bridge)
-    page.goto((repo / 'src/renderer/chat/claude.html').as_uri() + '?harness=codex', wait_until='networkidle')
+    page.goto((repo / 'src/renderer/chat/workbench.html').as_uri() + '?harness=codex', wait_until='networkidle')
     expect(page.locator('.desktop-titlebar')).to_have_count(0)
     assert page.locator('body > .app').bounding_box()['y'] == 0
     browser.close()

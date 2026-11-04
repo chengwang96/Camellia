@@ -1,0 +1,74 @@
+'use strict';
+
+// Kimi 2.4 queues prompts behind turns started by background-task completion.
+// ACP must wait for that exact prompt, not treat its undefined launch as done.
+// Apply only to the verified runtime; leave its scheduler and history intact.
+function patchKimiAcpTurns(source) {
+  const replacements = [
+    ['return this.driveLaunch(this.agent.prompt({ input }));', `const promptId = globalThis.crypto.randomUUID();
+      return this.driveLaunch(this.agent.prompt({ input, promptId }), promptId);`],
+    ['driveLaunch(launch) {', 'driveLaunch(launch, promptId) {'],
+    ['settled: false,\n\t\t\t\t\tearly: []', 'settled: false,\n\t\t\t\t\tpromptId,\n\t\t\t\t\tearly: []'],
+    ['if (launched === void 0) {\n\t\t\t\t\t\tthis.settleDriver', `if (launched === void 0) {
+            if (promptId !== void 0) {
+              if (driver.cancelRequested) this.camelliaCancelPrompt(promptId);
+              else if (driver.turnId === void 0) this.emit({ sessionId: this.sessionId, update: {
+                sessionUpdate: "agent_message_chunk", _meta: { camelliaQueuedPrompt: true },
+                content: { type: "text", text: "Kimi is finishing background work; this request is queued.\\n\\n" }
+              } });
+              return;
+            }
+            this.settleDriver`],
+    ['driver.turnId = launched.turn_id;', 'if (driver.turnId === void 0) driver.turnId = launched.turn_id;'],
+    ['const events = this.agent.events;\n\t\t\tthis.subscriptions.push', `const events = this.agent.events;
+      this.subscriptions.push(events.on("turn.started", event => {
+        const driver = this.driver;
+        if (driver?.promptId === void 0 || driver.promptId !== event.promptId || driver.settled) return;
+        driver.turnId = event.turnId;
+        if (driver.cancelRequested) this.agent.cancel({ turnId: event.turnId }).catch(() => {});
+      }), events.on("prompt.completed", event => this.camelliaPromptEnded(event, false)),
+        events.on("prompt.aborted", event => this.camelliaPromptEnded(event, true)));
+      this.subscriptions.push`],
+    ['driver.early.push({', `if (driver.promptId !== void 0) return;
+        driver.early.push({`],
+    ['/** The active driver, but only for events of ITS turn. */', `camelliaPromptEnded(event, aborted) {
+      const driver = this.driver;
+      if (!driver || driver.promptId !== event.promptId || driver.turnId !== void 0) return;
+      this.settleDriver(driver, () => {
+        if (aborted || driver.cancelRequested) driver.resolve({ stopReason: "cancelled" });
+        else if (event.reason === "blocked") driver.resolve({ stopReason: "refusal" });
+        else driver.reject(RequestError$1.internalError(void 0, "Kimi prompt ended without launching a turn"));
+      });
+    }
+    /** The active driver, but only for events of ITS turn. */`],
+    ['driver.cancelRequested = true;\n\t\t\t\tthis.agent.cancel()', `driver.cancelRequested = true;
+        if (driver.promptId !== void 0) {
+          // Submission may still be updating metadata; retry cancellation when
+          // its launch acknowledgement arrives if the prompt is not queued yet.
+          try { this.camelliaCancelPrompt(driver.promptId); } catch {}
+          return;
+        }
+        this.agent.cancel()`],
+    ['getServer().prompt(ctx.params, ctx.signal)', 'getServer().camelliaPrompt(ctx.params, ctx.signal)'],
+    ['\tlet closePromise;\n\tconst close = async () => {', `
+  server.camelliaPrompt = (params, signal) => {
+    const acpSession = server.getSession(params.sessionId);
+    if (acpSession) acpSession.camelliaCancelPrompt = promptId => {
+      const live = getLiveSessionById(core.accessor, params.sessionId);
+      const agent = live?.accessor.get(IAgentLifecycleService).handleOf("main");
+      if (!agent) throw new Error("Main agent is not live");
+      agent.accessor.get(IAgentLoopService).cancel({ promptId });
+    };
+    return server.prompt(params, signal);
+  };
+\tlet closePromise;
+\tconst close = async () => {`],
+  ];
+  for (const [before, after] of replacements) {
+    if (source.split(before).length !== 2) return null;
+    source = source.replace(before, after);
+  }
+  return source;
+}
+
+module.exports = { patchKimiAcpTurns };

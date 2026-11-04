@@ -10,11 +10,12 @@ with sync_playwright() as playwright:
     errors = []
     page.on('pageerror', lambda error: errors.append(str(error)))
     page.set_content('<div id="sessionList"></div>')
-    page.add_style_tag(path=str(repo / 'src/renderer/chat/claude.css'))
+    page.add_style_tag(path=str(repo / 'src/renderer/chat/workbench.css'))
     page.add_style_tag(content='#sessionList {width:320px;height:600px;overflow:auto} .session-item {min-height:40px}')
-    page.add_script_tag(path=str(repo / 'src/renderer/chat/claude-sidebar.js'))
+    page.add_script_tag(path=str(repo / 'src/renderer/chat/workbench-sidebar.js'))
     page.evaluate("""async () => {
       window.calls = []; window.opened = []; window.menus = [];
+      window.dshDesktop = {platform:'win32'};
       window.harnessId = 'codex'; window.chatProfile = {fixedCwd:true}; window.sharedChat = true;
       window.chatApi = {
         listSessions: async () => ({ok:true, sessions:[

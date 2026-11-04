@@ -275,7 +275,7 @@ let zoomController;
 function desktopZoom() {
   if (!zoomController) {
     const mode = loadConfig().mode;
-    const chatUrl = pathToFileURL(path.join(RENDERER_ROOT, 'chat/claude.html'));
+    const chatUrl = pathToFileURL(path.join(RENDERER_ROOT, 'chat/workbench.html'));
     chatUrl.searchParams.set('harness', mode);
     const urls = ['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'grok'].includes(mode) ? [chatUrl.href] : [];
     if (mode === 'dsh') urls.push('127.0.0.1');
@@ -2291,7 +2291,7 @@ if (!gotSingleInstanceLock) {
   });
 
   require('./discussion-ipc').registerDiscussionIpc({ ipcMain, service: { call: (...args) => discussions().call(...args) },
-    page: path.join(RENDERER_ROOT, 'discussions/discussions.html'), chatPage: path.join(RENDERER_ROOT, 'chat/claude.html'),
+    page: path.join(RENDERER_ROOT, 'discussions/discussions.html'), chatPage: path.join(RENDERER_ROOT, 'chat/workbench.html'),
     navigate: query => switchMode('discussions', null, query), getWindow: () => mainWindow });
   ipcMain.handle('dsh:switch-mode', (_event, mode) => navigateMode(mode));
   ipcMain.handle('dsh:conversation-command', async (_event, { engine, action, payload, historyPage }) => {
@@ -2346,7 +2346,7 @@ if (!gotSingleInstanceLock) {
       const contents = require('electron').webContents.getAllWebContents().filter(contents => {
         const url = contents.getURL().split('?')[0];
         return url === pathToFileURL(path.join(RENDERER_ROOT, 'settings/api-settings.html')).href
-          || url === pathToFileURL(path.join(RENDERER_ROOT, 'chat/claude.html')).href
+          || url === pathToFileURL(path.join(RENDERER_ROOT, 'chat/workbench.html')).href
           || url === pathToFileURL(path.join(RENDERER_ROOT, 'discussions/discussions.html')).href;
       });
       if (!contents.length) throw new Error('Could not verify saved drafts; cleanup was stopped');
@@ -2878,7 +2878,7 @@ if (!gotSingleInstanceLock) {
       try {
         let reloadTimer = null;
         fs.watch(path.join(RENDERER_ROOT, 'chat'), (_event, filename) => {
-          if (!['claude.html', 'claude.css', 'chat.js', 'chat-runtime.js'].includes(String(filename))) return;
+          if (!['workbench.html', 'workbench.css', 'chat.js', 'chat-runtime.js'].includes(String(filename))) return;
           clearTimeout(reloadTimer);
           reloadTimer = setTimeout(() => {
             if (['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'grok'].includes(currentMode) && mainWindow && !mainWindow.isDestroyed()) {
@@ -2989,11 +2989,11 @@ if (!gotSingleInstanceLock) {
       catch (error) { return { ok: false, error: error.message }; }
     }
     if (inPlace && currentMode === next && mainWindow && !mainWindow.isDestroyed()
-      && mainWindow.webContents.getURL().split(/[?#]/)[0] === require('node:url').pathToFileURL(path.join(RENDERER_ROOT, 'chat/claude.html')).href) {
+      && mainWindow.webContents.getURL().split(/[?#]/)[0] === require('node:url').pathToFileURL(path.join(RENDERER_ROOT, 'chat/workbench.html')).href) {
       return { ok: true };
     }
     if (next === 'discussions' && mainWindow && !mainWindow.isDestroyed()
-      && mainWindow.webContents.getURL().split(/[?#]/)[0] === require('node:url').pathToFileURL(path.join(RENDERER_ROOT, 'chat/claude.html')).href) {
+      && mainWindow.webContents.getURL().split(/[?#]/)[0] === require('node:url').pathToFileURL(path.join(RENDERER_ROOT, 'chat/workbench.html')).href) {
       mainWindow.webContents.send('dsh:discussion-navigate', navigation || {});
       return { ok: true };
     }
@@ -3007,7 +3007,7 @@ if (!gotSingleInstanceLock) {
     }
     if (request !== modeRequest) return { ok: true, canceled: true };
     if (inPlace && (!Object.hasOwn(ENGINES, next) || !mainWindow || mainWindow.isDestroyed()
-      || mainWindow.webContents.getURL().split(/[?#]/)[0] !== require('node:url').pathToFileURL(path.join(RENDERER_ROOT, 'chat/claude.html')).href)) {
+      || mainWindow.webContents.getURL().split(/[?#]/)[0] !== require('node:url').pathToFileURL(path.join(RENDERER_ROOT, 'chat/workbench.html')).href)) {
       return { ok: false, error: 'The chat page changed. Open the conversation again.' };
     }
     if (!['home', 'discussions'].includes(next)) saveConfig({ mode: next });
@@ -3028,7 +3028,7 @@ if (!gotSingleInstanceLock) {
       if (mainWindow && !mainWindow.isDestroyed()) {
         if (currentMode !== next) return;
         const discussionEngine = Object.hasOwn(ENGINES, loadConfig().mode) ? loadConfig().mode : 'claude';
-        await mainWindow.loadFile(path.join(RENDERER_ROOT, next === 'home' ? 'home/home.html' : 'chat/claude.html'),
+        await mainWindow.loadFile(path.join(RENDERER_ROOT, next === 'home' ? 'home/home.html' : 'chat/workbench.html'),
           next === 'home' ? undefined : { query: next === 'discussions' ? { harness: discussionEngine, discussion: '1', ...navigation }
             : { harness: next, ...(conversationId ? { conversation: conversationId } : {}), ...navigation } });
       }

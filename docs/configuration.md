@@ -277,7 +277,7 @@ Archiving the open conversation continues at its neighbor in the same workspace,
 | Change execution directory | Start a new conversation in the target folder |
 | Remove a workspace | Conversations become standalone and retain their execution directory; files remain |
 
-**General → Shared conversations** defaults to direct continuation, with switch reminders and origin labels disabled. Markdown mode asks the previous engine to generate a handoff file and automatically creates a native session in the target engine. **Switch options** overrides this per switch. Both modes keep the same shared conversation. Handoffs use model quota and can add latency, input tokens, or summary omissions. Native caches, internal reasoning and running tool processes cannot transfer. Permission and reasoning controls remain engine-specific.
+**General → Shared conversations** defaults to direct continuation, with switch reminders and origin labels disabled. Markdown mode exports the saved conversation locally and automatically creates a native session in the target engine with the exported overview and linked full transcript. **Switch options** overrides this per switch. Both modes keep the same shared conversation. Starting the target session uses model quota and can add latency and input tokens. Native caches, internal reasoning and running tool processes cannot transfer. Permission and reasoning controls remain engine-specific.
 
 The sidebar indicates background work and pending approvals. Opening another conversation restores its stream, draft, model and goal; stop and approval actions remain scoped to that conversation. Conversations in the same workspace still share its files, and concurrent API requests share provider limits.
 
@@ -300,7 +300,7 @@ New installations use `%APPDATA%/camellia` on Windows, `~/Library/Application Su
 | --- | --- |
 | `<app-data>` | Application preferences, workspace metadata, observation cache, and logs |
 | `<app-data>/subscription-usage.json` | Subscription token totals and API equivalent estimates by account slot/model/day; no credentials or message contents |
-| `<app-data>/conversations` | Shared metadata, full public conversation records, `goals/<id>.json` and `handoffs/*.md`; preserve native engine state too when migrating |
+| `<app-data>/conversations` | Shared metadata, full public conversation records, `goals/<id>.json` and `handoffs/*.{md,jsonl}`; preserve native engine state too when migrating |
 | `<app-data>/dsh-chat` | DSH ACP configuration and native shared-chat sessions; `dsh-chat-history` contains the display cache |
 | `~/.dsh` | DSH configuration and history; `ollama-proxy.json` contains the shared route pool, keys, and usage records |
 | `~/.claude` | Claude configuration and native history; MCP settings also use `~/.claude.json` |

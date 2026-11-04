@@ -39,7 +39,7 @@ with sync_playwright() as playwright:
             page = browser.new_page(viewport={'width': width, 'height': height}, color_scheme=theme)
             page.on('pageerror', lambda error: errors.append(str(error)))
             page.add_init_script(bridge)
-            target = 'chat/claude.html' if embedded else 'discussions/discussions.html'
+            target = 'chat/workbench.html' if embedded else 'discussions/discussions.html'
             query = '?harness=codex' if embedded else ''
             page.goto((repo / 'src/renderer' / target).as_uri() + query, wait_until='networkidle')
             if embedded:

@@ -48,7 +48,7 @@ test('explicit development hot reload debounces chat changes', () => {
   assert.equal(state.watches.length, 1);
   assert.equal(state.watches[0].directory, path.join('/renderer', 'chat'));
   state.watches[0].callback('change', 'chat.js');
-  state.watches[0].callback('change', 'claude.css');
+  state.watches[0].callback('change', 'workbench.css');
   assert.equal(state.timers.size, 1);
   assert.equal(state.reloads, 0);
   state.flush();
@@ -59,7 +59,7 @@ test('unwatched files and navigation away from chat do not reload the page', () 
   const { state, context } = harness({ argv: ['electron', '.', '--hot-reload'] });
   state.watches[0].callback('change', 'unrelated.js');
   assert.equal(state.timers.size, 0);
-  state.watches[0].callback('change', 'claude.html');
+  state.watches[0].callback('change', 'workbench.html');
   context.currentMode = 'home';
   state.flush();
   assert.equal(state.reloads, 0);

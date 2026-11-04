@@ -15,7 +15,7 @@ with sync_playwright() as playwright:
     for width in [1100, 390]:
         page = browser.new_page(viewport={'width': width, 'height': 800})
         page.add_init_script(scope['bridge'])
-        page.goto((repo / 'src/renderer/chat/claude.html').as_uri() + '?harness=codex', wait_until='networkidle')
+        page.goto((repo / 'src/renderer/chat/workbench.html').as_uri() + '?harness=codex', wait_until='networkidle')
         page.wait_for_function('uiReady')
         code = '    value = "' + 'long_identifier_中文' * 60 + '"\n    <script>alert(1)</script>'
         source = '```python\n' + code + '\n```\n\n```\nsecond block\n```'

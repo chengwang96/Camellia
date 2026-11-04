@@ -52,9 +52,15 @@ Waiting keeps the goal active without accumulating blockers. The goal chip shows
 
 This delay handles ongoing work within the current goal. User-requested recurring checks use scheduled tasks separately.
 
+Kimi background-task completion can start a native turn independently of the next Goal check. A continuation queued behind that turn remains pending until its own prompt starts and finishes; the queue acknowledgement is not a completed response. Stopping it cancels that queued prompt. A Kimi turn with no reply or tool activity is reported as an execution error, and three consecutive execution errors stop automatic continuations.
+
 ## Validation
 
 `node --test tests/claude-goal.test.js tests/goal-tool-bridge.test.js tests/shared-conversations.test.js`
+
+`node --test tests/acp-session.test.js tests/kimi-acp-turns.test.js`
+
+`node tests/kimi-cli-smoke.cjs`
 
 `node --test tests/chat-pending-send.test.js tests/chat-queue.test.js`
 

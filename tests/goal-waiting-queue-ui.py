@@ -42,7 +42,7 @@ with sync_playwright() as p:
                 errors = []
                 page.on('pageerror', lambda error: errors.append(str(error)))
                 page.add_init_script(bridge)
-                page.goto((repo / 'src/renderer/chat/claude.html').as_uri() + f'?harness={engine}', wait_until='networkidle')
+                page.goto((repo / 'src/renderer/chat/workbench.html').as_uri() + f'?harness={engine}', wait_until='networkidle')
                 page.wait_for_function('uiReady')
                 page.locator('#input').fill('Run the experiment')
                 page.locator('#send').click()

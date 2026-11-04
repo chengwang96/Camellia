@@ -67,7 +67,7 @@ try:
         page.on('pageerror', lambda err: errors.append(str(err)))
         page.expose_function('testRpc', rpc)
         page.add_init_script(bridge)
-        page.goto((repo / 'src/renderer/chat/claude.html').as_uri())
+        page.goto((repo / 'src/renderer/chat/workbench.html').as_uri())
         page.wait_for_load_state('networkidle')
         expect(page.locator('.ws-row.active')).to_have_count(0)
         expect(page.locator(f'#independentSessions [data-sid="{fixtures["conversationId"]}"]')).to_be_visible()

@@ -24,7 +24,7 @@ with sync_playwright() as playwright:
         page = browser.new_page(viewport={'width': width, 'height': height}, color_scheme=theme)
         page.on('pageerror', lambda error: errors.append(str(error)))
         page.add_init_script(bridge)
-        page.goto((repo / 'src/renderer/chat/claude.html').as_uri() + '?harness=codex&conversation=shared-fixture', wait_until='networkidle')
+        page.goto((repo / 'src/renderer/chat/workbench.html').as_uri() + '?harness=codex&conversation=shared-fixture', wait_until='networkidle')
         page.wait_for_function('uiReady')
         page.evaluate("""() => {
           window.emit = event => deliverEvent({session_id:'shared-fixture',engine:'codex',runId:950,...event});

@@ -7,7 +7,7 @@ const path = require('node:path');
 const vm = require('node:vm');
 
 const source = fs.readFileSync(path.join(__dirname, '../src/renderer/chat/chat.js'), 'utf8');
-const markup = fs.readFileSync(path.join(__dirname, '../src/renderer/chat/claude.html'), 'utf8');
+const markup = fs.readFileSync(path.join(__dirname, '../src/renderer/chat/workbench.html'), 'utf8');
 
 test('active conversations queue by default and retain an explicit queue shortcut', () => {
   assert.match(markup, /id="messageQueue"/);

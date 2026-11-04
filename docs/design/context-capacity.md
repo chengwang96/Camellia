@@ -88,12 +88,12 @@ a local handoff that omits old context. Explicitly unsupported native compaction
 a lost session, context overflow and the native request timeout can use portable
 summarization.
 
-Markdown handoffs also respect native ownership. A large archived transcript
-alone does not trigger an extra portable summary when the source thread already
-contains it. If the handoff request overflows, native compaction is attempted
-first when eligible, then the source writes the portable Markdown for the target.
-Oversized history that the source thread has not seen still needs a bounded
-portable replay.
+Markdown handoffs do not query or compact the source native context. Camellia
+exports the saved public history locally, including a bounded overview and a
+linked full JSONL transcript. The target reads those files, so an oversized
+source transcript does not require a source summary or replay. Cross-engine
+revisions use the same local handoff, bounded before the revised message; the
+superseded request, reply and tool records stay out of the exported snapshot.
 
 `context routing` logs the before-send native reuse decision and subscription
 selection. `context compaction route` records the decision before preparation or
@@ -123,16 +123,18 @@ and subsequent history, not the entire pre-checkpoint transcript. Original rows
 remain on disk. A missing checkpoint falls back to earlier available history.
 Portable compaction replaces the destination binding only after generating and
 checking the summary; cancellation or summarization failure leaves it intact.
-Markdown handoffs also use the destination budget and shorten oversized drafts
-before asking the target harness to accept them.
+Markdown handoffs bypass these summary budgets by giving the target a locally
+exported overview and linked full transcript instead of an inline model summary.
 
 User `/compact` retains a five-minute total budget, including a native-to-portable
-fallback. Automatic and programmatic compaction have a 30-minute total limit so
-large batches can continue while making progress. Engine requests additionally
-have a two-minute timeout; router
-requests and lack of router progress are bounded at three minutes. Both
-transports allow at most 128 summary attempts, with existing overflow,
-shortening and nesting limits still in force.
+fallback. Automatic and programmatic compaction instead use a 30-minute
+inactivity limit: native or summary running progress resets it, so healthy large
+batches are not killed by an absolute wall-clock cap. Engine requests additionally
+have a two-minute timeout; router requests and lack of router progress are bounded
+at three minutes. Both transports allow at most 128 summary attempts, with existing
+overflow, shortening and nesting limits still in force. Router summaries retain
+bounded parallelism; subscription engine summaries stay serial because they share
+one native session slot.
 Accepted fragment and merge answers are checkpointed with hashes of their exact
 inputs, instructions and output limits. Appending turns or repacking fragments
 does not invalidate unrelated accepted requests; changed requests are generated

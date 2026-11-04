@@ -8,7 +8,7 @@ end = source.index("    if (ev.type === 'gui:plan')", start)
 with sync_playwright() as playwright:
     browser = playwright.chromium.launch(headless=True)
     page = browser.new_page()
-    html = (root / 'src/renderer/chat/claude.html').read_text(encoding='utf-8')
+    html = (root / 'src/renderer/chat/workbench.html').read_text(encoding='utf-8')
     dialog_start = html.index('<dialog id="permissionBlockedDialog"')
     dialog_end = html.index('</dialog>', dialog_start) + len('</dialog>')
     page.set_content(html[dialog_start:dialog_end])

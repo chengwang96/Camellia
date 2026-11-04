@@ -103,7 +103,7 @@ try:
         page.on('pageerror', lambda error: errors.append(str(error)))
         page.expose_function('testRpc', rpc)
         page.add_init_script(bridge)
-        page.goto((repo / 'src/renderer/chat/claude.html').as_uri()
+        page.goto((repo / 'src/renderer/chat/workbench.html').as_uri()
                   + f'?harness=claude&conversation={second}', wait_until='networkidle')
         page.wait_for_function('uiReady && !loadingSession')
         expect(page.locator('#chat')).to_contain_text('Second conversation')

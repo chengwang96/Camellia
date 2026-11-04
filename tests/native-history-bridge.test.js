@@ -13,12 +13,44 @@ const { removeTree } = require('./test-fs.cjs');
 // engine seam; native fork/undo implementations stay owned by the runtime.
 const source = `
 function createAcpAgentApp(getServer) {
+  const prompt = ctx => getServer().prompt(ctx.params, ctx.signal);
   return agent({ name: "kimi-code-acp" });
 }
 function precheckUndo(history, count) { return check(history, count); }
 class NativeSession {
   async undoHistory(count = 1) {}
   async unstable_forkSession(params) {}
+  driveTurn(input) {
+    return this.driveLaunch(this.agent.prompt({ input }));
+  }
+  driveLaunch(launch) {
+    const driver = {
+      settled: false,
+\t\t\t\t\tearly: []
+    };
+    launch.then(launched => {
+      if (launched === void 0) {
+\t\t\t\t\t\tthis.settleDriver(driver, () => {});
+        return;
+      }
+      driver.turnId = launched.turn_id;
+    });
+  }
+  bindEvents() {
+    const events = this.agent.events;
+\t\t\tthis.subscriptions.push();
+  }
+  dispatchTurnEvent(event) {
+    const driver = this.driver;
+    driver.early.push({ event });
+  }
+  /** The active driver, but only for events of ITS turn. */
+  driverFor(turnId) { return this.driver; }
+  cancel() {
+    const driver = this.driver;
+    driver.cancelRequested = true;
+\t\t\t\tthis.agent.cancel();
+  }
 }
 function runNative() {
 \tlet closePromise;
@@ -29,7 +61,9 @@ function runNative() {
 async function bridge(check = () => ({ ok: true })) {
   const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
   const RequestError = { invalidParams: (_params, text) => Object.assign(new Error(text), { code: -32602 }) };
-  return new AsyncFunction('check', 'RequestError$1', 'isUndoAnchor', patchKimiHistory(source)
+  const patched = patchKimiHistory(source);
+  assert.ok(patched, 'The native fixture must satisfy both history and queued-prompt contracts');
+  return new AsyncFunction('check', 'RequestError$1', 'isUndoAnchor', patched
     + '\nreturn { boundary: camelliaHistoryState, fork: camelliaForkUndo };')(check, RequestError, message => message.role === 'user');
 }
 
