@@ -209,7 +209,7 @@ test('new API harness launches keep the exact route and disable native tool disc
     const spec = extraTextSpec({ ...input, home, runtime, profile: { engine, connection: 'api', model: 'chosen-model', thinking: '', contextWindow: 64000 } });
     assert.equal(spec.cwd, input.cwd);
     if (engine === 'claude') {
-      assert.equal(spec.env.ANTHROPIC_BASE_URL, input.route.baseUrl);
+      assert.equal(spec.env.ANTHROPIC_BASE_URL, input.route.baseUrl + '/harness-thinking/_default');
       assert.equal(spec.args[spec.args.indexOf('--tools') + 1], '');
       assert.ok(spec.args.includes('--strict-mcp-config')); assert.ok(spec.args.includes('--disable-slash-commands'));
     } else if (engine === 'kimi') {
@@ -219,7 +219,7 @@ test('new API harness launches keep the exact route and disable native tool disc
     } else if (engine === 'grok') {
       assert.ok(spec.args.indexOf('--model') < spec.args.indexOf('agent'));
       const config = TOML.parse(fs.readFileSync(path.join(home, 'config.toml'), 'utf8'));
-      assert.equal(config.model.camellia.base_url, input.route.baseUrl + '/v1');
+      assert.equal(config.model.camellia.base_url, input.route.baseUrl + '/harness-thinking/_default/v1');
     } else {
       const patch = YAML.parse(fs.readFileSync(path.join(home, 'discussion.patch.yml'), 'utf8'));
       assert.ok(patch.some(row => row.id === 'tool-future-tool' && row.disabled));

@@ -21,6 +21,7 @@ const { writeJson } = require('../shared/json-store');
 const { conversationModels } = require('../engines/conversation-models');
 const { nativeEditingSupported } = require('../engines/native-edit-boundary');
 const { snapshotTranscript } = require('../engines/native-fork');
+const { harnessThinkingRoute } = require('../api/harness-thinking');
 
 function claudeSpec({ settings, opts, home, route, environment, history, mcpFile }) {
   const env = { ...environment, CLAUDE_CONFIG_DIR: home };
@@ -44,14 +45,16 @@ function claudeSpec({ settings, opts, home, route, environment, history, mcpFile
   if (permission !== 'default') args.push('--permission-mode', permission);
   if (!settings.model) throw new Error('Choose a model on this server before sending');
   args.push('--model', settings.model);
-  if (settings.thinkingBudget && !['off', 'none'].includes(settings.thinkingBudget)) args.push('--effort', settings.thinkingBudget);
+  const subscription = settings.connection === 'subscription';
+  if (subscription && settings.thinkingBudget && !['off', 'none'].includes(settings.thinkingBudget)) args.push('--effort', settings.thinkingBudget);
   const overlay = {};
-  if (settings.connection !== 'subscription') {
+  if (!subscription) {
+    route = harnessThinkingRoute(route, settings.thinkingBudget || '');
     Object.assign(overlay, { ANTHROPIC_BASE_URL: route.baseUrl, ANTHROPIC_AUTH_TOKEN: route.authToken, ANTHROPIC_API_KEY: '', ANTHROPIC_MODEL: settings.model,
       ANTHROPIC_DEFAULT_OPUS_MODEL: settings.model, ANTHROPIC_DEFAULT_SONNET_MODEL: settings.model, ANTHROPIC_DEFAULT_HAIKU_MODEL: settings.model,
       ANTHROPIC_SMALL_FAST_MODEL: settings.model, CLAUDE_CODE_SUBAGENT_MODEL: settings.model });
   }
-  if (['off', 'none'].includes(settings.thinkingBudget)) overlay.MAX_THINKING_TOKENS = '0';
+  if (subscription && ['off', 'none'].includes(settings.thinkingBudget)) overlay.MAX_THINKING_TOKENS = '0';
   const file = path.join(home, 'overlays', `${opts.conversationId || 'legacy'}.json`);
   writeJson(file, { env: overlay }); args.push('--settings', file);
   return { args, env: { ...env, ...overlay }, cwd: settings.cwd };
@@ -120,7 +123,7 @@ function createEngineDrivers({ root, dataDir, loadConfig, saveConfig, onEvent, g
       const spec = kimiSpawnSpec({ runtime: locate('kimi').file, home: subscription ? kimiHome : path.join(dataDir, 'kimi-api', opts.conversationId),
         config: native.config('kimi'), mcp: JSON.stringify(native.config('kimi', 'mcp')),
         connection: settings.connection, model: settings.model, contextWindow: context(settings.model) || settings.contextWindow,
-        route: subscription ? undefined : getRoute(), env: environment(), sharedSubscription: subscription });
+        route: subscription ? undefined : getRoute(), env: environment(), sharedSubscription: subscription, thinkingBudget: settings.thinkingBudget || '' });
       const previous = kimiPool.get(opts)?.shutdown();
       const session = new KimiSession({ name: 'Kimi', gen: ++generation, settings, opts, spec, exe: process.execPath, spawn, history: kimiHistory, log: noLog,
         usageMeter: createUsageMeter('kimi', { settings, home: kimiHome, version: locate('kimi').version }),

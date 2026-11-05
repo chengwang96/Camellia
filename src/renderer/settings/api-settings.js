@@ -1617,8 +1617,10 @@ function archivedDeleteProgress({ processed, total }) {
   const t = window.CamelliaI18n.t;
   $('archivedDeleteStatus').textContent = t('Deleting archived conversations: {0} of {1}')
     .replace('{0}', () => fmt(processed)).replace('{1}', () => fmt(total));
-  $('archivedDeleteProgress').max = Math.max(total, 1);
-  $('archivedDeleteProgress').value = processed;
+  const progress = $('archivedDeleteProgress');
+  progress.max = Math.max(total, 1);
+  progress.value = processed;
+  $('archivedDeletePercent').textContent = `${fmt(Math.floor(progress.value / progress.max * 100))}%`;
 }
 api.onArchivedDeleteProgress(archivedDeleteProgress);
 api.onArchivedChanged?.(() => { if (view === 'archived') void renderArchived(); });

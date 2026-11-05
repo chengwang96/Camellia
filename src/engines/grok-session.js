@@ -12,6 +12,7 @@ const { valid, nativeMode } = require('./permission-levels');
 const { readJson, writeText } = require('../shared/json-store');
 const { grokEditBoundary, grokUpdatesFile } = require('./native-edit-boundary');
 const { copyGrokFork } = require('./native-fork');
+const { harnessThinkingRoute } = require('../api/harness-thinking');
 
 // Allow the native CLI's cold Windows startup before its ACP server is ready.
 const GROK_STARTUP_TIMEOUT_MS = 60000;
@@ -35,10 +36,12 @@ function nativeConfig(home) {
   return fs.existsSync(file) ? TOML.parse(fs.readFileSync(file, 'utf8')) : {};
 }
 
-function grokSpawnSpec({ runtime, home, model, connection = 'api', route, contextWindow, env = process.env, config = {}, proxyUrl = '', instructions = '', reasoningEffort = '' }) {
+function grokSpawnSpec({ runtime, home, model, connection = 'api', route, contextWindow, env = process.env, config = {}, proxyUrl = '', instructions = '', reasoningEffort }) {
   fs.mkdirSync(home, { recursive: true });
   if (process.platform === 'win32') home = fs.realpathSync.native(home);
   const merged = { ...nativeConfig(home), ...config };
+  const managedThinking = connection !== 'subscription' && reasoningEffort !== undefined;
+  if (managedThinking) route = harnessThinkingRoute(route, reasoningEffort);
   if (connection === 'subscription') merged.models = { ...merged.models, session_summary: model };
   if (connection !== 'subscription') {
     merged.models = { ...merged.models, default: 'camellia', session_summary: 'camellia' };
@@ -51,10 +54,11 @@ function grokSpawnSpec({ runtime, home, model, connection = 'api', route, contex
   const environment = { ...grokEnvironment(home, env, proxyUrl, { subscription: connection === 'subscription' }), CAMELLIA_API_KEY: route?.authToken || 'proxy-managed' };
   const args = ['--model', connection === 'subscription' ? model : 'camellia'];
   if (instructions) args.push('--rules', instructions);
-  if (reasoningEffort) args.push('--reasoning-effort', reasoningEffort);
+  if (reasoningEffort && !managedThinking) args.push('--reasoning-effort', reasoningEffort);
   args.push('--no-auto-update', 'agent', 'stdio');
   return { args, env: environment,
-    modeEngine: 'grok', modelValue: connection === 'subscription' ? model : 'camellia', authMethod: connection === 'subscription' ? 'cached_token' : '' };
+    modeEngine: 'grok', modelValue: connection === 'subscription' ? model : 'camellia', authMethod: connection === 'subscription' ? 'cached_token' : '',
+    ...(managedThinking ? { applyThinking: false } : {}) };
 }
 
 class GrokSession extends AcpSession {
@@ -160,7 +164,7 @@ class GrokSession extends AcpSession {
     }
     let config = this.settings.model ? await this.request('session/set_model', { sessionId: this.sessionId,
       modelId: this.spec.modelValue || this.settings.model }) : result;
-    if (this.settings.thinkingBudget) config = await this.request('session/set_config_option', {
+    if (this.settings.thinkingBudget && this.spec.applyThinking !== false) config = await this.request('session/set_config_option', {
       sessionId: this.sessionId, configId: 'reasoning_effort', value: this.settings.thinkingBudget });
     if (this.settings.permissionMode) await this.request('session/set_mode', { sessionId: this.sessionId, modeId: mode });
     this.onSessionId(this.sessionId);

@@ -47,6 +47,17 @@ bridge = r"""(() => {
       }
       return {ok:true};
     },
+    conversationHandoff:async payload=>{
+      switchCalls.push(payload);
+      if (window.failNextSwitch) { window.failNextSwitch=false; return {ok:false,error:'Fixture engine unavailable'}; }
+      if (window.holdNextHandoff) {
+        window.holdNextHandoff=false;
+        await new Promise(resolve=>{ window.releaseHandoff=resolve; });
+      }
+      if (payload.sessionId)
+        localStorage.setItem('fixture-harness:' + payload.sessionId, payload.engine);
+      return {ok:true};
+    },
     conversationCommand:async ({engine,action,payload})=>{
       if (action==='list-sessions') return {ok:true,sessions:rows.map(session),workspaces:[],pagination:{}};
       if (action==='load-session') {
@@ -130,7 +141,7 @@ with sync_playwright() as playwright:
     page.wait_for_function('switchCalls.some(call => !call.navigate && call.engine === "claude" && call.sessionId === "codex-session")')
     assert page.evaluate('localStorage.getItem("fixture-harness:codex-session")') == 'claude'
 
-    page.wait_for_function('uiReady && harnessId === "claude" && !loadingSession && !switchingEngine')
+    page.wait_for_function('uiReady && harnessId === "claude" && !loadingSession && handoffSessions.size === 0')
     expect(page.locator('#engineSwitch')).to_have_value('claude')
     expect(page.locator('#chat')).to_contain_text('Codex answer')
     assert page.evaluate('switchCalls.every(call => call.inPlace)'), 'Every switch must stay in the same document'
@@ -174,6 +185,20 @@ with sync_playwright() as playwright:
     page.locator('[data-sid="codex-session"]').click()
     page.wait_for_function('harnessId === "claude" && !loadingSession')
     expect(page.locator('#input')).to_have_value('Codex unsent draft')
+
+    # A handoff completes in the background after navigating away; only the
+    # conversation that started it changes engine.
+    page.evaluate('holdNextHandoff = true; void switchConversation("kimi", "direct")')
+    page.wait_for_function('handoffSessions.has("codex-session")')
+    page.locator('[data-sid="dsh-session"]').click()
+    page.wait_for_function('context.sessionId === "dsh-session" && !loadingSession')
+    expect(page.locator('#handoffStop')).to_be_visible()
+    expect(page.locator('#engineSwitch')).to_be_enabled()
+    page.evaluate('releaseHandoff()')
+    page.wait_for_function('handoffSessions.size === 0 && context.sessionId === "dsh-session"')
+    expect(page.locator('#handoffStop')).to_be_hidden()
+    assert page.evaluate('localStorage.getItem("fixture-harness:codex-session")') == 'kimi'
+    assert page.evaluate('harnessId') == 'dsh'
     assert len(document_loads) == 1, document_loads
     assert page.evaluate('originalSidebar === document.getElementById("sidebar")')
     assert not errors, errors

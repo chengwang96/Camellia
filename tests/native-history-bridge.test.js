@@ -46,6 +46,9 @@ class NativeSession {
   }
   /** The active driver, but only for events of ITS turn. */
   driverFor(turnId) { return this.driver; }
+  onTurnEnded(event) {
+    driver.resolve({ stopReason: turnEndReasonToStopReason(event.reason, error) });
+  }
   cancel() {
     const driver = this.driver;
     driver.cancelRequested = true;
@@ -122,12 +125,14 @@ test('unknown native layouts and runtimes retain the compatible path', t => {
   const runtime = path.join(root, 'dist', 'main.mjs'); fs.writeFileSync(runtime, source);
   assert.equal(prepareKimiHistory(runtime), null);
   assert.equal(prepareDshHistory({ file: path.join(root, 'not-installed.js') }), null);
-  fs.writeFileSync(path.join(root, 'package.json'), JSON.stringify({ name: '@moonshot-ai/kimi-code', version: '2.4.0' }));
-  const patched = prepareKimiHistory(runtime);
-  assert.ok(patched);
-  assert.equal(path.dirname(patched), path.dirname(runtime));
-  assert.equal(fs.readFileSync(runtime, 'utf8'), source);
-  assert.match(fs.readFileSync(patched, 'utf8'), /session\/camellia_fork_undo/);
+  for (const version of ['2.4.0', '2.4.1']) {
+    fs.writeFileSync(path.join(root, 'package.json'), JSON.stringify({ name: '@moonshot-ai/kimi-code', version }));
+    const patched = prepareKimiHistory(runtime);
+    assert.ok(patched, `Kimi ${version} must load the verified ACP bridge`);
+    assert.equal(path.dirname(patched), path.dirname(runtime));
+    assert.equal(fs.readFileSync(runtime, 'utf8'), source);
+    assert.match(fs.readFileSync(patched, 'utf8'), /session\/camellia_fork_undo/);
+  }
 });
 
 test('native bridge materialization publishes complete files and survives a failed publication', t => {

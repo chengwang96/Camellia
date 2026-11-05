@@ -12,6 +12,26 @@ test('models without reasoning metadata leave controls to the model default', ()
   }
 });
 
+test('native config notifications preserve the selected API effort and still update subscription efforts', () => {
+  const source = fs.readFileSync(path.join(__dirname, '../src/renderer/chat/chat.js'), 'utf8');
+  const start = source.indexOf("    if (ev.type === 'gui:config'");
+  const end = source.indexOf('\n    }', start) + '\n    }'.length;
+  const sandbox = { harnessId: 'grok', googleSubscription: () => false, subscription: false,
+    accountSubscription() { return sandbox.subscription; },
+    LEVELS: [{ id: '', label: 'Default' }, { id: 'max', label: 'Max' }], currentLevel: 'max',
+    applyApiLevels() {}, renderModelPill() {} };
+  vm.createContext(sandbox);
+  vm.runInContext('function updateConfig(ev) {\n' + source.slice(start, end) + '\n}', sandbox);
+  const event = { type: 'gui:config', options: [{ id: 'reasoning_effort', currentValue: 'minimal', options: [{ value: 'minimal', name: 'Minimal' }] }] };
+  sandbox.updateConfig(event);
+  assert.equal(sandbox.currentLevel, 'max');
+  assert.deepEqual(sandbox.LEVELS.map(level => level.id), ['', 'max']);
+  sandbox.subscription = true;
+  sandbox.updateConfig(event);
+  assert.equal(sandbox.currentLevel, 'minimal');
+  assert.deepEqual(sandbox.LEVELS.map(level => level.id), ['', 'minimal']);
+});
+
 test('reported Codex catalog efforts take precedence over the fallback', () => {
   const catalog = require('../src/engines/codex-metadata/models.json').models;
   for (const model of catalog) {

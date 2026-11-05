@@ -45,6 +45,7 @@ bridge = r"""(() => {
     },
     workbenchSettings:async()=>({ok:true,conversations:window.fixturePreferences}),
     conversationSwitch:async payload=>{window.switches.push(payload);return {ok:true};},
+    conversationHandoff:async payload=>{window.switches.push(payload);return {ok:true};},
     apiRouterGetState:async()=>({enabled:true,models:['fixture-model']}),
     onConversationEvent:()=>{},onConversationGoal:fn=>{window.deliverGoal=goal=>{window.currentGoal=goal;fn(goal);};},onConversationStatus:()=>{},
     onEngineSettingsChanged:()=>{},onApiRouterState:()=>{},onNetworkHealth:()=>{},onHarnessNavigate:()=>{},openSettingsWindow:()=>{},
@@ -112,7 +113,7 @@ with sync_playwright() as p:
             expect(page.locator('#goalToggle')).to_have_attribute('aria-pressed','false')
             page.select_option('#engineSwitch', 'kimi' if engine != 'kimi' else 'codex')
             expect(page.locator('#switchDialog')).not_to_be_visible()
-            page.wait_for_function('window.switches.filter(call => !call.navigate).length === 1 && !loadingSession && !switchingEngine')
+            page.wait_for_function('window.switches.filter(call => !call.navigate).length === 1 && !loadingSession && handoffSessions.size === 0')
             assert page.evaluate('switches.find(call => !call.navigate).sessionId') == 'shared-fixture'
             page.evaluate('fixturePreferences.warnOnSwitch = true; fixturePreferences.mode = "markdown"')
             page.select_option('#engineSwitch', 'dsh' if engine != 'dsh' else 'claude')
@@ -431,7 +432,7 @@ with sync_playwright() as p:
             page.wait_for_function('!pendingConversationSend() && !conversationBusy()')
             expect(page.locator('#input')).to_have_value('')
             expect(page.locator('.failed-send')).to_contain_text('Fixture compaction canceled')
-            expect(page.locator('.failed-send button')).to_have_count(1)
+            expect(page.locator('.failed-send > button')).to_have_count(1)
             expect(page.locator('#handoffStop')).to_be_hidden()
             expect(page.locator('#modelPill')).to_be_enabled()
             assert page.evaluate('actions.filter(entry=>entry.action==="send").length') == 1

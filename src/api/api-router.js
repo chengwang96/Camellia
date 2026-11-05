@@ -9,6 +9,7 @@ const { BufferedToolStream } = require('./buffered-tool-stream');
 const { recordUsage } = require('./api-usage');
 const { GeminiToolState } = require('./gemini-tool-state');
 const { RequestScopes } = require('./request-scopes');
+const { parseHarnessThinkingPath, validateHarnessThinking, applyHarnessThinking } = require('./harness-thinking');
 const { responsesToChat, ResponsesStream, chatToResponse } = require('./responses-protocol');
 const { routedModelId } = require('../shared/codex-tool-model');
 const { canonicalModelId } = require('../shared/model-names');
@@ -306,7 +307,7 @@ function startApiRouter({ configPath, log = () => {}, onState = () => {}, onCont
     changed();
   }
 
-  function forward(route, clientProtocol, body, pathname, downstream, clientHeaders, bufferTools = false) {
+  function forward(route, clientProtocol, body, pathname, downstream, clientHeaders, bufferTools = false, thinkingEffort) {
     const source = route.protocol;
     let payload, responseTools;
     const isGemini = source === 'openai' && (route.provider.type === 'gemini' || new URL(route.provider.baseUrl).hostname === 'generativelanguage.googleapis.com');
@@ -316,6 +317,7 @@ function startApiRouter({ configPath, log = () => {}, onState = () => {}, onCont
         const converted = responsesToChat(body); responseTools = converted.tools;
         payload = convertRequest(converted.body, 'openai', source);
       } else payload = convertRequest(body, clientProtocol, source);
+      applyHarnessThinking(payload, source, thinkingEffort, route.model.thinking);
       if (source === 'openai' && (route.provider.type === 'ollama' || new URL(route.provider.baseUrl).hostname === 'ollama.com')) {
         if (payload.thinking?.type === 'disabled' || payload.reasoning_effort === 'off') payload.reasoning_effort = 'none';
       }
@@ -508,8 +510,10 @@ function startApiRouter({ configPath, log = () => {}, onState = () => {}, onCont
     if (req.headers.origin || !/^(127\.0\.0\.1|localhost|\[::1\])(:\d+)?$/i.test(host)) return apiError(res, 403, "Only local API clients are allowed", 'openai');
     const scoped = scopes.resolve(new URL(req.url, 'http://localhost').pathname);
     const scope = scoped.scope;
-    const bufferTools = scoped.pathname.startsWith('/compat/antigravity/');
-    const pathname = (bufferTools ? scoped.pathname.slice('/compat/antigravity'.length) : scoped.pathname).replace(/^\/v1(?=\/)/, '');
+    const thinking = parseHarnessThinkingPath(scoped.pathname);
+    if (thinking.error) return apiError(res, 400, thinking.error, 'openai', 'invalid_thinking');
+    const bufferTools = thinking.pathname.startsWith('/compat/antigravity/');
+    const pathname = (bufferTools ? thinking.pathname.slice('/compat/antigravity'.length) : thinking.pathname).replace(/^\/v1(?=\/)/, '');
     if (bufferTools && pathname !== '/chat/completions') return apiError(res, 404, 'Unsupported Antigravity API path', 'openai');
     if (scoped.scoped && (!scope || scope.closed)) return apiError(res, 410, 'This API scope has ended', pathname.startsWith('/messages') ? 'anthropic' : 'openai');
     refreshDisk();
@@ -535,6 +539,8 @@ function startApiRouter({ configPath, log = () => {}, onState = () => {}, onCont
     const routes = candidates(model, protocol).filter(route => !scope || (route.provider.id === scope.providerId
       && (!scope.keyId || route.key.id === scope.keyId) && route.model.upstream === scope.upstream && routeFingerprint(route) === scope.routeFingerprint));
     if (!routes.length) return apiError(res, 404, `Model "${model}" has no configured routes. Add a route for this model; no other model will be used.`, protocol, 'model_not_found');
+    try { validateHarnessThinking(thinking.effort, model, scope ? { thinking: routes[0].model.thinking } : cfg); }
+    catch (error) { return apiError(res, 400, error.message, protocol, 'invalid_thinking'); }
     // Auxiliary requests (conversation titles) never block a route or a key for
     // real work: a title failing must not make the model look unhealthy.
     const auxiliary = String(req.headers['x-camellia-aux'] || '') !== '';
@@ -559,7 +565,7 @@ function startApiRouter({ configPath, log = () => {}, onState = () => {}, onCont
       keyRequests.set(identity, (keyRequests.get(identity) || 0) + 1);
       let pending, result;
       try {
-        pending = forward(route, protocol, body, pathname, res, req.headers, bufferTools);
+        pending = forward(route, protocol, body, pathname, res, req.headers, bufferTools, thinking.effort);
         scope?.pending.add(pending);
         result = await pending;
       } finally {

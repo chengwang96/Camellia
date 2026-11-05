@@ -11,6 +11,7 @@ const { kimiSpawnSpec } = require('../kimi-session');
 const { dshAcpSpec } = require('../dsh-session');
 const { grokSpawnSpec } = require('../grok-session');
 const { nativeMode } = require('../permission-levels');
+const { harnessThinkingRoute } = require('../../api/harness-thinking');
 
 function resources(home, source, names = ['skills', 'commands', 'plugins']) {
   if (!source) return;
@@ -29,6 +30,7 @@ function nativeToolSpec({ runtime, home, cwd, env, node, profile, route, permiss
   if (engine === 'codex') return codexSpawnSpec({ runtime, home, configHome: native.home || home,
     cwd, model, contextWindow, connection, route, env, allowUserQuestions: true });
   if (engine === 'claude') {
+    route = harnessThinkingRoute(route, profile.thinking || '');
     let mcp = {}; try { mcp = JSON.parse(native.mcp || '{}').mcpServers || {}; } catch { throw new Error('Invalid Claude MCP configuration'); }
     const mcpFile = path.join(home, 'mcp.json'); writeJson(mcpFile, { mcpServers: mcp });
     const routeEnv = { ANTHROPIC_BASE_URL: route.baseUrl, ANTHROPIC_AUTH_TOKEN: route.authToken, ANTHROPIC_API_KEY: '' };
@@ -40,11 +42,11 @@ function nativeToolSpec({ runtime, home, cwd, env, node, profile, route, permiss
       '--permission-mode', nativeMode(engine, permissionMode), '--mcp-config', mcpFile] };
   }
   if (engine === 'kimi') return { ...kimiSpawnSpec({ runtime: runtime.file, home, model, contextWindow, route, connection, env,
-    config: native.config || {}, mcp: native.mcp || '' }), exe: node, cwd };
-  if (engine === 'dsh') return { ...dshAcpSpec({ runtime, home, model, route, permissionMode, env, nativeConfig: native.config }), exe: node, cwd };
+    config: native.config || {}, mcp: native.mcp || '', thinkingBudget: profile.thinking || '' }), exe: node, cwd };
+  if (engine === 'dsh') return { ...dshAcpSpec({ runtime, home, model, route, permissionMode, env, nativeConfig: native.config, thinkingBudget: profile.thinking || '' }), exe: node, cwd };
   if (engine === 'grok') return { ...grokSpawnSpec({ runtime: runtime.file, home, model, connection, route, contextWindow, env,
-    config: native.config || {}, instructions: native.instructions }), exe: runtime.file, cwd };
-  if (engine === 'antigravity' && connection === 'api') return { ...antigravitySpawnSpec({ runtime, home, route, env, config: native.config }), exe: runtime.file, cwd };
+    config: native.config || {}, instructions: native.instructions, reasoningEffort: profile.thinking || '' }), exe: runtime.file, cwd };
+  if (engine === 'antigravity' && connection === 'api') return { ...antigravitySpawnSpec({ runtime, home, route, env, config: native.config, thinkingBudget: profile.thinking || '' }), exe: runtime.file, cwd };
   if (engine === 'antigravity' && connection === 'subscription') {
     const legacy = path.join(cwd, '.agents/agents/camellia-discussion.md');
     if (fs.existsSync(legacy) && fs.lstatSync(legacy).isFile()

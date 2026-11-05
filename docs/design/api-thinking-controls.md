@@ -37,6 +37,30 @@ sets `thinking.type: disabled`; Kimi K3 receives its effort without an
 unsupported generic `thinking` field; Gemini converts native disabled thinking
 to `reasoning_effort: none` before removing the generic field.
 
+## Harness transport
+
+As of 2026-11-05, API sessions for Claude Code, Kimi Code, Grok Build, DSH, and
+Antigravity carry the composer's selected effort in a process-specific local
+route, `/harness-thinking/<effort>` (`_default` means omission). The router
+strips this prefix, removes competing native thinking controls, applies the
+explicit selection, and then performs provider-specific adaptation. This
+preserves levels such as Minimal and Max even when the CLI only supports a
+different vocabulary or represents thinking with a numeric token budget.
+Default removes native overrides; Off remains an explicit request to disable
+thinking. Unknown or stale levels are rejected against available metadata
+before inference. Ordinary external router clients keep their native controls.
+
+The prefix nests inside discussion provider scopes and before Antigravity's
+compatibility prefix. It does not replace scope identity, request limits,
+provider/key selection, or normal failover. Each process has its own immutable
+route, so changing one conversation's effort cannot affect another. The GUI
+also ignores a native CLI's internal effort value for API sessions, preserving
+the selected provider effort in the composer.
+
+Codex's already-working API controls and all native subscription catalogs and
+effort controls keep their existing transport. In particular, native Ultra is
+an automatic-delegation mode and is not inferred from a single parent request.
+
 ## Evidence
 
 - [Command Code Provider API](https://commandcode.ai/docs/provider) documents the standard catalog and native request formats. The richer `?view=client` catalog was verified against the public endpoint and the published official `command-code` npm package, v1.88.2. No npm package code was executed.
@@ -55,3 +79,13 @@ test `tests/model-thinking-ui.py` starts from production-parsed Command Code and
 OpenCode catalog fixtures and checks all six engine composers. Public catalog
 checks do not establish that a provider honored an effort during inference;
 this audit does not send paid model requests.
+
+`tests/harness-thinking-smoke.cjs` additionally starts the actual six harnesses
+through the production headless drivers, with isolated homes and loopback
+responses. Its 126 cases cover DeepSeek, GLM, Kimi named and boolean controls,
+Gemini Minimal, fixed controls, Default and Off. It asserts the final request
+fields as well as successful turn completion, and retains sanitized results
+under `artifacts/harness-thinking-smoke-*`. Desktop CI runs this matrix after
+installing the managed runtimes. Set `CAMELLIA_RUNTIME_ROOT` to select a runtime
+installation, or pass harness IDs to run a subset. These checks do not contact
+paid inference endpoints or certify live subscription behavior.

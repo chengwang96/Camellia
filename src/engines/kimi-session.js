@@ -8,6 +8,7 @@ const { copyKimiFork } = require('./native-fork');
 const { validSessionId } = require('./claude-history');
 const { prepareKimiHistory } = require('./kimi-native-history');
 const { matchesPrompt, nativeEditOptions } = require('./native-edit-boundary');
+const { harnessThinkingRoute } = require('../api/harness-thinking');
 
 class KimiSession extends AcpSession {
   async editBoundary(prompt) {
@@ -30,10 +31,21 @@ class KimiSession extends AcpSession {
 }
 
 const MANAGED_PROVIDER = 'managed:kimi-code';
+const DIRECT_HOSTS = ['api.kimi.com', 'auth.kimi.com', 'www.kimi.com', 'kimi.com', '.kimi.com',
+  'api.kimi.ai', 'auth.kimi.ai', 'www.kimi.ai', 'kimi.ai', '.kimi.ai'];
 function kimiEnvironment(home, inherited = process.env) {
   const env = { ...inherited, KIMI_CODE_HOME: home, KIMI_DISABLE_TELEMETRY: '1', KIMI_CODE_REGION_MARKER: 'off' };
   // A subscription must not inherit an API route or a different OAuth server.
   for (const key of Object.keys(env)) if (/^KIMI_MODEL_|^KIMI_(API_KEY|BASE_URL|OAUTH_HOST|REGISTRY_API_KEY)$|^KIMI_CODE_(API_KEY|BASE_URL|OAUTH_HOST)$|^KIMI_WEB_(SEARCH|FETCH)_(BASE_URL|API_KEY)$/i.test(key)) delete env[key];
+  if (inherited.CAMELLIA_KIMI_DIRECT === '1') {
+    const current = String(env.NO_PROXY || env.no_proxy || '');
+    if (current !== '*') {
+      const hosts = current.split(',').map(value => value.trim()).filter(Boolean);
+      for (const host of DIRECT_HOSTS) if (!hosts.includes(host)) hosts.push(host);
+      delete env.no_proxy;
+      env.NO_PROXY = hosts.join(',');
+    }
+  }
   return env;
 }
 function managedKimiConfig(home) {
@@ -86,7 +98,7 @@ function updateKimiConnectionSettings(config, patch) {
 
 // API credentials stay in the router. Subscription credentials are maintained
 // by the official CLI in a separate app-owned home.
-function kimiSpawnSpec({ home, runtime, model, contextWindow = 131072, route, connection = 'api', sharedSubscription = false, config = {}, mcp = '', env = process.env }) {
+function kimiSpawnSpec({ home, runtime, model, contextWindow = 131072, route, connection = 'api', sharedSubscription = false, config = {}, mcp = '', env = process.env, thinkingBudget }) {
   fs.mkdirSync(home, { recursive: true });
   if (process.platform === 'win32') home = fs.realpathSync.native(home);
   const { routeKimi } = require('./engine-settings');
@@ -99,11 +111,13 @@ function kimiSpawnSpec({ home, runtime, model, contextWindow = 131072, route, co
     delete merged.default_provider;
     // A secondary API model from the global CLI must not cross into this account.
     delete merged.secondary_model;
-  } else merged = routeKimi({ telemetry: false, ...config, providers: {}, models: {} }, { route, model, contextWindow });
+  } else merged = routeKimi({ telemetry: false, ...config, providers: {}, models: {} }, {
+    route: thinkingBudget === undefined ? route : harnessThinkingRoute(route, thinkingBudget), model, contextWindow });
   writeText(path.join(home, 'config.toml'), TOML.stringify(merged));
   writeText(path.join(home, 'mcp.json'), mcp || '{"mcpServers":{}}');
   const bridge = prepareKimiHistory(runtime);
-  return { args: [bridge || runtime, 'acp'], env: { ...kimiEnvironment(home, env), KIMI_DISABLE_TELEMETRY: merged.telemetry ? '0' : '1' }, modeEngine: 'kimi', nativeHistory: Boolean(bridge) };
+  return { args: [bridge || runtime, 'acp'], env: { ...kimiEnvironment(home, env), KIMI_DISABLE_TELEMETRY: merged.telemetry ? '0' : '1' }, modeEngine: 'kimi', nativeHistory: Boolean(bridge),
+    ...(connection !== 'subscription' && thinkingBudget !== undefined ? { applyThinking: false } : {}) };
 }
 
 async function forkKimiNative({ ensureSource, targetHome, sessionId, sourceConversationId, cwd, settings, goalBridge, sourceGoalBridge, registerSession }) {

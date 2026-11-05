@@ -113,6 +113,7 @@ contextBridge.exposeInMainWorld('dshDesktop', {
   onHarnessNavigate: callback => subscribe('dsh:harness-navigate', callback),
   conversationCommand: payload => ipcRenderer.invoke('dsh:conversation-command', payload),
   conversationSwitch: payload => ipcRenderer.invoke('dsh:conversation-switch', payload),
+  conversationHandoff: payload => ipcRenderer.invoke('dsh:conversation-handoff', payload),
   conversationOpenHandoff: payload => ipcRenderer.invoke('dsh:conversation-open-handoff', payload),
   onConversationEvent: callback => subscribe('dsh:conversation-event', callback),
   onConversationGoal: callback => subscribe('dsh:conversation-goal', callback),

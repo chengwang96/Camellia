@@ -221,7 +221,7 @@ class AcpSession extends StreamingSession {
       const empty = !stopped && !failed && this.spec.modeEngine === 'kimi' && !this.hasReplyText && !this.tools.size;
       this.finish({ subtype: stopped ? 'stopped' : failed ? response.stopReason : empty ? 'empty_response' : 'success',
         is_error: failed || empty,
-        ...(empty ? { result: 'Kimi returned no reply or tool activity. The request may not have started; retry after its background work finishes.' } : {}),
+        ...(empty ? { result: 'Kimi returned no reply or tool activity.' } : {}),
         ...(response.usage ? { usage: response.usage } : {}) });
     } catch (error) {
       this.finish({ subtype: this.cancelled ? 'stopped' : 'error', is_error: !this.cancelled, result: error.message });

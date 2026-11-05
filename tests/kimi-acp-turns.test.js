@@ -18,10 +18,15 @@ async function fixture() {
     const end = patched.indexOf('\n\t};\n}));', start) + '\n\t};'.length;
     NativeSession = vm.runInNewContext('(' + patched.slice(start, end).trim().replace(/;$/, '') + ')', {
       globalThis: { crypto: require('node:crypto') }, DEFAULT_MODE_ID: 'manual',
-      AcpInteractionBridge: class {}, log: { warn() {} }, isAuthError: () => false,
-      RequestError$1: { internalError: (_, message) => new Error(message), invalidRequest: (_, message) => new Error(message) },
+      AcpInteractionBridge: class {}, log: { warn() {} }, isAuthError: error => error?.code === 'provider.auth',
+      RequestError$1: {
+        internalError: (data, message) => Object.assign(new Error(message), { code: -32603, data }),
+        authRequired: (_, message) => Object.assign(new Error(message), { code: -32000 }),
+        invalidRequest: (_, message) => new Error(message),
+      },
       mapPromptLaunchError: error => error,
-      turnEndReasonToStopReason: reason => reason === 'cancelled' ? 'cancelled' : 'end_turn',
+      turnEndReasonToStopReason: (reason, error) => reason === 'cancelled' ? 'cancelled'
+        : reason === 'blocked' || error?.code === 'provider.filtered' ? 'refusal' : 'end_turn',
       assistantDeltaToSessionUpdate: (sessionId, event) => ({ sessionId, update: { content: { text: event.delta } } }),
     });
   }
@@ -102,4 +107,43 @@ test('Kimi settles hook-blocked and aborted prompts without mistaking them for c
 
 test('Kimi queue adapter refuses changed runtime contracts', { skip: !source }, () => {
   assert.equal(patchKimiAcpTurns(source.replace('driveLaunch(launch) {', 'driveLaunch(changed) {')), null);
+});
+
+test('Kimi propagates failed turns through ACP with the provider reason, even after partial output', { skip: !source }, async () => {
+  for (const partial of [false, true]) {
+    const h = await fixture();
+    const result = h.native.driveTurn([]);
+    const error = { code: 'provider.api_error', message: "429 You've reached your 5-hour usage limit.",
+      details: { statusCode: 429 }, retryable: false };
+    const rejected = assert.rejects(result, failure => {
+      assert.equal(failure.code, -32603);
+      assert.match(failure.message, /429.*5-hour usage limit/);
+      assert.equal(failure.data.code, error.code);
+      assert.equal(failure.data.statusCode, 429);
+      assert.equal(failure.data.retryable, false);
+      return true;
+    });
+    h.emit('turn.started', { promptId: h.submissions[0].promptId, turnId: 2 });
+    h.emit('turn.ended', { turnId: 1, reason: 'failed', error: { message: 'Unrelated background error' } });
+    if (partial) h.emit('assistant.delta', { turnId: 2, delta: 'Partial reply' });
+    h.emit('turn.ended', { turnId: 2, reason: 'failed', error });
+    await rejected;
+    assert.equal(h.native.driver, undefined);
+  }
+});
+
+test('Kimi retains authentication, refusal and cancellation outcomes and reports unspecified failures', { skip: !source }, async () => {
+  for (const kind of ['auth', 'filtered', 'cancelled', 'failed']) {
+    const h = await fixture();
+    const result = h.native.driveTurn([]);
+    const checked = kind === 'auth' ? assert.rejects(result, { code: -32000, message: 'Sign in again' })
+      : kind === 'failed' ? assert.rejects(result, /Kimi turn failed/) : result;
+    h.emit('turn.started', { promptId: h.submissions[0].promptId, turnId: 0 });
+    h.emit('turn.ended', { turnId: 0, reason: kind === 'cancelled' ? 'cancelled' : 'failed',
+      error: kind === 'auth' ? { code: 'provider.auth', message: 'Sign in again' }
+        : kind === 'filtered' ? { code: 'provider.filtered', message: 'Filtered' } : undefined });
+    const value = await checked;
+    if (kind === 'filtered' || kind === 'cancelled') assert.equal(value.stopReason, kind === 'filtered' ? 'refusal' : 'cancelled');
+    assert.equal(h.native.driver, undefined);
+  }
 });

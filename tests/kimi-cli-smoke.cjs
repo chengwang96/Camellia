@@ -39,6 +39,11 @@ async function run() {
   const denied = path.join(cwd, 'denied.txt');
   fs.writeFileSync(marker, 'kimi-read-marker-7391');
   const requests = [], events = [], logs = [];
+  const providerErrors = [
+    { prompt: 'SMOKE quota', status: 429, code: 'insufficient_quota', message: "You've reached your 5-hour usage limit. Your quota will reset when the current 5-hour window ends." },
+    { prompt: 'SMOKE invalid model', status: 404, code: 'model_not_found', message: 'The selected model does not exist.' },
+    { prompt: 'SMOKE auth error', status: 401, code: 'invalid_api_key', message: 'The API key is invalid.' },
+  ];
   let slowRequest, backgroundStarted, finishBackground, backgroundParentReplied = false;
   const server = http.createServer(async (req, res) => {
     if (require('./model-metadata-fixture.cjs')(req, res)) return;
@@ -51,6 +56,12 @@ async function run() {
     }
     const lastUser = body.messages.findLastIndex(m => m.role === 'user' && JSON.stringify(m.content).includes('SMOKE '));
     const prompt = JSON.stringify(body.messages[lastUser].content);
+    const failure = providerErrors.find(error => prompt.includes(error.prompt));
+    if (failure) {
+      res.writeHead(failure.status, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ error: { message: failure.message, code: failure.code, type: failure.code } }));
+      return;
+    }
     if (prompt.includes('SMOKE wait')) { slowRequest?.(); return; }
     const hasTool = body.messages.slice(lastUser).some(m => m.role === 'tool');
     if (prompt.includes('SMOKE background') && hasTool) {
@@ -97,11 +108,11 @@ async function run() {
   const metering = require('../src/api/subscription-usage').createSubscriptionUsage({ file: path.join(root, 'subscription-usage.json') });
   const meteredTurns = [];
   let session, gen = 0, done, permissionCount = 0, allow = true;
-  async function create(opts = {}) {
+  async function create(opts = {}, route = { baseUrl: router.url, authToken: 'proxy-managed' }) {
     await session?.shutdown();
     const settings = { cwd, model: 'kimi-k2.5', permissionMode: 'default' };
     const spec = kimiSpawnSpec({ home, runtime, model: settings.model, contextWindow: 32768,
-      route: { baseUrl: router.url, authToken: 'proxy-managed' },
+      route,
       env: { ...process.env, HTTP_PROXY: '', HTTPS_PROXY: '', ALL_PROXY: '', NO_PROXY: '127.0.0.1,localhost' } });
     session = new KimiSession({ gen: ++gen, settings, opts, exe: process.execPath, spec, spawn, history,
       // Exercise native-journal metering against the loopback fixture, with no subscription calls.
@@ -221,7 +232,20 @@ async function run() {
     assert.ok(usage?.inputTokens > 0, 'The actual CLI journals must contain usage');
     assert.equal(usage.inputTokens, Object.values(routerUsage).reduce((sum, value) => sum + value.inputTokens, 0), 'Journal usage must equal the provider counts across resume/fork/cancel: ' + JSON.stringify({ turns: meteredTurns.map(row => ({ sessionId: row.sessionId, samples: row.samples, incomplete: row.incomplete })), logs }));
     assert.equal(usage.outputTokens, Object.values(routerUsage).reduce((sum, value) => sum + value.outputTokens, 0));
-    console.log(`PASS: real Kimi Code ${runtimeVersion} ACP, same-model quota failover, streamed thought/text, Read/Write/Bash, approve/deny, cancel, native resume/fork, background follow-up with queued reply/cancel, isolated history and config. Local endpoints only.`);
+    // Bypass router failover to exercise terminal provider failures through
+    // the real CLI, JSON-RPC transport and the result shown by the workbench.
+    for (const failure of providerErrors) {
+      await create({}, { baseUrl: url.slice(0, -3), authToken: 'local-working' });
+      const result = await turn(failure.prompt);
+      assert.equal(result.subtype, 'error', JSON.stringify(result));
+      assert.equal(result.is_error, true);
+      assert.ok(result.result.includes(failure.message), result.result);
+      assert.doesNotMatch(result.result, /no reply or tool activity|background work/);
+      assert.equal(events.findLast(event => event.type === 'result').result, result.result);
+    }
+    await create();
+    assert.equal((await turn('SMOKE after provider error')).subtype, 'success');
+    console.log(`PASS: real Kimi Code ${runtimeVersion} ACP, same-model quota failover, streamed thought/text, Read/Write/Bash, approve/deny, cancel, native resume/fork, background follow-up with queued reply/cancel, terminal quota/model/auth errors and recovery, isolated history and config. Local endpoints only.`);
   } finally {
     fs.writeFileSync(path.join(cwd, 'release-bg.txt'), 'release');
     finishBackground?.();

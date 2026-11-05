@@ -305,6 +305,8 @@ class Bridge:
                     if self.preparation and self.model != params["value"]:
                         raise ValueError("Prepared session model is fixed")
                     self.model = params["value"]
+                else:
+                    raise ValueError("Unsupported configuration option: " + str(params["configId"]))
                 result = {"configOptions": []}
             elif method == "session/set_mode":
                 if self.tool_free and params["modeId"] not in ("default", "plan"):

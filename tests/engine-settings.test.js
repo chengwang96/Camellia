@@ -42,11 +42,13 @@ test('Grok defaults and native configuration stay isolated from personal CLI set
     environment: () => ({}), onEvent() {}, nativeConfig: f.service.grokConfig, nativeRevision: f.service.grokConfigRevision });
   t.after(() => driver.shutdown());
   const session = driver.ensure({ cwd: f.home });
-  assert.deepEqual(session.spec.args, ['--model', 'camellia', '--reasoning-effort', 'high', '--no-auto-update', 'agent', 'stdio']);
+  assert.deepEqual(session.spec.args, ['--model', 'camellia', '--no-auto-update', 'agent', 'stdio']);
+  assert.equal(session.spec.applyThinking, false);
   assert.equal(session.settings.permissionMode, 'auto');
   assert.equal(session.settings.thinkingBudget, 'high');
   const model = TOML.parse(fs.readFileSync(path.join(f.home, 'runtime/grok/api/standalone/config.toml'), 'utf8')).model.camellia;
   assert.equal(model.context_window, 131072);
+  assert.equal(model.base_url, f.route.baseUrl + '/harness-thinking/high/v1');
   const firstRevision = f.service.grokConfigRevision();
   const updated = f.service.get('grok'); updated.files[1].text = 'Updated instructions';
   f.service.save('grok', { ...updated, desktop: { model: 'stale-model' }, common: { thinkingBudget: '' } });

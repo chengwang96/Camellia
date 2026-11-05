@@ -14,6 +14,7 @@ const { prepareDshHistory } = require('./dsh-native-history');
 const { matchesPrompt, nativeEditOptions } = require('./native-edit-boundary');
 const { validSessionId } = require('./claude-history');
 const { copyDshFork } = require('./native-fork');
+const { harnessThinkingRoute } = require('../api/harness-thinking');
 
 class DshSession extends AcpSession {
   async editBoundary(prompt) {
@@ -36,7 +37,8 @@ const DSH_PRESETS = {
     description: 'Full access without confirmation prompts.' },
 };
 
-function dshAcpSpec({ runtime, home, model, route, permissionMode, env, nativeConfig = {}, thinking, webTools = false }) {
+function dshAcpSpec({ runtime, home, model, route, permissionMode, env, nativeConfig = {}, thinking, webTools = false, thinkingBudget }) {
+  if (thinkingBudget !== undefined) route = harnessThinkingRoute(route, thinkingBudget);
   const levels = levelsFor(model, { thinking });
   const supported = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
   const reasoningEfforts = Object.fromEntries(levels.map(level => [level === 'none' ? 'off' : level, level]).filter(([level]) => supported.includes(level)));
@@ -68,7 +70,7 @@ function dshAcpSpec({ runtime, home, model, route, permissionMode, env, nativeCo
   }
   return { args, env: { ...env, DSH_HOME: home, DSH_API_ROUTER_KEY: 'proxy-managed' },
     modeEngine: 'dsh', nativeSubagentEvents: childEvents, nativeHistory: Boolean(nativeHistory),
-    noModes: true, modelValue: JSON.stringify(['api-pool', model]), thinkingId: 'reasoning_effort', applyThinking: canThink };
+    noModes: true, modelValue: JSON.stringify(['api-pool', model]), thinkingId: 'reasoning_effort', applyThinking: thinkingBudget === undefined && canThink };
 }
 function createDshChat({ dataDir, loadConfig, saveConfig, getRoute, getModels, getModelThinking = () => undefined, runtime, node, environment, onEvent, log, nativeConfig = () => ({}), nativeRevision = () => '' }) {
   const sessions = new SessionPool();
@@ -90,8 +92,8 @@ function createDshChat({ dataDir, loadConfig, saveConfig, getRoute, getModels, g
     if (!selected.model || !getModels().includes(selected.model)) throw new Error('Select a configured model first');
     if (current && !current.dead && !opts.fork && current.opts.goalBridge === opts.goalBridge && current.sessionId === opts.sessionId && JSON.stringify(current.settings) === JSON.stringify(selected)) return current;
     const spec = dshAcpSpec({ runtime: runtime(), home: path.join(dataDir, 'dsh-chat', ...(opts.conversationId ? ['conversations', opts.conversationId] : [])), model: selected.model,
-      route: getRoute(), permissionMode: selected.permissionMode, env: environment(), nativeConfig: nativeConfig(), thinking: selected.modelThinking, webTools: opts.goalBridge?.webTools });
-    if (selected.thinkingBudget === 'none') spec.thinkingValue = 'off';
+      route: getRoute(), permissionMode: selected.permissionMode, env: environment(), nativeConfig: nativeConfig(), thinking: selected.modelThinking,
+      thinkingBudget: selected.thinkingBudget || '', webTools: opts.goalBridge?.webTools });
     const previous = current?.shutdown();
     const session = new DshSession({ name: 'DSH', gen: ++generation, opts, settings: selected, spec, exe: node(), spawn, log, history,
       onEvent: event => { if (sessions.get(opts) === session) onEvent({ ...event, conversationId: opts.conversationId }); }, onSessionId: () => {}, onResult: () => {} });

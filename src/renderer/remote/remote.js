@@ -310,7 +310,24 @@ if (embedded) element('openPanel').addEventListener('click', async () => {
 element('toggle').addEventListener('click', () => run(() => call(state.enabled || state.running ? 'stop' : 'start')));
 element('login').addEventListener('click', () => run(() => call(state.network?.loginUrl ? 'open-login' : 'login')));
 element('logout').addEventListener('click', () => {
-  if (window.confirm(translate('confirmLogout'))) void run(() => call('logout'));
+  if (working || root.querySelector('dialog.mobile-logout')) return;
+  const dialog = document.createElement('dialog'); dialog.className = 'mobile-logout';
+  const title = document.createElement('h2'); title.id = embedded ? 'mobile-logoutTitle' : 'logoutTitle';
+  title.dataset.copy = 'logout'; title.textContent = translate('logout');
+  const description = document.createElement('p'); description.id = embedded ? 'mobile-logoutDescription' : 'logoutDescription';
+  description.dataset.copy = 'confirmLogout'; description.textContent = translate('confirmLogout');
+  dialog.setAttribute('aria-labelledby', title.id); dialog.setAttribute('aria-describedby', description.id);
+  const actions = document.createElement('form'); actions.method = 'dialog'; actions.className = 'mobile-logout-actions';
+  const cancel = document.createElement('button'); cancel.type = 'submit'; cancel.value = 'cancel'; cancel.autofocus = true;
+  cancel.dataset.copy = 'renameCancel'; cancel.textContent = translate('renameCancel');
+  const confirm = document.createElement('button'); confirm.type = 'submit'; confirm.value = 'logout'; confirm.className = 'danger';
+  confirm.dataset.copy = 'logout'; confirm.textContent = translate('logout');
+  actions.append(cancel, confirm); dialog.append(title, description, actions);
+  dialog.addEventListener('close', () => {
+    const confirmed = dialog.returnValue === 'logout'; dialog.remove();
+    if (confirmed) void run(() => call('logout'));
+  });
+  root.append(dialog); dialog.showModal();
 });
 async function generateInvitation() {
   invitationDeviceIds = new Set((state?.devices || []).map(entry => entry.id));

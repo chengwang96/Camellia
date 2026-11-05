@@ -38,6 +38,17 @@
 .device-settings .device-feedback:empty { display: none; }
 .device-settings button:focus-visible, .device-settings input:focus-visible, .device-settings select:focus-visible, .device-settings summary:focus-visible { outline: 2px solid var(--dsw-static-deepseek-400); outline-offset: 3px; }
 .device-settings dialog { padding: 24px; }
+/* Shared by the embedded settings category and the separate mobile panel. */
+dialog.mobile-logout {
+  width: 440px; max-width: calc(100vw - 32px); max-height: calc(100dvh - 32px);
+  padding: 24px; overflow: auto; border: 1px solid var(--dsw-alias-border-l2); border-radius: 16px;
+  background: var(--dsw-alias-bg-layer-1); color: var(--dsw-alias-label-primary); box-shadow: var(--dsw-shadow-lv3);
+}
+dialog.mobile-logout::backdrop { background: var(--dsw-alias-bg-mask-1); }
+.mobile-logout h2 { margin: 0; font: var(--f-m-18); overflow-wrap: anywhere; }
+.mobile-logout p { margin: 12px 0 0; color: var(--dsw-alias-label-secondary); line-height: 1.7; }
+.mobile-logout-actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 8px; margin-top: 24px; }
+.mobile-logout-actions .danger { color: var(--dsw-alias-state-error-primary); }
 @media (max-width: 760px) {
   .device-settings .device-card { padding: 16px; }
   .device-settings .device-row { gap: 12px; }

@@ -278,7 +278,7 @@ class DiscussionProduction {
         if (env.SystemRoot && env.SYSTEMROOT) delete env.SYSTEMROOT;
         // Subscription logins use the resolved subscription proxy rather than
         // the general bridge, whose direct-first attempt can stall Google auth.
-        for (const [key, value] of Object.entries(inherited)) if (/^(https?_proxy|all_proxy|no_proxy|CAMELLIA_NETWORK_MODE|CAMELLIA_NETWORK_PROXY|CAMELLIA_SUBSCRIPTION_PROXY)$/i.test(key)) env[key] = value;
+        for (const [key, value] of Object.entries(inherited)) if (/^(https?_proxy|all_proxy|no_proxy|CAMELLIA_NETWORK_MODE|CAMELLIA_NETWORK_PROXY|CAMELLIA_SUBSCRIPTION_PROXY|CAMELLIA_KIMI_DIRECT)$/i.test(key)) env[key] = value;
         const models = profile.engine === 'antigravity' && profile.connection === 'subscription' ? (await this.antigravity.handlers['account-state']()).models : [];
         spec = nativeToolSpec({ runtime, home, cwd, env, node: this.node(), profile, route: record.route, permissionMode,
           native: this.getNativeConfig(profile.engine, profile.connection), models });
@@ -286,13 +286,13 @@ class DiscussionProduction {
       else {
         const inherited = this.environment(), env = isolatedEnvironment(path.join(home, 'profile'), this.node(), inherited);
         if (env.SystemRoot && env.SYSTEMROOT) delete env.SYSTEMROOT;
-        for (const [key, value] of Object.entries(inherited)) if (/^(https?_proxy|all_proxy|no_proxy|CAMELLIA_NETWORK_MODE|CAMELLIA_NETWORK_PROXY|CAMELLIA_SUBSCRIPTION_PROXY)$/i.test(key)) env[key] = value;
+        for (const [key, value] of Object.entries(inherited)) if (/^(https?_proxy|all_proxy|no_proxy|CAMELLIA_NETWORK_MODE|CAMELLIA_NETWORK_PROXY|CAMELLIA_SUBSCRIPTION_PROXY|CAMELLIA_KIMI_DIRECT)$/i.test(key)) env[key] = value;
         if (profile.engine === 'antigravity') {
           if (profile.connection === 'subscription') {
             const account = await this.antigravity.handlers['account-state']();
             spec = googleDiscussionSpec({ runtime, home, cwd, env, node: this.node(), profile, models: account.models });
             settings.permissionMode = 'default';
-          } else spec = { ...antigravitySpawnSpec({ runtime, home, route: record.route, env, executionPolicy: 'tool-free-v1' }), exe: runtime.file, cwd };
+          } else spec = { ...antigravitySpawnSpec({ runtime, home, route: record.route, env, executionPolicy: 'tool-free-v1', thinkingBudget: profile.thinking || '' }), exe: runtime.file, cwd };
         } else spec = extraTextSpec({ runtime, home, cwd, env, node: this.node(), profile, route: record.route });
       }
       spec.env.CAMELLIA_DISCUSSION_HOME = home;

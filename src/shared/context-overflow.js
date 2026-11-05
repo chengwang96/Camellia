@@ -1,5 +1,10 @@
 'use strict';
 
+(function (root, factory) {
+  if (typeof module === 'object' && module.exports) module.exports = factory();
+  else root.CamelliaContextOverflow = factory();
+})(typeof window === 'object' ? window : globalThis, function () {
+
 // Recognizing a provider context error has to tolerate the many wordings
 // suppliers use. Two classes of message matter: the model's declared window
 // ("maximum context length is N tokens") and the per-request input cap
@@ -80,4 +85,10 @@ function contextError(status, detail) {
     ...(limit?.scope === 'input' ? { inputLimit: limit.tokens } : {}) };
 }
 
-module.exports = { CONTEXT_OVERFLOW_SOURCES, RATE_LIMIT, contextOverflow, contextOverflowText, contextTokenLimit, contextError };
+// Recovery choices also apply when summarization itself failed, even though
+// that failure must never be treated as a provider context-overflow signal.
+const contextRecoveryText = value => contextOverflowText(value)
+  || /\bcompaction\b|\bcontext recovery\b|\bconversation (?:is |was )?(?:still )?too large\b|\bcompacted context\b/i.test(String(value ?? ''));
+
+return { CONTEXT_OVERFLOW_SOURCES, RATE_LIMIT, contextOverflow, contextOverflowText, contextTokenLimit, contextError, contextRecoveryText };
+});

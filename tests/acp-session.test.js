@@ -108,10 +108,33 @@ test('Kimi empty turns are visible errors while text, tools and cancellation ret
     if (['empty', 'whitespace', 'thinking', 'queued'].includes(kind)) {
       assert.equal(result.subtype, 'empty_response'); assert.equal(result.is_error, true);
       assert.match(result.result, /Kimi returned no reply/);
+      assert.doesNotMatch(result.result, /background|may not have started/);
     } else {
       assert.equal(result.subtype, kind === 'cancelled' ? 'stopped' : kind === 'refusal' ? 'refusal' : 'success');
       assert.equal(result.is_error, kind === 'refusal');
     }
+  }
+});
+
+test('Kimi JSON-RPC provider errors reach the result chip instead of the empty-response fallback', async t => {
+  for (const partial of [false, true]) {
+    const { session, proc } = fixture(t), events = [];
+    session.ready = Promise.resolve(); session.sessionId = 'kimi-fixture'; session.spec.modeEngine = 'kimi';
+    session.onEvent = event => events.push(event);
+    const done = new Promise(resolve => { session.onResult = resolve; });
+    session.sendUserMessage('Continue');
+    await new Promise(resolve => setImmediate(resolve));
+    const request = JSON.parse(proc.stdin.read().toString());
+    if (partial) session.update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'Partial reply' } });
+    const message = "Internal error: 429 You've reached your 5-hour usage limit.";
+    proc.stdout.write(JSON.stringify({ id: request.id, error: { code: -32603, message,
+      data: { code: 'provider.api_error', statusCode: 429, retryable: false } } }) + '\n');
+    const result = await done;
+    assert.equal(result.subtype, 'error');
+    assert.equal(result.is_error, true);
+    assert.equal(result.result, message);
+    assert.equal(events.findLast(event => event.type === 'result').result, message);
+    assert.equal(session.dead, true);
   }
 });
 

@@ -18,6 +18,11 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
   let acceptSessionEvents = false;
   let restoringRun = true;
   let switchingEngine = false;
+  // A harness handoff keeps running while the user opens another conversation.
+  // Track each origin separately so unrelated conversations stay usable.
+  const handoffSessions = new Map();
+  // A stalled native handoff must not leave its origin locked indefinitely.
+  let handoffTimeoutMs = 10 * 60 * 1000;
   let conversationPrefs = { mode: 'direct', warnOnSwitch: false, showOrigin: false };
   let loadedEngine = harnessId;
   const eventsDuringRestore = [];
@@ -761,7 +766,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     const button = $('fastModeToggle'), tier = currentFastTier();
     button.hidden = !tier;
     button.setAttribute('aria-pressed', String(Boolean(tier && currentFastMode)));
-    button.disabled = savingFastMode || loadingSession || switchingEngine || sending;
+    button.disabled = savingFastMode || loadingSession || switchingEngine || sending || handoffForCurrentSession();
     const label = currentFastMode ? 'Fast mode on · Uses more subscription allowance' : 'Enable Fast mode · Uses more subscription allowance';
     button.title = window.CamelliaI18n.t(label) + (tier?.description ? '\n' + window.CamelliaI18n.t(tier.description) : '');
   }
@@ -1186,7 +1191,8 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       edit.title = window.CamelliaI18n.t('Return to editor');
       edit.setAttribute('aria-label', edit.title);
       edit.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="m14 5 5 5M4 20l5-1L20 8a2.8 2.8 0 0 0-4-4L5 15z"/></svg>';
-      edit.disabled = sending || drainingQueue || loadingSession || switchingEngine || Boolean(editingMessage) || Boolean(pendingConversationSend()) || goalUI.isDraft();
+      edit.disabled = sending || drainingQueue || loadingSession || switchingEngine || Boolean(editingMessage) || Boolean(pendingConversationSend()) || goalUI.isDraft()
+        || handoffSessions.has(context.sessionId);
       edit.addEventListener('click', () => editQueuedMessage(message));
       const steer = document.createElement('button');
       steer.type = 'button'; steer.className = 'queue-steer';
@@ -1253,7 +1259,8 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
   }
 
   function editQueuedMessage(message) {
-    if (sending || drainingQueue || loadingSession || switchingEngine || editingMessage || pendingConversationSend() || goalUI.isDraft()) return false;
+    if (sending || drainingQueue || loadingSession || switchingEngine || editingMessage || pendingConversationSend() || goalUI.isDraft()
+        || handoffSessions.has(context.sessionId)) return false;
     const index = messageQueue.indexOf(message);
     if (index === -1) return false;
     input.value += (input.value && message.text ? '\n\n' : '') + message.text;
@@ -1273,6 +1280,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     // context before dispatch. Queueing is safe there because draining still
     // waits for that send and the resulting turn to finish.
     return !loadingSession && !switchingEngine && !editingMessage
+      && !handoffSessions.has(context.sessionId)
       && (!sending || Boolean(pendingConversationSend()));
   }
 
@@ -1293,7 +1301,8 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
   }
 
   function drainMessageQueue() {
-    if (messageQueuePaused || drainingQueue || !messageQueue.length || running || sending || loadingSession || conversationActivity || pendingConversationSend() || switchingEngine || editingMessage || goalUI.isActive()) return;
+    if (messageQueuePaused || drainingQueue || !messageQueue.length || running || sending || loadingSession || conversationActivity || pendingConversationSend() || switchingEngine || editingMessage || goalUI.isActive()
+        || handoffSessions.has(context.sessionId)) return;
     const next = messageQueue[0];
     const queue = messageQueue, key = draftKey();
     const openSeq = sessionOpenSeq;
@@ -1596,12 +1605,14 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       writeUi('failed-send:' + context.sessionId, null);
       div.remove(); input.focus();
     };
-    controls.append(error, edit); div.appendChild(controls);
+    controls.append(error, edit);
+    renderContextRecovery(controls, attempt.error);
+    div.appendChild(controls);
   }
 
   function updateMessageActions() {
     const users = [...chat.querySelectorAll('.msg-user')];
-    const editable = context.sessionId && !conversationBusy() && !loadingSession && !sending && !switchingEngine;
+    const editable = context.sessionId && !conversationBusy() && !loadingSession && !sending && !switchingEngine && !handoffForCurrentSession();
     for (const div of users) {
       const button = div.querySelector('.message-edit');
       if (button) button.hidden = !editable || div !== users.at(-1) || !div.messageData.seq || Boolean(editingMessage);
@@ -1653,6 +1664,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
   function showMessageEditStatus(state, text, error = false) {
     state.status.textContent = text; state.status.hidden = false;
     state.status.classList.toggle('error', error); state.status.setAttribute('role', error ? 'alert' : 'status');
+    renderContextRecovery(state.form, error ? text : '');
     state.status.scrollIntoView({ block: 'nearest' });
     state.submit.scrollIntoView({ block: 'nearest' });
   }
@@ -1730,7 +1742,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     if (!editingMessage) return;
     failedMessageEdits.delete(context.sessionId);
     editingMessage.textarea.value = failed.text;
-    showMessageEditStatus(editingMessage, failed.error, true);
+    showMessageEditStatus(editingMessage, failed.error, failed.isError !== false);
   }
 
   function turnMetaHtml() {
@@ -2404,6 +2416,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       if (!errorEl) { errorEl = document.createElement('div'); errorEl.className = 'context-compaction-error'; row.appendChild(errorEl); }
       errorEl.textContent = compaction.error;
     } else errorEl?.remove();
+    renderContextRecovery(row, compaction.error, compaction.state === 'failed');
     // The label is translated in place, so the elapsed time lives beside it
     // instead of inside the translated text node.
     const running = compaction.state === 'running';
@@ -2425,7 +2438,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     if (historyBefore === undefined) maybeScroll(was);
   }
   let statusText = '';
-  let conversationPhase = '';
+  let conversationPhase = '', conversationPhaseSessionId = null;
   function setStatus(text) { statusText = text; statusLine.textContent = text; }
   function handleConversationStatus({ sessionId, text, compaction }) {
     // The transcript marker owns the compaction progress. Mirroring its text
@@ -2436,8 +2449,8 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     const pending = pendingConversationSends.get(sessionId);
     if (pending) pending.phase = text;
     if (sessionId !== context.sessionId) return;
-    conversationPhase = text;
-    $('handoffStop').hidden = !text;
+    conversationPhase = text; conversationPhaseSessionId = sessionId;
+    updateHandoffStop();
     if (statusText === 'Stopping…') { renderCompactionStatus(compaction); return; }
     if (text) {
       setStatus(text);
@@ -2457,7 +2470,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     }, 1000);
     setStatus(conversationPhase || 'Running…');
   }
-  function stopRunTicker() { clearInterval(runTimer); runTimer = null; conversationPhase = ''; }
+  function stopRunTicker() { clearInterval(runTimer); runTimer = null; conversationPhase = ''; conversationPhaseSessionId = null; }
 
   // ---------- context usage ring ----------
   let modelCtxCaps = new Map();
@@ -2554,6 +2567,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       };
       chip.append(retry);
     }
+    if (!ok && !stopped) renderContextRecovery(chip, ev.result);
     return { chip, stats, stopped, ok };
   }
 
@@ -2792,8 +2806,11 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     // The Google subscription bridge pins its model and effort at launch, so
     // it reports no native config options; the model menu owns the levels.
     if (ev.type === 'gui:config' && harnessId !== 'claude' && !googleSubscription()) {
+      // API efforts are pinned in the route. A CLI's internal default is not
+      // the selected provider effort and must not replace the composer value.
+      if (!accountSubscription()) { applyApiLevels(); return; }
       const thinking = (ev.options || []).find(option => ['thinking', 'reasoning_effort'].includes(option.id));
-      if (!accountSubscription() || !thinking?.options?.length) applyApiLevels();
+      if (!thinking?.options?.length) applyApiLevels();
       else LEVELS.splice(0, LEVELS.length, { id: '', label: 'Default' },
         ...thinking.options.map(option => ({ id: option.value,
           label: String(option.name || option.value).replace(/^Thinking\s+/i, '') })));
@@ -2866,7 +2883,9 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     const findReady = typeof findUI !== 'undefined' && findUI.isDraft();
     const hasMessage = Boolean(input.value.trim() || attachments.length || findReady);
     const pendingSend = pendingConversationSend();
-    const active = running || Boolean(conversationActivity) || Boolean(pendingSend);
+    // Armed Goals keep the shared conversation busy while waiting, but have
+    // no live reply to queue behind. New instructions can wake the same Goal.
+    const active = running || Boolean(pendingSend) || (Boolean(conversationActivity) && !goalUI.waitingId?.());
     sendBtn.classList.toggle('stop', active && !hasMessage);
     sendBtn.classList.toggle('queue', active && hasMessage);
     if (active && !hasMessage) {
@@ -2876,13 +2895,14 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       sendBtn.title = active ? 'Queue message' : 'Send';
       sendBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/></svg>';
     }
-    sendBtn.disabled = (loadingSession && !(active && !hasMessage)) || (sending && !(pendingSend && (hasMessage || (active && !hasMessage)))) || (Boolean(editingMessage) && !(pendingSend && active && !hasMessage)) || (!active && goalUI.isActive() && !goalUI.waitingId?.()) || (!active && !hasMessage);
+    const handoffHere = handoffSessions.has(context.sessionId);
+    sendBtn.disabled = (handoffHere && !active) || (loadingSession && !(active && !hasMessage)) || (sending && !(pendingSend && (hasMessage || (active && !hasMessage)))) || (Boolean(editingMessage) && !(pendingSend && active && !hasMessage)) || (!active && goalUI.isActive() && !goalUI.waitingId?.()) || (!active && !hasMessage);
     renderMessageQueue();
   }
 
   function canSteerQueuedMessage() {
     return !drainingQueue && !sending && !loadingSession && !switchingEngine && !editingMessage && !pendingConversationSend()
-      && (running ? Boolean(currentRunId) : !conversationActivity && Boolean(goalUI.waitingId?.()));
+      && (running ? Boolean(currentRunId) : Boolean(goalUI.waitingId?.()));
   }
 
   async function steerQueuedMessage(message) {
@@ -2931,12 +2951,14 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
 
   async function send(queuedMessage = null) {
     const pendingSend = pendingConversationSend();
+    const handoffHere = handoffSessions.has(context.sessionId);
     const composerHasMessage = Boolean(input.value.trim() || attachments.length);
     if ((loadingSession && !((running || conversationActivity || pendingSend) && !queuedMessage && !composerHasMessage))
         || (sending && !(pendingSend && !queuedMessage))) return;
-    const active = running || Boolean(conversationActivity) || Boolean(pendingSend);
+    const waitingGoalId = goalUI.waitingId?.();
+    const active = running || Boolean(pendingSend) || (Boolean(conversationActivity) && !waitingGoalId);
     if (active && !queuedMessage) {
-      if ((input.value.trim() || attachments.length) && (editingMessage || switchingEngine)) return;
+      if ((input.value.trim() || attachments.length) && (editingMessage || switchingEngine || handoffHere)) return;
       if (input.value.trim() || attachments.length) { queueComposerMessage(); return; }
       const stopSessionId = context.sessionId, stopRunId = currentRunId, stopOpenSeq = sessionOpenSeq;
       if (messageQueue.length) setMessageQueuePaused(true);
@@ -2953,8 +2975,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       }
       return;
     }
-    const waitingGoalId = goalUI.waitingId?.();
-    if (editingMessage || !canChangeContext() || (conversationBusy() && !waitingGoalId)) return;
+    if (editingMessage || handoffHere || !canChangeContext() || (conversationBusy() && !waitingGoalId)) return;
     if (context.sessionId && loadedEngine !== harnessId) {
       // A conversation keeps its own harness. A stale renderer must reopen it
       // there instead of turning Send into an implicit harness switch.
@@ -3197,11 +3218,55 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       card.appendChild(open);
     } catch (error) { body.textContent = error.message; }
   }
+  function renderContextRecovery(host, error, failedCompaction = false) {
+    const existing = host.querySelector('.context-recovery');
+    if (!(failedCompaction || window.CamelliaContextOverflow.contextRecoveryText(error))) {
+      existing?.remove(); return;
+    }
+    if (existing) return;
+    const sessionId = context.sessionId;
+    const row = document.createElement('div'); row.className = 'context-recovery';
+    const hint = document.createElement('p'); hint.dataset.i18n = '';
+    hint.textContent = 'Recover here. Your message and attachments are kept.';
+    const actions = document.createElement('div'); actions.className = 'context-recovery-actions';
+    for (const [action, label, title] of [
+      ['compact', 'Compact context', 'Summarize this conversation; if that fails, keep recent messages. Full history stays saved.'],
+      ['markdown', 'Markdown handoff', 'Open a fresh session in the current harness with a Markdown overview and the full saved transcript.'],
+    ]) {
+      const button = document.createElement('button'); button.type = 'button'; button.dataset.recoveryAction = action;
+      button.textContent = label; button.title = title; button.dataset.i18n = ''; button.dataset.i18nAttrs = 'title';
+      button.disabled = conversationBusy() || contextBusy() || sending || handoffForCurrentSession();
+      button.onclick = async () => {
+        if (sessionId !== context.sessionId || conversationBusy() || contextBusy() || sending || handoffForCurrentSession()) return;
+        const edit = editingMessage;
+        row.setAttribute('aria-busy', 'true');
+        const result = action === 'compact' ? await compactConversation() : await switchConversation(harnessId, 'markdown');
+        row.removeAttribute('aria-busy');
+        if (context.sessionId !== sessionId) return;
+        if (!result?.ok) {
+          hint.textContent = result?.error || 'Context recovery failed. Try another recovery option.';
+          return;
+        }
+        if (edit && editingMessage === edit) showMessageEditStatus(edit, 'Context ready. Send your message again.');
+        chat.querySelectorAll('.context-recovery').forEach(recovery => {
+          recovery.querySelector('.context-recovery-actions')?.remove();
+          recovery.querySelector('p').textContent = 'Context ready. Send your message again.';
+        });
+        setStatus('Context ready. Send your message again.');
+      };
+      actions.appendChild(button);
+    }
+    row.append(hint, actions); host.appendChild(row);
+  }
+
   async function compactConversation() {
     if (!context.sessionId) { setStatus('Start a conversation first, then compact it.'); return; }
-    if (conversationBusy()) { setStatus('Available when this conversation stops working'); return; }
+    if (conversationBusy() || contextBusy() || sending || handoffForCurrentSession()) { setStatus('Available when this conversation stops working'); return; }
+    const sessionId = context.sessionId;
+    switchingEngine = true; input.disabled = true; updateConversationControls();
+    setStatus('Compacting context…');
     try {
-      const res = await window.dshDesktop.conversationCommand({ engine: harnessId, action: 'compact', payload: { sessionId: context.sessionId } });
+      const res = await window.dshDesktop.conversationCommand({ engine: harnessId, action: 'compact', payload: { sessionId } });
       if (!res?.ok) setStatus(res?.error || 'Compaction failed');
       else {
         const duration = compactionDuration(res.durationMs);
@@ -3209,7 +3274,9 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
           : res.native ? compactionLabel({ state: 'completed', native: true }) : 'Context compacted. The conversation continues with the summary.';
         setStatus(window.CamelliaI18n.t(label) + (duration ? ' · ' + duration : ''));
       }
-    } catch (error) { setStatus(error.message); }
+      return res;
+    } catch (error) { setStatus(error.message); return { ok: false, error: error.message }; }
+    finally { switchingEngine = false; input.disabled = loadingSession; updateConversationControls(); }
   }
   input.addEventListener('keydown', (e) => {
     if (slashPop) {
@@ -3666,18 +3733,57 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     setStatus('Please wait for the conversation to open.');
     return false;
   }
+  function handoffForCurrentSession() { return handoffSessions.has(context.sessionId); }
+  function stopHandoffSessionId() {
+    if (handoffSessions.has(context.sessionId)) return context.sessionId;
+    if (handoffSessions.size === 1) return handoffSessions.keys().next().value;
+    return conversationPhase && conversationPhaseSessionId === context.sessionId ? context.sessionId : null;
+  }
+  function updateHandoffStop() {
+    $('handoffStop').hidden = !stopHandoffSessionId();
+  }
+  function clearHandoffSession(sessionId, expected = null) {
+    const handoff = handoffSessions.get(sessionId);
+    if (!handoff || expected && handoff !== expected) return false;
+    clearTimeout(handoff.timer);
+    handoffSessions.delete(sessionId);
+    if (context.sessionId === sessionId) {
+      if (handoff.cancelled || handoff.timedOut) conversationActivity = null;
+      conversationPhase = '';
+      conversationPhaseSessionId = null;
+      input.disabled = loadingSession;
+    }
+    updateConversationControls();
+    return true;
+  }
+  function beginHandoffSession(sessionId) {
+    const handoff = { sessionId, startedAt: Date.now(), timer: null, cancelled: false, timedOut: false };
+    handoff.timer = setTimeout(() => {
+      if (handoffSessions.get(sessionId) !== handoff) return;
+      handoff.timedOut = true;
+      clearHandoffSession(sessionId, handoff);
+      if (context.sessionId === sessionId) setStatus('Handoff timed out. The conversation is unlocked; cancellation was requested.');
+      void Promise.resolve().then(() => chatApi.cancel({ sessionId })).catch(error => {
+        if (context.sessionId === sessionId) setStatus('Handoff timed out, but it could not be stopped: ' + error.message);
+      });
+    }, handoffTimeoutMs);
+    handoffSessions.set(sessionId, handoff);
+    return handoff;
+  }
   function updateConversationControls() {
-    const locked = conversationBusy() || loadingSession || switchingEngine || sending;
-    $('conversationActions').disabled = !context.sessionId || loadingSession || switchingEngine;
+    const locked = conversationBusy() || loadingSession || switchingEngine || sending || handoffForCurrentSession();
+    $('conversationActions').disabled = !context.sessionId || loadingSession || switchingEngine || handoffForCurrentSession();
     // Changing the model or reasoning level is queued the same way a message is:
     // it applies to the next message, not the running turn, so it stays usable
     // while a response runs. Switching harness, and the session-level settings
     // that restart the engine process, still wait for the turn to stop.
     $('engineSwitch').disabled = locked;
     $('engineSwitch').title = locked ? 'Available when this conversation stops working' : 'Switch chat mode';
-    $('modelPill').disabled = loadingSession || switchingEngine || sending;
+    $('modelPill').disabled = loadingSession || switchingEngine || sending || handoffForCurrentSession();
     renderFastMode();
     $('selPermission').disabled = locked;
+    chat.querySelectorAll('.context-recovery button').forEach(button => { button.disabled = locked; });
+    updateHandoffStop();
     updateSendEnabled();
     updateMessageActions();
   }
@@ -3706,7 +3812,8 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     seenPermissionBlocks.clear();
     if ($('permissionBlockedDialog').open) $('permissionBlockedDialog').close();
     clearRunStatus(); setRunning(false);
-    $('handoffStop').hidden = true;
+    conversationPhase = ''; conversationPhaseSessionId = null;
+    updateHandoffStop();
     messageQueue = []; messageQueuePaused = false; remoteMessageQueue = []; remoteQueueVersion = -1; renderMessageQueue();
   }
   const sidebar = createClaudeSidebar({ $, context, contextBusy, canChangeContext, setStatus,
@@ -3721,7 +3828,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
   const workPanel = window.createWorkPanel({ context, setStatus, openFilePreview,
     shouldFollow: () => followRunOutput && !userScrollActive });
   $('conversationActions').onclick = () => sidebar.openCurrentActions($('conversationActions'));
-  const goalUI = createClaudeGoalUI({ $, context, canChangeContext: () => !editingMessage && canChangeContext() && !running, openHistorySession, setStatus,
+  const goalUI = createClaudeGoalUI({ $, context, canChangeContext: () => !editingMessage && !handoffForCurrentSession() && canChangeContext() && !running, openHistorySession, setStatus,
     acceptEvents: () => { acceptSessionEvents = true; }, onChange: () => { sidebar.updateLabel(); updateConversationControls(); queueMicrotask(drainMessageQueue); }, openActionMenu, closePops });
 
   // /find turns the composer into a file search box: type what you want, and
@@ -3940,6 +4047,10 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       const pending = pendingConversationSend();
       if (pending?.phase || res.compaction) handleConversationStatus({ sessionId: id,
         text: pending?.phase || (res.compaction?.state === 'running' ? 'Compacting context…' : ''), compaction: res.compaction });
+      if (handoffForCurrentSession()) {
+        updateHandoffStop();
+        if (!conversationPhase) setStatus('Handoff in progress…');
+      }
       void goalUI.refresh();
       if (res.lastReplyAt) sidebar.markReplyRead(id, res.lastReplyAt);
       // Hidden Windows windows may never deliver an animation frame. Bound the
@@ -3957,7 +4068,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     } catch (err) { if (seq === sessionOpenSeq && !/archived/i.test(err.message)) setStatus("Could not load: " + err.message); return false; }
     finally {
       if (seq === sessionOpenSeq) {
-        historyOpening = false; loadingSession = false; input.disabled = false; restoringRun = false;
+        historyOpening = false; loadingSession = false; input.disabled = handoffForCurrentSession(); restoringRun = false;
         updateSendEnabled(); updateConversationControls(); sidebar.updateLabel();
         if (draftRestored) saveDraft(); else restoreDraft();
         if (followRunOutput && !userScrollActive) chatScroll.scrollTop = chatScroll.scrollHeight;
@@ -4343,24 +4454,41 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
   window.CamelliaChatModeSelect.populate($('engineSwitch'), harnessId);
   $('engineSwitch').disabled = false;
   async function switchConversation(target, mode) {
-    if (switchingEngine || conversationBusy() || sending || loadingSession) { setStatus('Available when this conversation stops working'); return; }
-    switchingEngine = true; $('engineSwitch').disabled = true; $('handoffStop').hidden = false; input.disabled = true;
+    const handoffHere = handoffForCurrentSession();
+    if (switchingEngine || handoffHere || conversationBusy() || sending || loadingSession) {
+      setStatus(handoffHere
+        ? 'A handoff is still running. Stop it before starting another.'
+        : 'Available when this conversation stops working');
+      return { ok: false, error: 'The conversation is busy' };
+    }
+    const edit = editingMessage;
+    const sessionId = context.sessionId;
+    const openSeq = sessionOpenSeq;
+    const background = Boolean(sessionId);
+    const handoff = background ? beginHandoffSession(sessionId) : null;
+    if (!background) switchingEngine = true;
+    $('engineSwitch').disabled = true;
+    updateHandoffStop();
+    input.disabled = true;
+    updateConversationControls();
     saveDraft();
     setStatus('Preparing conversation…');
+    let completed = false;
     try {
-      if (!context.sessionId && currentConnection !== 'subscription' && currentModel) {
+      if (!sessionId && currentConnection !== 'subscription' && currentModel) {
         const saved = await chatApi.saveSettings({ model: currentModel });
         if (!saved.ok) throw new Error(saved.error);
       }
-      const result = await window.dshDesktop.conversationSwitch({ engine: target, sessionId: context.sessionId, mode, inPlace: true });
+      const result = background
+        ? await window.dshDesktop.conversationHandoff({ engine: target, sessionId, mode, inPlace: true })
+        : await window.dshDesktop.conversationSwitch({ engine: target, sessionId, mode, inPlace: true });
+      if (handoff?.cancelled || handoff?.timedOut) return { ok: false, error: 'Handoff stopped' };
       if (!result.ok) throw new Error(result.error);
-      if (result.canceled) return;
-      applyChatHarness(target);
-      loadedEngine = target;
-      if (context.sessionId) {
-        switchingEngine = false;
-        await openHistorySession(context.sessionId);
-      } else {
+      if (result.canceled) return result;
+      completed = true;
+      if (!background && context.sessionId === null && sessionOpenSeq === openSeq) {
+        applyChatHarness(target);
+        loadedEngine = target;
         resetConversationView();
         chat.replaceChildren(emptyStateTemplate.cloneNode(true));
         await loadSettings();
@@ -4368,11 +4496,36 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
         restoreDraft();
         sidebar.render();
       }
-    } catch (error) { setStatus(error.message); }
-    finally { switchingEngine = false; updateConversationControls(); $('engineSwitch').value = harnessId; $('handoffStop').hidden = true; input.disabled = loadingSession; }
+      return result;
+    } catch (error) {
+      if (context.sessionId === sessionId) setStatus(error.message);
+      return { ok: false, error: error.message };
+    } finally {
+      if (background && handoff) clearHandoffSession(sessionId, handoff);
+      if (!background) switchingEngine = false;
+      if (completed && mode === 'markdown' && edit) failedMessageEdits.set(edit.sessionId, {
+        seq: edit.div.messageData.seq, text: edit.textarea.value, error: 'Context ready. Send your message again.', isError: false,
+      });
+      if (context.sessionId === sessionId) {
+        conversationPhase = ''; conversationPhaseSessionId = null;
+        input.disabled = loadingSession;
+      }
+      updateConversationControls();
+      $('engineSwitch').value = harnessId;
+      // The handoff may finish while another conversation is open. Only the
+      // conversation that started it reloads, and only after its new native
+      // session has been committed.
+      if (background && completed && context.sessionId === sessionId && !discussionVisible) await openHistorySession(sessionId);
+    }
   }
   async function switchOptions(target) {
-    if (conversationBusy() || sending || loadingSession) { setStatus('Available when this conversation stops working'); return; }
+    const handoffHere = handoffForCurrentSession();
+    if (switchingEngine || handoffHere || conversationBusy() || sending || loadingSession) {
+      setStatus(handoffHere
+        ? 'A handoff is still running. Stop it before switching again.'
+        : 'Available when this conversation stops working');
+      return;
+    }
     const settings = await window.dshDesktop.workbenchSettings(); conversationPrefs = settings.conversations || conversationPrefs;
     if (conversationPrefs.warnOnSwitch && context.sessionId) {
       $('switchTarget').value = target; $('switchMethod').value = conversationPrefs.mode; $('switchDialog').showModal();
@@ -4457,5 +4610,17 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
   window.dshDesktop.onDiscussionNavigate?.(openDiscussions);
   $('switchCancel').onclick = () => $('switchDialog').close();
   $('switchConfirm').onclick = () => { $('switchDialog').close(); void switchConversation($('switchTarget').value, $('switchMethod').value); };
-  $('handoffStop').onclick = () => void chatApi.cancel({ sessionId: context.sessionId });
+  $('handoffStop').onclick = () => {
+    const sessionId = stopHandoffSessionId();
+    if (!sessionId) return;
+    const handoff = handoffSessions.get(sessionId);
+    if (handoff) {
+      handoff.cancelled = true;
+      clearHandoffSession(sessionId, handoff);
+      setStatus('Stopping…');
+    }
+    void Promise.resolve().then(() => chatApi.cancel({ sessionId })).catch(error => {
+      if (context.sessionId === sessionId) setStatus(error.message);
+    });
+  };
   window.dshDesktop.onConversationStatus(handleConversationStatus);

@@ -185,6 +185,32 @@ test('auto falls back to the system proxy when a direct connection fails', async
   assert.equal(config.network.mode, 'auto');
   service.close();
 });
+test('auto keeps Kimi direct when another subscription needs the system proxy', async () => {
+  let config = {}, applied;
+  const service = createNetworkSettings({ loadConfig: () => config, saveConfig: value => Object.assign(config, value),
+    sessions: () => ({ fromPartition: () => ({ setProxy: async () => {}, resolveProxy: async () => 'PROXY localhost:7890' }), defaultSession: { setProxy: async () => {} } }),
+    applyEnvironment: env => { applied = env; }, createFallback: async () => ({ url: 'http://127.0.0.1:12345', close() {} }),
+    providerTargetsImpl: () => [], subscriptionEngines: () => ['codex', 'kimi'],
+    probeImpl: async targets => targets.map(target => ({ ...target, direct: target.engine === 'kimi', proxy: true })) });
+  const result = await service.save({ mode: 'auto' });
+  assert.equal(result.directFirst, false);
+  assert.equal(applied.HTTPS_PROXY, 'http://localhost:7890/');
+  assert.equal(applied.CAMELLIA_KIMI_DIRECT, '1');
+  service.close();
+});
+test('Kimi only bypasses the shared proxy for official hosts', () => {
+  const { kimiEnvironment } = require('../src/engines/kimi-session');
+  const inherited = { CAMELLIA_KIMI_DIRECT: '1', HTTPS_PROXY: 'http://127.0.0.1:7890/',
+    NO_PROXY: 'localhost,127.0.0.1,::1' };
+  const direct = kimiEnvironment('/test', inherited);
+  assert.equal(direct.HTTPS_PROXY, inherited.HTTPS_PROXY);
+  assert.match(direct.NO_PROXY, /(?:^|,)api\.kimi\.com(?:,|$)/);
+  assert.match(direct.NO_PROXY, /(?:^|,)auth\.kimi\.com(?:,|$)/);
+  assert.match(direct.NO_PROXY, /(?:^|,)\.kimi\.ai(?:,|$)/);
+  assert.equal(direct.NO_PROXY.includes('google.com'), false);
+  assert.equal(kimiEnvironment('/test', { ...inherited, CAMELLIA_KIMI_DIRECT: '0' }).NO_PROXY,
+    'localhost,127.0.0.1,::1');
+});
 
 test('auto checks provider connectivity on startup and uses the proxy without changing the saved choice', async () => {
   const config = { network: { mode: 'auto' } };

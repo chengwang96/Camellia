@@ -15,7 +15,7 @@ function detectedProxy(result) {
     return { url: url.href, unsupported: false };
   } catch { return { url: '', unsupported: true }; }
 }
-function networkEnvironment(source, { mode = 'direct', url = '', subscriptionProxy } = {}) {
+function networkEnvironment(source, { mode = 'direct', url = '', subscriptionProxy, kimiDirect = false } = {}) {
   const env = { ...source };
   for (const key of Object.keys(env)) if (PROXY_KEYS.test(key)) delete env[key];
   const proxy = mode !== 'direct' ? url : '';
@@ -27,7 +27,11 @@ function networkEnvironment(source, { mode = 'direct', url = '', subscriptionPro
   Object.assign(env, { HTTP_PROXY: proxy, HTTPS_PROXY: proxy, ALL_PROXY: '',
     NO_PROXY: proxy ? 'localhost,127.0.0.1,::1' : '*', NODE_USE_ENV_PROXY: '1',
     npm_config_proxy: proxy, npm_config_https_proxy: proxy, npm_config_noproxy: proxy ? 'localhost,127.0.0.1,::1' : '*',
-    CAMELLIA_NETWORK_MODE: mode, CAMELLIA_NETWORK_PROXY: proxy, CAMELLIA_SUBSCRIPTION_PROXY: subscription });
+    CAMELLIA_NETWORK_MODE: mode, CAMELLIA_NETWORK_PROXY: proxy, CAMELLIA_SUBSCRIPTION_PROXY: subscription,
+    // Kimi Code's official hosts work directly on networks where the other
+    // subscription providers do not. Keep the shared proxy for its tools, but
+    // let Kimi's own API and OAuth traffic bypass it when the probe passed.
+    CAMELLIA_KIMI_DIRECT: mode === 'direct' || kimiDirect ? '1' : '0' });
   return env;
 }
 // The provider CLIs (Codex app-server, Claude Code) are spawned with this
@@ -63,6 +67,7 @@ function createNetworkSettings({ loadConfig, saveConfig, sessions, applyEnvironm
   healthCheckImpl = healthCheck, createFallback = require('./network-fallback').createFallbackProxy,
   loadRoutes = () => ({ providers: [] }), providerTargetsImpl = providerTargets, subscriptionEngines = () => [], configuredSubscriptionEngines = subscriptionEngines, probeImpl = probeTargets }) {
   let detected = { url: '', unsupported: false }, error = '', queue = Promise.resolve(), degraded = false, monitor = null, closed = false;
+  let kimiDirect = false;
   const bridges = [];
   // Whether the live transport is the direct-first bridge, or the real system
   // proxy. "Auto" is allowed to fall back to the proxy when direct is blocked,
@@ -137,7 +142,10 @@ function createNetworkSettings({ loadConfig, saveConfig, sessions, applyEnvironm
       await detectProxy();
       const engines = subscriptionEngines();
       const targets = [...providerTargetsImpl(loadRoutes()), ...subscriptionTargets(engines)];
-      const summary = targets.length ? summarize(await probeImpl(targets, { proxyUrl: detected.url })) : { direct: 0, total: 0, subscriptionDirect: true, hasSubscriptions: false };
+      const results = targets.length ? await probeImpl(targets, { proxyUrl: detected.url }) : [];
+      const summary = targets.length ? summarize(results) : { direct: 0, total: 0, subscriptionDirect: true, hasSubscriptions: false };
+      const kimi = results.find(result => result.kind === 'subscription' && result.engine === 'kimi');
+      kimiDirect = Boolean(kimi?.direct);
       const eligible = summary.total === 0 || (summary.direct === summary.total && summary.subscriptionDirect);
       nextMode = eligible ? 'auto' : 'system';
     }
@@ -183,9 +191,13 @@ function createNetworkSettings({ loadConfig, saveConfig, sessions, applyEnvironm
     // take the real detected proxy, never the loopback bridge that tries direct
     // first.
     const subscriptionProxy = nextMode === 'direct' ? '' : degraded ? url : detected.url || url;
+    // Auto may stay on the system proxy for ChatGPT, Grok or Google while
+    // Kimi's own hosts remain directly reachable. An explicit system choice
+    // still applies to Kimi.
+    const kimiProxy = requested === 'auto' && nextMode === 'system' && kimiDirect;
     // One resolved HTTP proxy is shared by Electron, Node and engine processes.
     await sessions().defaultSession.setProxy(url ? { mode: 'fixed_servers', proxyRules: url, proxyBypassRules: '<local>;localhost;127.0.0.1;[::1]' } : { mode: 'direct' });
-    applyEnvironment(networkEnvironment(process.env, { mode: nextMode === 'prefer-direct' ? 'auto' : nextMode, url, subscriptionProxy }));
+    applyEnvironment(networkEnvironment(process.env, { mode: nextMode === 'prefer-direct' ? 'auto' : nextMode, url, subscriptionProxy, kimiDirect: kimiProxy }));
     saveConfig({ ...(persist ? { network: { mode: requested } } : {}), downloadProxy: { mode: url ? 'proxy' : 'direct', url } });
     schedule(nextMode === 'system' ? 4000 : 60000);
     return state();

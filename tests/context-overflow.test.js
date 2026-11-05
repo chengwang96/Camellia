@@ -2,7 +2,15 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { contextOverflow, contextOverflowText, contextError, contextTokenLimit } = require('../src/shared/context-overflow');
+const { contextOverflow, contextOverflowText, contextError, contextTokenLimit, contextRecoveryText } = require('../src/shared/context-overflow');
+
+test('context recovery includes failed summaries without mistaking rate limits for overflow', () => {
+  for (const text of ['Compaction summary request limit reached', 'Context recovery failed',
+    'The conversation is still too large after automatic compaction.', 'The compacted context does not fit the target model.',
+    'maximum context length is 8192 tokens']) assert.equal(contextRecoveryText(text), true, text);
+  for (const text of ['Engine unavailable', 'Connection failed', 'Too many requests',
+    'Request too large on tokens per min (TPM)']) assert.equal(contextRecoveryText(text), false, text);
+});
 
 // Real provider wordings that mean "this request is over a context limit".
 const overflow = [

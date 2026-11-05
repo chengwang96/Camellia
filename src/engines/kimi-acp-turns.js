@@ -1,8 +1,8 @@
 'use strict';
 
-// Kimi 2.4 queues prompts behind turns started by background-task completion.
-// ACP must wait for that exact prompt, not treat its undefined launch as done.
-// Apply only to the verified runtime; leave its scheduler and history intact.
+// Kimi 2.4 queues prompts behind turns started by background-task completion
+// and maps most failed turns to end_turn. Wait for the submitted prompt and
+// forward failures over ACP's error channel, leaving native scheduling intact.
 function patchKimiAcpTurns(source) {
   const replacements = [
     ['return this.driveLaunch(this.agent.prompt({ input }));', `const promptId = globalThis.crypto.randomUUID();
@@ -20,6 +20,13 @@ function patchKimiAcpTurns(source) {
             }
             this.settleDriver`],
     ['driver.turnId = launched.turn_id;', 'if (driver.turnId === void 0) driver.turnId = launched.turn_id;'],
+    ['driver.resolve({ stopReason: turnEndReasonToStopReason(event.reason, error) });', `if (event.reason === "failed" && error?.code !== "provider.filtered") {
+          driver.reject(RequestError$1.internalError({ code: error?.code,
+            statusCode: error?.details?.statusCode, retryable: error?.retryable },
+            error?.message || "Kimi turn failed"));
+          return;
+        }
+        driver.resolve({ stopReason: turnEndReasonToStopReason(event.reason, error) });`],
     ['const events = this.agent.events;\n\t\t\tthis.subscriptions.push', `const events = this.agent.events;
       this.subscriptions.push(events.on("turn.started", event => {
         const driver = this.driver;

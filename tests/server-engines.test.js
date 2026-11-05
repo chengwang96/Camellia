@@ -86,13 +86,14 @@ test('Claude API and subscription spawn specs never inherit external API credent
   const root = directory(context);
   const common = { home: root, opts: { conversationId: 'test' }, environment: { PATH: '/usr/bin', ANTHROPIC_API_KEY: 'do-not-inherit', ANTHROPIC_BASE_URL: 'https://untrusted', CLAUDE_CODE_OAUTH_TOKEN: 'no-copy' }, history: { find: () => null } };
   const api = claudeSpec({ ...common, settings: { connection: 'api', permissionMode: 'ask', model: 'model-a', cwd: root }, route: { baseUrl: 'http://127.0.0.1:8788', authToken: 'managed' } });
-  assert.equal(api.env.ANTHROPIC_BASE_URL, 'http://127.0.0.1:8788');
+  assert.equal(api.env.ANTHROPIC_BASE_URL, 'http://127.0.0.1:8788/harness-thinking/_default');
   assert.equal(api.env.CLAUDE_CONFIG_DIR, root);
   assert.equal(api.env.ANTHROPIC_API_KEY, '');
   assert.equal(api.env.CLAUDE_CODE_OAUTH_TOKEN, undefined);
   const disabled = claudeSpec({ ...common, settings: { connection: 'api', model: 'model-a', thinkingBudget: 'none' }, route: { baseUrl: 'http://127.0.0.1:8788', authToken: 'managed' } });
   assert.equal(disabled.args.includes('--effort'), false);
-  assert.equal(disabled.env.MAX_THINKING_TOKENS, '0');
+  assert.equal(disabled.env.MAX_THINKING_TOKENS, undefined);
+  assert.equal(disabled.env.ANTHROPIC_BASE_URL, 'http://127.0.0.1:8788/harness-thinking/none');
   const subscription = claudeSpec({ ...common, settings: { connection: 'subscription', permissionMode: 'ask', model: 'account-model', cwd: root } });
   assert.equal(subscription.env.ANTHROPIC_API_KEY, undefined);
   assert.equal(subscription.env.ANTHROPIC_BASE_URL, undefined);

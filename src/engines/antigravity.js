@@ -16,15 +16,18 @@ const { createGoogleAccount, subscriptionEnvironment, requireGoogleProvider, eff
 const { valid } = require('./permission-levels');
 const { accountSummary, accountsFor, normalizeLabel, DEFAULT_ACCOUNT_ID } = require('./subscription-accounts');
 const { getDiscussionLaunch, buildDiscussionSpec, assertDiscussionPoolAccess } = require('./discussions/native-launch');
+const { harnessThinkingRoute } = require('../api/harness-thinking');
 
-function antigravitySpawnSpec({ runtime, home, route, config = {}, env, python, executionPolicy }) {
+function antigravitySpawnSpec({ runtime, home, route, config = {}, env, python, executionPolicy, thinkingBudget }) {
   // Explicit main-process launch input, never a native settings/permission-mode
   // field. This primitive does not register production discussion capability.
   if (executionPolicy !== undefined && executionPolicy !== 'tool-free-v1')
     throw new Error('Unverified Antigravity execution policy');
   if (executionPolicy && (Object.keys(config.mcpServers || {}).length || config.skillsPaths?.length))
     throw new Error('Tool-free Antigravity cannot load MCP servers or skills');
-  return { args: ['-u', path.join(__dirname, 'antigravity/bridge.py').replace(/app\.asar([\\/])/, 'app.asar.unpacked$1')], modeEngine: 'antigravity', env: {
+  if (thinkingBudget !== undefined) route = harnessThinkingRoute(route, thinkingBudget);
+  return { args: ['-u', path.join(__dirname, 'antigravity/bridge.py').replace(/app\.asar([\\/])/, 'app.asar.unpacked$1')], modeEngine: 'antigravity',
+    ...(thinkingBudget !== undefined ? { applyThinking: false } : {}), env: {
     ...(runtime.packages ? pythonEnvironment(runtime.dir, env) : python ? globalPythonEnvironment(python, env)
       : runtime.custom ? { ...env, PYTHONUTF8: '1', PYTHONDONTWRITEBYTECODE: '1' } : pythonEnvironment(runtime.dir, env)),
     CAMELLIA_ANTIGRAVITY_CONFIG: JSON.stringify({ home, baseUrl: route.baseUrl + '/compat/antigravity/v1', settings: config,
@@ -136,7 +139,7 @@ function createAntigravity({ dataDir, cliSettingsFile, node, openLogin, loadConf
     const spec = discussion ? buildDiscussionSpec(discussion, runtime, selected) : subscription ? subscriptionSpawnSpec({ runtime, home, env: environment(), proxyUrl: selected.proxyUrl,
       model: selected.model, effort: selected.thinkingBudget })
       : antigravitySpawnSpec({ runtime, home, route: getRoute(), env: environment(),
-        python: sharedPython?.file ? sharedPython : null, config: readJson(path.join(home, 'settings.json'), {}) });
+        python: sharedPython?.file ? sharedPython : null, config: readJson(path.join(home, 'settings.json'), {}), thinkingBudget: selected.thinkingBudget || '' });
     const previousClosed = current?.shutdown();
     const next = new AntigravitySession({ name: 'Antigravity', gen: ++generation, settings: selected, opts,
       exe: discussion ? spec.exe : subscription ? node() : runtime.file, spec, spawn: discussion?.spawn || spawn, log, history: discussion ? discussionHistory : history,

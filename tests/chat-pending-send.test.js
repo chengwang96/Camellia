@@ -19,7 +19,7 @@ function fixture() {
   const requests = [], requestEngines = [], replies = [], settings = deferred(), drafts = new Map(), cancellations = [];
   const state = {
     sharedChat: true, context: { sessionId: 'conversation-a', workspaceId: 'workspace-a' }, sessionOpenSeq: 1,
-    sending: false, loadingSession: false, switchingEngine: false, running: false, conversationActivity: null,
+    sending: false, loadingSession: false, switchingEngine: false, handoffSessions: new Map(), running: false, conversationActivity: null,
     editingMessage: null, harnessId: 'codex', loadedEngine: 'codex', pendingForkId: null, currentRunId: null, currentFastMode: false,
     input: { value: 'Continue' }, attachments: [], chatProfile: {}, statusText: '', eventsDuringRestore: [],
     messageQueue: [], messageQueuePaused: false, conversationQueues: new Map(), drainingQueue: false,
@@ -289,7 +289,7 @@ for (const returnToOrigin of [false, true]) {
 
 test('busy states block queued sends before reopening another harness', async () => {
   for (const overrides of [
-    { loadingSession: true }, { sending: true }, { switchingEngine: true },
+    { loadingSession: true }, { sending: true }, { switchingEngine: true }, { handoffSessions: new Map([['conversation-a', {}]]) },
     { editingMessage: {} }, { running: true }, { conversationActivity: 'running' },
     { pendingConversationSends: new Map([['conversation-a', {}]]) },
     { goalUI: { isActive: () => true } },
@@ -304,9 +304,10 @@ test('busy states block queued sends before reopening another harness', async ()
   }
 });
 
-test('a waiting Goal accepts an immediate composer instruction', async () => {
+for (const activity of [null, 'running']) test(`a waiting Goal accepts an immediate composer instruction (activity=${activity})`, async () => {
   const harness = fixture(), { state } = harness;
   state.goalUI = { isActive: () => true, isDraft: () => false, waitingId: () => 'goal-waiting' };
+  state.conversationActivity = activity;
   state.updateSendEnabled();
   assert.equal(state.sendBtn.disabled, false);
   harness.settings.resolve({});
@@ -319,12 +320,13 @@ test('a waiting Goal accepts an immediate composer instruction', async () => {
   assert.equal(await pending, true);
 });
 
-test('queued instructions require a live run or an idle waiting Goal and respect send locks', () => {
+test('queued instructions accept a busy waiting Goal but still respect reply and send locks', () => {
   const { state } = fixture();
   assert.equal(state.canSteerQueuedMessage(), false);
   state.goalUI = { isActive: () => true, isDraft: () => false, waitingId: () => 'goal-waiting' };
+  state.conversationActivity = 'running';
   assert.equal(state.canSteerQueuedMessage(), true);
-  for (const lock of ['drainingQueue', 'sending', 'loadingSession', 'switchingEngine', 'editingMessage', 'conversationActivity', 'running']) {
+  for (const lock of ['drainingQueue', 'sending', 'loadingSession', 'switchingEngine', 'editingMessage', 'running']) {
     state[lock] = true;
     assert.equal(state.canSteerQueuedMessage(), false, lock);
     state[lock] = false;
@@ -341,6 +343,7 @@ test('queued instructions require a live run or an idle waiting Goal and respect
 test('a waiting Goal sends the selected queued instruction once and preserves the remaining queue and draft', async () => {
   const harness = fixture(), { state } = harness;
   state.goalUI = { isActive: () => true, isDraft: () => false, waitingId: () => 'goal-waiting' };
+  state.conversationActivity = 'running';
   const first = { text: 'Keep waiting', attachments: [] };
   const selected = { text: 'Inspect this output now', attachments: [{ path: 'D:/output.csv' }] };
   state.messageQueue.push(first, selected);
@@ -368,6 +371,7 @@ test('a waiting Goal sends the selected queued instruction once and preserves th
 test('a rejected waiting Goal instruction retains its queue entry and attachments', async () => {
   const harness = fixture(), { state } = harness;
   state.goalUI = { isActive: () => true, isDraft: () => false, waitingId: () => 'goal-waiting' };
+  state.conversationActivity = 'running';
   const selected = { text: 'Inspect the output now', attachments: [{ path: 'D:/output.csv' }] };
   state.messageQueue.push(selected);
   harness.settings.resolve({});
@@ -385,6 +389,7 @@ test('a rejected waiting Goal instruction retains its queue entry and attachment
 for (const accepted of [true, false]) test(`a waiting Goal queue handoff stays scoped across navigation (accepted=${accepted})`, async () => {
   const harness = fixture(), { state } = harness;
   state.goalUI = { isActive: () => true, isDraft: () => false, waitingId: () => 'goal-waiting' };
+  state.conversationActivity = 'running';
   const selected = { text: 'Instruction for A', attachments: [] };
   state.messageQueue.push(selected);
   state.saveMessageQueue();

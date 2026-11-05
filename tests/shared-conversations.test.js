@@ -3125,6 +3125,8 @@ test('a normal send command wakes a waiting Goal with the current user instructi
   await run.done; await h.flush();
   assert.equal(driver.view().waiting.reason, 'Training still running');
   assert.equal(timer.delay, 60000);
+  assert.equal(h.manager.active.has(run.sessionId), false);
+  assert.equal(h.manager.activity(run.sessionId), 'running', 'An armed waiting Goal still owns the conversation');
   const result = await h.manager.command('codex', 'send', {
     sessionId: run.sessionId, goalId: driver.goal.id,
     prompt: 'Check the latest output now', displayText: 'Check the latest output now',
@@ -4345,6 +4347,26 @@ test('Markdown handoff is exported locally and a fresh target gets it automatica
   assert.ok(restored.handoffFiles(restored.get(first.sessionId)).has(handoff.file));
   assert.ok(restored.handoffFiles(restored.get(first.sessionId)).has(handoff.fullPath));
 });
+test('Markdown recovery starts a fresh session in the same harness and retains full history', async t => {
+  const f = fixture(t);
+  const first = await f.manager.send('kimi', { prompt: 'Review every source file' });
+  f.finish('kimi', 'success', 'Progress saved. Continue with the remaining figures.'); await first.done;
+  const c = f.manager.get(first.sessionId), previous = { ...c.segments.kimi };
+  const switching = f.manager.switchEngine(first.sessionId, 'kimi', 'markdown');
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(f.sent.length, 2);
+  assert.equal(f.sent.at(-1).engine, 'kimi'); assert.equal(f.sent.at(-1).opts.sessionId, null);
+  assert.match(f.sent.at(-1).prompt, /locally exported Markdown handoff/);
+  assert.doesNotMatch(f.sent.at(-1).prompt, /Progress saved/);
+  f.finish('kimi'); await switching;
+  assert.notEqual(c.segments.kimi.nativeId, previous.nativeId);
+  assert.equal(c.currentEngine, 'kimi');
+  assert.equal(c.handoffs.at(-1).status, 'complete');
+  assert.ok(c.retiredSegments.some(segment => segment.nativeId === previous.nativeId));
+  assert.match(fs.readFileSync(c.handoffs.at(-1).fullPath, 'utf8'), /Continue with the remaining figures/);
+  assert.equal(f.manager.messages(c).filter(row => row.role === 'user').length, 1);
+});
+
 test('a working conversation locks its harness while other conversations run concurrently', async t => {
   const f = fixture(t), a = await f.manager.send('codex', { prompt: 'Work A' });
   await assert.rejects(f.manager.send('dsh', { sessionId: a.sessionId, prompt: 'race' }), /Wait/);

@@ -8,16 +8,17 @@ const vm = require('node:vm');
 
 const source = fs.readFileSync(path.join(__dirname, '../src/renderer/chat/chat.js'), 'utf8').replace(/\r\n/g, '\n');
 const queueSource = source.slice(source.indexOf('  function saveMessageQueue('), source.indexOf("  window.addEventListener('beforeunload'"));
-const sendSource = source.slice(source.indexOf('  async function send('), source.indexOf('    if (editingMessage || !canChangeContext()')) + '\n  }';
+const sendSource = source.slice(source.indexOf('  async function send('), source.indexOf('    if (editingMessage || handoffHere || !canChangeContext()')) + '\n  }';
 const activitySource = source.slice(source.indexOf('  function handleEvent(ev)'), source.indexOf('    if (restoringRun) { eventsDuringRestore.push(ev); return; }\n    if (ev.session_id')) + '\n  }';
 
 function harness(cancel, overrides = {}) {
   const state = {
-    running: true, sending: false, loadingSession: false, input: { value: '' }, attachments: [], conversationActivity: 'running', currentRunId: 12, sessionOpenSeq: 1,
+    running: true, sending: false, loadingSession: false, handoffSessions: new Map(), input: { value: '' }, attachments: [], conversationActivity: 'running', currentRunId: 12, sessionOpenSeq: 1,
     context: { sessionId: 'conversation-a' }, sharedChat: true, restoringRun: false,
     messageQueue: [], messageQueuePaused: false, conversationQueues: new Map(),
     draftKey: () => state.context.sessionId, writeUi() {}, renderMessageQueue() {},
     pendingConversationSend: () => null,
+    goalUI: { waitingId: () => null },
     statusText: 'Running…', statusLine: { textContent: 'Running…' }, queueComposerMessage: () => false,
     chatApi: { cancel: payload => cancel(state, payload) },
     sidebar: { load() {} }, updateConversationControls() {}, drainMessageQueue() {},

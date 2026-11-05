@@ -41,6 +41,7 @@ const { validateMemoryDirectory } = require('../engines/global-memory');
 const { createDshChat } = require('../engines/dsh-session');
 const { createGrokChat } = require('../engines/grok-session');
 const { createGrokAccount } = require('../engines/grok-account');
+const { harnessThinkingRoute } = require('../api/harness-thinking');
 const { createZoomController, readLegacyZoom } = require('./zoom-controller');
 const { createSettingsWindowSizeCache, settingsWindowBounds } = require('./settings-window-size');
 const settingsWindowSizes = createSettingsWindowSizeCache({
@@ -832,17 +833,13 @@ function claudeSpawnSpec(settings, opts) {
   }
   if (settings.permissionMode) { const mode = nativeMode('claude', settings.permissionMode); if (mode !== 'default') args.push('--permission-mode', mode); }
   if (settings.model) args.push('--model', settings.model);
-  // Thinking intensity → --effort (matches DSH 推理等级: low|medium|high|xhigh|max).
-  // '' = Default (flag omitted); 'off' goes through MAX_THINKING_TOKENS=0.
-  const thinking = settings.thinkingBudget;
-  if (thinking && !['off', 'none'].includes(thinking)) args.push('--effort', thinking);
-
   // Unified routing: the proxy owns upstream credentials for every harness.
-  const route = resolveClaudeRoute();
+  // The route also carries the selected effort: the CLI's native fallback
+  // (including High with MAX_THINKING_TOKENS=0) must not override it.
+  const route = harnessThinkingRoute(resolveClaudeRoute(), settings.thinkingBudget || '');
   if (!settings.model) throw new Error("Select a configured model in the composer first");
   const overlayEnv = { ...managedClaudeModelEnv(settings.model),
     ANTHROPIC_BASE_URL: route.baseUrl, ANTHROPIC_AUTH_TOKEN: route.authToken, ANTHROPIC_API_KEY: '' };
-  if (['off', 'none'].includes(thinking)) overlayEnv.MAX_THINKING_TOKENS = '0';
   // ~/.claude/settings.json 的 env 块优先级高于进程环境变量（会覆盖上面
   // 的设置）——用 --settings overlay 反压回去（命令行设置 > 用户设置）。
   // 写到 userData 文件而不是内联 JSON，避免密钥出现在命令行里。
@@ -1055,7 +1052,8 @@ function ensureKimiSession(settings, opts) {
   if (!exe) throw new Error("Kimi Code requires Node.js 22.19 or later. Configure the runtime in settings.");
   const spec = kimiSpawnSpec({ home,
     sharedSubscription: Boolean(opts.conversationId), runtime, route, connection: settings.connection,
-    model: settings.model, contextWindow: settings.contextWindow, env: runtimeEnvironment(exe, 'kimi'), ...engineSettings().kimiConfig() });
+    model: settings.model, contextWindow: settings.contextWindow, env: runtimeEnvironment(exe, 'kimi'), ...engineSettings().kimiConfig(),
+    thinkingBudget: settings.thinkingBudget || '' });
   const previousClosed = current?.shutdown();
   const session = new KimiSession({ gen: ++kimiGen, settings, opts, exe, spec, spawn, log, history: kimiHistory,
     usageMeter: createUsageMeter('kimi', { settings, home, version: runtimes().locate('kimi')?.version }),
@@ -2313,6 +2311,14 @@ if (!gotSingleInstanceLock) {
         ...(typeof payload.workspaceId === 'string' ? { workspace: payload.workspaceId } : {}), ...(payload.addWorkspace === true ? { addWorkspace: '1' } : {}) } : undefined;
       const result = await switchMode(payload.engine, payload.sessionId, navigation, payload.inPlace === true);
       return result;
+    } catch (error) { return { ok: false, error: error.message }; }
+  });
+  // A handoff replaces the conversation's native session and can take as long
+  // as a model turn. Keep it out of the window-mode IPC so the renderer can
+  // navigate elsewhere while it runs and adopt the new engine on return.
+  ipcMain.handle('dsh:conversation-handoff', async (_event, payload) => {
+    try {
+      return await sharedConversations.switchEngine(payload.sessionId, payload.engine, payload.mode);
     } catch (error) { return { ok: false, error: error.message }; }
   });
   ipcMain.handle('dsh:conversation-open-handoff', (_event, { sessionId, file }) => {

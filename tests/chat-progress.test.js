@@ -8,11 +8,13 @@ const vm = require('node:vm');
 
 const source = fs.readFileSync(path.join(__dirname, '../src/renderer/chat/chat.js'), 'utf8');
 const statusSource = source.slice(source.indexOf("  let statusText = '';"), source.indexOf('  // ---------- context usage ring'));
+const handoffSource = source.slice(source.indexOf('  function stopHandoffSessionId()'), source.indexOf('  function updateConversationControls()'));
 
 function harness() {
   const stopButton = { hidden: true };
   const state = {
-    context: { sessionId: 'conversation-a' }, running: true, runStartedAt: 0, runTimer: null,
+    context: { sessionId: 'conversation-a' }, handoffSessions: new Map(),
+    running: true, runStartedAt: 0, runTimer: null,
     pendingConversationSends: new Map(), pendingQuestion: null,
     statusLine: { textContent: '' }, rows: [],
     $: () => stopButton,
@@ -22,7 +24,7 @@ function harness() {
     clearInterval() {}, fmtDuration: () => '5m',
   };
   vm.createContext(state);
-  vm.runInContext(statusSource, state);
+  vm.runInContext(statusSource + '\n' + handoffSource, state);
   return { state, stopButton };
 }
 

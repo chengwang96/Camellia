@@ -13,6 +13,7 @@ const { recordUsage } = require('../src/api/api-usage');
 const { frame, SSEParser, StreamConverter, convertRequest } = require('../src/api/api-protocol');
 const { toolModelId } = require('../src/shared/codex-tool-model');
 const { BAD_PORTS } = require('./bad-ports.cjs');
+const { harnessThinkingRoute } = require('../src/api/harness-thinking');
 
 async function port() {
   for (;;) {
@@ -310,6 +311,81 @@ test('Codex Responses streams preserve tool calls, same-model failover and per-k
   assert.ok(f.requests.every(r => r.body.model === 'vendor/Kimi-K3'));
   assert.equal(f.requests[1].body.messages[0].content[0].text, 'read the document');
   assert.equal(f.router.getState().usage['p-key-1'].byModel['kimi-k3'].inputTokens, 15);
+});
+
+test('API harness selections survive conflicting native defaults across client protocols', async t => {
+  const profiles = [
+    { id: 'deepseek-flash', type: 'deepseek', values: ['none', 'low', 'high', 'max'] },
+    { id: 'glm-5.3', type: 'custom', values: ['low', 'high', 'max'] },
+    { id: 'kimi-k3', type: 'kimi', values: ['low', 'high', 'max'] },
+    { id: 'kimi-k2.6', type: 'kimi', values: [false, true] },
+    { id: 'gemini-3-flash-preview', type: 'gemini', values: ['minimal', 'low', 'medium', 'high'] },
+    { id: 'fixed-thinking', type: 'custom', values: [] },
+    { id: 'reported-off', type: 'custom', values: ['off', 'low'] },
+  ];
+  const harness = await fixture(t, (request, res) => reply(res, 200, completion(request.body.model)), url => profiles.map(profile => ({
+    ...provider(profile.id, url, ['secret'], [{ id: profile.id, upstream: profile.id, thinking: { values: profile.values } }]), type: profile.type,
+  })));
+  for (const profile of profiles) for (const effort of ['', ...profile.values.map(value => value === false ? 'none' : value === true ? 'high' : value)]) {
+    for (const endpoint of ['/v1/messages', '/v1/responses', '/v1/chat/completions']) {
+      // These reproduce Claude's High with Off, and DSH's disabled/default
+      // or budget-only request. None of them should supersede the composer.
+      const native = endpoint === '/v1/responses' ? { input: 'OK', reasoning: { effort: 'high' } }
+        : endpoint === '/v1/messages' ? { max_tokens: 32, output_config: { effort: 'high' }, thinking: { type: 'enabled', budget_tokens: 16384 } }
+          : { reasoning_effort: 'high', thinking: { type: 'disabled' } };
+      const route = harnessThinkingRoute({ baseUrl: '' }, effort);
+      const response = await harness.post({ model: profile.id, ...native }, route.baseUrl + endpoint);
+      assert.equal(response.status, 200, `${profile.id} ${effort || 'Default'} ${endpoint}`);
+      await response.json();
+      const sent = harness.requests.at(-1);
+      assert.equal(sent.url, '/chat/completions');
+      const boolean = profile.values.length && profile.values.every(value => typeof value === 'boolean');
+      assert.equal(sent.body.reasoning_effort, !effort || boolean || profile.type === 'deepseek' && effort === 'none' ? undefined : effort);
+      assert.deepEqual(sent.body.thinking, effort && (boolean || profile.type === 'deepseek')
+        ? { type: effort === 'none' ? 'disabled' : 'enabled' } : undefined);
+    }
+  }
+});
+
+test('controlled native Messages routes preserve response formats and distinguish Off from Default', async t => {
+  const model = { ...mapping('deepseek-flash', 'deepseek-flash'), thinking: { values: ['none', 'low', 'high', 'max'] } };
+  const harness = await fixture(t, (_, res) => reply(res, 200, {
+    id: 'reply', type: 'message', role: 'assistant', content: [{ type: 'text', text: 'OK' }], stop_reason: 'end_turn', usage: { input_tokens: 1, output_tokens: 1 },
+  }), url => [{ ...provider('deepseek', url, ['secret'], [model], 'anthropic'), type: 'deepseek' }]);
+  const format = { type: 'json_schema', schema: { type: 'object' } };
+  for (const effort of ['', 'none', 'max']) {
+    const endpoint = harnessThinkingRoute({ baseUrl: '' }, effort).baseUrl + '/v1/messages';
+    const response = await harness.post({ model: model.id, max_tokens: 32, thinking: { type: 'disabled' }, output_config: { effort: 'high', format } }, endpoint);
+    assert.equal(response.status, 200); await response.json();
+    const sent = harness.requests.at(-1).body;
+    assert.deepEqual(sent.output_config, effort && effort !== 'none' ? { effort, format } : { format });
+    assert.deepEqual(sent.thinking, effort ? { type: effort === 'none' ? 'disabled' : 'enabled' } : undefined);
+  }
+});
+
+test('controlled API routes isolate concurrent efforts, validate current metadata and keep scope limits', async t => {
+  const model = { ...mapping('deepseek-flash', 'deepseek-flash'), thinking: { values: ['none', 'low', 'high', 'max'] } };
+  const harness = await fixture(t, (request, res) => reply(res, 200, completion(request.body.model, request.body.reasoning_effort || 'default')),
+    url => [provider('local', url, ['secret'], [model])]);
+  const results = await Promise.all(['', 'low', 'max', 'none'].map(async effort => {
+    const endpoint = harnessThinkingRoute({ baseUrl: '' }, effort).baseUrl + '/v1/messages';
+    const response = await harness.post({ model: model.id, max_tokens: 32, output_config: { effort: 'high' } }, endpoint);
+    assert.equal(response.status, 200);
+    return (await response.json()).content[0].text;
+  }));
+  assert.deepEqual(results, ['default', 'low', 'max', 'none']);
+  const invalid = await harness.post({ model: model.id }, '/harness-thinking/medium/v1/chat/completions');
+  assert.equal(invalid.status, 400);
+  assert.match((await invalid.json()).error.message, /not supported/);
+  const scope = harness.router.createScope({ model: model.id, providerId: 'local', maxRequests: 1 });
+  const endpoint = harnessThinkingRoute(scope, 'max').baseUrl.slice(harness.router.url.length) + '/v1/chat/completions';
+  let response = await harness.post({ model: model.id }, endpoint);
+  assert.equal(response.status, 200); await response.json();
+  response = await harness.post({ model: model.id }, endpoint);
+  assert.equal(response.status, 429); await response.json();
+  await scope.close();
+  response = await harness.post({ model: model.id }, endpoint);
+  assert.equal(response.status, 410); await response.json();
 });
 
 test('Responses preserve explicit thinking controls and leave the default effort unset', async context => {

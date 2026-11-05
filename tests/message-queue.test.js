@@ -48,7 +48,7 @@ function queueHarness(send, overrides = {}) {
     messageQueue: [{ text: 'First', attachments: [{ name: 'data.csv', path: 'D:/data.csv' }] }, { text: 'Second', attachments: [] }],
     messageQueuePaused: false, drainingQueue: false, running: false, sending: false, loadingSession: false,
     sessionOpenSeq: 1,
-    conversationActivity: null, switchingEngine: false, editingMessage: null,
+    conversationActivity: null, switchingEngine: false, handoffSessions: new Map(), editingMessage: null,
     sharedChat: true, context: { sessionId: 'session' }, conversationQueues: new Map(),
     pendingConversationSend: () => null, draftKey: () => state.context.sessionId,
     writeUi: (key, value) => storage.set(key, JSON.stringify(value)),
@@ -110,6 +110,7 @@ test('queueing stays unavailable without a pending send or while the session cha
     { sending: true, pendingConversationSend: () => null },
     { sending: false, loadingSession: true },
     { sending: false, switchingEngine: true },
+    { sending: false, handoffSessions: new Map([['session', {}]]) },
     { sending: false, editingMessage: {} },
   ]) {
     const state = composerHarness({
@@ -168,7 +169,7 @@ test('attachment-only messages return without changing existing draft text', () 
 test('busy and stale queue edit actions cannot consume a message or overwrite a draft', () => {
   for (const overrides of [
     { sending: true }, { drainingQueue: true }, { loadingSession: true },
-    { switchingEngine: true }, { editingMessage: {} }, { pendingConversationSend: () => ({}) },
+    { switchingEngine: true }, { handoffSessions: new Map([['session', {}]]) }, { editingMessage: {} }, { pendingConversationSend: () => ({}) },
     { goalUI: { isDraft: () => true } },
   ]) {
     const state = queueEditorHarness(overrides);
@@ -212,7 +213,7 @@ test('queue remains intact until a send is accepted, and drains in order once', 
 
 test('active goal and other send guards retain queued messages', async () => {
   for (const overrides of [
-    { goalUI: { isActive: () => true } }, { editingMessage: {} }, { switchingEngine: true },
+    { goalUI: { isActive: () => true } }, { editingMessage: {} }, { switchingEngine: true }, { handoffSessions: new Map([['session', {}]]) },
     { running: true }, { sending: true }, { loadingSession: true }, { conversationActivity: 'running' },
     { pendingConversationSend: () => ({}) },
   ]) {

@@ -64,7 +64,7 @@ test('Claude pins all CLI model tiers to the chosen model and clears direct API 
   const h=createHarness(); t.after(()=>h.cleanup());
   const home=h.folder('home/.dsh'); writeConfig(path.join(home,'ollama-proxy.json'),normalizeConfig(pool(19098)));
   const spec=h.api.claudeSpawnSpec({model:'kimi-k3',baseUrl:'https://example.test',authToken:'stale-token',apiKey:'stale-direct-key'},{});
-  assert.equal(spec.env.ANTHROPIC_BASE_URL,'http://127.0.0.1:19098'); assert.equal(spec.env.ANTHROPIC_API_KEY,'');
+  assert.equal(spec.env.ANTHROPIC_BASE_URL,'http://127.0.0.1:19098/harness-thinking/_default'); assert.equal(spec.env.ANTHROPIC_API_KEY,'');
   assert.equal(spec.env.ANTHROPIC_DEFAULT_HAIKU_MODEL,'kimi-k3'); assert.equal(spec.env.CLAUDE_CODE_SUBAGENT_MODEL,'kimi-k3');
   const overlay=JSON.parse(fs.readFileSync(spec.args[spec.args.indexOf('--settings')+1],'utf8'));
   assert.equal(overlay.env.ANTHROPIC_API_KEY,''); assert.equal(overlay.env.ANTHROPIC_DEFAULT_OPUS_MODEL,'kimi-k3');

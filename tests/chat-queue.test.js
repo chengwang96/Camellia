@@ -13,7 +13,7 @@ function fixture(storage = new Map()) {
   const state = {
     sharedChat: true, context: { sessionId: 'first' }, messageQueue: [], messageQueuePaused: false, conversationQueues: new Map(),
     sessionOpenSeq: 1, drainingQueue: false, running: false, sending: false, loadingSession: false,
-    conversationActivity: null, switchingEngine: false, editingMessage: null,
+    conversationActivity: null, switchingEngine: false, handoffSessions: new Map(), editingMessage: null,
     goalUI: { isActive: () => false }, pendingConversationSend: () => null,
     draftKey: () => state.context.sessionId,
     writeUi: (key, value) => storage.set(key, JSON.stringify(value)),

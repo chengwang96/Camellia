@@ -9,7 +9,7 @@ screenshots.mkdir(parents=True, exist_ok=True)
 bridge = """(() => {
   const state = { running: true, enabled: true, address: 'http://100.80.1.2:43127',
     computerName: 'Desktop', pending: [], workspaces: [], closeToTray: false,
-    language: TEST_LANGUAGE, theme: 'system', devices: [
+    language: TEST_LANGUAGE, theme: 'system', network: {state: 'Running'}, devices: [
       { id: 'ipad', name: 'iPad14,1', workspaceIds: [], allWorkspaces: true, includeUnassigned: true },
       { id: 'tablet', name: 'Y700', workspaceIds: [], allWorkspaces: true, includeUnassigned: true }
     ] };
@@ -147,6 +147,31 @@ with sync_playwright() as playwright:
                 page.keyboard.press('Escape')
                 expect(dialog).to_have_count(0)
                 assert len(rename_calls(page)) == 2
+
+                # The network sign-out confirmation stays in the app, preserves
+                # cancellation and focus, and survives background polling.
+                page.locator('.mobile-help summary').click()
+                logout = page.locator(f'#{prefix}logout')
+                logout_dialog = page.locator('dialog.mobile-logout')
+                logout.click()
+                expect(logout_dialog).to_be_visible()
+                expect(logout_dialog).to_contain_text('CLI 设备' if chinese else 'CLI device')
+                logout_cancel = logout_dialog.get_by_role('button', name='取消' if chinese else 'Cancel', exact=True)
+                expect(logout_cancel).to_be_focused()
+                poll(page)
+                expect(logout_cancel).to_be_enabled()
+                logout_cancel.click()
+                expect(logout_dialog).to_have_count(0)
+                expect(logout).to_be_focused()
+                assert not page.evaluate("remoteCalls.some(call => call.action === 'logout')")
+                logout.click()
+                page.keyboard.press('Escape')
+                expect(logout_dialog).to_have_count(0)
+                assert not page.evaluate("remoteCalls.some(call => call.action === 'logout')")
+                logout.click()
+                logout_dialog.get_by_role('button', name='退出 Tailscale 登录' if chinese else 'Sign out of Tailscale', exact=True).click()
+                expect(logout_dialog).to_have_count(0)
+                page.wait_for_function("remoteCalls.filter(call => call.action === 'logout').length === 1")
                 assert not errors, errors
                 page.close()
                 print(f'PASS: mobile device rename in {surface}, {language}')

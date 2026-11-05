@@ -305,9 +305,40 @@ dialog > button { display: block; margin: 20px 0 0 auto; }
   .usage-summary { grid-template-columns: repeat(2, 1fr); }
 }
 .archived-row h2 { overflow-wrap: anywhere; }
-.archived-delete-activity { margin: 0 0 14px; }
-.archived-delete-activity p { margin: 0 0 7px; }
-.archived-delete-activity progress { display: block; width: 100%; height: 7px; accent-color: var(--dsw-alias-state-business-primary); }
+.archived-delete-activity {
+  --archived-delete-accent: light-dark(#d26d64, #e99188);
+  position: sticky; top: 0; z-index: 1;
+  display: grid; grid-template-columns: 36px minmax(0, 1fr) auto;
+  align-items: center; gap: 10px 14px;
+  margin: 0 0 18px; padding: 16px;
+  border: 1px solid var(--dsw-alias-border-l2); border-radius: 14px;
+  background: var(--dsw-alias-bg-layer-1); box-shadow: var(--dsw-shadow-lv2);
+}
+.archived-delete-icon {
+  grid-row: 1 / span 2; display: grid; place-items: center;
+  width: 36px; height: 36px; border-radius: 11px;
+  color: var(--archived-delete-accent);
+  background: color-mix(in srgb, var(--archived-delete-accent) 12%, transparent);
+}
+.archived-delete-icon svg { width: 20px; height: 20px; }
+.archived-delete-activity p { min-width: 0; margin: 0; font-weight: 500; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.archived-delete-percent { color: var(--dsw-alias-label-secondary); font: var(--f-code); font-variant-numeric: tabular-nums; }
+.archived-delete-activity progress {
+  grid-column: 2 / -1; appearance: none; display: block;
+  width: 100%; min-width: 0; height: 6px; overflow: hidden; border: 0; border-radius: 6px;
+  background: var(--dsw-alias-bg-muted); color: var(--archived-delete-accent);
+}
+.archived-delete-activity progress::-webkit-progress-bar { border-radius: 6px; background: var(--dsw-alias-bg-muted); }
+.archived-delete-activity progress::-webkit-progress-value { border-radius: 6px; background: var(--archived-delete-accent); transition: width .24s var(--ds-ease-in-out); }
+.archived-delete-activity progress::-moz-progress-bar { border-radius: 6px; background: var(--archived-delete-accent); }
+@media (max-width: 700px) {
+  .archived-delete-activity { grid-template-columns: 28px minmax(0, 1fr) auto; gap: 10px; padding: 12px; }
+  .archived-delete-icon { width: 28px; height: 32px; border-radius: 9px; }
+  .archived-delete-icon svg { width: 18px; height: 18px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .archived-delete-activity progress::-webkit-progress-value { transition: none; }
+}
 .storage-file code { overflow-wrap: anywhere; min-width: 0; }
 .storage-file span { flex-shrink: 0; }
 #storageDetails { margin: 20px 0; }

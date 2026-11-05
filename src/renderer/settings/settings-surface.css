@@ -54,14 +54,63 @@ input:not([type=checkbox]), textarea { border-radius: 10px; }
 .theme-choices button { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; min-height: 84px; padding: 16px 8px; border: 1px solid var(--settings-card-stroke); border-radius: 16px; font-weight: 400; white-space: normal; }
 .theme-choices button[aria-pressed=true] { background: var(--settings-control-fill); border-color: var(--settings-selected-stroke); }
 .theme-choices svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
-/* Preserve checkbox semantics and keyboard behavior while painting a switch. */
-.setting-row > input[type=checkbox] {
-  appearance: none; position: relative; width: 36px; height: 21px; margin: 0;
-  padding: 0; border: 0; border-radius: 20px; background: light-dark(#d9dce0, #54575d); cursor: pointer;
+/* Selection controls keep native form semantics without platform-specific paint. */
+input[type=checkbox] {
+  appearance: none; display: inline-grid; place-items: center; vertical-align: middle;
+  flex: 0 0 auto; width: 16px; height: 16px; margin: 0; padding: 0;
+  border: 1px solid var(--settings-selected-stroke); border-radius: 5px;
+  background: var(--dsw-specific-input-major); color: var(--dsw-alias-bg-base); cursor: pointer;
 }
-.setting-row > input[type=checkbox]::before { content: ''; position: absolute; width: 17px; height: 17px; top: 2px; left: 2px; border-radius: 50%; background: #fff; transition: transform .12s ease; }
-.setting-row > input[type=checkbox]:checked { background: var(--dsw-alias-label-primary); }
-.setting-row > input[type=checkbox]:checked::before { transform: translateX(15px); background: var(--dsw-alias-bg-base); }
+input[type=checkbox]::before {
+  content: ''; width: 8px; height: 4px; margin-top: -2px;
+  border-left: 2px solid currentColor; border-bottom: 2px solid currentColor;
+  transform: rotate(-45deg); opacity: 0;
+}
+input[type=checkbox]:is(:checked, :indeterminate) { border-color: var(--dsw-alias-label-primary); background: var(--dsw-alias-label-primary); }
+input[type=checkbox]:is(:checked, :indeterminate)::before { opacity: 1; }
+input[type=checkbox]:indeterminate::before { height: 0; margin: 0; border-left: 0; transform: none; }
+input[type=checkbox]:disabled { cursor: default; opacity: .45; }
+.cli-devices .native-confirm input[type=checkbox] { width: 16px; height: 16px; padding: 0; }
+/* Boolean preferences use the same switch in every category and account row. */
+:is(.setting-row, .engine-field) > input[type=checkbox],
+.subscription-rotation input[type=checkbox], .key-row input[type=checkbox], #enabled, #pEnabled {
+  appearance: none; position: relative; width: 36px; height: 21px; margin: 0;
+  padding: 0; border: 0; border-radius: 20px; background: light-dark(#d9dce0, #54575d); color: inherit;
+}
+:is(.setting-row, .engine-field) > input[type=checkbox]::before,
+.subscription-rotation input[type=checkbox]::before, .key-row input[type=checkbox]::before, #enabled::before, #pEnabled::before {
+  content: ''; position: absolute; width: 17px; height: 17px; top: 2px; left: 2px; margin: 0;
+  border: 0; border-radius: 50%; background: #fff; opacity: 1; transform: none; transition: transform .12s ease;
+}
+:is(.setting-row, .engine-field) > input[type=checkbox]:checked,
+.subscription-rotation input[type=checkbox]:checked, .key-row input[type=checkbox]:checked, #enabled:checked, #pEnabled:checked { background: var(--dsw-alias-label-primary); }
+:is(.setting-row, .engine-field) > input[type=checkbox]:checked::before,
+.subscription-rotation input[type=checkbox]:checked::before, .key-row input[type=checkbox]:checked::before, #enabled:checked::before, #pEnabled:checked::before { transform: translateX(15px); background: var(--dsw-alias-bg-base); }
+/* Download, transfer and legacy quota meters share the settings material.
+   The archive activity and subscription cards supply their own semantic colors. */
+progress {
+  --settings-progress-fill: var(--dsw-alias-state-business-primary);
+  appearance: none; display: block; width: 100%; height: 6px; overflow: hidden;
+  border: 0; border-radius: 6px; background: var(--dsw-alias-bg-muted); color: var(--settings-progress-fill);
+}
+progress::-webkit-progress-bar { border-radius: 6px; background: var(--dsw-alias-bg-muted); }
+progress::-webkit-progress-value { border-radius: 6px; background: var(--settings-progress-fill); transition: width .2s var(--ds-ease-in-out); }
+progress::-moz-progress-bar { border-radius: 6px; background: var(--settings-progress-fill); }
+progress:indeterminate {
+  background: linear-gradient(90deg, transparent, var(--settings-progress-fill), transparent) var(--dsw-alias-bg-muted);
+  background-size: 45% 100%; background-repeat: no-repeat; animation: settings-progress-pending 1.6s ease-in-out infinite;
+}
+progress:indeterminate::-webkit-progress-bar { background: transparent; }
+@keyframes settings-progress-pending { from { background-position: -85% 0; } to { background-position: 185% 0; } }
+/* Disclosure arrows follow the small line icons used in the category rail. */
+summary { display: flex; align-items: baseline; gap: 8px; list-style: none; }
+summary::-webkit-details-marker { display: none; }
+summary::before { content: ''; flex: 0 0 6px; width: 6px; height: 6px; border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor; transform: rotate(-45deg); align-self: center; transition: transform .12s ease; }
+details[open] > summary::before { transform: rotate(45deg); }
+dialog::backdrop { background: var(--dsw-alias-bg-mask-1); }
+.dialog-head { gap: 16px; }
+.dialog-head h2 { min-width: 0; overflow-wrap: anywhere; }
+.dialog-head button { display: grid; place-items: center; flex: none; width: 30px; height: 30px; min-height: 30px; padding: 0; border-radius: 8px; color: var(--dsw-alias-label-secondary); }
 .provider-grid { gap: 12px; }
 .provider-grid > .provider { padding: 16px; border-radius: 16px; border-color: var(--settings-card-stroke); }
 .balance-card, .chart-panel, .subscription-model-group { border-radius: 16px; }
@@ -101,5 +150,10 @@ input:not([type=checkbox]), textarea { border-radius: 10px; }
   .theme-choices button { min-height: 76px; padding: 12px 4px; font-size: 12px; border-radius: 12px; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .setting-row > input[type=checkbox]::before { transition: none; }
+  input[type=checkbox]::before, summary::before, progress::-webkit-progress-value { transition: none; }
+  progress:indeterminate { animation: none; background-position: 50% 0; }
+}
+@media (forced-colors: active) {
+  input[type=checkbox] { appearance: auto !important; }
+  input[type=checkbox]::before { display: none; }
 }

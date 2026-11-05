@@ -19,6 +19,7 @@ const { subscriptionSpawnSpec } = require('../antigravity');
 const { effectiveSelection } = require('../antigravity/subscription');
 const { getDiscussionLaunch, buildDiscussionSpec } = require('./native-launch');
 const { writeJson } = require('../../shared/json-store');
+const { harnessThinkingRoute } = require('../../api/harness-thinking');
 
 const EXTRA_ENGINES = Object.freeze(['claude', 'dsh', 'kimi', 'grok']);
 const DENY = ['read_file', 'write_file', 'command', 'unsandboxed', 'read_url', 'execute_url', 'mcp'].map(name => name + '(*)');
@@ -48,6 +49,7 @@ function googleDiscussionSpec({ runtime, home, cwd, env, node, profile, models }
 function extraTextSpec({ runtime, home, cwd, env, node, profile, route }) {
   const { engine, model, contextWindow, connection } = profile;
   if (engine === 'claude') {
+    route = harnessThinkingRoute(route, profile.thinking || '');
     const mcp = path.join(home, 'mcp.json'); writeJson(mcp, { mcpServers: {} });
     const selected = Object.fromEntries(['ANTHROPIC_MODEL', 'ANTHROPIC_DEFAULT_OPUS_MODEL', 'ANTHROPIC_DEFAULT_SONNET_MODEL',
       'ANTHROPIC_DEFAULT_HAIKU_MODEL', 'ANTHROPIC_SMALL_FAST_MODEL', 'CLAUDE_CODE_SUBAGENT_MODEL'].map(key => [key, model]));
@@ -62,11 +64,11 @@ function extraTextSpec({ runtime, home, cwd, env, node, profile, route }) {
     // Kimi treats enabled:[] as "all". A nonempty allow-list with no native
     // tool names disables every builtin and MCP tool, including future ones.
     const spec = kimiSpawnSpec({ runtime: runtime.file, home, model, contextWindow, route, connection, env,
-      config: { tools: { enabled: ['camellia_discussion_text_only'] } }, mcp: '{"mcpServers":{}}' });
+      config: { tools: { enabled: ['camellia_discussion_text_only'] } }, mcp: '{"mcpServers":{}}', thinkingBudget: profile.thinking || '' });
     return { ...spec, exe: node, cwd };
   }
   if (engine === 'dsh') {
-    const spec = dshAcpSpec({ runtime, home, model, route, permissionMode: 'ask', env });
+    const spec = dshAcpSpec({ runtime, home, model, route, permissionMode: 'ask', env, thinkingBudget: profile.thinking || '' });
     // Use the installed profile's actual tool rows instead of maintaining a
     // stale name list. A global native guard also rejects unadvertised calls.
     const base = fs.readFileSync(path.join(runtime.dir, 'node_modules/@deepseek-ai/dsh-base/cordis.patch.yml'), 'utf8');
@@ -80,7 +82,7 @@ function extraTextSpec({ runtime, home, cwd, env, node, profile, route }) {
     return { ...spec, exe: node, cwd };
   }
   if (engine === 'grok') {
-    const spec = grokSpawnSpec({ runtime: runtime.file, home, model, connection, route, contextWindow, env });
+    const spec = grokSpawnSpec({ runtime: runtime.file, home, model, connection, route, contextWindow, env, reasoningEffort: profile.thinking || '' });
     return { ...spec, exe: runtime.file, cwd };
   }
   throw new Error('Unknown discussion transport');
