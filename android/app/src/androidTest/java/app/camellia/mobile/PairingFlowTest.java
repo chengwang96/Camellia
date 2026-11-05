@@ -60,6 +60,9 @@ public class PairingFlowTest extends InstrumentationTestCase {
         activity = (MainActivity) getInstrumentation().startActivitySync(new Intent(context, MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
         ui(() -> invoke("pairScreen"));
         getInstrumentation().waitForIdleSync();
+        // The first launch can be idle before the emulator gives the activity
+        // focus. Pairing is deliberately ignored while it is in the background.
+        await(() -> Boolean.TRUE.equals(field(activity, "foreground")) && activity.hasWindowFocus());
     }
 
     @Override protected void tearDown() throws Exception {
@@ -190,7 +193,8 @@ public class PairingFlowTest extends InstrumentationTestCase {
             var credentials = MainActivity.class.getDeclaredField("credentials"); credentials.setAccessible(true);
             credentials.set(activity, new JSONObject().put("address", ADDRESS).put("name", "Expired phone").put("id", "expired").put("claim", "expired").put("expiresAt", 1));
             invoke("waitForApproval");
-            assertTrue(action().isEnabled()); assertFalse(((JSONObject) field(activity, "credentials")).has("claim"));
+            assertTrue("Expired pairing must enable a fresh request", action().isEnabled());
+            assertFalse("Expired pairing must clear the claim", ((JSONObject) field(activity, "credentials")).has("claim"));
             assertTrue(status().contains("过期") || status().contains("expired"));
         });
     }
