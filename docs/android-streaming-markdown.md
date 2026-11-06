@@ -57,6 +57,16 @@ discussions transfer a live view to its canonical history message when it can be
 matched to the completed turn/delivery. Tool and delivery controls update
 separately from Markdown.
 
+Remote chat shows "Waiting for output…" only for an active reply without text
+or process entries. Saved stopped and failed turns use their recorded terminal
+status and elapsed time, including when stopped before the first output. Partial
+answers, process entries and usage remain available after stopping and reopening.
+
+The remote compaction timer advances from the host's elapsed time using the
+device's monotonic clock. Replayed snapshots and local redraws cannot rewind an
+active timer. Stage/chunk updates preserve its elapsed time; a new start or
+timeline boundary resets it, and a terminal state freezes the final host duration.
+
 ## Verification
 
 `MarkdownMathTest` checks delimiter semantics, TeX preservation, code/currency
@@ -87,6 +97,14 @@ coalescing, restart invalidation and state disposal. It uses a disposable activi
 under the debug source set, excluded from release builds. `MarkdownTest`,
 `LocalChatTest` and `RemoteDiscussionsTest` exercise the actual chat entry points
 and completion handoffs without model calls.
+
+`RemoteFeedbackTest` also checks the empty live-to-stopped handoff, reopening a
+stopped turn, starting a later run, partial output and usage preservation, and
+empty finished or legacy rows that must not display a waiting indicator.
+`CompactionClockTest` checks stale/replayed progress, forward corrections, missing
+timing fields, new operations and terminal durations with a deterministic clock.
+`RemoteRichControlsTest` exercises repeated snapshots and local redraws on the
+real chat page while verifying that the compaction clock continues advancing.
 
 Build with `assembleDebug assembleDebugAndroidTest testDebugUnitTest lintDebug`.
 Run the instrumentation classes with the platform instrumentation runner on a

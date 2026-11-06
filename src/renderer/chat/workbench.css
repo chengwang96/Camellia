@@ -1147,6 +1147,7 @@
   .dsh-pop {
     position: fixed; z-index: 1000;
     min-width: 230px;
+    max-width: calc(100vw - 16px);
     max-height: min(480px, calc(100vh - 24px));
     overflow-y: auto;
     background: var(--dsw-alias-bg-layer-3);
@@ -1189,6 +1190,7 @@
   .pop-opt .pop-check { display: none; color: var(--dsw-alias-label-primary); flex-shrink: 0; }
   .pop-opt.current .pop-check { display: block; }
   .pop-opt .pop-marks { display: flex; align-items: center; gap: 6px; margin-left: auto; flex-shrink: 0; }
+  .pop-opt .pop-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .pop-manage { display: block; width: 100%; margin-top: 5px; padding: 9px 12px; border: 0; border-top: 1px solid var(--dsw-alias-border-l2); border-radius: 0 0 8px 8px; background: transparent; color: var(--dsw-alias-label-secondary); font: var(--f-xxs-12); text-align: left; cursor: pointer; }
   .pop-manage:hover { background: var(--dsw-alias-interactive-bg-hover); color: var(--dsw-alias-label-primary); }
 .history-more {
@@ -1350,7 +1352,21 @@
 
 /* Background work remains visible without competing with conversation titles. */
 .session-item[data-activity="running"] .session-item-time { color: var(--accent, #4275ed); }
+.session-item[data-background="running"] .session-item-time { color: var(--dsw-alias-state-business-primary); }
 .session-item[data-activity="permission"] .session-item-time, .session-item[data-activity="question"] .session-item-time { color: #ae6900; }
+
+.background-work-status {
+  display: flex; align-items: center; gap: 8px;
+  margin: 12px 0; padding: 10px 12px;
+  border-left: 3px solid var(--dsw-alias-state-business-primary); border-radius: 3px 9px 9px 3px;
+  background: var(--dsw-alias-bg-soft); color: var(--dsw-alias-label-secondary);
+  font: var(--f-s-14); line-height: 1.5; overflow-wrap: anywhere;
+}
+.background-work-status .background-work-pulse {
+  width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0;
+  background: var(--dsw-alias-state-business-primary);
+  animation: pulse 1.2s ease-in-out infinite;
+}
 
 .md .chat-inline-image { display: block; max-width: 100%; width: auto; height: auto; max-height: 560px; object-fit: contain; object-position: left center; margin: 12px 0; border: 1px solid var(--dsw-alias-border-l2); border-radius: 10px; cursor: zoom-in; }
 .md .chat-inline-image:focus-visible { outline: 2px solid var(--dsw-static-deepseek-500); outline-offset: 3px; }

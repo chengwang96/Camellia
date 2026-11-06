@@ -17,7 +17,8 @@ struct PopupChoiceRow: View {
                     Text(LocalizedStringKey(title))
                         .font(.system(size: Palette.textRowStrong, weight: .medium))
                         .foregroundColor(Palette.ink)
-                        .lineLimit(2)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
                     if !subtitle.isEmpty {
                         Text(LocalizedStringKey(subtitle))
                             .font(.system(size: Palette.textSmall))
@@ -29,7 +30,7 @@ struct PopupChoiceRow: View {
                 if selected {
                     Text("✓")
                         .font(.system(size: Palette.textTick))
-                        .foregroundColor(Palette.accent)
+                        .foregroundColor(Palette.ink)
                         .frame(width: 32)
                         .accessibilityHidden(true)
                 } else if let icon {
@@ -49,6 +50,8 @@ struct PopupChoiceRow: View {
         .buttonStyle(.plain)
         .disabled(!enabled)
         .opacity(enabled ? 1 : 0.4)
+        .help(Text(LocalizedStringKey(title)))
+        .accessibilityElement(children: .combine)
         .accessibilityAddTraits(selected ? .isSelected : [])
     }
 }

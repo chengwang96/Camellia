@@ -66,8 +66,11 @@ async function bridge(check = () => ({ ok: true })) {
   const RequestError = { invalidParams: (_params, text) => Object.assign(new Error(text), { code: -32602 }) };
   const patched = patchKimiHistory(source);
   assert.ok(patched, 'The native fixture must satisfy both history and queued-prompt contracts');
-  return new AsyncFunction('check', 'RequestError$1', 'isUndoAnchor', patched
-    + '\nreturn { boundary: camelliaHistoryState, fork: camelliaForkUndo };')(check, RequestError, message => message.role === 'user');
+  const api = await new AsyncFunction('check', 'RequestError$1', 'isUndoAnchor', patched
+    + '\nreturn { boundary: camelliaHistoryState, fork: camelliaForkUndo, title: camelliaGenerateTitle };')(
+    check, RequestError, message => message.role === 'user');
+  api.titleCalls = [];
+  return api;
 }
 
 function engine() {
@@ -115,6 +118,16 @@ test('Kimi bridge rejects a stale native boundary and closes a failed undo child
   assert.deepEqual(server.calls, [['fork', 'source'], ['close', 'child']]);
 });
 
+test('Kimi bridge names an active turn from only the visible user request', async () => {
+  const api = await bridge(), server = engine();
+  const prompt = '如果机器比较繁忙，点开设置页面可能会卡在这里一段时间，尤其是右上角几个按钮没被半透明灰色遮挡，看起来很有问题';
+  server.camelliaTitle = async (_sessionId, visible, force) => {
+    api.titleCalls.push({ input: 'user: ' + visible, force }); return '设置页面卡顿与按钮遮挡';
+  };
+  assert.deepEqual(await api.title(server, { sessionId: 'source', prompt, force: false }), { title: '设置页面卡顿与按钮遮挡' });
+  assert.deepEqual(api.titleCalls, [{ input: 'user: ' + prompt, force: false }]);
+});
+
 test('unknown native layouts and runtimes retain the compatible path', t => {
   assert.equal(patchKimiHistory(source.replace('function createAcpAgentApp', 'function renamed')), null);
   assert.equal(patchDshHistory('unknown ACP contract', '/host.js'), null);
@@ -125,7 +138,7 @@ test('unknown native layouts and runtimes retain the compatible path', t => {
   const runtime = path.join(root, 'dist', 'main.mjs'); fs.writeFileSync(runtime, source);
   assert.equal(prepareKimiHistory(runtime), null);
   assert.equal(prepareDshHistory({ file: path.join(root, 'not-installed.js') }), null);
-  for (const version of ['2.4.0', '2.4.1']) {
+  for (const version of ['2.4.0', '2.4.1', '2.5.1']) {
     fs.writeFileSync(path.join(root, 'package.json'), JSON.stringify({ name: '@moonshot-ai/kimi-code', version }));
     const patched = prepareKimiHistory(runtime);
     assert.ok(patched, `Kimi ${version} must load the verified ACP bridge`);
@@ -145,4 +158,27 @@ test('native bridge materialization publishes complete files and survives a fail
   t.mock.method(fs, 'renameSync', () => { throw Object.assign(new Error('Directory is read only'), { code: 'EACCES' }); });
   assert.throws(() => nativeHistoryModule(original, 'another complete module'), /read only/);
   assert.deepEqual(fs.readdirSync(root), [path.basename(file)]);
+});
+
+test('pinned DSH history bridge materializes against the installed ACP contract', t => {
+  const installed = path.resolve(__dirname, '../runtimes/dsh/node_modules/@deepseek-ai');
+  const packages = ['dsh-acp', 'dsh-api-session-controller'];
+  if (!packages.every(name => fs.existsSync(path.join(installed, name, 'lib/index.js')))) return t.skip('DSH runtime is not installed');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'camellia-dsh-history-'));
+  t.after(() => removeTree(root));
+  for (const name of packages) {
+    const source = path.join(installed, name), target = path.join(root, 'node_modules/@deepseek-ai', name);
+    fs.mkdirSync(path.join(target, 'lib'), { recursive: true });
+    fs.copyFileSync(path.join(source, 'package.json'), path.join(target, 'package.json'));
+    fs.copyFileSync(path.join(source, 'lib/index.js'), path.join(target, 'lib/index.js'));
+  }
+  const runtime = path.join(root, 'node_modules/@deepseek-ai/dsh/lib/bin.js');
+  fs.mkdirSync(path.dirname(runtime), { recursive: true });
+  fs.writeFileSync(runtime, '');
+  const acp = path.join(root, 'node_modules/@deepseek-ai/dsh-acp/lib/index.js');
+  const original = fs.readFileSync(acp, 'utf8');
+  const patched = prepareDshHistory({ file: runtime });
+  assert.ok(patched, 'The pinned DSH ACP and Host versions must support native history');
+  assert.match(fs.readFileSync(patched, 'utf8'), /session\/camellia_fork/);
+  assert.equal(fs.readFileSync(acp, 'utf8'), original, 'The upstream ACP module remains unchanged');
 });

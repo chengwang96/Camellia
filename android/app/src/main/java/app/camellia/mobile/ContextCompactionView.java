@@ -18,7 +18,7 @@ final class ContextCompactionView extends LinearLayout {
     private final TextView label;
     private final TextView duration;
     private JSONObject current;
-    private long elapsedBase = -1, observedAt;
+    private final CompactionClock elapsedClock = new CompactionClock();
     private final Runnable clock = new Runnable() {
         @Override public void run() {
             if (current == null || !current.optString("state").equals("running") || !isAttachedToWindow()) return;
@@ -53,15 +53,7 @@ final class ContextCompactionView extends LinearLayout {
 
     void update(JSONObject compaction) {
         boolean running = "running".equals(compaction.optString("state"));
-        boolean wasRunning = current != null && "running".equals(current.optString("state"));
-        long now = android.os.SystemClock.elapsedRealtime();
-        if (compaction.optLong("elapsedMs", -1) >= 0) {
-            elapsedBase = compaction.optLong("elapsedMs"); observedAt = now;
-        } else if (running && !wasRunning) {
-            elapsedBase = 0; observedAt = now;
-        } else if (!running && wasRunning && elapsedBase >= 0) {
-            elapsedBase += now - observedAt; observedAt = now;
-        }
+        elapsedClock.update(compaction, android.os.SystemClock.elapsedRealtime());
         current = compaction;
         progress.setVisibility(running ? VISIBLE : GONE); icon.setVisibility(running ? GONE : VISIBLE);
         label.setTextColor(running ? style.ink : style.muted);
@@ -117,8 +109,7 @@ final class ContextCompactionView extends LinearLayout {
 
     private String elapsedDescription(JSONObject value) {
         String state = value.optString("state");
-        long elapsed = state.equals("running") ? elapsedBase + android.os.SystemClock.elapsedRealtime() - observedAt
-            : value.optLong("durationMs", value.optLong("elapsedMs", elapsedBase));
+        long elapsed = elapsedClock.elapsed(android.os.SystemClock.elapsedRealtime());
         if (elapsed >= 0) {
             long seconds = Math.round(elapsed / 1000.0);
             return (state.equals("running") ? tr("已用时 ", "Elapsed ") : "")

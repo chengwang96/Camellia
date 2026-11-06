@@ -116,6 +116,34 @@ test('Kimi empty turns are visible errors while text, tools and cancellation ret
   }
 });
 
+test('Kimi queue and idle background notices remain status events rather than reply text', async t => {
+  const { session } = fixture(t), events = [];
+  session.ready = Promise.resolve(); session.sessionId = 'kimi-fixture'; session.spec.modeEngine = 'kimi';
+  session.onEvent = event => events.push(event);
+  session.running = false; session.replayEvents = [];
+  const background = { sessionUpdate: 'camellia_background_task', terminated: false,
+    task: { id: 'bash-eval', description: 'Evaluation', kind: 'process', status: 'running' } };
+  session.receive({ method: 'session/update', params: { sessionId: session.sessionId, update: background } });
+  assert.equal(session.backgroundTasks.size, 1);
+  session.request = async () => {
+    session.update({ sessionUpdate: 'agent_message_chunk', _meta: { camelliaQueuedPrompt: true },
+      content: { type: 'text', text: 'Kimi is finishing background work; this request is queued.' } });
+    session.update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'Actual answer' } });
+    session.receive({ method: 'session/update', params: { sessionId: session.sessionId,
+      update: { ...background, terminated: true, task: { ...background.task, status: 'completed' } } } });
+    return { stopReason: 'end_turn' };
+  };
+  const done = new Promise(resolve => { session.onResult = resolve; });
+  session.sendUserMessage('Continue');
+  const result = await done;
+  assert.equal(result.subtype, 'success');
+  assert.equal(result.result, 'Actual answer');
+  assert.equal(session.backgroundTasks.size, 0);
+  assert.equal(events.filter(event => event.type === 'gui:prompt-queue').length, 1);
+  assert.deepEqual(events.filter(event => event.type === 'gui:background-work').map(event => event.tasks.length), [1, 0]);
+  assert.equal(events.some(event => event.event?.delta?.text?.includes('finishing background work')), false);
+});
+
 test('Kimi JSON-RPC provider errors reach the result chip instead of the empty-response fallback', async t => {
   for (const partial of [false, true]) {
     const { session, proc } = fixture(t), events = [];
@@ -259,7 +287,7 @@ test('a native denial that arrives after the turn still reaches the UI', context
   assert.equal(events[0].status, 'failed');
 });
 
-test('only denials are admitted after a turn, and never for a cancelled one', context => {
+test('only denials and background lifecycle updates are admitted after a turn, and never for a cancelled one', context => {
   const { session } = fixture(context), events = [];
   session.sessionId = 'native-session'; session.running = false;
   session.onEvent = event => events.push(event);

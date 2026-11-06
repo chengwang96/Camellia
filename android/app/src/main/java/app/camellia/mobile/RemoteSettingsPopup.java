@@ -48,7 +48,7 @@ final class RemoteSettingsPopup {
     }
     private void row(String title, String description, boolean selected, String tag, Runnable action) {
         String icon = tag.equals("remoteThinkingBack") ? "down" : tag.equals("remoteThinkingSettings") ? "right" : null;
-        body.addView(new ChatChoiceRow(context, chinese, ink, muted, accent, title, description, icon, selected, tag, action));
+        body.addView(new ChatChoiceRow(context, chinese, ink, muted, title, description, icon, selected, tag, action));
     }
     private void choose(String key, String value) { dismiss(); listener.onSelect(key, value); }
     private void divider() {

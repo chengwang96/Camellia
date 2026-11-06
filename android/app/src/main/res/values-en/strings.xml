@@ -9,4 +9,8 @@
     <string name="turn_usage_summary">Usage %1$s tok</string>
     <string name="turn_completed">Completed</string>
     <string name="turn_completion_elapsed">Completed · Elapsed %1$s</string>
+    <string name="turn_stopped">Stopped</string>
+    <string name="turn_stopped_elapsed">Stopped · Elapsed %1$s</string>
+    <string name="turn_failed">Reply failed</string>
+    <string name="turn_failed_elapsed">Reply failed · Elapsed %1$s</string>
 </resources>

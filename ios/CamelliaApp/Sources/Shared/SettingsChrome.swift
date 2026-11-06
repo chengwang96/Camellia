@@ -1,5 +1,19 @@
 import SwiftUI
 
+struct SettingsProgressStyle: ProgressViewStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        let fraction = min(1, max(0, configuration.fractionCompleted ?? 0))
+        return GeometryReader { geometry in
+            ZStack(alignment: .leading) {
+                Capsule().fill(Palette.progressTrack)
+                Capsule().fill(Palette.accent).frame(width: geometry.size.width * CGFloat(fraction))
+            }
+        }
+        .frame(height: 6)
+        .accessibilityValue(Text(fraction, format: .percent.precision(.fractionLength(0))))
+    }
+}
+
 struct SettingsToggleStyle: ToggleStyle {
     func makeBody(configuration: Configuration) -> some View {
         Button { configuration.isOn.toggle() } label: {

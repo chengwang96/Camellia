@@ -6,13 +6,13 @@ const os = require('node:os');
 const { randomUUID, createHash } = require('node:crypto');
 const { writeText } = require('../shared/json-store');
 const { openSync, appendText, retryOpen } = require('../shared/file-open');
-const { INLINE_CHARS, projectRow } = require('./tool-history');
+const { INLINE_CHARS, projectRow, isStreamingToolRow } = require('./tool-history');
 
 // The JSONL remains authoritative. This disposable index contains offsets and
 // cumulative statistics, never message bodies. Fixed-size records allow paging
 // without loading an entire conversation's index into the heap.
 const HEADER = 4096, RECORD = 80, BLOCK = RECORD * 512, READ = 128 * 1024;
-const VERSION = 3;
+const VERSION = 4;
 const FLAGS = { public: 1, visible: 2, remote: 4, user: 8, summary: 16, preview: 32, sequence: 64, tool: 128, file: 256 };
 const signature = stat => stat ? [stat.dev, stat.ino, stat.size, stat.mtimeMs, stat.ctimeMs].join(':') : 'missing';
 const tokens = text => {
@@ -22,7 +22,7 @@ const tokens = text => {
   return (value.length - dense) / 3 + dense;
 };
 const contextRow = row => !(row.role === 'assistant' && !row.runResult && /^Context recovery failed: /u.test(String(row.text || '')))
-  && !(row.runResult && (!row.text || row.text === row.runResult.result));
+  && !(row.runResult && (!row.text || row.text === row.runResult.result)) && !isStreamingToolRow(row);
 function stat(file) { try { return fs.statSync(file); } catch (error) { if (error.code === 'ENOENT') return null; throw error; } }
 const digest = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 function checksum(buffer, offset = 0) {
@@ -195,10 +195,11 @@ class ConversationHistory {
     let flags = Number.isFinite(row.seq) ? FLAGS.sequence : 0;
     if (row.role === 'user') flags |= FLAGS.user;
     if (row.role === 'tool') flags |= FLAGS.tool;
+    const streamingTool = isStreamingToolRow(row);
     if (!row.internal) {
-      flags |= FLAGS.public;
+      if (!streamingTool) flags |= FLAGS.public;
       if (['user', 'assistant', 'notice'].includes(row.role)) flags |= FLAGS.visible;
-      if (['user', 'assistant', 'notice', 'tool'].includes(row.role)) flags |= FLAGS.remote;
+      if (!streamingTool && ['user', 'assistant', 'notice', 'tool'].includes(row.role)) flags |= FLAGS.remote;
       if (row.role === 'user') { value.userSeq = Math.max(value.userSeq, seq); value.userAt = Math.max(value.userAt, Number(row.at) || 0); }
       if (row.role === 'notice' && row.file) { flags |= FLAGS.summary; value.lastSummary = value.count; }
       if (row.role === 'user' && row.attachments?.length || row.role === 'assistant' && row.artifacts?.length) flags |= FLAGS.preview;

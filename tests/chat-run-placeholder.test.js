@@ -21,6 +21,7 @@ function fixture() {
     startRunTicker() { state.startTicker++; },
     stopRunTicker() { state.stopTicker++; },
     updateSendEnabled() { state.sendEnabled++; },
+    renderBackgroundWork() {},
     setRunStatus(text) { state.runStatus.push(text); state.statusRow = { text: text || 'Working…' }; },
   };
   vm.createContext(state);

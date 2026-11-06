@@ -953,6 +953,9 @@ test('artifact listing and streaming expose only authorized workspace deliverabl
   fs.writeFileSync(path.join(root, 'unmentioned.pdf'), 'private');
   manager.append(visible, { role: 'assistant', text: '', artifacts: [{ path: filename }, { path: '.env' }] });
   manager.append(visible, { role: 'assistant', text: '`empty.txt`' });
+  manager.append(visible, { role: 'assistant', text: 'Cleanup finished.',
+    process: [{ type: 'tool', title: 'mcp__camellia_goals__camellia_find_files' }],
+    artifacts: [{ path: 'unmentioned.pdf', explicitDelivery: true }] });
   manager.append(visible, { role: 'assistant', text: '`unmentioned.pdf`', internal: true });
   manager.append(visible, { role: 'user', text: '`unmentioned.pdf`' });
   const { token, deviceId } = pair();

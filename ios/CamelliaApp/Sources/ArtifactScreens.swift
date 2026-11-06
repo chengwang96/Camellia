@@ -272,7 +272,8 @@ struct ArtifactSheetView: View {
                 .padding(.bottom, 16)
             if downloading == artifact.id {
                 ProgressView(value: Double(downloadedBytes), total: Double(max(artifact.size, 1)))
-                    .tint(Palette.ink)
+                    .progressViewStyle(SettingsProgressStyle())
+                    .accessibilityLabel(Text(artifact.name))
                 HStack {
                     Text("\(Self.size(downloadedBytes)) / \(Self.size(artifact.size))")
                         .font(.system(size: Palette.textNote))

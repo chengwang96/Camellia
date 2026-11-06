@@ -61,18 +61,20 @@ const handlers = `
   }
 `;
 
-function patchDshHistory(source, hostFile) {
+function patchDshHistory(source, hostFile, version = '0.2.1-rc.2') {
   const apply = '\tconst implementation = {';
   const chain = 'agent({ name: "deepseek-harness-acp" })';
-  const resume = 'persisted.origin === "subagent" || persisted.parentSession !== void 0';
-  const listing = 'header.origin === "subagent" || header.parentSession !== void 0';
+  const parentFilters = version !== '0.2.2-rc.1';
+  const resume = parentFilters ? 'persisted.origin === "subagent" || persisted.parentSession !== void 0' : 'persisted.origin === "subagent"';
+  const listing = parentFilters ? 'header.origin === "subagent" || header.parentSession !== void 0' : 'header.origin === "subagent"';
   const capability = '\t\t\t\t\t\tresume: {}';
   const inject = '\t"sessionPersistence",';
   if ([apply, chain, resume, listing, capability, inject].some(marker => source.split(marker).length !== 2)) return null;
+  const filtered = parentFilters ? source
+    .replace(resume, 'persisted.origin === "subagent" || persisted.parentSession !== void 0 && !persisted.isSeeded')
+    .replace(listing, 'header.origin === "subagent" || header.parentSession !== void 0 && !header.isSeeded') : source;
   return 'import { SessionCommandController as CamelliaHostFork } from ' + JSON.stringify(pathToFileURL(hostFile).href) + ';\n'
-    + source.replace(inject, inject + '\n\t"sessionQuery",')
-      .replace(resume, 'persisted.origin === "subagent" || persisted.parentSession !== void 0 && !persisted.isSeeded')
-      .replace(listing, 'header.origin === "subagent" || header.parentSession !== void 0 && !header.isSeeded')
+    + filtered.replace(inject, inject + '\n\t"sessionQuery",')
       .replace(capability, capability + ',\n\t\t\t\t\t\tfork: {}')
       .replace(apply, handlers + '\n' + apply)
       .replace(chain, chain
@@ -88,13 +90,14 @@ function prepareDshHistory(runtime) {
     const acpFile = requireNative.resolve('@deepseek-ai/dsh-acp');
     const hostFile = requireNative.resolve('@deepseek-ai/dsh-api-session-controller');
     const metadata = file => JSON.parse(fs.readFileSync(path.resolve(path.dirname(file), '../package.json'), 'utf8'));
-    if (metadata(acpFile).version !== '0.2.1-rc.2' || metadata(hostFile).version !== '0.2.1-rc.2') return null;
+    const version = metadata(acpFile).version;
+    if (!['0.2.1-rc.2', '0.2.2-rc.1'].includes(version) || metadata(hostFile).version !== version) return null;
     const stats = [acpFile, hostFile].map(file => { const s = fs.statSync(file); return file + ':' + s.size + ':' + s.mtimeMs; }).join('|');
     if (cache.has(stats) && fs.existsSync(cache.get(stats))) return cache.get(stats);
     const host = fs.readFileSync(hostFile, 'utf8');
     if (!host.includes('var SessionCommandController = class') || !host.includes('const seed = buildForkSeed(source.events, boundary);')) return null;
     const derivedHost = nativeHistoryModule(hostFile, host + '\nexport { SessionCommandController };\n');
-    const patched = patchDshHistory(fs.readFileSync(acpFile, 'utf8'), derivedHost);
+    const patched = patchDshHistory(fs.readFileSync(acpFile, 'utf8'), derivedHost, version);
     if (!patched) return null;
     const file = nativeHistoryModule(acpFile, patched);
     cache.set(stats, file);

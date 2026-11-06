@@ -20,12 +20,14 @@
   }
   function normalizeSettings(value = { provider: 'native' }) {
     if (!value || typeof value !== 'object' || Array.isArray(value)
-      || Object.keys(value).some(key => !['provider', 'providerId'].includes(key))
+      || Object.keys(value).some(key => !['provider', 'providerId', 'fetchMode'].includes(key))
       || !['native', 'deepseek'].includes(value.provider)) throw new Error('Invalid web tool settings');
     if (value.provider === 'native') return { provider: 'native' };
     if (typeof value.providerId !== 'string' || !/^[a-zA-Z0-9_-]{1,100}$/.test(value.providerId)
       || ['__proto__', 'constructor', 'prototype'].includes(value.providerId)) throw new Error('Choose a DeepSeek API provider');
-    return { provider: 'deepseek', providerId: value.providerId };
+    const fetchMode = value.fetchMode ?? 'deepseek';
+    if (!['deepseek', 'auto', 'local'].includes(fetchMode)) throw new Error('Invalid page fetch mode');
+    return { provider: 'deepseek', providerId: value.providerId, fetchMode };
   }
   return { officialDeepSeek, availableProviders, normalizeSettings };
 });

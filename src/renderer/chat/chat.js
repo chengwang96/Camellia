@@ -14,6 +14,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
 
   let running = false;
   let conversationActivity = null;
+  let backgroundWork = null;
   let currentRunId = null;
   let acceptSessionEvents = false;
   let restoringRun = true;
@@ -492,7 +493,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       tokens.push({ t: 'math', span });
       return SENT + (tokens.length - 1) + SENT;
     });
-    text = text.replace(/```(\w*)[ \t]*\n?([\s\S]*?)(?:```|$)/g, (_m, lang, code) => {
+    text = text.replace(/^ {0,3}```(\w*)[ \t]*\n?([\s\S]*?)(?:^ {0,3}```[ \t]*$|(?![\s\S]))/gm, (_m, lang, code) => {
       tokens.push({ t: 'code', lang, code });
       return SENT + (tokens.length - 1) + SENT;
     });
@@ -911,6 +912,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
         el.className = 'pop-opt' + (selected ? ' current' : '');
         el.innerHTML = '<span class="pop-label"></span><span class="pop-marks">' + checkMark() + '</span>';
         el.querySelector('.pop-label').textContent = o.label;
+        el.querySelector('.pop-label').title = o.label;
         if (section.options === LEVELS || !o.id) el.querySelector('.pop-label').dataset.i18n = '';
         el.addEventListener('click', () => { void onPick(o.id, section.connection); closePops(); });
         if (o.id) el.dataset.modelId = o.id;
@@ -1793,15 +1795,18 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
   }
   function turnBody() { return ensureTurn().querySelector('.turn-body'); }
 
-  async function showTurnArtifacts(turn, text, files, paths = [], roots = []) {
+  async function showTurnArtifacts(turn, text, files, paths = [], roots = [], process = []) {
     if (!turn || !window.dshDesktop.resolveArtifacts) return;
     const sessionId = context.sessionId;
     const cwd = sidebar.sessions.find(session => session.id === sessionId)?.cwd
       || sidebar.workspaces.find(workspace => workspace.id === context.workspaceId)?.path || '';
+    const modelSearch = process.some(entry => /(?:^|__)camellia_find_files$/.test(entry.title || entry.name || ''));
+    const namedFiles = new Set(window.CamelliaArtifacts.referencedArtifacts(files || [], text, window.dshDesktop.platform));
+    const retainedFiles = files?.filter(file => !file.explicitDelivery || !modelSearch || namedFiles.has(file));
     try {
       const result = await window.dshDesktop.resolveArtifacts({ sessionId, cwd,
-        paths: files ? files.map(file => file.path) : paths,
-        explicitPaths: files?.filter(file => file.explicitDelivery).map(file => file.path), text, roots });
+        paths: retainedFiles ? retainedFiles.map(file => file.path) : paths,
+        explicitPaths: retainedFiles?.filter(file => file.explicitDelivery).map(file => file.path), text, roots });
       if (!turn.isConnected || !result.ok || !result.files.length) return;
       const was = nearBottom();
       turn.querySelector('.turn-artifacts')?.remove();
@@ -2379,6 +2384,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
   }
   window.addEventListener('camellia:language', () => {
     chat.querySelectorAll('.context-compaction-duration').forEach(compactionDurationText);
+    renderBackgroundWork();
   });
   function renderCompactionStatus(compaction, historyBefore) {
     if (!compaction) return;
@@ -2436,6 +2442,32 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     refreshCompactionClocks();
     if (running && !compactionClockTimer) compactionClockTimer = setInterval(refreshCompactionClocks, 1000);
     if (historyBefore === undefined) maybeScroll(was);
+  }
+  function backgroundWorkText(tasks) {
+    const first = tasks[0] || {};
+    const detail = tasks.length > 1 ? window.CamelliaI18n.t('{0} background tasks').replace('{0}', tasks.length)
+      : first.description || first.id || '';
+    return window.CamelliaI18n.t('Reply completed · background work still running') + (detail ? ' · ' + detail : '');
+  }
+  function renderBackgroundWork() {
+    const tasks = running ? [] : backgroundWork?.tasks || [];
+    const was = nearBottom();
+    let row = chat.querySelector('.background-work-status');
+    if (!tasks.length) { row?.remove(); return; }
+    const text = backgroundWorkText(tasks);
+    if (!row) {
+      row = document.createElement('div');
+      row.className = 'background-work-status';
+      row.setAttribute('role', 'status');
+      row.setAttribute('aria-live', 'polite');
+      row.innerHTML = '<span class="background-work-pulse" aria-hidden="true"></span><span class="background-work-text"></span>';
+      chat.appendChild(row);
+    }
+    const label = row.querySelector('.background-work-text');
+    if (label.textContent !== text) {
+      label.textContent = text;
+      maybeScroll(was);
+    }
   }
   let statusText = '';
   let conversationPhase = '', conversationPhaseSessionId = null;
@@ -2587,6 +2619,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       stopRunTicker();
     }
     updateSendEnabled();
+    renderBackgroundWork();
   }
 
   // ---------- event handling ----------
@@ -2606,7 +2639,9 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       if (restoringRun) { eventsDuringRestore.push(ev); return; }
       if (ev.session_id === context.sessionId) {
         conversationActivity = ev.activity;
+        backgroundWork = ev.backgroundWork || null;
         updateConversationControls();
+        renderBackgroundWork();
         if (!conversationActivity && !running && statusText === 'Stopping…') setStatus('Stopped');
         if (!conversationActivity) drainMessageQueue();
       }
@@ -2694,6 +2729,11 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     if (currentRunId != null && ev.runId != null && currentRunId !== ev.runId) return;
     const was = nearBottom();
 
+    if (ev.type === 'gui:prompt-queue') {
+      handleConversationStatus({ sessionId: ev.session_id, text: 'Background work in progress · request queued' });
+      return;
+    }
+
     if (ev.type === 'gui:compaction') {
       handleConversationStatus({ sessionId: ev.session_id, text: ev.state === 'running' ? 'Compacting context…' : '',
         compaction: { state: ev.state, native: ev.native !== false, engine: ev.engine || turnEngine || loadedEngine, seq: ev.compactionSeq,
@@ -2736,6 +2776,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
         setRunStatus("Working…");
       } else if (e.type === 'content_block_start') {
         const b = e.content_block || {};
+        if (conversationPhase === 'Background work in progress · request queued') handleConversationStatus({ sessionId: ev.session_id, text: '' });
         if (b.type === 'thinking') setRunStatus("Thinking…");
         else if (b.type === 'text') setRunStatus("Writing a response…");
         else if (b.type === 'tool_use') setRunStatus("Preparing tool " + (b.name || '') + '…');
@@ -2785,6 +2826,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     }
 
     if (ev.type === 'gui:tool') {
+      if (conversationPhase === 'Background work in progress · request queued') handleConversationStatus({ sessionId: ev.session_id, text: '' });
       const card = pendingTools[ev.id] || makeToolCard(ev.name || "Tool", ev.input, ev.id);
       if (ev.input !== undefined) card.setInput(ev.input);
       if (ev.status === 'completed' || ev.status === 'failed') card.setOutput(ev.output || '', ev.is_error || ev.status === 'failed');
@@ -2847,7 +2889,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       void showTurnArtifacts(turnEl, Array.from(turnEl?.querySelectorAll('.md') || []).map(element => element.artifactText || '').join('\n'), ev.artifacts,
         artifactTools.flatMap(card => window.CamelliaArtifacts.toolPaths(card.name, card.inputData)),
         artifactTools.flatMap(card => window.CamelliaArtifacts.toolRoots(card.inputData)
-          .concat(window.CamelliaArtifacts.toolDirectories(card.inputData))));
+          .concat(window.CamelliaArtifacts.toolDirectories(card.inputData))), artifactTools);
       setStatus((stopped ? "Stopped · " : ok ? '' : "Error · ") + stats.join(' · '));
       const completedTurn = turnEl;
       turnEl = null;
@@ -3806,7 +3848,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     if ($('questionDialog').open) $('questionDialog').close();
     $('questionDialog').replaceChildren();
     pendingQuestion = null; permissionSubmission = null;
-    acceptSessionEvents = false; currentRunId = null; conversationActivity = null;
+    acceptSessionEvents = false; currentRunId = null; conversationActivity = null; backgroundWork = null;
     restoringRun = false; eventsDuringRestore.length = 0;
     permRequestId = null; permissionQueue.length = 0; $('permMask').classList.remove('visible');
     seenPermissionBlocks.clear();
@@ -4006,6 +4048,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       conversationPrefs = res.preferences || conversationPrefs;
       loadedEngine = res.currentEngine || harnessId;
       conversationActivity = res.activity || null;
+      backgroundWork = res.backgroundWork || null;
       updateConversationControls();
       $('conversationOrigin').hidden = !conversationPrefs.showOrigin || !res.origin;
       $('conversationOrigin').textContent = res.origin === harnessId ? 'Created in this engine' : 'Created in ' + res.origin;
@@ -4039,6 +4082,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       setStatus(res.interrupted ? 'The last turn was interrupted. Review its result before continuing.' : res.truncated ? "Showing the latest 200 messages. Continuation uses the full history." : "History loaded. Your next message continues this session.");
       if (!await applyLiveRun(res.live)) return false;
       workPanel.update(res.subagents);
+      renderBackgroundWork();
       if (seq !== sessionOpenSeq) return false;
       const lastSeq = res.live?.eventSeq || 0;
       const liveRun = res.live?.runId;
@@ -4225,7 +4269,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
             turnFooter(div, m.at, () => turnCopyText(div));
             window.CamelliaTurnDetails.render(div, { ...runResult, ...m.turnMetrics, usage: m.usage || runResult?.usage });
             chat.insertBefore(div, before);
-            void showTurnArtifacts(div, resultOnly ? '' : m.text, m.artifacts);
+            void showTurnArtifacts(div, resultOnly ? '' : m.text, m.artifacts, [], [], m.process || []);
           }
         }
         return true;

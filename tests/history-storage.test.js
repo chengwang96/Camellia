@@ -84,6 +84,32 @@ test('append updates only the new index record and retains cached immutable mess
   assert.equal(h.history.metrics.rebuilds, 1);
 });
 
+test('legacy and appended streaming tool snapshots stay out of public replay and token estimates', t => {
+  const h = fixture(t), event = (id, status, output) => JSON.stringify({ type: 'gui:tool', id, status, output });
+  const source = [{ seq: 1, role: 'user', text: 'Inspect the result' },
+    { seq: 2, role: 'tool', text: event('write', 'pending', '') },
+    { seq: 3, role: 'tool', text: event('write', 'in_progress', 'PARTIAL_OUTPUT') },
+    { seq: 4, role: 'tool', text: event('write', 'completed', 'FINAL_OUTPUT') },
+    { seq: 5, role: 'tool', text: 'Plain tool result' },
+    { seq: 6, role: 'assistant', text: 'Finished' }];
+  h.seed(source);
+  const file = path.join(h.root, 'sample.jsonl'), original = fs.readFileSync(file);
+  assert.deepEqual(h.history.rows('sample').map(row => row.seq), [1, 2, 3, 4, 5, 6]);
+  assert.deepEqual(h.history.rows('sample', { mask: FLAGS.public }).map(row => row.seq), [1, 4, 5, 6]);
+  assert.deepEqual(h.history.rows('sample', { mask: FLAGS.remote }).map(row => row.seq), [1, 4, 5, 6]);
+  const retained = source.filter(row => [1, 4, 5, 6].includes(row.seq));
+  const wanted = retained.reduce((sum, row) => sum + tokens(row.text) + 200 / 3, 0);
+  assert.ok(Math.abs(h.history.estimate('sample') - wanted) < 1e-8);
+  assert.ok(Math.abs(h.history.estimateRange('sample', { after: 1 }) - (wanted - tokens(source[0].text) - 200 / 3)) < 1e-8);
+  assert.deepEqual(fs.readFileSync(file), original);
+
+  h.history.append('sample', { seq: 7, role: 'tool', text: event('search', 'running', 'STREAMING_SEARCH') });
+  assert.deepEqual(h.history.rows('sample', { mask: FLAGS.public }).map(row => row.seq), [1, 4, 5, 6]);
+  h.history.append('sample', { seq: 8, role: 'tool', text: event('search', 'failed', 'SEARCH_ERROR') });
+  assert.deepEqual(h.history.rows('sample', { mask: FLAGS.public }).map(row => row.seq), [1, 4, 5, 6, 8]);
+  assert.deepEqual(h.history.rows('sample').map(row => row.seq), [1, 2, 3, 4, 5, 6, 7, 8]);
+});
+
 test('fork persists the copied transcript in one batch', t => {
   const { root, manager, conversation: c } = managerFixture(t);
   const rows = Array.from({ length: 1200 }, (_, i) => ({ seq: i + 1, role: i % 2 ? 'assistant' : 'user', text: 'message ' + i }));

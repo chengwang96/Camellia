@@ -294,8 +294,10 @@ function createClaudeSidebar({ $, context, contextBusy, canChangeContext, canRea
       item.querySelector('.session-item-text').appendChild(badge);
     }
     const activity = s?.activity;
+    const background = !activity && Boolean(s?.backgroundWork?.tasks?.length);
     item.dataset.activity = activity || '';
-    item.querySelector('.session-item-time').textContent = activity === 'permission' ? 'Needs approval' : activity === 'question' ? 'Needs input' : activity ? 'Working' : s ? relTime(s.mtimeMs) : 'Now';
+    item.dataset.background = background ? 'running' : '';
+    item.querySelector('.session-item-time').textContent = activity === 'permission' ? 'Needs approval' : activity === 'question' ? 'Needs input' : activity ? 'Working' : background ? 'Background tasks' : s ? relTime(s.mtimeMs) : 'Now';
     const open = () => {
       const wrongHarness = Boolean(s?.currentEngine && s.currentEngine !== harnessId);
       if (s && (discussionOpening() || s.id !== context.sessionId || wrongHarness || ['permission', 'question'].includes(s.activity)))

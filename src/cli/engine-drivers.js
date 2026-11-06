@@ -99,11 +99,11 @@ function createEngineDrivers({ root, dataDir, loadConfig, saveConfig, onEvent, g
     return current && !current.dead && !opts.fork && current.opts.goalBridge === opts.goalBridge && current.sessionId === (opts.sessionId || null)
       && JSON.stringify(current.settings) === JSON.stringify(settings) ? current : null;
   }
-  const kimi = { sessions: kimiPool, history: kimiHistory, settings: kimiSettings, nativeCompaction: true, nativeAutoCompaction: true,
+  const kimi = { sessions: kimiPool, history: kimiHistory, settings: kimiSettings, nativeCompaction: true, nativeAutoCompaction: true, titleDuringTurn: true,
     nativeEditing: () => nativeEditingSupported('kimi', runtimes.locate('kimi')?.version),
-    generateTitle({ conversation }) {
+    generateTitle({ conversation, prompt, duringTurn }) {
       const session = kimiPool.get({ conversationId: conversation.id });
-      return session && !session.dead ? session.generateTitle() : '';
+      return session && !session.dead ? session.generateTitle({ prompt, duringTurn }) : '';
     },
     async forkNative(options) {
       const result = await forkKimiNative({ ...options, ensureSource: kimi.ensure,

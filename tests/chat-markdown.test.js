@@ -40,6 +40,15 @@ test('single prose line breaks and blank lines inside code remain intact', () =>
   assert.equal(render('```text\none\n\nthree\n```'), '<pre><code>one\n\nthree\n</code></pre>');
 });
 
+test('inline triple backticks do not capture prose or unbalance real code fences', () => {
+  const html = chatRenderer()('原因是这些回复把 mp4 路径放在 ``` 代码块里。\n\n```\n`video.mp4`\n```\n\n或\n\n```md\n[视频](video.mp4)\n```\n\n后续 **正文**。');
+  assert.match(html, /放在 ``` 代码块里/);
+  assert.equal((html.match(/<pre><code>/g) || []).length, 2);
+  assert.match(html, /<pre><code>`video\.mp4`\n?<\/code><\/pre>/);
+  assert.match(html, /<pre><code>\[视频\]\(video\.mp4\)\n?<\/code><\/pre>/);
+  assert.match(html, /<p class="md-paragraph">后续 <strong>正文<\/strong>。<\/p>$/);
+});
+
 test('the reported Windows Markdown link renders a label and a preview path without the line suffix', () => {
   const html = chatRenderer()('对应说明：[多账号管理](D:/Code/DSH/docs/configuration.md:62)。');
   assert.match(html, /^<p class="md-paragraph">对应说明：<a /);

@@ -15,25 +15,22 @@ import android.widget.TextView;
 
 @android.annotation.SuppressLint("ViewConstructor")
 final class ChatChoiceRow extends LinearLayout {
-    ChatChoiceRow(Context context, boolean chinese, int ink, int muted, int accent,
+    ChatChoiceRow(Context context, boolean chinese, int ink, int muted,
                   String title, String description, String icon, boolean selected, String tag, Runnable action) {
         super(context);
         setGravity(Gravity.CENTER_VERTICAL); setPadding(dp(16), dp(14), dp(14), dp(14)); setMinimumHeight(dp(64));
         setTag(tag); setFocusable(true); setSelected(selected);
         GradientDrawable mask = new GradientDrawable(); mask.setColor(Color.WHITE); mask.setCornerRadius(dp(Palette.RADIUS_FIELD));
-        setBackground(new RippleDrawable(ColorStateList.valueOf((accent & 0xffffff) | 0x18000000), null, mask));
-        // The ripple is 0x18 alpha, the same one `SettingsStyle` uses on a card
-        // row — derived from `accent` rather than a fixed colour because this row
-        // is also used over the darker popups, where the fixed one reads wrong.
+        setBackground(new RippleDrawable(ColorStateList.valueOf((ink & 0xffffff) | 0x18000000), null, mask));
         LinearLayout words = new LinearLayout(context); words.setOrientation(VERTICAL);
         TextView name = label(title, Palette.TEXT_ROW_STRONG, ink); name.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
-        name.setMaxLines(2); words.addView(name);
+        name.setSingleLine(true); words.addView(name);
         if (!description.isEmpty()) {
             TextView detail = label(description, Palette.TEXT_SMALL, muted); detail.setMaxLines(3); detail.setPadding(0, dp(5), 0, 0); words.addView(detail);
         }
         addView(words, new LayoutParams(0, -2, 1));
         if (selected) {
-            TextView check = label("✓", Palette.TEXT_TICK, accent); check.setGravity(Gravity.CENTER);
+            TextView check = label("✓", Palette.TEXT_TICK, ink); check.setGravity(Gravity.CENTER);
             check.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO); addView(check, new LayoutParams(dp(32), dp(32)));
         } else if (icon != null) {
             ImageView arrow = new ImageView(context); arrow.setImageDrawable(new LineIcon(icon, muted));
@@ -41,6 +38,7 @@ final class ChatChoiceRow extends LinearLayout {
             addView(arrow, new LayoutParams(dp(26), dp(26)));
         }
         setContentDescription(title + (description.isEmpty() ? "" : ", " + description) + (selected ? chinese ? "，已选择" : ", selected" : ""));
+        setTooltipText(title + (description.isEmpty() ? "" : "\n" + description));
         setOnClickListener(view -> action.run());
     }
 

@@ -44,7 +44,7 @@ final class ConversationRow extends LinearLayout {
         CheckBox check = new CheckBox(getContext()); check.setChecked(selected);
         check.setClickable(false); check.setFocusable(false);
         check.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
-        check.setButtonTintList(ColorStateList.valueOf(new ChatStyle(getContext()).accent));
+        new SettingsStyle(getContext()).selection(check);
         addView(check, 0, new LayoutParams(dp(40), dp(40)));
         setSelected(selected);
         setContentDescription(getContentDescription() + (selected ? " · ✓" : " · ○"));

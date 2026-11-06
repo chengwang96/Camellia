@@ -29,13 +29,17 @@ function createZoomController({ loadConfig, saveConfig, legacyLevel, log = () =>
   function apply(wc) {
     const target = clamp(level + (contents.get(wc) || 0));
     if (!wc.isDestroyed() && Math.abs(wc.getZoomLevel() - target) > 0.000001) wc.setZoomLevel(target);
+    return 1.2 ** target;
   }
   function set(value) {
     if (!valid(value)) throw new Error('Invalid zoom level');
     const next = clamp(value);
     saveConfig({ zoomLevel: next });
     level = next;
-    for (const wc of contents.keys()) apply(wc);
+    for (const wc of contents.keys()) {
+      const zoomFactor = apply(wc);
+      if (!wc.isDestroyed()) wc.send('dsh:zoom-changed', { zoomFactor });
+    }
     return { ok: true, zoomLevel: level, zoomFactor: 1.2 ** level };
   }
   function adjust(direction) {

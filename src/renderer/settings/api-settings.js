@@ -433,9 +433,8 @@ function fillUsageFilters() {
   fillSelect($('usageModel'), [...models].sort().map(id => [id,id]), "All models");
 }
 function usageSources() {
-  const source = $('usageSource').value;
-  const providers = source === 'subscription' ? [] : (live.providers || []).map(p => ({ ...p, keys: [...p.keys], source: 'api' }));
-  if (source !== 'subscription') for (const archived of live.usageArchive || []) {
+  const providers = (live.providers || []).map(p => ({ ...p, keys: [...p.keys], source: 'api' }));
+  for (const archived of live.usageArchive || []) {
     let provider = providers.find(p => p.id === archived.providerId || p.id === 'history:' + archived.providerId);
     if (!provider) {
       provider = { id: 'history:' + archived.providerId, name: archived.providerName,
@@ -446,7 +445,6 @@ function usageSources() {
     provider.keys.push({ id: archived.id, name: `${label} · ${window.CamelliaI18n.t('Previous key')}`,
       usage: archived.usage });
   }
-  if (source === 'api') return providers;
   const subscriptions = new Map();
   for (const account of live.subscriptionUsage?.accounts || []) {
     const id = 'subscription:' + account.engine;
@@ -509,7 +507,7 @@ function subscriptionPriceStatus(message, detail = '') {
 function renderUsage() {
   const { rows, series } = usageRows(); usageData = rows;
   const sum = rows.reduce(addStats, blankStats());
-  const hasSubscriptions = $('usageSource').value === 'subscription' || rows.some(row => row.source === 'subscription');
+  const hasSubscriptions = rows.some(row => row.source === 'subscription');
   const countLabel = hasSubscriptions ? 'Successful requests / turns' : 'Successful requests';
   const countUnit = hasSubscriptions ? 'requests / turns' : 'requests';
   $('usageSummary').innerHTML = [[countLabel, sum.requests, countUnit], ["Input tokens", sum.inputTokens, "Includes cache"], ["Output tokens", sum.outputTokens, "Reported by provider"], ["Failed / Canceled", sum.failures + sum.cancelled, countUnit]].map(([label,value,note]) => `<div><small data-i18n>${label}</small><strong>${compact(value)}</strong><small data-i18n>${note}</small></div>`).join('');
@@ -518,7 +516,7 @@ function renderUsage() {
   const usd = value => new Intl.NumberFormat(window.CamelliaI18n.locale, { style: 'currency', currency: 'USD', minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(value);
   const estimate = stats => stats.pricedTokens > 0 ? usd(stats.estimatedCostUsd) : t('Unavailable');
   $('subscriptionCost').textContent = estimate(subscription);
-  $('subscriptionCostCard').hidden = $('usageSource').value === 'api';
+  $('subscriptionCostCard').hidden = !hasSubscriptions;
   const pricing = live.subscriptionUsage?.pricing || {};
   const repricing = live.subscriptionUsage?.repricing || {};
   const details = [t('Standard text API equivalent, not your subscription bill.'),
@@ -670,7 +668,7 @@ $('editor').onclick = async e => {
   if (d.upKey !== undefined || d.downKey !== undefined) { const i = Number(d.upKey ?? d.downKey), j = d.upKey !== undefined ? i-1 : i+1; [p.keys[i], p.keys[j]] = [p.keys[j], p.keys[i]]; edited(true); renderKeys(); }
   try {
     if (d.keyUsage) {
-      await assertClean(); $('usageSource').value = 'api'; $('usageModel').value = '';
+      await assertClean(); $('usageModel').value = '';
       if ($('usageMetric').value === 'estimatedCostUsd') $('usageMetric').value = 'tokens';
       setView('usage'); $('usageProvider').value = p.id; fillUsageFilters();
       $('usageKey').value = d.keyUsage; fillUsageFilters(); renderUsage();
@@ -748,7 +746,7 @@ $('enabled').onchange = e => { config.enabled = e.target.checked; edited(true); 
 $('port').oninput = e => { config.port = Number(e.target.value); edited(); };
 $('port').onchange = () => void flushSave();
 $('port').onblur = () => void flushSave();
-for (const id of ['usageSource','usageRange','usageProvider','usageKey','usageModel','usageMetric']) $(id).onchange = () => {
+for (const id of ['usageRange','usageProvider','usageKey','usageModel','usageMetric']) $(id).onchange = () => {
   fillUsageFilters();
   renderUsage();
 };
@@ -1116,9 +1114,15 @@ function renderWebToolsSettings() {
   const providers = window.CamelliaWebTools.availableProviders(live);
   const settings = config?.webTools || { provider: 'native' };
   const unavailable = settings.provider === 'deepseek' && !providers.some(provider => provider.id === settings.providerId);
+  const fetchMode = settings.fetchMode || 'deepseek';
   const hint = t(unavailable ? 'The selected official API key is unavailable. Enable it in API Keys or choose another source.'
-    : settings.provider === 'deepseek' ? 'Search and read pages with DeepSeek from the next message. Google subscription sessions are not supported.'
+    : settings.provider === 'deepseek' ? 'Search with DeepSeek and choose how pages are fetched from the next message. Google subscription sessions are not supported.'
       : providers.length ? 'Use the engine default, or choose a configured DeepSeek official API.' : 'Add an enabled DeepSeek official API key to use its web tools.');
+  const fetchHint = t({
+    auto: 'Try DeepSeek first, then retry unreadable pages through this computer using the current connection mode.',
+    deepseek: 'Use only DeepSeek to fetch pages. Local fallback is off.',
+    local: 'Fetch pages through this computer using the current connection mode. Search still uses DeepSeek.',
+  }[fetchMode] || 'Use only DeepSeek to fetch pages. Local fallback is off.');
   for (const prefix of ['webTools', 'networkWebTools']) {
     const select = $(prefix + 'Provider');
     select.replaceChildren(new Option(t('Engine default'), 'native'));
@@ -1131,13 +1135,23 @@ function renderWebToolsSettings() {
     select.disabled = !config || saving;
     $(prefix + 'AddApi').hidden = providers.length > 0 && !unavailable;
     $(prefix + 'Hint').textContent = hint;
+    $(prefix + 'FetchRow').hidden = settings.provider !== 'deepseek';
+    $(prefix + 'FetchMode').value = fetchMode;
+    $(prefix + 'FetchMode').disabled = !config || saving || unavailable;
+    $(prefix + 'FetchHint').textContent = fetchHint;
   }
 }
 for (const prefix of ['webTools', 'networkWebTools']) {
   $(prefix + 'Provider').addEventListener('change', () => {
     if (!config || saving) return;
     const value = $(prefix + 'Provider').value;
-    config.webTools = value === 'native' ? { provider: 'native' } : { provider: 'deepseek', providerId: value.slice('deepseek:'.length) };
+    const fetchMode = config.webTools?.fetchMode || 'deepseek';
+    config.webTools = value === 'native' ? { provider: 'native' } : { provider: 'deepseek', providerId: value.slice('deepseek:'.length), fetchMode };
+    edited(true);
+  });
+  $(prefix + 'FetchMode').addEventListener('change', () => {
+    if (!config || saving || config.webTools?.provider !== 'deepseek') return;
+    config.webTools.fetchMode = $(prefix + 'FetchMode').value;
     edited(true);
   });
   $(prefix + 'AddApi').addEventListener('click', () => {

@@ -19,7 +19,7 @@ final class Palette {
     final int ink;
     /** Secondary, tertiary and placeholder text, respectively. */
     final int muted, faint, caption;
-    final int userBubble, cardBorder, controlFill, selectedBorder;
+    final int userBubble, cardBorder, controlFill, selectedBorder, progressTrack;
     /** The hairline around a floating bar, and the dock's own edge. */
     final int separator;
 
@@ -173,6 +173,7 @@ final class Palette {
         cardBorder = color(dark, "#424448", "#D6D6D8");
         controlFill = color(dark, "#292A2D", "#F5F6F7");
         selectedBorder = color(dark, "#737981", "#ADB2B8");
+        progressTrack = color(dark, "#353638", "#EBEEF2");
         separator = color(dark, "#3B3B40", "#ECEEF1");
 
         grouped = background;

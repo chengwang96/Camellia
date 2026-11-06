@@ -81,3 +81,30 @@ test('the main window keeps the same hidden-until-ready pattern', () => {
   assert.match(createMain, /\n    show: false,\n/);
   assert.match(createMain, /mainWindow\.once\('ready-to-show', \(\) => \{ mainWindow\.show\(\); \}\);/);
 });
+
+test('native caption painting is yielded before the backdrop and refreshed before modal construction', async () => {
+  const source = /async function setSettingsBackdrop\(owner, visible\) \{[\s\S]*?\n\}/.exec(main)[0];
+  const owner = {}, order = [];
+  const contents = {
+    send: (channel, visible) => order.push(['send', channel, visible]),
+    executeJavaScript: async script => { order.push(['paint', script]); },
+  };
+  const setBackdrop = new Function('windowChrome', 'liveWebContents', 'log', 'setImmediate', `return ${source}`)(
+    { setDimmed: (current, visible) => { assert.equal(current, owner); order.push(['dim', visible]); } },
+    current => current === owner ? contents : null,
+    () => {},
+    callback => { order.push(['yield']); callback(); });
+
+  await setBackdrop(owner, true);
+  assert.deepEqual(order, [
+    ['dim', true], ['yield'], ['send', 'dsh:settings-overlay', true], ['paint', 'window.paintSettingsBackdrop?.()'],
+  ]);
+  const refresh = openSettings.indexOf('windowChrome.setDimmed(owner, true)');
+  const yieldBeforeModal = openSettings.indexOf('await new Promise(resolve => setImmediate(resolve))', refresh);
+  const construct = openSettings.indexOf('settingsWindow = new BrowserWindow');
+  assert.ok(refresh > 0 && yieldBeforeModal > refresh && construct > yieldBeforeModal);
+
+  order.length = 0;
+  await setBackdrop(owner, false);
+  assert.deepEqual(order, [['dim', false], ['send', 'dsh:settings-overlay', false]]);
+});

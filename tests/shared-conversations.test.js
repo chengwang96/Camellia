@@ -48,6 +48,27 @@ function fixture(t, overrides = {}) {
     restart: () => { manager = new SharedConversations(args); return manager; } };
 }
 
+test('background work remains visible after a reply without making the conversation busy', async t => {
+  const h = fixture(t), run = await h.manager.send('kimi', { prompt: 'Evaluate in the background' });
+  const active = h.manager.active.get(run.sessionId), nativeId = active.session.sessionId;
+  const task = { id: 'bash-eval', description: 'Policy evaluation', kind: 'process', status: 'running' };
+  assert.equal(h.manager.capture('kimi', { type: 'gui:background-work', conversationId: run.sessionId,
+    runId: active.session.gen, session_id: nativeId, tasks: [task] }), true);
+  assert.equal(h.manager.backgroundStatus(run.sessionId).tasks[0].description, 'Policy evaluation');
+  h.finish('kimi'); await run.done;
+  assert.equal(h.manager.busy(run.sessionId), false);
+  assert.equal(h.manager.activity(run.sessionId), null);
+  assert.equal(h.manager.load('kimi', run.sessionId).backgroundWork.tasks[0].id, 'bash-eval');
+  assert.equal((await h.manager.list('kimi', {})).sessions.find(session => session.id === run.sessionId).backgroundWork.tasks.length, 1);
+  assert.equal(h.events.findLast(event => event.type === 'conversation:activity').backgroundWork.tasks.length, 1);
+  assert.equal(h.manager.capture('kimi', { type: 'gui:background-work', conversationId: run.sessionId,
+    runId: active.session.gen, session_id: 'stale-native-session', tasks: [task] }), false);
+  assert.equal(h.manager.capture('kimi', { type: 'gui:background-work', conversationId: run.sessionId,
+    runId: active.session.gen, session_id: nativeId, tasks: [] }), true);
+  assert.equal(h.manager.backgroundStatus(run.sessionId), null);
+  assert.equal(h.manager.load('kimi', run.sessionId).backgroundWork, null);
+});
+
 for (const engine of ['claude', 'dsh', 'kimi', 'grok', 'antigravity']) test(`${engine} native child identity merges persist once and preserve the initiating turn`, async t => {
   const h = fixture(t), result = await h.manager.send(engine, { prompt: 'Delegate the fixture task' });
   const active = h.manager.active.get(result.sessionId), conversation = h.manager.get(result.sessionId);
@@ -335,6 +356,30 @@ test('unchanged streaming native bindings avoid per-delta writes and persist at 
   assert.equal(saved.segments.claude.nativeId, a.session.sessionId); assert.ok(saved.segments.claude.lastUsedAt);
 });
 
+test('streaming tool snapshots stay internal and an unfinished tool is published once as cancelled', async t => {
+  const h = fixture(t), run = await h.manager.send('codex', { prompt: 'Inspect tool replay' });
+  const c = h.manager.get(run.sessionId), runId = h.sent[0].session.gen;
+  const emit = event => h.manager.capture('codex', { ...event, runId });
+  emit({ type: 'gui:tool', id: 'done', name: 'Write', status: 'pending', output: '' });
+  emit({ type: 'gui:tool', id: 'done', name: 'Write', status: 'in_progress', output: 'DONE_PARTIAL' });
+  emit({ type: 'gui:tool', id: 'done', name: 'Write', status: 'completed', output: 'FINAL_OUTPUT' });
+  emit({ type: 'gui:tool', id: 'open', name: 'Read', status: 'in_progress', output: 'OPEN_PARTIAL' });
+  const tools = () => h.manager.rows(c).filter(row => row.role === 'tool');
+  assert.deepEqual(tools().map(row => row.internal), [true, true, false, true]);
+  const activeReplay = h.manager.context(c, 'codex');
+  assert.match(activeReplay, /FINAL_OUTPUT/);
+  assert.doesNotMatch(activeReplay, /DONE_PARTIAL|OPEN_PARTIAL/);
+
+  h.finish('codex', 'stopped', 'Stopped'); await run.done;
+  const settled = tools().filter(row => JSON.parse(row.text).status === 'cancelled');
+  assert.equal(settled.length, 1); assert.equal(settled[0].internal, false);
+  assert.equal(JSON.parse(settled[0].text).id, 'open');
+  assert.equal(tools().filter(row => JSON.parse(row.text).id === 'done' && !row.internal).length, 1);
+  const stoppedReplay = h.manager.context(c, 'codex');
+  assert.equal(stoppedReplay.match(/OPEN_PARTIAL/g)?.length, 1);
+  assert.doesNotMatch(stoppedReplay, /DONE_PARTIAL/);
+});
+
 for (const message of ['HTTP 401: Authentication failed', 'HTTP 429: quota exceeded',
   'Compaction failed: HTTP 429: usage limit reached', 'HTTP 403: permission denied', 'Provider unavailable'])
   test('automatic compaction retains full context after ' + message, async t => {
@@ -583,22 +628,29 @@ for (const engine of ['codex', 'kimi']) test(engine + ' compaction quota fallbac
   c.engineSettings[engine].contextWindow = 6000;
   for (let index = 0; index < 3; index++) h.manager.append(c, { role: 'tool', text: 'SOURCE_' + index + ' ' + 'x'.repeat(9000) });
   const pending = h.manager.compact(c.id).catch(error => error);
-  await h.flush();
-  const firstPrompt = h.sent.at(-1).prompt;
-  h.finish(engine, 'success', 'First completed fragment'); await h.flush();
-  const failedPrompt = h.sent.at(-1).prompt;
-  assert.notEqual(failedPrompt, firstPrompt);
-  h.finish(engine, 'error', 'You\u2019ve hit your usage limit.'); await h.flush();
-  assert.equal(h.sent.at(-1).opts.settings.subscriptionId, 'b');
-  assert.equal(h.sent.at(-1).prompt, failedPrompt);
+  let firstPrompt, failedPrompt, failures = 0;
+  const allowedFailures = engine === 'kimi' ? 2 : 1;
   while (h.manager.switching.has(c.id)) {
     assert.ok(h.sent.length < 12);
-    assert.equal(h.sent.at(-1).opts.settings.subscriptionId, 'b');
-    h.finish(engine, 'success', 'Recovered working context'); await h.flush();
+    const running = h.sent.filter(item => item.session.running);
+    if (!running.length) { await h.flush(); continue; }
+    const next = !firstPrompt ? running.find(item => item.prompt.includes('SOURCE_0'))
+      : !failedPrompt ? running.find(item => item.prompt.includes('SOURCE_1')) : running.at(-1);
+    if (!next) { await h.flush(); continue; }
+    if (!firstPrompt) {
+      firstPrompt = next.prompt;
+      h.finish(engine, 'success', 'First completed fragment', next.session);
+    } else if (!failedPrompt || next.prompt === failedPrompt && failures < allowedFailures) {
+      failedPrompt ||= next.prompt;
+      failures++;
+      h.finish(engine, 'error', 'You\u2019ve hit your usage limit.', next.session);
+    } else h.finish(engine, 'success', 'Recovered working context', next.session);
+    await h.flush();
   }
   const result = await pending;
   assert.equal(result.ok, true, result.message);
   assert.equal(h.sent.filter(sent => sent.prompt === firstPrompt).length, 1);
+  assert.equal(h.sent.filter(sent => sent.prompt === failedPrompt).at(-1).opts.settings.subscriptionId, 'b');
   assert.match(fs.readFileSync(result.file, 'utf8'), /Recovered working context/);
   assert.equal(c.lastCompaction.outcome, 'completed');
 });
@@ -1258,6 +1310,115 @@ test('engine fallback maps a million-character history once and merges short sum
   assert.equal(h.sent.at(-1).opts.settings.thinkingBudget, 'max');
   assert.doesNotMatch(h.sent.at(-1).prompt, /FRAGMENT_/);
   h.finish('codex'); await next.done;
+});
+
+test('Kimi auxiliary summaries use low effort without changing the main turn effort', async context => {
+  const h = subscriptionFixture(context, 'kimi'), manager = h.manager;
+  const first = await manager.send('kimi', { prompt: 'Original task' }); h.finish('kimi'); await first.done;
+  const c = manager.get(first.sessionId);
+  c.engineSettings.kimi.thinkingBudget = 'max';
+  manager.append(c, { role: 'tool', text: 'SOURCE_CONTEXT ' + 'x'.repeat(100000) });
+  const pending = manager.compact(c.id, { portable: true });
+  await h.flush();
+  const summary = h.sent.at(-1);
+  assert.equal(summary.opts.settings.thinkingBudget, 'low');
+  assert.equal(manager.settings('kimi', c.id).thinkingBudget, 'max');
+  h.finish('kimi', 'success', 'Compacted context with the exact next step');
+  const result = await pending;
+  assert.equal(c.lastCompaction.thinkingBudget, 'low');
+  assert.match(fs.readFileSync(result.file, 'utf8'), /Compacted context/);
+
+  const next = await manager.send('kimi', { sessionId: c.id, prompt: 'Continue after summary' });
+  assert.equal(h.sent.at(-1).opts.settings.thinkingBudget, 'max');
+  h.finish('kimi'); await next.done;
+});
+
+test('Kimi subscription summaries run four independent workers and merge in source order', async context => {
+  const h = subscriptionFixture(context, 'kimi'), manager = h.manager;
+  const first = await manager.send('kimi', { prompt: 'Original task' }); h.finish('kimi'); await first.done;
+  const c = manager.get(first.sessionId);
+  c.engineSettings.kimi.contextWindow = 6000;
+  c.engineSettings.kimi.thinkingBudget = 'max';
+  for (let n = 0; n < 6; n++) manager.append(c, { role: 'tool', text: 'FRAGMENT_' + n + ' ' + 'x'.repeat(8000) });
+  const released = new Set();
+  h.drivers.kimi.sessions = { touch() {}, pendingRelease: () => null, release: async ({ conversationId }) => { released.add(conversationId); return true; } };
+  const pending = manager.compact(c.id, { portable: true });
+  const workers = new Set(); let maxActive = 0;
+  for (let guard = 0; manager.busy(c.id); guard++) {
+    assert.ok(guard < 30);
+    const running = h.sent.filter(item => item.session.running);
+    maxActive = Math.max(maxActive, manager.active.size);
+    if (!running.length) { await h.flush(); continue; }
+    for (const item of running) workers.add(item.opts.conversationId);
+    const next = running.at(-1), merge = /Summaries to merge/.test(next.prompt);
+    const fragment = merge ? null : next.prompt.match(/FRAGMENT_(\d+)/)?.[1];
+    h.finish('kimi', 'success', merge ? 'MERGED_CONTEXT' : 'PART_' + fragment, next.session);
+    await h.flush();
+  }
+  const result = await pending;
+  assert.equal(maxActive, 4);
+  assert.equal(workers.size, 7);
+  assert.deepEqual([...released].sort(), [...workers].sort());
+  assert.ok(!workers.has(c.id));
+  assert.equal(c.lastCompaction.concurrency, 4);
+  assert.equal(c.lastCompaction.thinkingBudget, 'low');
+  const maps = h.sent.filter(item => item.prompt.includes('History fragment (JSON data'));
+  assert.equal(maps.length, 6);
+  const merge = h.sent.find(item => item.prompt.includes('Summaries to merge'));
+  for (let n = 0; n < 6; n++) {
+    assert.ok(merge.prompt.indexOf('PART_' + n) < merge.prompt.indexOf('PART_' + (n + 1)) || n === 5);
+  }
+  assert.match(fs.readFileSync(result.file, 'utf8'), /MERGED_CONTEXT/);
+});
+
+test('Kimi parallel summary quota failure reuses checkpoints before serial account recovery', async context => {
+  const h = subscriptionFixture(context, 'kimi'), manager = h.manager;
+  const first = await manager.send('kimi', { prompt: 'Original task' }); h.finish('kimi'); await first.done;
+  const c = manager.get(first.sessionId);
+  c.engineSettings.kimi.contextWindow = 6000;
+  for (let n = 0; n < 4; n++) manager.append(c, { role: 'tool', text: 'FRAGMENT_' + n + ' ' + 'x'.repeat(8000) });
+  const pending = manager.compact(c.id, { portable: true });
+  let failures = 0, attempts = 0;
+  for (let guard = 0; manager.busy(c.id); guard++) {
+    assert.ok(guard < 30);
+    const running = h.sent.filter(item => item.session.running);
+    if (!running.length) { await h.flush(); continue; }
+    const next = running.at(-1), merge = /Summaries to merge/.test(next.prompt);
+    const fragment = merge ? null : next.prompt.match(/FRAGMENT_(\d+)/)?.[1];
+    if (fragment === '1') attempts++;
+    if (fragment === '1' && failures < 2) {
+      failures++;
+      h.finish('kimi', 'error', 'HTTP 429 quota exhausted', next.session);
+    } else h.finish('kimi', 'success', merge ? 'RECOVERED_CONTEXT' : 'PART_' + fragment, next.session);
+    await h.flush();
+  }
+  const result = await pending;
+  assert.equal(attempts, 3);
+  assert.equal(c.lastCompaction.serialFallback, 'quota');
+  assert.equal(c.lastCompaction.concurrency, 1);
+  assert.ok(c.lastCompaction.reusedRequests > 0, JSON.stringify({ reusedRequests: c.lastCompaction.reusedRequests, requests: c.lastCompaction.requests }));
+  const retry = h.sent.filter(item => item.prompt.includes('FRAGMENT_1')).at(-1);
+  assert.equal(retry.opts.settings.subscriptionId, 'b');
+  assert.match(fs.readFileSync(result.file, 'utf8'), /RECOVERED_CONTEXT/);
+});
+
+test('stopping Kimi parallel compaction cancels every worker and retains the native binding', async context => {
+  const h = subscriptionFixture(context, 'kimi'), manager = h.manager;
+  const first = await manager.send('kimi', { prompt: 'Original task' }); h.finish('kimi'); await first.done;
+  const c = manager.get(first.sessionId), nativeId = c.segments.kimi.nativeId;
+  c.engineSettings.kimi.contextWindow = 6000;
+  for (let n = 0; n < 4; n++) manager.append(c, { role: 'tool', text: 'FRAGMENT_' + n + ' ' + 'x'.repeat(8000) });
+  const pending = manager.compact(c.id).catch(error => error);
+  await h.flush();
+  const running = h.sent.filter(item => item.session.running);
+  assert.equal(running.length, 4);
+  await manager.cancel({ sessionId: c.id });
+  const result = await pending;
+  assert.match(result.message, /canceled/i);
+  assert.ok(running.every(item => item.session.running === false), JSON.stringify(running.map(item => ({ id: item.opts.conversationId, running: item.session.running, gen: item.session.gen }))));
+  assert.equal(manager.active.size, 0);
+  assert.equal(manager.switching.has(c.id), false);
+  assert.equal(c.segments.kimi.nativeId, nativeId);
 });
 
 test('engine summary timeout leaves a retryable checkpoint and the original native context', async context => {
@@ -3858,6 +4019,42 @@ for (const engine of ['kimi', 'codex', 'antigravity', 'grok']) {
   });
 }
 
+test('Kimi subscription generates a native title from the visible request before the first turn finishes', async t => {
+  const visible = '如果机器比较繁忙，点开设置页面可能会卡在这里一段时间，尤其是右上角几个按钮没被半透明灰色遮挡，看起来很有问题';
+  const calls = [], harness = fixture(t, { generateTitle: async () => { throw new Error('API naming must not be used'); } });
+  harness.drivers.kimi.settings = () => ({ connection: 'subscription', model: 'kimi-subscription' });
+  harness.drivers.kimi.titleDuringTurn = true;
+  harness.drivers.kimi.generateTitle = async ({ prompt, duringTurn }) => {
+    calls.push({ prompt, duringTurn }); return '设置页面卡顿与按钮遮挡';
+  };
+  const run = await harness.manager.send('kimi', { prompt: 'Hidden harness context', displayText: visible });
+  await harness.flush();
+  assert.deepEqual(calls, [{ prompt: visible, duringTurn: true }]);
+  assert.equal(harness.sent[0].session.running, true);
+  assert.equal(harness.manager.get(run.sessionId).title, '设置页面卡顿与按钮遮挡');
+  assert.equal(harness.manager.get(run.sessionId).titleSource, 'model');
+  harness.finish('kimi'); await run.done; await harness.flush();
+  assert.equal(calls.length, 1);
+});
+
+test('Kimi queues the completed-turn title retry when the early request is still pending', async t => {
+  let resolveEarly;
+  const calls = [], harness = fixture(t, { generateTitle: async () => '' });
+  harness.drivers.kimi.settings = () => ({ connection: 'subscription', model: 'kimi-subscription' });
+  harness.drivers.kimi.titleDuringTurn = true;
+  harness.drivers.kimi.generateTitle = ({ duringTurn }) => {
+    calls.push(duringTurn);
+    return duringTurn ? new Promise(resolve => { resolveEarly = resolve; }) : Promise.resolve('首轮补充标题');
+  };
+  const run = await harness.manager.send('kimi', { prompt: 'Visible request' });
+  harness.finish('kimi'); await run.done; await harness.flush();
+  assert.deepEqual(calls, [true]);
+  resolveEarly(''); await harness.flush();
+  assert.deepEqual(calls, [true, false]);
+  assert.equal(harness.manager.get(run.sessionId).title, '首轮补充标题');
+  assert.equal(harness.manager.titleFollowUps.size, 0);
+});
+
 test('attachment-only first turns name the visible file without exposing its path or hidden prompt', async t => {
   for (const engine of ENGINES) {
     const calls = [], harness = fixture(t, { generateTitle: async message => { calls.push(message); return ''; } });
@@ -4347,6 +4544,57 @@ test('Markdown handoff is exported locally and a fresh target gets it automatica
   assert.ok(restored.handoffFiles(restored.get(first.sessionId)).has(handoff.file));
   assert.ok(restored.handoffFiles(restored.get(first.sessionId)).has(handoff.fullPath));
 });
+test('Markdown handoff preserves every visible turn and deduplicates tool snapshots', async t => {
+  const f = fixture(t), c = f.manager.create('kimi');
+  for (let turn = 0; turn < 6; turn++) {
+    f.manager.append(c, { role: 'user', text: 'REQUEST_' + turn + ' keep this instruction' });
+    for (let snapshot = 0; snapshot < 6; snapshot++) f.manager.append(c, { role: 'tool', engine: 'kimi',
+      text: JSON.stringify({ type: 'gui:tool', id: 'call-' + turn,
+        name: turn === 5 ? 'Running: python\nimport json' : 'Bash', status: 'completed',
+        output: 'TOOL_' + turn + '_' + snapshot + ' ' + 'x'.repeat(1500) }) });
+    f.manager.append(c, { role: 'assistant', engine: 'kimi', text: 'ANSWER_' + turn + ' keep this conclusion' });
+  }
+  f.manager.save(c);
+  const { attachment } = f.manager.exportConversation(c.id);
+  const markdown = fs.readFileSync(attachment.path, 'utf8');
+  let previous = -1;
+  for (let turn = 0; turn < 6; turn++) {
+    for (const marker of ['REQUEST_' + turn, 'ANSWER_' + turn]) {
+      const position = markdown.indexOf(marker);
+      assert.ok(position > previous, marker + ' is missing or out of order');
+      previous = position;
+    }
+    assert.match(markdown, new RegExp('TOOL_' + turn + '_5'));
+    assert.doesNotMatch(markdown, new RegExp('TOOL_' + turn + '_[0-4]'));
+  }
+  assert.match(markdown, /## Conversation/);
+  assert.match(markdown, /### User · seq/);
+  assert.match(markdown, /### Running: python import json · seq 47 · completed/);
+  assert.doesNotMatch(markdown, /\{"seq":/);
+  const transcript = fs.readFileSync(attachment.fullPath, 'utf8');
+  assert.match(transcript, /TOOL_0_0/);
+  assert.match(transcript, /TOOL_5_5/);
+});
+
+test('Markdown handoff shortens long messages without dropping intermediate turns', async t => {
+  const f = fixture(t), c = f.manager.create('kimi');
+  for (let turn = 0; turn < 20; turn++) {
+    f.manager.append(c, { role: 'user', text: 'LONG_REQUEST_' + turn + ' ' + 'r'.repeat(4000) });
+    f.manager.append(c, { role: 'assistant', engine: 'kimi', text: 'LONG_ANSWER_' + turn + ' ' + 'a'.repeat(4000) });
+  }
+  f.manager.save(c);
+  const { attachment } = f.manager.exportConversation(c.id);
+  const markdown = fs.readFileSync(attachment.path, 'utf8');
+  for (let turn = 0; turn < 20; turn++) {
+    assert.match(markdown, new RegExp('LONG_REQUEST_' + turn));
+    assert.match(markdown, new RegExp('LONG_ANSWER_' + turn));
+  }
+  assert.match(markdown, /## Conversation \(shortened\)/);
+  assert.match(markdown, /\[Middle omitted; see full transcript\]/);
+  assert.ok(markdown.length < 60000);
+  assert.doesNotMatch(markdown, /earlier messages omitted/);
+});
+
 test('Markdown recovery starts a fresh session in the same harness and retains full history', async t => {
   const f = fixture(t);
   const first = await f.manager.send('kimi', { prompt: 'Review every source file' });
@@ -5185,13 +5433,34 @@ test('the model can search for a file by content and the hits become turn artifa
   assert.equal((await bridge.call('camellia_find_files', { run_token: token, query: 'x', root: '/' })).ok, false);
 
   // Ending the turn publishes the located file as a deliverable even though the
-  // model only mentioned its name in prose.
-  harness.finish('codex', 'success', 'I found `outputs/未命名草稿.md`.');
+  // model only mentioned its basename without the output directory.
+  harness.finish('codex', 'success', 'I found `未命名草稿.md`.');
   await run.done;
   const rows = manager.rows(manager.get(conversation.id));
   const reply = rows.filter(row => row.role === 'assistant').at(-1);
   assert.deepEqual(reply.artifacts.map(file => file.name), ['未命名草稿.md']);
   assert.deepEqual(byContent.searched, [fs.realpathSync.native(cwd)]);
+});
+
+test('file searches do not deliver hits the final answer did not use', async context => {
+  const harness = fixture(context, { createGoalBridge: async options => ({ call: options.call, close() {} }) });
+  context.after(() => harness.manager.closeGoalTools());
+  const manager = harness.manager;
+  const conversation = manager.create('codex', undefined, 'Clean up duplicate PDFs');
+  const cwd = manager.get(conversation.id).cwd;
+  fs.writeFileSync(path.join(cwd, '论文收录自查表.md'), '# 论文记录\n\n核对标记。\n');
+  fs.writeFileSync(path.join(cwd, '王诚_中文简历_职称版.md'), '# 简历\n\n核对标记。\n');
+  const run = await manager.send('codex', { sessionId: conversation.id, prompt: '可以删，只需要保留一份 pdf' });
+  const bridge = harness.sent.at(-1).opts.goalBridge;
+  const token = manager.active.get(conversation.id).goalRunToken;
+  const found = await bridge.call('camellia_find_files', { run_token: token, query: '核对标记', inside: true });
+  assert.equal(found.ok, true);
+  assert.equal(found.count, 2);
+
+  harness.finish('codex', 'success', '已清理完成；查找结果与本次任务无关，因此未采用。');
+  await run.done;
+  const reply = manager.rows(manager.get(conversation.id)).filter(row => row.role === 'assistant').at(-1);
+  assert.deepEqual(reply.artifacts, []);
 });
 
 test('a content search cannot restore a deleted conversation when its result arrives late', async context => {
@@ -5862,7 +6131,7 @@ test('all engines compact at tool boundaries and resume the same logical turn wi
     const emit = event => f.manager.capture(engine, { ...event, runId: original.gen });
     emit({ type: 'gui:tool', id: 'write', status: 'in_progress', output: 'x'.repeat(52000) });
     assert.equal(f.manager.recovering.size, 0);
-    emit({ type: 'gui:tool', id: 'write', status: 'completed', output: 'File written successfully' });
+    emit({ type: 'gui:tool', id: 'write', status: 'completed', output: 'File written successfully\n' + 'x'.repeat(52000) });
     assert.equal(f.manager.recovering.has(run.sessionId), true);
     assert.equal(f.manager.busy(run.sessionId), true);
     assert.equal(f.manager.live(engine, run.sessionId).live.runId, run.runId);
@@ -7506,4 +7775,25 @@ test('an oversized replay compacts from the index before materializing history e
   assert.match(h.sent.at(-1).prompt, /Preserved working context/);
   assert.equal(c.lastCompaction.triggerReason, 'before-send');
   h.finish('codex'); await turn.done;
+});
+
+
+test('local fallback failures retain both providers and the fallback reason through the conversation bridge', async t => {
+  const h = fixture(t, { createGoalBridge: async options => ({ ...options, config: {}, close() {} }),
+    webTools: { enabled: () => true, call: async () => {
+      throw Object.assign(new Error('HTTP 404 · DeepSeek failed. Local fallback also failed: Proxy unavailable'), {
+        provider: 'local', operation: 'fetch', url: 'https://example.com/missing', code: 'web_fetch_network', retryable: true,
+        fallback_from: 'deepseek', fallback_reason: 'web_page_unavailable',
+        deepseek_error: { status: 404, code: 'web_page_unavailable', message: 'HTTP 404 · DeepSeek failed' },
+      });
+    } } });
+  t.after(() => h.manager.closeGoalTools());
+  const run = await h.manager.send('codex', { prompt: 'Read a page' });
+  const result = await h.manager.goalBridges.get(run.sessionId).call('camellia_web_fetch', {
+    url: 'https://example.com/missing', run_token: h.manager.active.get(run.sessionId).goalRunToken,
+  });
+  assert.equal(result.ok, false); assert.equal(result.provider, 'local'); assert.equal(result.fallback_from, 'deepseek');
+  assert.equal(result.fallback_reason, 'web_page_unavailable'); assert.equal(result.deepseek_error.status, 404);
+  assert.equal(result.code, 'web_fetch_network'); assert.equal(result.retryable, true);
+  h.finish('codex');
 });

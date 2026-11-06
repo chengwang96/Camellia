@@ -9,6 +9,17 @@ const { createHash } = require('node:crypto');
 const INLINE_CHARS = 128 * 1024;
 const PREVIEW_CHARS = 32 * 1024;
 const STRING_CHARS = 8 * 1024;
+const STREAMING_TOOL_STATUSES = new Set(['pending', 'in_progress', 'running']);
+
+function isStreamingToolEvent(event) {
+  return event?.type === 'gui:tool' && STREAMING_TOOL_STATUSES.has(event.status);
+}
+
+function isStreamingToolRow(row) {
+  if (row.role !== 'tool' || typeof row.text !== 'string' || !row.text.includes('"gui:tool"')) return false;
+  try { return isStreamingToolEvent(JSON.parse(row.text)); }
+  catch { return false; }
+}
 
 function oversized(value, remaining = { chars: INLINE_CHARS, nodes: 10000 }) {
   if (--remaining.nodes < 0) return true;
@@ -89,4 +100,4 @@ function projectRow(row, reference) {
   return { ...row, text: JSON.stringify(projectEvent(event, reference)) };
 }
 
-module.exports = { INLINE_CHARS, PREVIEW_CHARS, oversized, retainEvent, projectRow };
+module.exports = { INLINE_CHARS, PREVIEW_CHARS, oversized, retainEvent, projectRow, isStreamingToolEvent, isStreamingToolRow };

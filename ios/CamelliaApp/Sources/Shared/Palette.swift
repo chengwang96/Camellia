@@ -19,6 +19,7 @@ enum Palette {
     static let cardBorder = dynamic(light: 0xD6D6D8, dark: 0x424448)
     static let controlFill = dynamic(light: 0xF5F6F7, dark: 0x292A2D)
     static let selectedBorder = dynamic(light: 0xADB2B8, dark: 0x737981)
+    static let progressTrack = dynamic(light: 0xEBEEF2, dark: 0x353638)
     static let accent = dynamic(light: 0x4176E6, dark: 0x679EFE)
     /// The outline used only by the two large choices on the home page.
     static let homeCardEdge = dynamic(light: 0xE6E8EB, dark: 0x34363A)

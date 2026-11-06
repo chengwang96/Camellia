@@ -52,8 +52,8 @@ final class ConnectionTestDialog implements AutoCloseable {
         TextView computerName = style.label(name, Palette.TEXT_ROW_STRONG, style.ink); content.addView(computerName);
         hint = style.label(tr("持续约 30 秒，检查请求响应和实时连接。", "About 30 seconds. Checks responses and the live connection."), Palette.TEXT_NOTE, style.secondary);
         hint.setPadding(0, style.dp(6), 0, style.dp(16)); content.addView(hint);
-        progress = new ProgressBar(activity, null, android.R.attr.progressBarStyleHorizontal);
-        progress.setTag("connectionTestProgress"); progress.setMax(100); content.addView(progress, new LinearLayout.LayoutParams(-1, style.dp(8)));
+        progress = style.progressBar();
+        progress.setTag("connectionTestProgress"); content.addView(progress, new LinearLayout.LayoutParams(-1, style.dp(6)));
         status = style.label("", Palette.TEXT_BODY, style.secondary); status.setTag("connectionTestStatus");
         status.setPadding(0, style.dp(12), 0, style.dp(12)); status.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE); content.addView(status);
         details = style.label("", Palette.TEXT_NOTE, style.ink); details.setTag("connectionTestReport"); details.setTextIsSelectable(true);

@@ -153,11 +153,12 @@ class RemoteReadModel {
   }
   summary(conversation, meta = this.manager.workspaces.sessionMeta(), includePreview = false) {
     const filePreview = includePreview ? this.filePreview(conversation) : null;
+    const backgroundWork = this.manager.backgroundStatus?.(conversation.id) || null;
     return { id: conversation.id, title: String(meta.titles[conversation.id] || conversation.title).slice(0, 200),
       engine: conversation.currentEngine, pinned: Boolean(meta.pinned[conversation.id]), workspaceId: meta.sessionWorkspace[conversation.id] || null,
       workspaceName: meta.workspaces.find(workspace => workspace.id === meta.sessionWorkspace[conversation.id])?.name || null,
       updatedAt: conversation.updatedAt, seq: conversation.seq, lastReplyAt: conversation.lastReplyAt || 0, replyReadAt: conversation.replyReadAt || 0,
-      activity: this.manager.activity(conversation.id), ...(filePreview ? { filePreview } : {}) };
+      activity: this.manager.activity(conversation.id), ...(backgroundWork ? { backgroundWork } : {}), ...(filePreview ? { filePreview } : {}) };
   }
   list(device, offset = 0, limit = 100, query = '') {
     const meta = this.manager.workspaces.sessionMeta();

@@ -18,6 +18,7 @@ async function fixture() {
     const end = patched.indexOf('\n\t};\n}));', start) + '\n\t};'.length;
     NativeSession = vm.runInNewContext('(' + patched.slice(start, end).trim().replace(/;$/, '') + ')', {
       globalThis: { crypto: require('node:crypto') }, DEFAULT_MODE_ID: 'manual',
+      looseObject: () => ({}), literal: () => ({}), string: () => ({}),
       AcpInteractionBridge: class {}, log: { warn() {} }, isAuthError: error => error?.code === 'provider.auth',
       RequestError$1: {
         internalError: (data, message) => Object.assign(new Error(message), { code: -32603, data }),
@@ -64,6 +65,18 @@ test('Kimi queued prompt waits for its own turn and forwards its reply, ignoring
   assert.equal(h.native.driver, undefined);
 });
 
+test('Kimi forwards background task lifecycle without exposing command lines', { skip: !source }, async () => {
+  const h = await fixture();
+  const info = { taskId: 'bash-eval', description: 'Governed policy evaluation', kind: 'process', status: 'running', command: 'private command' };
+  h.emit('task.started', { info });
+  assert.deepEqual({ ...h.updates[0].update, task: { ...h.updates[0].update.task } }, { sessionUpdate: 'camellia_background_task', terminated: false,
+    task: { id: 'bash-eval', description: 'Governed policy evaluation', kind: 'process', status: 'running' } });
+  assert.equal(h.updates[0].update.task.command, undefined);
+  h.emit('task.terminated', { info: { ...info, status: 'completed' } });
+  assert.deepEqual({ ...h.updates[1].update, task: { ...h.updates[1].update.task } }, { sessionUpdate: 'camellia_background_task', terminated: true,
+    task: { id: 'bash-eval', description: 'Governed policy evaluation', kind: 'process', status: 'completed' } });
+});
+
 test('Kimi matches turn events even before the prompt launch acknowledgement', { skip: !source }, async () => {
   const h = await fixture(); let acknowledge;
   h.agent.prompt = input => { h.submissions.push(input); return new Promise(resolve => { acknowledge = resolve; }); };
@@ -107,6 +120,11 @@ test('Kimi settles hook-blocked and aborted prompts without mistaking them for c
 
 test('Kimi queue adapter refuses changed runtime contracts', { skip: !source }, () => {
   assert.equal(patchKimiAcpTurns(source.replace('driveLaunch(launch) {', 'driveLaunch(changed) {')), null);
+});
+
+test('Kimi queue adapter supports the async ACP server registration contract', { skip: !source }, () => {
+  const modern = patchKimiAcpTurns(source.replace('getServer().prompt(ctx.params, ctx.signal)', '(await getServer()).prompt(ctx.params, ctx.signal)'));
+  assert.ok(modern.includes('(await getServer()).camelliaPrompt(ctx.params, ctx.signal)'));
 });
 
 test('Kimi propagates failed turns through ACP with the provider reason, even after partial output', { skip: !source }, async () => {

@@ -35,6 +35,10 @@ public class ModelPickerStyleTest extends InstrumentationTestCase {
     }
 
     private void open(boolean dark, boolean empty) {
+        open(dark, empty, "GPT");
+    }
+
+    private void open(boolean dark, boolean empty, String modelName) {
         getInstrumentation().runOnMainSync(() -> {
             android.widget.LinearLayout fixture = new android.widget.LinearLayout(activity);
             fixture.setOrientation(android.widget.LinearLayout.VERTICAL);
@@ -49,7 +53,7 @@ public class ModelPickerStyleTest extends InstrumentationTestCase {
         });
         getInstrumentation().waitForIdleSync();
         getInstrumentation().runOnMainSync(() -> {
-            LocalChatConfig.Route route = new LocalChatConfig.Route("test/gpt", "Example · GPT", "gpt-5", "openai", "https://example.com/v1", "test");
+            LocalChatConfig.Route route = new LocalChatConfig.Route("test/gpt", "Example · " + modelName, "gpt-5", "openai", "https://example.com/v1", "test");
             LocalChatConfig.Route other = new LocalChatConfig.Route("test/other", "Example · Another model", "other", "openai", "https://example.com/v1", "test");
             picker = new ModelPickerPopup(activity, true, dark ? 0xff151517 : 0xffffffff, dark ? 0xff232324 : 0xfff5f6f7,
                 dark ? 0xfff9fafb : 0xff0f1115, dark ? 0xffadb2b8 : 0xff61666b, 0xff4176e6,
@@ -124,6 +128,32 @@ public class ModelPickerStyleTest extends InstrumentationTestCase {
             panel().findViewWithTag("pickerImport").performClick();
             assertEquals("import", chosen); assertFalse(picker.isShowing());
         });
+    }
+
+    public void testLongModelNameFitsAndStillSelectsTheOriginalRoute() throws Exception {
+        String title = "GPT 模型名称与思考能力说明 / A model name that exceeds a narrow phone menu";
+        for (boolean dark : new boolean[]{false, true}) {
+            open(dark, false, title);
+            getInstrumentation().runOnMainSync(() -> {
+                android.widget.LinearLayout row = panel().findViewWithTag("modelOption:test/gpt");
+                android.widget.LinearLayout words = (android.widget.LinearLayout) row.getChildAt(0);
+                android.widget.TextView label = (android.widget.TextView) words.getChildAt(0);
+                assertEquals(title, label.getText().toString());
+                assertEquals(1, label.getLineCount());
+                assertTrue("The full label must fit by truncation", label.getLayout().getEllipsisCount(0) > 0);
+                assertTrue(row.getContentDescription().toString().contains(title));
+                assertTrue(row.getTooltipText().toString().contains(title));
+                assertTrue(row.getHeight() >= Math.round(64 * activity.getResources().getDisplayMetrics().density));
+                View tick = row.getChildAt(1);
+                assertTrue(words.getRight() <= tick.getLeft());
+                assertTrue(tick.getRight() <= row.getWidth() - row.getPaddingRight());
+            });
+            screenshot(dark ? "long-model-dark" : "long-model-light");
+            getInstrumentation().runOnMainSync(() -> {
+                panel().findViewWithTag("modelOption:test/gpt").performClick();
+                assertEquals("test/gpt", chosen); assertFalse(picker.isShowing());
+            });
+        }
     }
 
     public void testBothLayersFollowPageAndReleaseBackdrop() throws Exception {

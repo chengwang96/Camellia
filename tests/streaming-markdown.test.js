@@ -7,7 +7,7 @@ const { createStream, split } = require('../src/shared/thinking-tags');
 
 test('streaming boundaries retain unfinished block and inline syntax', () => {
   for (const source of [
-    '```js\nfirst\n\nsecond\n',
+    '```js\nfirst\n\nsecond\n', '````js\nfirst\n```\n\n',
     '$$a\n\nb\n', String.raw`\[a` + '\n\nb\n', String.raw`\(a` + '\n\nb\n',
     String.raw`$$\text{\$\$}` + '\n\nmore\n',
     String.raw`\[\begin{matrix}a\\[2pt]b` + '\n\nmore\n',
@@ -26,7 +26,7 @@ test('streaming boundaries seal complete paragraphs, lists, tables and formulas'
     'plain\n\n', '**bold**\n\n', '~~strike~~\n\n',
     '- first\n- second\n\n', '* first\n* second\n\n',
     '| a | b |\n| --- | --- |\n| c | d |\n\n',
-    '```js\nfirst\n\nsecond\n```\n\n', '$$a\n\nb$$\n\n',
+    '```js\nfirst\n\nsecond\n```\n\n', '````js\nfirst\n\nsecond\n````\n\n', '$$a\n\nb$$\n\n',
     String.raw`\[a` + '\n\nb' + String.raw`\]` + '\n\n',
     String.raw`\(a` + '\n\nb' + String.raw`\)` + '\n\n',
     String.raw`$$\text{\$\$}` + '\n\nb$$\n\n',
@@ -36,6 +36,14 @@ test('streaming boundaries seal complete paragraphs, lists, tables and formulas'
     for (let i = 1; i <= source.length; i++) scanner.scan(source.slice(0, i));
     assert.equal(scanner.cut, source.length, source);
   }
+});
+
+test('streaming boundaries ignore inline triple backticks and pair line fences', () => {
+  const source = '前文在 ``` 中间。\n\n```\n`video.mp4`\n```\n\n后文。\n\n';
+  const scanner = new Boundaries();
+  for (let i = 1; i <= source.length; i++) scanner.scan(source.slice(0, i));
+  assert.equal(scanner.fence, '');
+  assert.equal(scanner.cut, source.length);
 });
 
 test('long unfinished lines are searched only over newly appended characters', () => {

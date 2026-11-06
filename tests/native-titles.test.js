@@ -8,6 +8,7 @@ const { CodexTitles, codexTitleSpec } = require('../src/engines/codex-title');
 const { GrokSession } = require('../src/engines/grok-session');
 const { InteractiveCli } = require('../src/engines/antigravity/cli-interactive.cjs');
 const { AntigravitySession } = require('../src/engines/antigravity');
+const { KimiSession } = require('../src/engines/kimi-session');
 const { removeTree } = require('./test-fs.cjs');
 
 function temporary(t) {
@@ -131,4 +132,28 @@ test('Antigravity subscription title requests use ACP without appending a user t
   assert.equal(await session.generateTitle(), '原生标题');
   assert.deepEqual(calls, [{ method: 'session/camellia_generate_title', params: { sessionId: 'agy-test' } }]);
   session.dead = true; assert.equal(await session.generateTitle(), '');
+});
+
+test('Kimi titles use the visible prompt while the first turn is still running', async () => {
+  const prompt = '如果机器比较繁忙，点开设置页面可能会卡在这里一段时间，尤其是右上角几个按钮没被半透明灰色遮挡，看起来很有问题';
+  const calls = [], session = Object.assign(Object.create(KimiSession.prototype), {
+    spec: { nativeHistory: true }, running: true, dead: false, sessionId: 'session_kimi_title', ready: Promise.resolve(),
+    request: async (method, params) => { calls.push({ method, params }); return { title: '设置页面卡顿与按钮遮挡' }; },
+  });
+  assert.equal(await session.generateTitle({ prompt, duringTurn: true }), '设置页面卡顿与按钮遮挡');
+  assert.deepEqual(calls, [{ method: 'session/camellia_generate_title', params: { sessionId: 'session_kimi_title', prompt } }]);
+});
+
+test('Kimi supports a completed-first-turn retry after an early attempt settles', async () => {
+  const calls = [], session = Object.assign(Object.create(KimiSession.prototype), {
+    spec: { nativeHistory: true }, running: true, dead: false, sessionId: 'session_kimi_title', ready: Promise.resolve(),
+  });
+  session.request = async (_method, params) => {
+    calls.push(params);
+    if (params.prompt) { session.running = false; return {}; }
+    return { title: '首轮补充标题' };
+  };
+  assert.equal(await session.generateTitle({ prompt: 'Visible request', duringTurn: true, delay: async () => {} }), '');
+  assert.equal(await session.generateTitle(), '首轮补充标题');
+  assert.deepEqual(calls, [{ sessionId: 'session_kimi_title', prompt: 'Visible request' }, { sessionId: 'session_kimi_title' }]);
 });

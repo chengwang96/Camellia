@@ -33,6 +33,7 @@ with sync_playwright() as playwright:
         '- [x] done\n- todo\n  - nested\n  continuation\n\nend',
         '3. third\n4. fourth\n\nnext', '    code\n\n    more\n\n\nend',
         '```js\nfirst\n\nsecond\n```\n\nend', '````js\ncode\n````\nend',
+        '前文在 ``` 中间。\n\n```\n`video.mp4`\n```\n\n后文。\n\n',
         'before\n\n```latex\n\\frac{a}{b}\n```\n\n$$a^2$$\n\nend',
         'before\n\n\\[\na=b\n\n+c\n\\]\n\nend',
         'before\n\n\\(\\frac{a}{b}\n\n+c\\)\n\nend',

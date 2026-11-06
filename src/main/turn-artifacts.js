@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { fileURLToPath } = require('node:url');
 const { previewKind } = require('./file-preview');
-const { textPaths } = require('../shared/turn-artifacts');
+const { textPaths, ignoredOutputPath } = require('../shared/turn-artifacts');
 
 function describeArtifact(resolved, explicit) {
   const kind = previewKind(resolved);
@@ -21,7 +21,7 @@ function describeArtifact(resolved, explicit) {
   // Native resolution also expands Windows 8.3 aliases (for example RUNNER~1
   // in CI's TEMP), which the JavaScript realpath implementation leaves intact.
   const canonical = fs.realpathSync.native(resolved);
-  return { canonical, kind,
+  return { canonical, kind, mtimeMs: stat.mtimeMs,
     file: { path: resolved, canonicalPath: canonical, name: path.basename(resolved), kind,
       extension: path.extname(resolved).slice(1).toUpperCase(), size: stat.size,
       ...(explicit ? { explicitDelivery: true } : {}) } };
@@ -38,6 +38,12 @@ function networkPath(value) {
   return /^\\\\(?![?.]\\)/.test(text) || /^(?:[a-z]:[\\/])*[\\/]{2}(?![\\/])/.test(text);
 }
 
+function windowsShellPath(value) {
+  if (process.platform !== 'win32') return value;
+  // Git Bash spells a drive as /c/Users/...; Windows needs C:/Users/....
+  return value.replace(/^\/([a-z])\//i, '$1:/');
+}
+
 function targetsFor(candidate, bases) {
   const value = candidate.trim();
   if (/^file:/i.test(value)) return [fileURLToPath(value)];
@@ -46,7 +52,7 @@ function targetsFor(candidate, bases) {
   // Markdown file links can use /D:/folder/file.apk. Windows treats that
   // URL-style drive prefix as an invalid filesystem path until the slash is
   // removed; normalize after decoding so encoded links resolve the same way.
-  if (process.platform === 'win32') relative = relative.replace(/^\/([a-z]:[\\/])/i, '$1');
+  if (process.platform === 'win32') relative = windowsShellPath(relative.replace(/^\/([a-z]:[\\/])/i, '$1'));
   if (networkPath(relative)) return [];
   relative = relative.replace(/#L\d+(?:C\d+)?$|:\d+(?::\d+)?$/, '');
   if (/^[a-z][a-z\d+.-]*:/i.test(relative) && !/^[a-z]:[\\/]/i.test(relative)) return [];
@@ -93,7 +99,7 @@ function usableRoots(values) {
   for (const value of values) {
     if (typeof value !== 'string' || !value.trim() || networkPath(value)) continue;
     let resolved;
-    try { resolved = path.resolve(value); } catch { continue; }
+    try { resolved = path.resolve(windowsShellPath(value)); } catch { continue; }
     const key = process.platform === 'win32' ? resolved.toLowerCase() : resolved;
     if (seen.has(key)) continue;
     seen.add(key);
@@ -103,33 +109,52 @@ function usableRoots(values) {
   return directories;
 }
 
+// Output paths are only trusted when the file was written during this run and
+// sits inside the workspace or a directory the turn's tools used. This keeps a
+// command that merely names an existing media file from delivering it.
+function insideOutputRoot(file, root) {
+  const key = value => process.platform === 'win32' ? value.toLowerCase() : value;
+  const relative = path.relative(key(root), key(file));
+  if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) return false;
+  // A scratch folder below the turn's own root is still scratch. The root
+  // itself may live in a temp directory when the conversation workspace is
+  // temporary, so only segments below it count.
+  return !relative.split(/[\\/]/).slice(0, -1).some(segment => ['temp', 'tmp'].includes(segment.toLowerCase()));
+}
+
 // A turn can produce files outside the conversation workspace (for example when
 // its commands ran in another project directory), so relative references are
 // resolved against the workspace and every directory the turn's tools used.
 // `explicitPaths` are files the caller already decided are deliverables (a
 // file search the user asked for, for example), so they bypass the noise
 // filter that keeps edited source and configuration out of a normal turn.
-function resolveArtifacts({ paths = [], explicitPaths = [], text = '', cwd = '', roots = [], reference } = {}) {
+function resolveArtifacts({ paths = [], explicitPaths = [], outputPaths = [], text = '', cwd = '', roots = [], since = 0, reference } = {}) {
   const files = new Map();
   const references = textPaths(text).filter(candidate => !/(?:#L\d+(?:C\d+)?|:\d+(?::\d+)?)$/.test(candidate));
   if (reference !== undefined && !references.includes(reference)) return [];
   const candidates = [...paths.slice(0, 100).map(candidate => ({ candidate, explicit: false })),
+    ...outputPaths.slice(0, 100).map(candidate => ({ candidate, explicit: false, output: true })),
     ...explicitPaths.slice(0, 100).map(candidate => ({ candidate, explicit: true })),
     ...references.map(candidate => ({ candidate, explicit: true }))];
   const rootsAndCwd = usableRoots([cwd, ...roots]);
+  // A command's own working directory is a stronger base for its relative
+  // output than the conversation workspace; a same-named old file in the
+  // workspace must not win.
+  const outputBases = outputPaths.length ? usableRoots([...roots, cwd]) : [];
+  const outputRoots = outputBases.map(root => { try { return fs.realpathSync.native(root); } catch { return root; } });
   // A folder the reply names itself is the strongest evidence of where its files
   // live. Bare names stay in that folder instead of falling back to an older
   // copy in the workspace or a directory inferred from a command.
   const named = mentionedDirectories(references, rootsAndCwd);
   const bases = [cwd, ...named, ...rootsAndCwd.slice(1)].filter((base, index, list) => list.indexOf(base) === index);
-  for (const { candidate, explicit } of candidates) {
+  for (const { candidate, explicit, output } of candidates) {
     if (reference !== undefined && candidate !== reference) continue;
     if (typeof candidate !== 'string' || !candidate.trim()) continue;
     let targets = [];
     try {
       let decoded = candidate.trim();
       try { decoded = decodeURIComponent(decoded); } catch {}
-      const referenceBases = named.length && references.includes(candidate) && !/[\\/:]/.test(decoded)
+      const referenceBases = output ? outputBases : named.length && references.includes(candidate) && !/[\\/:]/.test(decoded)
         ? named.slice(0, 1) : bases;
       targets = targetsFor(candidate, referenceBases);
     } catch {}
@@ -137,6 +162,12 @@ function resolveArtifacts({ paths = [], explicitPaths = [], text = '', cwd = '',
       try {
         const entry = describeArtifact(target, explicit);
         if (!entry) continue;
+        if (output) {
+          if (entry.kind === 'text' || entry.file.size <= 0) continue;
+          if (!(since > 0) || entry.mtimeMs < since - 2000) continue;
+          if (ignoredOutputPath(entry.canonical)) continue;
+          if (!outputRoots.some(root => insideOutputRoot(entry.canonical, root))) continue;
+        }
         const key = process.platform === 'win32' ? entry.canonical.toLowerCase() : entry.canonical;
         if (!files.has(key)) files.set(key, entry.file);
         break;

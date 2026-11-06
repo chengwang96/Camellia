@@ -238,4 +238,49 @@ public class RemoteRichControlsTest extends InstrumentationTestCase {
         android.os.SystemClock.sleep(1100);
         ui(() -> assertEquals("42 seconds", ((TextView) view.get().findViewWithTag("compactionDuration")).getText().toString()));
     }
+
+    public void testCompactionClockSurvivesRepeatedSnapshotRendering() throws Exception {
+        String id = "11111111-1111-4111-8111-111111111111";
+        JSONObject compaction = new JSONObject().put("state", "running").put("afterSeq", 1).put("startedAt", 1793910000000L)
+            .put("elapsedMs", 0).put("stage", "summarizing").put("summaryPhase", "map")
+            .put("completedChunks", 0).put("totalChunks", 1).put("totalChunksKnown", false);
+        JSONObject snapshot = new JSONObject().put("instanceId", "fixture").put("cursor", 1).put("permission", "control")
+            .put("conversation", new JSONObject().put("id", id).put("title", "压缩计时测试").put("seq", 1))
+            .put("messages", new JSONArray().put(new JSONObject().put("seq", 1).put("role", "user").put("text", "可以进一步验证")))
+            .put("compaction", compaction);
+        var apply = MainActivity.class.getDeclaredMethod("applySnapshot", JSONObject.class); apply.setAccessible(true);
+        var render = MainActivity.class.getDeclaredMethod("renderMessages", JSONObject.class); render.setAccessible(true);
+        AtomicReference<ContextCompactionView> view = new AtomicReference<>();
+        int[] previous = {0};
+        ui(() -> {
+            set("credentials", new JSONObject()); set("conversationId", id); set("conversationTitle", "压缩计时测试"); set("chinese", true);
+            var detail = MainActivity.class.getDeclaredMethod("detailScreen"); detail.setAccessible(true); detail.invoke(activity);
+            apply.invoke(activity, snapshot);
+            view.set(activity.getWindow().getDecorView().findViewWithTag("remoteCompaction:compaction:live"));
+        });
+        for (int i = 0; i < 8; i++) {
+            android.os.SystemClock.sleep(350);
+            final int index = i;
+            ui(() -> {
+                if (index % 2 == 0) {
+                    // A retried snapshot still contains the host's original zero elapsed time.
+                    snapshot.put("cursor", index + 2); apply.invoke(activity, snapshot);
+                } else {
+                    // Composer/delivery refreshes also render the same cached compaction.
+                    render.invoke(activity, (Object) null);
+                }
+                ContextCompactionView marker = view.get();
+                assertSame(marker, activity.getWindow().getDecorView().findViewWithTag("remoteCompaction:compaction:live"));
+                String label = ((TextView) marker.findViewWithTag("compactionDuration")).getText().toString();
+                int seconds = Integer.parseInt(label.replaceAll("[^0-9]", ""));
+                assertTrue("Elapsed time went backwards: " + label, seconds >= previous[0]);
+                previous[0] = seconds;
+            });
+        }
+        assertTrue("Repeated refreshes must not keep the timer at zero", previous[0] >= 2);
+        android.graphics.Bitmap image = getInstrumentation().getUiAutomation().takeScreenshot();
+        if (image != null) try (var output = new java.io.FileOutputStream(new java.io.File(activity.getExternalFilesDir(null), "compaction-clock.png"))) {
+            image.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, output); image.recycle();
+        }
+    }
 }

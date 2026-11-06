@@ -2,9 +2,9 @@
 
 ## Instructions during a response
 
-While a response is running, Enter or the send button submits an immediate instruction to the current turn, without stopping it or starting another turn. The shared Codex connection uses native `turn/steer` with the expected turn ID. Acceptance means the engine received the instruction, not that an already-running command was interrupted or undone.
+While a response is running, Enter or the send button submits an immediate instruction to the current turn, without stopping it or starting another turn. The shared Codex connection uses native `turn/steer` with the expected turn ID. Kimi uses a version-checked ACP bridge with native turn confirmation and the same image conversion as a normal prompt. Acceptance means the engine received the instruction, not that an already-running command was interrupted or undone. Accepted instructions are retained in native and portable history.
 
-Other current engine connections, including Kimi over ACP, do not yet expose this capability; they report it as unsupported and retain the composer text and attachments. Rejected instructions also stay in the composer and are not automatically retried against another turn. Use Alt+Enter to explicitly queue a message for after the current work ends. An empty composer retains the Stop action.
+Other current engine connections do not yet expose this capability; they report it as unsupported and retain the composer text and attachments. Rejected instructions also stay in the composer and are not automatically retried against another turn. Use Alt+Enter to explicitly queue a message for after the current work ends. An empty composer retains the Stop action.
 
 On Windows, an opt-in paid integration check is available with `$env:CAMELLIA_LIVE_STEER='1'; node tests/codex-steer-live.cjs`. It uses the configured Codex API model and an already-running local API router, with isolated temporary conversation/history files. It verifies a correction after real streaming begins, same-turn identity, rejected stale instructions, and persisted history. This is not part of `npm test` and incurs provider usage; its JSON report is saved under the printed temporary directory. It tests the shared manager and native transport, not Electron UI automation. Steering may be consumed after the current model response finishes rather than interrupting its token stream.
 
@@ -281,7 +281,7 @@ Archiving the open conversation continues at its neighbor in the same workspace,
 
 The sidebar indicates background work and pending approvals. Opening another conversation restores its stream, draft, model and goal; stop and approval actions remain scoped to that conversation. Conversations in the same workspace still share its files, and concurrent API requests share provider limits.
 
-New conversations are named automatically from their first message. A readable provisional title appears immediately. Subscription naming runs after the first turn and does not require an API route for these engines:
+New conversations are named automatically from their first message. A readable provisional title appears immediately. Kimi replaces it from the visible request while the first turn is still running; the other subscription engines below generate their titles after that turn. None of these native naming paths requires an API route:
 
 | Subscription engine | Model-generated title |
 | --- | --- |

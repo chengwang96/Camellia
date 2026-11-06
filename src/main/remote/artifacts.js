@@ -3,7 +3,7 @@
 const fs = require('node:fs');
 const { createHash } = require('node:crypto');
 const { resolveArtifacts } = require('../turn-artifacts');
-const { collector } = require('../../shared/turn-artifacts');
+const { collector, referencedArtifacts } = require('../../shared/turn-artifacts');
 const { fail } = require('./access');
 
 function identity(conversation, canonical, stat) {
@@ -21,7 +21,7 @@ function files(reader, device, conversationId, selection) {
   // starts at its user row and its roots belong to every reply it produced.
   let turn = null;
   for (const row of rows) {
-    if (row.role === 'user') { userTimes.set(row.seq, row.at); turn = collector(); continue; }
+    if (row.role === 'user') { userTimes.set(row.seq, row.at); turn = collector({ deriveOutputs: false }); continue; }
     if (row.role === 'tool') {
       if (turn && !row.internal) { try { turn.capture(JSON.parse(row.text)); } catch {} }
       continue;
@@ -44,11 +44,16 @@ function files(reader, device, conversationId, selection) {
     || (second.row.seq || 0) - (first.row.seq || 0));
   for (const { row, roots, cwd, managedConversationId } of turns) {
     if (selection && (row.seq !== selection.seq || row.subagentId)) continue;
-    const paths = Array.isArray(row.artifacts) ? row.artifacts.map(file => file?.path).filter(file => typeof file === 'string') : [];
-    const explicitPaths = [...(Array.isArray(row.explicitArtifacts) ? row.explicitArtifacts : []),
-      ...(Array.isArray(row.artifacts) ? row.artifacts.filter(file => file?.explicitDelivery === true) : [])]
-      .map(file => file?.path).filter(file => typeof file === 'string');
     const text = Array.isArray(row.outputBlocks) ? row.outputBlocks.filter(block => block.phase === 'final_answer').map(block => block.text || '').join('\n') : row.text;
+    const artifacts = Array.isArray(row.artifacts) ? row.artifacts : [];
+    const named = new Set(referencedArtifacts(artifacts, text, process.platform));
+    const modelSearch = (Array.isArray(row.process) ? row.process : [])
+      .some(entry => /(?:^|__)camellia_find_files$/.test(entry.title || entry.name || ''));
+    const retained = artifacts.filter(file => file?.explicitDelivery !== true || !modelSearch || named.has(file));
+    const paths = retained.map(file => file?.path).filter(file => typeof file === 'string');
+    const explicitPaths = [...(Array.isArray(row.explicitArtifacts) ? row.explicitArtifacts : []),
+      ...retained.filter(file => file?.explicitDelivery === true)]
+      .map(file => file?.path).filter(file => typeof file === 'string');
     for (const file of resolveArtifacts({ paths, explicitPaths, text, cwd, roots, reference: selection?.reference })) {
       try {
         const canonical = fs.realpathSync.native(file.path);

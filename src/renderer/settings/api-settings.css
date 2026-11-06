@@ -482,7 +482,6 @@ dialog > button { display: block; margin: 20px 0 0 auto; }
 .network-detection button { flex: 0 0 auto; }
 #networkPage { max-width: 1240px; }
 #networkMode { flex: 0 0 auto; width: auto; min-width: 0; }
-#networkMode option { white-space: nowrap; overflow-wrap: normal; }
 .connectivity-section { padding: 22px 0 24px; }
 .connectivity-section .hint { margin: 0 0 18px; max-width: 76ch; }
 .connectivity-summary { margin: 0 0 14px; font-size: 13px; color: var(--dsw-alias-label-secondary); overflow-wrap: anywhere; }

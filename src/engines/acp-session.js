@@ -22,6 +22,7 @@ class AcpSession extends StreamingSession {
     this.pending = new Map();
     this.permissions = new Map();
     this.tools = new Map();
+    this.backgroundTasks = new Map();
     this.eventSeq = 0;
     this.subagents = new NativeSubagents(spec.modeEngine || name.toLowerCase(), (task, replacesIds) => {
       for (const request of this.permissions.values()) if (replacesIds?.includes(request.subagentId)) request.subagentId = task.id;
@@ -89,15 +90,14 @@ class AcpSession extends StreamingSession {
           && (!this.sessionId || message.params.sessionId === this.sessionId)) {
         this.availableCommands = message.params.update.availableCommands; return;
       }
-      // A native-denial notice travels on the CLI's stderr, so it can reach us
-      // just after the turn ended. It still describes the turn the user watched
-      // — dropping it would hide a real refusal — so let that one update through
-      // after `running` clears. Nothing else is admitted late.
+      // Native-denial notices and background-task lifecycle events can arrive
+      // after the visible turn ended. They still describe this live session.
       const lateDenial = this.running === false && !this.dead && !this.cancelled && !this.compaction
         && message.method === 'session/update' && message.params.update?.permissionBlocked === true;
       const childUpdate = message.params?.update?.sessionUpdate === 'camellia_subagent'
         && this.children.has(this.subagents.resolve(message.params.update.task?.id));
-      if (message.method === 'session/update' && message.params.sessionId === this.sessionId && (this.running || lateDenial || childUpdate)) this.update(message.params.update);
+      const backgroundUpdate = message.params?.update?.sessionUpdate === 'camellia_background_task';
+      if (message.method === 'session/update' && message.params.sessionId === this.sessionId && (this.running || lateDenial || childUpdate || backgroundUpdate)) this.update(message.params.update);
       else if (message.id !== undefined) {
         const child = message.params?._meta?.camelliaSubagentId && this.children.get(this.subagents.resolve(message.params._meta.camelliaSubagentId));
         if (message.method === 'session/request_permission' && message.params.sessionId === this.sessionId
@@ -291,6 +291,15 @@ class AcpSession extends StreamingSession {
     }
     if (kind === 'camellia_usage') { this.usageMeter?.antigravityStep(update.stepId, update.usage); return; }
     if (kind === 'available_commands_update') { this.availableCommands = update.availableCommands; return; }
+    if (kind === 'camellia_background_task') {
+      const task = update.task;
+      if (!task || typeof task.id !== 'string' || !task.id) return;
+      if (update.terminated || ['completed', 'failed', 'timed_out', 'killed', 'lost', 'cancelled', 'stopped'].includes(task.status)) this.backgroundTasks.delete(task.id);
+      else this.backgroundTasks.set(task.id, { id: task.id, description: String(task.description || '').slice(0, 500),
+        kind: String(task.kind || ''), status: String(task.status || '') });
+      this.emit({ type: 'gui:background-work', tasks: [...this.backgroundTasks.values()] });
+      return;
+    }
     if (this.compaction) {
       if (kind === 'agent_message_chunk' && update.content?.type === 'text') {
         const text = update.content.text;
@@ -302,13 +311,18 @@ class AcpSession extends StreamingSession {
       return;
     }
     if (kind === 'camellia_compaction') { this.emit({ type: 'gui:compaction', state: update.state }); return; }
+    if (kind === 'agent_message_chunk' && update._meta?.camelliaQueuedPrompt) {
+      this.endBlock();
+      this.emit({ type: 'gui:prompt-queue', state: 'queued' });
+      return;
+    }
     if (kind === 'agent_message_chunk' || kind === 'agent_thought_chunk') {
       if (update.content.type !== 'text') return;
       const text = update.content.text;
       const type = kind === 'agent_message_chunk' ? 'text' : 'thinking';
       if (type === 'text') {
         this.text += text;
-        if (!update._meta?.camelliaQueuedPrompt && text.trim()) this.hasReplyText = true;
+        if (text.trim()) this.hasReplyText = true;
       }
       if (this.activeBlock?.type !== type) {
         this.endBlock();
@@ -383,6 +397,10 @@ class AcpSession extends StreamingSession {
 
   close(error) {
     this.settleCompaction(error);
+    if (this.backgroundTasks.size) {
+      this.backgroundTasks.clear();
+      this.emit({ type: 'gui:background-work', tasks: [] });
+    }
     this.dead = true;
     this.subagents.disconnect();
     this.childHistory?.stop();

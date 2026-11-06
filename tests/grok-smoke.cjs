@@ -27,7 +27,7 @@ async function run() {
   const version = spawnSync(runtime.file, ['--version'], { encoding: 'utf8', windowsHide: true,
     env: grokEnvironment(versionHome, isolatedEnvironment(root, process.execPath)) });
   assert.equal(version.status, 0, version.stderr);
-  assert.match(version.stdout + version.stderr, /grok 1\.0\.70/);
+  assert.match(version.stdout + version.stderr, /grok 1\.0\.77/);
   const home = path.join(root, 'runtime-home'), cwd = path.join(root, 'Project With Spaces');
   fs.mkdirSync(cwd, { recursive: true });
   const marker = path.join(cwd, 'marker.txt'), written = path.join(cwd, 'written.txt'), denied = path.join(cwd, 'denied.txt');

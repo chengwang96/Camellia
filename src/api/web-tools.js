@@ -2,6 +2,7 @@
 
 const { availableProviders } = require('../shared/web-tools');
 const { requestJson } = require('./provider-accounts');
+const { createLocalWebFetch } = require('./local-web-fetch');
 // Budget the serialized size as well: control characters and quotes expand
 // in JSON, and all harnesses share a bounded IPC response channel.
 function clip(value, bytes) {
@@ -17,13 +18,30 @@ function clip(value, bytes) {
 const MAX_RESULT_BYTES = 90000;
 const RESPONSE_HEADERS = ['content-type', 'content-length', 'date', 'server', 'x-request-id', 'request-id', 'x-ds-request-id'];
 
+function shouldFallback(error) {
+  if (error.code === 'web_attachment_requires_download' || error.code === 'web_fetch_blocked') return false;
+  return error.code === 'web_page_unavailable' || error.status === 429 || error.status >= 500 || !error.status;
+}
+
+function fallbackReason(error) {
+  return error.code || (error.status ? `http_${error.status}` : 'deepseek_unavailable');
+}
+
+function proxyDnsAllowed(env) {
+  const camelliaProxy = ['auto', 'system'].includes(env.CAMELLIA_NETWORK_MODE) && Boolean(env.CAMELLIA_NETWORK_PROXY);
+  const nodeProxy = env.NODE_USE_ENV_PROXY === '1' && env.NO_PROXY !== '*' && Boolean(env.HTTPS_PROXY || env.HTTP_PROXY);
+  return camelliaProxy || nodeProxy;
+}
+
 // Independent of model routing: any model with Camellia tools can use the
 // selected official account, including an account without model routes.
-function createWebTools({ getConfig, fetchImpl = fetch, timeoutMs = 55000 }) {
+function createWebTools({ getConfig, fetchImpl = fetch, timeoutMs = 55000, localFetch, getConnectionMode } = {}) {
+  const local = localFetch || createLocalWebFetch({ fetchImpl });
   return {
     enabled: () => getConfig().webTools?.provider === 'deepseek',
     async call(name, args, { signal } = {}) {
       if (signal?.aborted) throw new Error('Web tool call cancelled');
+      const operationSignal = signal ? AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]) : AbortSignal.timeout(timeoutMs);
       const config = getConfig();
       if (config.webTools?.provider !== 'deepseek') throw new Error('DeepSeek web tools are disabled in Model Settings');
       const provider = availableProviders(config).find(provider => provider.id === config.webTools.providerId);
@@ -42,6 +60,32 @@ function createWebTools({ getConfig, fetchImpl = fetch, timeoutMs = 55000 }) {
           || !url.hostname || url.username || url.password) throw new Error('Enter a complete HTTP or HTTPS page URL without credentials');
         endpoint = 'fetch'; body = { url: url.href };
       } else throw new Error('Unknown web tool');
+      const fetchMode = config.webTools.fetchMode || 'deepseek';
+      async function readLocal(primaryError) {
+        const fallback = primaryError ? { fallback_from: 'deepseek', fallback_reason: fallbackReason(primaryError) } : {};
+        try {
+          const page = await local.fetchPage(body.url, { signal: operationSignal, allowProxyDns: proxyDnsAllowed(process.env) });
+          if (!page || typeof page.content !== 'string' || !page.content || typeof page.title !== 'string') {
+            throw Object.assign(new Error('Local fetch returned an invalid page response'), { provider: 'local', code: 'web_page_unavailable' });
+          }
+          const content = clip(page.content, 72000);
+          const connectionMode = getConnectionMode?.();
+          return { ok: true, provider: 'local', url: body.url,
+            final_url: typeof page.final_url === 'string' ? page.final_url : body.url,
+            title: clip(page.title, 2048), content, truncated: content !== page.content,
+            ...(connectionMode ? { connection_mode: connectionMode } : {}), ...fallback };
+        } catch (error) {
+          const failure = Object.assign(error.provider === 'local' ? error : new Error(error.message || 'Local page fetch failed'), {
+            provider: 'local', operation: 'fetch', url: body.url, ...fallback,
+          });
+          if (!primaryError || signal?.aborted) throw failure;
+          const primary = primaryError;
+          failure.deepseek_error = { code: primary.code, status: primary.status, message: primary.message };
+          failure.message = `${primary.message} Local fallback also failed: ${failure.message}`;
+          throw failure;
+        }
+      }
+      if (endpoint === 'fetch' && fetchMode === 'local') return readLocal();
       // Always send the key to the fixed official host, never to a page URL or
       // a configured relay. No automatic retry of a potentially billed call.
       const apiUrl = 'https://api.deepseek.com/v1/tools/' + endpoint;
@@ -57,9 +101,10 @@ function createWebTools({ getConfig, fetchImpl = fetch, timeoutMs = 55000 }) {
               return value ? [[name, clip(value.replaceAll(key.key, '[redacted]'), 512)]] : [];
             }));
             return response;
-          }, method: 'POST', body, timeoutMs, signal, maxResponseBytes: 4 * 1024 * 1024,
+          }, method: 'POST', body, timeoutMs, signal: operationSignal, maxResponseBytes: 4 * 1024 * 1024,
         });
       } catch (error) {
+        if (signal?.aborted) throw new Error('Web tool call cancelled');
         // Fetch uses 404 for an unreadable target page, unlike account/model
         // APIs where the shared HTTP helper interprets it as a missing API.
         const attachment = endpoint === 'fetch' && error.status === 404 && /\.docx$/i.test(new URL(body.url).pathname.replace(/%2e/ig, '.'));
@@ -71,12 +116,26 @@ function createWebTools({ getConfig, fetchImpl = fetch, timeoutMs = 55000 }) {
           status: error.status, code: failure.code, retryable: false,
           ...(attachment ? { download_url: body.url } : {}),
         }) : error;
-        throw Object.assign(failureError, { provider: 'deepseek', operation: endpoint, url: body.url, api_url: apiUrl,
+        Object.assign(failureError, { provider: 'deepseek', operation: endpoint, url: body.url, api_url: apiUrl,
           response_headers: responseHeaders });
+        if (endpoint === 'fetch' && fetchMode === 'auto' && shouldFallback(failureError)) return readLocal(failureError);
+        throw failureError;
       }
       if (signal?.aborted) throw new Error('Web tool call cancelled');
       if (endpoint === 'fetch') {
-        if (typeof data?.content !== 'string' || typeof data.title !== 'string') throw new Error('DeepSeek returned an invalid page response');
+        if (typeof data?.content !== 'string' || typeof data.title !== 'string') {
+          const error = Object.assign(new Error('DeepSeek returned an invalid page response'), {
+            provider: 'deepseek', operation: endpoint, url: body.url, api_url: apiUrl, response_headers: responseHeaders,
+          });
+          if (fetchMode === 'auto') return readLocal(error);
+          throw error;
+        }
+        if (!data.content && fetchMode === 'auto') {
+          return readLocal(Object.assign(new Error('DeepSeek returned no readable page content'), {
+            provider: 'deepseek', operation: endpoint, url: body.url, api_url: apiUrl,
+            code: 'web_page_unavailable', response_headers: responseHeaders,
+          }));
+        }
         const content = clip(data.content, 72000);
         return { ok: true, provider: 'deepseek', url: body.url, title: clip(data.title, 2048), content, truncated: content !== data.content };
       }

@@ -1236,7 +1236,8 @@ sharedConversations = new SharedConversations({ dir: path.join(app.getPath('user
     antigravity: () => antigravity.handlers['account-state'](),
   }),
   createGoalBridge: options => require('../engines/goal-tool-bridge').createGoalToolBridge({ ...options, node: detectNode() }),
-  webTools: require('../api/web-tools').createWebTools({ getConfig: readOllamaProxyConfig }),
+  webTools: require('../api/web-tools').createWebTools({ getConfig: readOllamaProxyConfig,
+    getConnectionMode: () => networkSettingsService?.state().configured }),
   drivers: {
     claude: { sessions: claudeSessions, history: claudeHistory, settings: claudeSettings, saveSettings: saveClaudeSettings, ensure: opts => ensureClaudeSession({ ...claudeSettings(), ...opts.settings }, opts), nativeCompaction: true, nativeAutoCompaction: true,
       forkNative: async ({ sessionId, snapshotFile, boundary }) => {
@@ -1246,10 +1247,10 @@ sharedConversations = new SharedConversations({ dir: path.join(app.getPath('user
         return { pendingNativeFork: { sessionId, ...(boundary?.resumeSessionAt ? { resumeSessionAt: boundary.resumeSessionAt } : {}) } };
       },
       nativeEditing: () => nativeEditingSupported('claude', runtimes().locate('claude')?.version) },
-    kimi: { sessions: kimiSessions, history: kimiHistory, settings: kimiSettings, saveSettings: saveKimiSettings, subscriptionAccounts: () => kimiAccount.state(), ensure: opts => ensureKimiSession({ ...kimiSettings(opts.sessionId), ...opts.settings }, opts), nativeCompaction: true, nativeAutoCompaction: true,
-      generateTitle: ({ conversation }) => {
+    kimi: { sessions: kimiSessions, history: kimiHistory, settings: kimiSettings, saveSettings: saveKimiSettings, subscriptionAccounts: () => kimiAccount.state(), ensure: opts => ensureKimiSession({ ...kimiSettings(opts.sessionId), ...opts.settings }, opts), nativeCompaction: true, nativeAutoCompaction: true, titleDuringTurn: true,
+      generateTitle: ({ conversation, prompt, duringTurn }) => {
         const session = kimiSessions.get({ conversationId: conversation.id });
-        return session && !session.dead ? session.generateTitle() : '';
+        return session && !session.dead ? session.generateTitle({ prompt, duringTurn }) : '';
       },
       nativeEditing: () => nativeEditingSupported('kimi', runtimes().locate('kimi')?.version),
       forkNative: async options => {
@@ -1480,15 +1481,16 @@ function flushSettingsWindow() {
   return settingsFlush;
 }
 
-function setSettingsBackdrop(owner, visible) {
+async function setSettingsBackdrop(owner, visible) {
   // Prepare the native caption and wait for the matching renderer frame before
   // revealing Settings.
   windowChrome.setDimmed(owner, visible);
   const contents = liveWebContents(owner);
-  if (!contents) return Promise.resolve();
+  if (!contents) return;
+  if (visible) await new Promise(resolve => setImmediate(resolve));
   contents.send('dsh:settings-overlay', visible);
-  if (!visible) return Promise.resolve();
-  return contents.executeJavaScript('window.paintSettingsBackdrop?.()').catch(error => {
+  if (!visible) return;
+  await contents.executeJavaScript('window.paintSettingsBackdrop?.()').catch(error => {
     if (liveWebContents(owner)) log(`Settings backdrop: ${error.message}`);
   });
 }
@@ -1518,6 +1520,8 @@ function openSettingsWindow(target = {}) {
   void (async () => {
     // Yield before BrowserWindow construction so the backdrop can paint first.
     await setSettingsBackdrop(owner, true);
+    windowChrome.setDimmed(owner, true);
+    await new Promise(resolve => setImmediate(resolve));
     if (appQuitting || (owner && owner.isDestroyed())) {
       settingsOpening = null;
       void setSettingsBackdrop(owner, false);
@@ -2726,7 +2730,7 @@ if (!gotSingleInstanceLock) {
     try {
       const sessionCwd = payload?.sessionId ? sharedConversations.get(payload.sessionId).cwd : '';
       const cwd = sessionCwd || payload?.cwd || '';
-      return { ok: true, files: resolveArtifacts({ paths: payload?.paths, explicitPaths: payload?.explicitPaths, text: payload?.text, cwd, roots: payload?.roots }) };
+      return { ok: true, files: resolveArtifacts({ paths: payload?.paths, explicitPaths: payload?.explicitPaths, outputPaths: payload?.outputPaths, text: payload?.text, cwd, roots: payload?.roots, since: payload?.since }) };
     } catch (error) { return { ok: false, error: error?.message || String(error) }; }
   });
 

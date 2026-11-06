@@ -44,13 +44,13 @@ The entry point is `src/main/main.js`; `src/main/preload.js` exposes the rendere
 | --- | --- | --- |
 | Claude Code | `@anthropic-ai/claude-code@2.1.312` | stream-json |
 | Codex CLI | `@openai/codex@0.160.0` | app-server over stdin/stdout |
-| DSH | `@deepseek-ai/dsh@0.2.1-rc.2` | Local web backend and embedded UI; ACP with native Host fork bridge |
-| Kimi Code | `@moonshot-ai/kimi-code@2.4.0` | ACP over stdin/stdout with native undo bridge |
+| DSH | `@deepseek-ai/dsh@0.2.2-rc.1` | Local web backend and embedded UI; ACP with native Host fork bridge |
+| Kimi Code | `@moonshot-ai/kimi-code@2.4.0` | ACP over stdin/stdout with native undo and mid-turn steering bridges |
 | Antigravity | CLI 1.2.3 on desktop; `google-antigravity==0.1.20`, Python 3.13.14, uv 0.12.15 | CLI connection for Google subscriptions; Python SDK for API routing |
-| Grok Build | `@xai-official/grok@1.0.70` | ACP over stdin/stdout; OAuth subscription or shared API routes |
+| Grok Build | `@xai-official/grok@1.0.77` | ACP over stdin/stdout; OAuth subscription or shared API routes |
 | DSH plugin package manager | `pnpm@11.7.0` | Runtime tooling |
 
-The per-engine manifests and lockfiles are authoritative. The patched DSH settings and client-modules packages are pinned to `0.2.1-rc.2`; review patch compatibility before changing upstream pins. [Native conversation history](design/native-conversation-history.md) records editing/fork support and local runtime verification.
+The per-engine manifests and lockfiles are authoritative. The patched DSH settings, client-modules and locale packages are pinned to `0.2.2-rc.1`; review patch compatibility before changing upstream pins. [Native conversation history](design/native-conversation-history.md) records editing/fork support and local runtime verification.
 
 `scripts/prepare-runtimes.cjs` prepares explicitly selected development runtimes. `scripts/prepare-package.cjs` bundles only the pinned official Node.js distribution, npm, and the Node license into generated `build/runtime-assets/`; it does not install any harness.
 

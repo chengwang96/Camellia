@@ -2953,7 +2953,7 @@ public final class MainActivity extends Activity {
         binding.run = run; binding.process.update(process, live, new TurnDetails(details));
         TurnUsage.bind(binding.wrapper, live ? null : details, chinese);
         binding.truncated.setVisibility(truncated ? View.VISIBLE : View.GONE);
-        binding.waiting.setVisibility(value.isEmpty() && (process == null || process.length() == 0) ? View.VISIBLE : View.GONE);
+        binding.waiting.setVisibility(live && value.isEmpty() && (process == null || process.length() == 0) ? View.VISIBLE : View.GONE);
         binding.body.setVisibility(value.isEmpty() ? View.GONE : View.VISIBLE); binding.body.update(value, !live);
         binding.wrapper.findViewWithTag("messageFooter").setVisibility(value.isEmpty() && !new TurnDetails(details).hasUsage() ? View.GONE : View.VISIBLE);
         if (binding.at != at) { binding.at = at; chatStyle.updateMessageTimestamp(binding.wrapper, at, chinese); }

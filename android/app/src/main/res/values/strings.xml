@@ -9,4 +9,8 @@
     <string name="turn_usage_summary">用量 %1$s tok</string>
     <string name="turn_completed">已完成</string>
     <string name="turn_completion_elapsed">已完成 · 耗时 %1$s</string>
+    <string name="turn_stopped">已停止</string>
+    <string name="turn_stopped_elapsed">已停止 · 耗时 %1$s</string>
+    <string name="turn_failed">回复失败</string>
+    <string name="turn_failed_elapsed">回复失败 · 耗时 %1$s</string>
 </resources>

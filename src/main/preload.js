@@ -172,6 +172,86 @@ contextBridge.exposeInMainWorld('dshDesktop', {
   antigravitySignOut: () => ipcRenderer.invoke('dsh:antigravity-sign-out'),
 });
 
+function createZoomIndicator({ top = 16, hideAfter = 1400 }) {
+  let host, shadow, sheet, label, hideTimer, pendingFactor;
+
+  function updateMetrics(factor) {
+    const px = value => value / factor + 'px';
+    sheet.replaceSync(`
+      :host {
+        position: fixed; z-index: 2147483647; top: ${px(top)}; left: 50%;
+        pointer-events: none; opacity: 0; visibility: hidden;
+        transform: translate(-50%, ${px(-4)});
+        transition: opacity 140ms ease, transform 140ms ease, visibility 140ms;
+      }
+      :host([data-visible]) { opacity: 1; visibility: visible; transform: translate(-50%, 0); }
+      .zoom-panel {
+        display: flex; align-items: center; gap: ${px(7)}; box-sizing: border-box;
+        padding: ${px(7)} ${px(12)}; border: 1px solid light-dark(#0f11151a, #ffffff1f);
+        border-radius: ${px(12)}; background: light-dark(#ffffffd9, #232324d9);
+        box-shadow: 0 ${px(4)} ${px(18)} #0000001f;
+        backdrop-filter: blur(${px(18)}) saturate(140%);
+        color: light-dark(#0f1115, #f9fafb);
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+        font-size: ${px(13)}; font-weight: 600; line-height: ${px(18)};
+        font-variant-numeric: tabular-nums; white-space: nowrap; user-select: none;
+      }
+      svg { width: ${px(16)}; height: ${px(16)}; flex: none; opacity: .72; }
+      @media (prefers-reduced-motion: reduce) { :host { transition: none; } }
+    `);
+  }
+
+  function mount() {
+    host = document.createElement('div');
+    host.id = 'camellia-zoom-indicator';
+    host.setAttribute('role', 'status');
+    host.setAttribute('aria-live', 'polite');
+    host.setAttribute('aria-atomic', 'true');
+    shadow = host.attachShadow({ mode: 'open' });
+    sheet = new window.CSSStyleSheet();
+    shadow.adoptedStyleSheets = [sheet];
+    const panel = document.createElement('div');
+    panel.className = 'zoom-panel';
+    const icon = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    icon.setAttribute('viewBox', '0 0 24 24');
+    icon.setAttribute('fill', 'none');
+    icon.setAttribute('stroke', 'currentColor');
+    icon.setAttribute('stroke-width', '1.8');
+    icon.setAttribute('stroke-linecap', 'round');
+    icon.setAttribute('aria-hidden', 'true');
+    const circle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+    circle.setAttribute('cx', '10.5'); circle.setAttribute('cy', '10.5'); circle.setAttribute('r', '6.5');
+    const handle = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    handle.setAttribute('d', 'm16 16 4 4M7.5 10.5h6M10.5 7.5v6');
+    label = document.createElement('span');
+    icon.append(circle, handle); panel.append(icon, label); shadow.append(panel);
+    document.body.append(host);
+  }
+
+  function show(factor) {
+    if (!Number.isFinite(factor) || factor <= 0) return;
+    if (!document.body) { pendingFactor = factor; return; }
+    if (!host) mount();
+    window.clearTimeout(hideTimer);
+    updateMetrics(factor);
+    label.textContent = Math.round(factor * 100) + '%';
+    host.setAttribute('data-visible', '');
+    hideTimer = window.setTimeout(() => host.removeAttribute('data-visible'), hideAfter);
+  }
+
+  document.addEventListener('DOMContentLoaded', () => {
+    if (pendingFactor) { const factor = pendingFactor; pendingFactor = undefined; show(factor); }
+  }, { once: true });
+  return show;
+}
+
+let showZoomIndicator;
+ipcRenderer.on('dsh:zoom-changed', (_event, state) => {
+  showZoomIndicator ||= createZoomIndicator({
+    top: process.platform === 'win32' && !['--camellia-settings-window', '--workbench-settings'].some(flag => process.argv.includes(flag)) ? 52 : 16 });
+  showZoomIndicator(state?.zoomFactor);
+});
+
 // Ctrl + mouse wheel zoom (zoom by font/page size from any page).
 window.addEventListener('wheel', (event) => {
   if (!event.ctrlKey && !event.metaKey) return;

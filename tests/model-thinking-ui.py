@@ -72,6 +72,19 @@ with sync_playwright() as playwright:
 
         reasoning_menu(['Default', 'Low', 'High', 'Max']).get_by_text('Max', exact=True).click()
         page.wait_for_function("settings.thinkingBudget==='max'")
+        if engine == 'codex':
+            long_label = 'Extremely thorough reasoning with a long label'
+            page.evaluate("label => LEVELS.push({id:'extended',label})", long_label)
+            menu = reasoning_menu(['Default', 'Low', 'High', 'Max', long_label])
+            rows = menu.locator('.pop-opt').evaluate_all("""options => options.map(option => {
+              const label = option.querySelector('.pop-label'), rect = option.getBoundingClientRect();
+              return {height:rect.height,whiteSpace:getComputedStyle(label).whiteSpace,title:label.title};
+            })""")
+            assert all(row['whiteSpace'] == 'nowrap' for row in rows), rows
+            assert len({round(row['height']) for row in rows}) == 1, rows
+            assert rows[-1]['title'] == long_label
+            page.mouse.click(10, 10)
+            page.evaluate('LEVELS.pop()')
         reasoning_menu(['Default', 'Low', 'High', 'Max']).get_by_text('Default', exact=True).click()
         page.wait_for_function("settings.thinkingBudget===''")
         if engine != 'claude':

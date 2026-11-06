@@ -19,6 +19,7 @@ final class RemoteApprovalDialog {
     static AlertDialog show(Activity activity, JSONObject request, String member, Answer answer) {
         boolean zh = activity.getResources().getConfiguration().getLocales().get(0).getLanguage().equals("zh");
         ChatStyle style = new ChatStyle(activity);
+        SettingsStyle settings = new SettingsStyle(activity);
         LinearLayout body = new LinearLayout(activity); body.setOrientation(LinearLayout.VERTICAL);
         body.setPadding(style.dp(18), style.dp(8), style.dp(18), style.dp(8));
         String nativeDetails = request.optString("details"), reason = request.optString("reason");
@@ -39,6 +40,7 @@ final class RemoteApprovalDialog {
             for (int optionIndex = 0; options != null && optionIndex < options.length(); optionIndex++) {
                 JSONObject option = options.optJSONObject(optionIndex); if (option == null) continue;
                 CompoundButton choice = multi ? new CheckBox(activity) : new RadioButton(activity);
+                settings.selection(choice);
                 String value = option.optString("label"); choice.setText(option.optString("description").isEmpty() ? value : String.join("\n", value, option.optString("description")));
                 choice.setTextColor(style.ink); choice.setMinHeight(style.dp(48)); choice.setId(android.view.View.generateViewId());
                 choice.setTag(value); choices.addView(choice); field.choices.add(choice);

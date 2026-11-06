@@ -1,6 +1,6 @@
 # Mobile desktop design alignment
 
-Android and iOS share the desktop chat and settings vocabulary as of 2026-11-01. Native touch targets, navigation, keyboard handling, dock fading and popup glass retain their mobile behavior.
+Android and iOS share the desktop chat and settings vocabulary, reviewed again against the November 6 desktop changes. Native touch targets, navigation, keyboard handling, dock fading and popup glass retain their mobile behavior.
 
 | Element | Light | Dark |
 | --- | --- | --- |
@@ -13,6 +13,24 @@ Android and iOS share the desktop chat and settings vocabulary as of 2026-11-01.
 | Placeholder | `#ADB2B8` | `#81858C` |
 
 User bubbles use an 18dp/pt radius, settings cards 16 and settings fields 10. Existing popup and sheet radii remain separate. Appearance is a three-choice icon row with an accessible selected state, saving through each client's existing preference path. Neutral switches retain at least 48dp/pt touch targets and an inverted thumb in dark mode.
+
+## November 6 follow-up
+
+The comparison includes desktop `settings-surface.css`, `ui-theme.css`, `workbench.css` and the settings dialogs, including the current working-tree changes.
+
+| Desktop update | Native mobile result |
+| --- | --- |
+| Neutral selection controls across settings | Model/thinking/permission ticks and conversation selection now use primary ink. Android question-form checkboxes and radio buttons share checked, unchecked and disabled colors, retaining native selection semantics. |
+| Long menu options stay on one line | Both clients truncate model and preference-choice titles at the end, preserving a separate description, a visible trailing selection mark, the full accessibility label and tooltip/help text. Menu widths remain bounded by the phone viewport and rows retain 64dp/pt touch targets. |
+| Shared progress rails | Android downloads and connection tests reuse the rounded 6dp rail. iOS downloads use the matching 6pt rail. Both use accent fill (`#4176E6` / `#679EFE`) over the desktop muted track (`#EBEEF2` / `#353638`), retaining progress values and cancellation. |
+| Card, field, appearance and switch consistency | Existing native tokens and neutral switches already match; retained. |
+| Window chrome, desktop account management and archive-deletion progress | These have no equivalent native mobile surface; no additional phone settings were introduced. |
+
+The new desktop context-recovery actions are a separate functional gap: the remote protocol does not advertise compaction-retry or Markdown-handoff actions to native clients. This visual alignment does not add those commands. Existing mobile error, stopped-turn and compaction feedback remains in place.
+
+Follow-up verification and screenshots are recorded in `build/mobile-design-sync-104/`. Swift checks on this Windows host validate syntax only; Xcode compilation and iOS interaction checks still require a Mac or CI. The signed Android update is exported to `dist/mobile-design-sync-104/`.
+
+Android validation passed 226 unit tests and 58 UI checks (49 at normal size, 9 at 320dp with 1.3 font scaling), with zero lint errors and five existing warnings. Light/dark screenshots were reviewed at both sizes. Another test process reinstalled the app on the first emulator, interrupting its run; completed classes passed, and the affected connection/download classes passed on a dedicated emulator. A final control-sheet screenshot capture waits for the sheet animation to settle. All seven changed Swift files passed grammar checks; no iOS compiler or runtime result is claimed.
 
 ## Completion and accounting
 

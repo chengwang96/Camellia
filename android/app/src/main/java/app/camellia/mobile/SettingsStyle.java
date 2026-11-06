@@ -468,14 +468,21 @@ final class SettingsStyle {
 
     android.widget.ProgressBar progressBar() {
         android.widget.ProgressBar bar = new android.widget.ProgressBar(context, null, android.R.attr.progressBarStyleHorizontal);
-        GradientDrawable track = new GradientDrawable(); track.setColor(divider); track.setCornerRadius(dp(Palette.RADIUS_GRIP));
-        GradientDrawable fill = new GradientDrawable(); fill.setColor(ink); fill.setCornerRadius(dp(Palette.RADIUS_GRIP));
+        GradientDrawable track = new GradientDrawable(); track.setColor(palette.progressTrack); track.setCornerRadius(dp(Palette.RADIUS_GRIP));
+        GradientDrawable fill = new GradientDrawable(); fill.setColor(accent); fill.setCornerRadius(dp(Palette.RADIUS_GRIP));
         android.graphics.drawable.ScaleDrawable progress = new android.graphics.drawable.ScaleDrawable(fill, Gravity.START, 1f, -1f);
         android.graphics.drawable.LayerDrawable layers = new android.graphics.drawable.LayerDrawable(new android.graphics.drawable.Drawable[]{track, progress});
         layers.setId(0, android.R.id.background); layers.setId(1, android.R.id.progress);
         bar.setProgressTintList(null); bar.setProgressBackgroundTintList(null); bar.setProgressDrawable(layers);
         bar.setIndeterminate(false); bar.setMax(100); bar.setPadding(0, 0, 0, 0); bar.setMinimumHeight(dp(6));
         bar.setBackground(track.getConstantState().newDrawable().mutate()); bar.setClipToOutline(true); return bar;
+    }
+
+    /** Shared neutral selection for native checkboxes and radio buttons. */
+    void selection(android.widget.CompoundButton control) {
+        control.setButtonTintList(new ColorStateList(new int[][]{
+            {-android.R.attr.state_enabled}, {android.R.attr.state_checked}, {}
+        }, new int[]{(ink & 0xffffff) | 0x73000000, ink, palette.selectedBorder}));
     }
 
     void action(LinearLayout group, String title, String description, String tag, boolean destructive, Runnable action) {

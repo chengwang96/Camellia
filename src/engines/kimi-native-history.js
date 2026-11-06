@@ -14,7 +14,7 @@ function camelliaHistoryParams(params) {
   return params;
 }
 async function camelliaHistoryState(server, params) {
-  await server.ensureAuthed();
+  await server.ensureAuthed?.();
   if (!server.getSession(params.sessionId)) throw RequestError$1.invalidParams(params, "Session must be loaded");
   const history = (await server.klient.session(params.sessionId).agent("main").getContext()).history;
   const check = precheckUndo(history, 1);
@@ -45,16 +45,22 @@ async function camelliaForkUndo(server, params) {
 function camelliaTitleParams(params) {
   if (!params || typeof params.sessionId !== "string" || params.sessionId.length === 0)
     throw RequestError$1.invalidParams(params, "sessionId is required");
-  return { sessionId: params.sessionId, force: params.force === true };
+  return { sessionId: params.sessionId, force: params.force === true,
+    prompt: typeof params.prompt === "string" ? params.prompt.trim().slice(0, 400) : "" };
 }
 async function camelliaGenerateTitle(server, params) {
-  await server.ensureAuthed();
+  await server.ensureAuthed?.();
   if (!server.getSession(params.sessionId)) throw RequestError$1.invalidParams(params, "Session must be loaded");
   const session = server.klient.session(params.sessionId);
-  const title = await session.generateTitle({
-    force: params.force,
-    source: "first_turn"
-  });
+  let title;
+  if (params.prompt) {
+    title = await server.camelliaTitle(params.sessionId, params.prompt, params.force);
+  } else {
+    title = await session.generateTitle({
+      force: params.force,
+      source: "first_turn"
+    });
+  }
   if (typeof title === "string" && title.length > 0) return { title };
   const metadata = await session.get();
   return { title: metadata?.titleKind === "generated" && typeof metadata.title === "string" ? metadata.title : "" };
@@ -79,17 +85,23 @@ function patchKimiHistory(source) {
     if (!agent) throw new Error("Forked main agent is not live");
     await agent.accessor.get(IAgentConversationUndoService).undo(1);
   };
+  server.camelliaTitle = async (sessionId, prompt, force) => {
+    const native = getLiveSessionById(core.accessor, sessionId);
+    const titles = native?.accessor.get(ISessionTitleService);
+    if (!titles) throw new Error("Kimi native title service is unavailable");
+    return titles.generateAndApply("user: " + prompt, force);
+  };
 ` + owner).replace(anchor, handlers + '\n' + anchor).replace(chain, chain
-    + '.onRequest("session/camellia_history_boundary", camelliaHistoryParams, ctx => camelliaHistoryState(getServer(), ctx.params))'
-    + '.onRequest("session/camellia_fork_undo", camelliaHistoryParams, ctx => camelliaForkUndo(getServer(), ctx.params))'
-    + '.onRequest("session/camellia_generate_title", camelliaTitleParams, ctx => camelliaGenerateTitle(getServer(), ctx.params))');
+    + '.onRequest("session/camellia_history_boundary", camelliaHistoryParams, async ctx => camelliaHistoryState(await getServer(), ctx.params))'
+    + '.onRequest("session/camellia_fork_undo", camelliaHistoryParams, async ctx => camelliaForkUndo(await getServer(), ctx.params))'
+    + '.onRequest("session/camellia_generate_title", camelliaTitleParams, async ctx => camelliaGenerateTitle(await getServer(), ctx.params))');
 }
 
 const cache = new Map();
 function prepareKimiHistory(runtime) {
   try {
     const metadata = JSON.parse(fs.readFileSync(path.resolve(path.dirname(runtime), '../package.json'), 'utf8'));
-    if (metadata.name !== '@moonshot-ai/kimi-code' || !['2.4.0', '2.4.1'].includes(metadata.version)) return null;
+    if (metadata.name !== '@moonshot-ai/kimi-code' || !['2.4.0', '2.4.1', '2.5.1'].includes(metadata.version)) return null;
     const stat = fs.statSync(runtime), key = runtime + ':' + stat.size + ':' + stat.mtimeMs;
     if (cache.has(key) && fs.existsSync(cache.get(key))) return cache.get(key);
     const source = fs.readFileSync(runtime, 'utf8'), patched = patchKimiHistory(source);

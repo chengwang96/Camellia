@@ -17,13 +17,17 @@ packages = [{'path': 'C:/outputs/Camellia-Android-debug.apk', 'name': 'Camellia-
              'extension': 'APK', 'kind': 'package', 'size': 46689292}]
 documents = [{'path': 'C:/outputs/试讲测评表.doc', 'name': '试讲测评表.doc', 'extension': 'DOC', 'kind': 'document', 'size': 43008},
              {'path': 'C:/outputs/自查表.docx', 'name': '自查表.docx', 'extension': 'DOCX', 'kind': 'word', 'size': 15995}]
-fixture['messages'][-1]['artifacts'] = files
+unrelated = [{'path': 'C:/outputs/论文收录自查表.pdf', 'name': '论文收录自查表.pdf', 'extension': 'PDF',
+              'kind': 'pdf', 'size': 2048, 'explicitDelivery': True}]
+fixture['messages'][-1]['artifacts'] = files + unrelated
+fixture['messages'][-1]['process'] = [{'type': 'tool', 'title': 'mcp__camellia_goals__camellia_find_files',
+                                       'text': '{}', 'status': 'completed', 'truncated': False}]
 bridge = ast.literal_eval(bridge_node.value.func.value).replace('FIXTURE', json.dumps(fixture))
 bridge = bridge.replace('onConversationEvent:()=>{}', 'onConversationEvent:fn=>{window.deliverEvent=fn;}')
 bridge += r"""(() => {
   const files = FILES;
   const packages = PACKAGES;
-  const all = [...packages, ...files];
+  const all = [...packages, ...files, ...UNRELATED];
   const documents = DOCUMENTS;
   all.push(...documents);
   window.resolveRequests = [];
@@ -49,7 +53,7 @@ bridge += r"""(() => {
   };
   window.dshDesktop.openFileExternally = async path => { openedExternally.push(path); return {ok:true}; };
   window.dshDesktop.revealFile = async path => { revealed.push(path); return {ok:true}; };
-})();""".replace('FILES', json.dumps(files)).replace('PACKAGES', json.dumps(packages)).replace('DOCUMENTS', json.dumps(documents))
+})();""".replace('FILES', json.dumps(files)).replace('PACKAGES', json.dumps(packages)).replace('DOCUMENTS', json.dumps(documents)).replace('UNRELATED', json.dumps(unrelated))
 preview = repo / 'dist/ui-preview'
 preview.mkdir(parents=True, exist_ok=True)
 

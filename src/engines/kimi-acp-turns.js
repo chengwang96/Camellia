@@ -28,13 +28,26 @@ function patchKimiAcpTurns(source) {
         }
         driver.resolve({ stopReason: turnEndReasonToStopReason(event.reason, error) });`],
     ['const events = this.agent.events;\n\t\t\tthis.subscriptions.push', `const events = this.agent.events;
+      Object.assign(events.registrations ||= {}, {
+        "task.started": { kind: "stream", name: "events", type: "task.started",
+          schema: looseObject({ type: literal("task.started"), agentId: string(), info: looseObject({}) }) },
+        "task.terminated": { kind: "stream", name: "events", type: "task.terminated",
+          schema: looseObject({ type: literal("task.terminated"), agentId: string(), info: looseObject({}) }) }
+      });
+      const forwardBackgroundTask = (event, terminated) => {
+        const info = event.info;
+        this.emit({ sessionId: this.sessionId, update: { sessionUpdate: "camellia_background_task", terminated,
+          task: { id: info.taskId, description: info.description, kind: info.kind, status: info.status } } });
+      };
       this.subscriptions.push(events.on("turn.started", event => {
         const driver = this.driver;
         if (driver?.promptId === void 0 || driver.promptId !== event.promptId || driver.settled) return;
         driver.turnId = event.turnId;
         if (driver.cancelRequested) this.agent.cancel({ turnId: event.turnId }).catch(() => {});
       }), events.on("prompt.completed", event => this.camelliaPromptEnded(event, false)),
-        events.on("prompt.aborted", event => this.camelliaPromptEnded(event, true)));
+        events.on("prompt.aborted", event => this.camelliaPromptEnded(event, true)),
+        events.on("task.started", event => forwardBackgroundTask(event, false)),
+        events.on("task.terminated", event => forwardBackgroundTask(event, true)));
       this.subscriptions.push`],
     ['driver.early.push({', `if (driver.promptId !== void 0) return;
         driver.early.push({`],
@@ -56,7 +69,6 @@ function patchKimiAcpTurns(source) {
           return;
         }
         this.agent.cancel()`],
-    ['getServer().prompt(ctx.params, ctx.signal)', 'getServer().camelliaPrompt(ctx.params, ctx.signal)'],
     ['\tlet closePromise;\n\tconst close = async () => {', `
   server.camelliaPrompt = (params, signal) => {
     const acpSession = server.getSession(params.sessionId);
@@ -75,7 +87,12 @@ function patchKimiAcpTurns(source) {
     if (source.split(before).length !== 2) return null;
     source = source.replace(before, after);
   }
-  return source;
+  const legacyPrompt = 'getServer().prompt(ctx.params, ctx.signal)';
+  const asyncPrompt = '(await getServer()).prompt(ctx.params, ctx.signal)';
+  const legacy = source.split(legacyPrompt).length === 2, modern = source.split(asyncPrompt).length === 2;
+  if (legacy === modern) return null;
+  return source.replace(legacy ? legacyPrompt : asyncPrompt,
+    legacy ? 'getServer().camelliaPrompt(ctx.params, ctx.signal)' : '(await getServer()).camelliaPrompt(ctx.params, ctx.signal)');
 }
 
 module.exports = { patchKimiAcpTurns };

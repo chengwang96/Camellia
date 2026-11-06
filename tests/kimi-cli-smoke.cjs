@@ -38,6 +38,8 @@ async function run() {
   const written = path.join(cwd, 'written.txt');
   const denied = path.join(cwd, 'denied.txt');
   fs.writeFileSync(marker, 'kimi-read-marker-7391');
+  const image = path.join(cwd, 'pixel.png');
+  fs.writeFileSync(image, Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9ZQmcAAAAASUVORK5CYII=', 'base64'));
   const requests = [], events = [], logs = [];
   const providerErrors = [
     { prompt: 'SMOKE quota', status: 429, code: 'insufficient_quota', message: "You've reached your 5-hour usage limit. Your quota will reset when the current 5-hour window ends." },
@@ -45,6 +47,7 @@ async function run() {
     { prompt: 'SMOKE auth error', status: 401, code: 'invalid_api_key', message: 'The API key is invalid.' },
   ];
   let slowRequest, backgroundStarted, finishBackground, backgroundParentReplied = false;
+  let steerStarted, finishSteerRequest;
   const server = http.createServer(async (req, res) => {
     if (require('./model-metadata-fixture.cjs')(req, res)) return;
     const chunks = []; for await (const chunk of req) chunks.push(chunk);
@@ -63,6 +66,11 @@ async function run() {
       return;
     }
     if (prompt.includes('SMOKE wait')) { slowRequest?.(); return; }
+    const transcript = JSON.stringify(body.messages);
+    if (transcript.includes('SMOKE steer start') && !transcript.includes('SMOKE steer correction')) {
+      steerStarted?.();
+      await new Promise(resolve => { finishSteerRequest = resolve; });
+    }
     const hasTool = body.messages.slice(lastUser).some(m => m.role === 'tool');
     if (prompt.includes('SMOKE background') && hasTool) {
       if (backgroundParentReplied) {
@@ -72,7 +80,7 @@ async function run() {
     }
     let tool;
     if (!hasTool) {
-      if (prompt.includes('SMOKE read')) tool = { name: 'Read', arguments: JSON.stringify({ path: marker }) };
+      if (prompt.includes('SMOKE read') || prompt.includes('SMOKE steer start')) tool = { name: 'Read', arguments: JSON.stringify({ path: marker }) };
       if (prompt.includes('SMOKE write')) tool = { name: 'Write', arguments: JSON.stringify({ path: written, content: 'kimi-wrote-7391' }) };
       if (prompt.includes('SMOKE deny')) tool = { name: 'Write', arguments: JSON.stringify({ path: denied, content: 'must not write' }) };
       if (prompt.includes('SMOKE shell')) tool = { name: 'Bash', arguments: JSON.stringify({ command: 'pwd', description: 'Report this test workspace' }) };
@@ -136,7 +144,15 @@ async function run() {
   }
   function turn(prompt, attachments) {
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => { session.kill(); reject(new Error('Kimi smoke timed out\n' + logs.join('\n'))); }, 30000);
+      const timer = setTimeout(() => {
+        const wire = fs.readdirSync(home, { recursive: true }).filter(file => file.endsWith('wire.jsonl')).flatMap(file => {
+          try { return fs.readFileSync(path.join(home, file), 'utf8').trim().split('\n').slice(-40).map(line => {
+            const row = JSON.parse(line); return { type: row.type, agentId: row.agentId, turnId: row.turnId, promptId: row.promptId, id: row.id };
+          }); } catch { return []; }
+        });
+        session.kill(); reject(new Error('Kimi smoke timed out during ' + prompt + '\n' + logs.join('\n')
+          + '\nRequests: ' + requests.length + '\nEvents: ' + JSON.stringify(events.slice(-8)) + '\nWire: ' + JSON.stringify(wire)));
+      }, 30000);
       done = result => { clearTimeout(timer); resolve(result); };
       assert.equal(session.sendUserMessage(prompt, attachments), true);
     });
@@ -161,6 +177,21 @@ async function run() {
     allow = true;
     assert.equal((await turn('SMOKE shell cwd')).subtype, 'success');
     assert.ok(events.some(e => e.type === 'gui:tool' && e.output?.includes('Project With Spaces')), 'Bash must work without optional node-pty');
+    const steeringStarted = new Promise(resolve => { steerStarted = resolve; });
+    const steeredTurn = turn('SMOKE steer start');
+    await steeringStarted;
+    const requestCount = requests.length;
+    const accepted = await session.steerUserMessage('SMOKE steer correction', [{ path: image, isImage: true }]);
+    assert.ok(Number.isSafeInteger(accepted.turnId));
+    finishSteerRequest();
+    assert.equal((await steeredTurn).subtype, 'success');
+    assert.equal(requests.length, requestCount + 1, 'The correction must join the active turn instead of launching another one');
+    const steeredRequest = JSON.stringify(requests.at(-1).body.messages);
+    assert.match(steeredRequest, /SMOKE steer start/);
+    assert.match(steeredRequest, /SMOKE steer correction/);
+    assert.match(steeredRequest, /data:image\/png;base64/);
+    const steeredHistory = await history.transcript(session.sessionId);
+    assert.equal(steeredHistory.messages.filter(message => message.role === 'user' && message.text.includes('SMOKE steer correction')).length, 1);
     const reached = new Promise(resolve => { slowRequest = resolve; });
     const pending = turn('SMOKE wait');
     await reached;
@@ -176,8 +207,6 @@ async function run() {
     assert.ok(JSON.stringify(requests.at(-1).body.messages).includes('SMOKE resume'), JSON.stringify(requests.at(-1).body.messages.filter(m => m.role === 'user' && m.content.includes('SMOKE'))));
     assert.ok((await history.transcript(session.sessionId)).messages.length >= 10);
     assert.equal((await history.list()).length, 2);
-    const image = path.join(cwd, 'pixel.png');
-    fs.writeFileSync(image, Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9ZQmcAAAAASUVORK5CYII=', 'base64'));
     assert.equal((await turn('SMOKE image attachment', [{ path: image, isImage: true }])).subtype, 'success');
     assert.match(JSON.stringify(requests.at(-1).body.messages), /data:image\/png;base64/);
     // Native task completion starts a turn without an ACP prompt. Submit the
@@ -188,6 +217,8 @@ async function run() {
       backgroundParentReplied = false;
       const backgroundReached = new Promise(resolve => { backgroundStarted = resolve; });
       assert.equal((await turn('SMOKE background')).subtype, 'success');
+      assert.ok(events.some(event => event.type === 'gui:background-work'
+        && event.tasks.some(task => task.description === 'Wait for the loopback background fixture')));
       fs.writeFileSync(path.join(cwd, 'release-bg.txt'), 'release');
       let reachedTimer;
       try {
@@ -202,8 +233,8 @@ async function run() {
       // Wait for the queued acknowledgement, rather than relying only on a
       // sleep while the prompt might not have reached the native engine yet.
       const queuedDeadline = Date.now() + 5000;
-      while (!events.slice(updateIndex).some(event => event.event?.delta?.text?.includes('this request is queued'))) {
-        assert.ok(Date.now() < queuedDeadline, 'Queued prompt was not acknowledged');
+      while (!events.slice(updateIndex).some(event => event.type === 'gui:prompt-queue')) {
+        assert.ok(Date.now() < queuedDeadline, 'Queued prompt was not acknowledged: ' + JSON.stringify(events.slice(updateIndex).map(event => ({ type: event.type, eventType: event.event?.type, subtype: event.subtype, tasks: event.tasks }))));
         await new Promise(resolve => setTimeout(resolve, 20));
       }
       await new Promise(resolve => setTimeout(resolve, 100));

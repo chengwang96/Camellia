@@ -2,8 +2,8 @@
 
 Official runtime: [MoonshotAI/kimi-code](https://github.com/MoonshotAI/kimi-code), MIT.
 This workbench pins `@moonshot-ai/kimi-code` to **2.4.0** and talks to its ACP stdio server.
-The shared conversation adapter adds a version-checked bridge to native undo;
-see [native conversation history](../../docs/design/native-conversation-history.md).
+The shared conversation adapter adds version-checked bridges to native undo and mid-turn steering;
+see [native conversation history](../../docs/design/native-conversation-history.md). Steering uses the same image conversion as a normal ACP prompt, confirms the native turn before acknowledging the instruction, and records accepted instructions in both native and portable history.
 
 Kimi is an optional download. Choose it on the home screen or in Settings → Engine Settings,
 or run `npm run setup:kimi` from source. Root dependency installation does not download it.
@@ -36,10 +36,12 @@ session to use another workspace. Removing a sidebar workspace retains all
 sessions, their original execution directories and files.
 
 For subscription sessions, the ACP bridge also exposes Kimi's native title
-service. Camellia keeps an immediate provisional title, then adopts the
-model-generated native title after the first turn. This path uses the signed-in
-Kimi account and does not require an API route; if native generation is
-unavailable, the shared API-route naming fallback still applies.
+service. Camellia keeps an immediate provisional title, then adopts a
+model-generated native title from the visible request while the first turn is
+running. If early generation is unavailable, Camellia retries from the completed
+first turn. This path uses the signed-in Kimi account and does not require an API
+route; if native generation is unavailable, the shared API-route naming fallback
+still applies.
 
 Runtime permission IDs follow the engine toggles: `default` = manual, `plan` =
 planning, `yolo` = ask when needed, `auto` = never ask. The workbench follows

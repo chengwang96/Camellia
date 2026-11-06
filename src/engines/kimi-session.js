@@ -6,11 +6,31 @@ const TOML = require('smol-toml');
 const { writeText } = require('../shared/json-store');
 const { copyKimiFork } = require('./native-fork');
 const { validSessionId } = require('./claude-history');
-const { prepareKimiHistory } = require('./kimi-native-history');
+const { prepareKimiRuntime } = require('./kimi-steer');
 const { matchesPrompt, nativeEditOptions } = require('./native-edit-boundary');
 const { harnessThinkingRoute } = require('../api/harness-thinking');
 
 class KimiSession extends AcpSession {
+  async steerUserMessage(prompt, attachments = []) {
+    if (!this.spec.nativeSteer) throw new Error('This engine connection does not support immediate instructions. Your message has been retained.');
+    if (!this.running || this.dead || this.cancelled || !this.sessionId)
+      throw new Error('The active turn is not ready or has already finished. Your message was not sent.');
+    const parts = [{ type: 'text', text: prompt }];
+    const imageTypes = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp', '.gif': 'image/gif' };
+    for (const attachment of attachments) {
+      const mimeType = imageTypes[path.extname(attachment.path).toLowerCase()];
+      if (!attachment.isImage || !mimeType) continue;
+      if (this.promptCapabilities.image !== true)
+        throw new Error('Kimi did not advertise inline image prompts; send this message without the image or use an engine with image input.');
+      parts.push({ type: 'image', mimeType, data: fs.readFileSync(attachment.path).toString('base64') });
+    }
+    const result = await this.request('session/camellia_steer', { sessionId: this.sessionId, prompt: parts }, 0);
+    if (!Number.isSafeInteger(result?.turnId))
+      throw new Error('Kimi did not confirm the expected turn. Check the conversation before retrying.');
+    this.appendHistory('user', prompt);
+    return result;
+  }
+
   async editBoundary(prompt) {
     if (!this.spec.nativeHistory || this.running) return null;
     await (this.ready ||= this.open());
@@ -18,15 +38,24 @@ class KimiSession extends AcpSession {
     return matchesPrompt(boundary.text, prompt) ? nativeEditOptions('kimi', boundary) : null;
   }
 
-  async generateTitle() {
-    if (!this.spec.nativeHistory || this.running || this.dead || !this.sessionId) return '';
+  async generateTitle({ prompt = '', duringTurn = false, delay = ms => new Promise(resolve => setTimeout(resolve, ms)) } = {}) {
+    if (!this.spec.nativeHistory || this.dead || this.running && !duringTurn) return '';
     await (this.ready ||= this.open());
-    for (let attempt = 0; attempt < 3; attempt++) {
-      const result = await this.request('session/camellia_generate_title', { sessionId: this.sessionId }, 45000);
-      if (typeof result?.title === 'string' && result.title.trim()) return result.title;
-      if (attempt < 2) await new Promise(resolve => setTimeout(resolve, 750 * (attempt + 1)));
-    }
-    return '';
+    if (this.dead || !this.sessionId || this.running && !duringTurn) return '';
+    const request = async visiblePrompt => {
+      for (let attempt = 0; attempt < 3; attempt++) {
+        if (visiblePrompt && !this.running) return '';
+        const result = await this.request('session/camellia_generate_title', {
+          sessionId: this.sessionId, ...(visiblePrompt ? { prompt: visiblePrompt } : {}) }, 45000);
+        if (typeof result?.title === 'string' && result.title.trim()) return result.title;
+        if (visiblePrompt && !this.running) return '';
+        if (attempt < 2) await delay(750 * (attempt + 1));
+      }
+      return '';
+    };
+    if (duringTurn && this.running && prompt.trim()) return request(prompt);
+    if (this.running) return '';
+    return request('');
   }
 }
 
@@ -115,8 +144,9 @@ function kimiSpawnSpec({ home, runtime, model, contextWindow = 131072, route, co
     route: thinkingBudget === undefined ? route : harnessThinkingRoute(route, thinkingBudget), model, contextWindow });
   writeText(path.join(home, 'config.toml'), TOML.stringify(merged));
   writeText(path.join(home, 'mcp.json'), mcp || '{"mcpServers":{}}');
-  const bridge = prepareKimiHistory(runtime);
-  return { args: [bridge || runtime, 'acp'], env: { ...kimiEnvironment(home, env), KIMI_DISABLE_TELEMETRY: merged.telemetry ? '0' : '1' }, modeEngine: 'kimi', nativeHistory: Boolean(bridge),
+  const bridge = prepareKimiRuntime(runtime);
+  return { args: [bridge.file, 'acp'], env: { ...kimiEnvironment(home, env), KIMI_DISABLE_TELEMETRY: merged.telemetry ? '0' : '1' }, modeEngine: 'kimi',
+    nativeHistory: bridge.nativeHistory, nativeSteer: bridge.nativeSteer,
     ...(connection !== 'subscription' && thinkingBudget !== undefined ? { applyThinking: false } : {}) };
 }
 

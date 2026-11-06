@@ -21,7 +21,7 @@ function harness(cancel, overrides = {}) {
     goalUI: { waitingId: () => null },
     statusText: 'Running…', statusLine: { textContent: 'Running…' }, queueComposerMessage: () => false,
     chatApi: { cancel: payload => cancel(state, payload) },
-    sidebar: { load() {} }, updateConversationControls() {}, drainMessageQueue() {},
+    sidebar: { load() {} }, updateConversationControls() {}, drainMessageQueue() {}, renderBackgroundWork() {},
     ...overrides,
   };
   state.setStatus = text => { state.statusText = text; state.statusLine.textContent = text; };

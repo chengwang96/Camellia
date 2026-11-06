@@ -42,9 +42,12 @@ try:
         page.goto((repo / 'src/renderer/settings/api-settings.html').as_uri())
         page.wait_for_load_state('networkidle')
         page.locator('[data-view=usage]').click()
+        expect(page.locator('#usageSource')).to_have_count(0)
+        filters = page.locator('#usagePage .filter-row > label')
+        expect(filters).to_have_count(4)
+        assert len({label.bounding_box()['y'] for label in filters.all()}) == 1
         expect(page.locator('#usageRange')).to_have_value('all')
         page.locator('#usageRange').select_option('7')
-        page.locator('#usageSource').select_option('subscription')
         expect(page.locator('#usageRows tr')).to_have_count(3)
         # Explanatory copy stays in the tooltip; only exceptions are visible.
         expect(page.locator('#subscriptionCost')).not_to_contain_text('Unpriced usage')
@@ -83,7 +86,7 @@ try:
         page.locator('#usageKey').select_option('subscription:codex:account-1')
         expect(page.locator('#subscriptionCost')).to_have_text('Unavailable')
         expect(page.locator('#usageRows')).to_contain_text('future-model')
-        page.locator('#usageSource').select_option('api')
+        page.locator('#usageProvider').select_option('test')
         expect(page.locator('#subscriptionCostCard')).to_be_hidden()
         expect(page.locator('#usageRows')).not_to_contain_text('future-model')
         page.evaluate('''() => {
@@ -112,15 +115,13 @@ try:
         expect(page.locator('#usageProvider option[value="history:gone"]')).to_have_count(1)
         page.evaluate('''() => { live.usageArchive = []; fillUsageFilters(); renderUsage(); }''')
 
-        # A key's Usage shortcut must leave subscription-only filters behind.
-        page.locator('#usageSource').select_option('subscription')
+        # A key's Usage shortcut must replace subscription provider, account and model filters.
         page.locator('#usageProvider').select_option('subscription:codex')
         page.locator('#usageKey').select_option('subscription:codex:account-1')
         page.locator('#usageModel').select_option('future-model')
         page.locator('[data-view=providers]').click()
         page.locator('#providers [data-select=test]').first.click()
         page.locator('[data-key-usage=test-key]').click()
-        expect(page.locator('#usageSource')).to_have_value('api')
         expect(page.locator('#usageProvider')).to_have_value('test')
         expect(page.locator('#usageKey')).to_have_value('test-key')
         expect(page.locator('#usageModel')).to_have_value('')
@@ -132,12 +133,12 @@ try:
         page.reload(); page.wait_for_load_state('networkidle')
         page.locator('[data-view=usage]').click()
         page.locator('#usageRange').select_option('7')
-        page.locator('#usageSource').select_option('subscription')
         expect(page.locator('#usageRows tr')).to_have_count(3)
         page.locator('[data-view=general]').click()
         page.locator('#language').select_option('zh-CN')
         expect(page.locator('html')).to_have_attribute('lang', 'zh-CN')
         page.locator('[data-view=usage]').click()
+        assert len({label.bounding_box()['y'] for label in filters.all()}) == 1
         expect(page.locator('#subscriptionCostSummary')).to_have_attribute('title', re.compile('不代表订阅实际账单'))
         expect(page.locator('#usageRows')).to_contain_text('订阅')
         preview = repo / 'dist/ui-preview'
@@ -152,7 +153,6 @@ try:
         page.reload(); page.wait_for_load_state('networkidle')
         page.locator('[data-view=usage]').click()
         page.locator('#usageRange').select_option('all')
-        page.locator('#usageSource').select_option('subscription')
         page.locator('#usageProvider').select_option('subscription:codex')
         page.locator('#usageKey').select_option('subscription:codex:default')
         page.locator('#usageModel').select_option('gpt-6.1-sol')

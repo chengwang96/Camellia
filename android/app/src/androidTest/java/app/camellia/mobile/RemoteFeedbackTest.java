@@ -168,6 +168,88 @@ public class RemoteFeedbackTest extends InstrumentationTestCase {
             .put("messages", new JSONArray().put(new JSONObject().put("seq", 11).put("role", "user").put("text", "instant message")));
     }
 
+    private int visibleText(View view, String value) {
+        if (view.getVisibility() != View.VISIBLE) return 0;
+        int count = view instanceof TextView && ((TextView) view).getText().toString().equals(value) ? 1 : 0;
+        if (view instanceof ViewGroup) for (int i = 0; i < ((ViewGroup) view).getChildCount(); i++) count += visibleText(((ViewGroup) view).getChildAt(i), value);
+        return count;
+    }
+
+    private int waitingReplies() throws Exception {
+        View messages = (View) field("messages");
+        return visibleText(messages, "等待输出…") + visibleText(messages, "Waiting for output…");
+    }
+
+    public void testDesktopStopBeforeOutputReplacesWaitingAndSurvivesReopening() {
+        ui(() -> {
+            JSONObject snapshot = snapshot().put("live", new JSONObject().put("runId", 7).put("userSeq", 11).put("text", ""));
+            invoke("applySnapshot", snapshot);
+            assertEquals(1, waitingReplies());
+            View process = ((View) field("messages")).findViewWithTag("executionProcess:" + ID + ":turn:11");
+            snapshot.getJSONArray("messages").put(new JSONObject().put("seq", 12).put("role", "assistant").put("text", "")
+                .put("turnDetails", new JSONObject().put("state", "stopped").put("duration_ms", 5993)));
+            snapshot.getJSONObject("conversation").put("seq", 12).put("activity", JSONObject.NULL);
+            snapshot.put("cursor", 2).put("live", JSONObject.NULL);
+            invoke("applySnapshot", snapshot);
+            assertEquals(0, waitingReplies());
+            assertSame(process, ((View) field("messages")).findViewWithTag("executionProcess:" + ID + ":turn:11"));
+            String stopped = activity.getString(R.string.turn_stopped_elapsed, "6s");
+            assertEquals(1, visibleText((View) field("messages"), stopped));
+            assertNull(field("lastLive"));
+            assertEquals(View.GONE, ((View) field("stopButton")).getVisibility());
+            assertEquals(View.VISIBLE, ((View) field("sendButton")).getVisibility());
+
+            invoke("detailScreen"); invoke("stopNetwork");
+            invoke("applySnapshot", snapshot);
+            assertEquals(0, waitingReplies());
+            assertEquals(1, visibleText((View) field("messages"), stopped));
+
+            // A new run still gets its own waiting indicator; the stopped turn stays stopped.
+            snapshot.getJSONArray("messages").put(new JSONObject().put("seq", 13).put("role", "user").put("text", "Continue"));
+            snapshot.put("cursor", 3).put("live", new JSONObject().put("runId", 8).put("userSeq", 13).put("text", ""));
+            invoke("applySnapshot", snapshot);
+            assertEquals(1, waitingReplies());
+            assertEquals(1, visibleText((View) field("messages"), stopped));
+        });
+    }
+
+    public void testStoppedPartialReplyRetainsItsTextProcessAndUsage() {
+        ui(() -> {
+            JSONArray process = new JSONArray().put(new JSONObject().put("type", "tool").put("title", "Shell").put("text", "output").put("status", "cancelled"));
+            JSONObject snapshot = snapshot().put("live", new JSONObject().put("runId", 7).put("userSeq", 11).put("text", "Partial answer").put("process", process));
+            invoke("applySnapshot", snapshot);
+            snapshot.getJSONArray("messages").put(new JSONObject().put("seq", 12).put("role", "assistant").put("text", "Partial answer").put("process", process)
+                .put("turnDetails", new JSONObject().put("state", "stopped").put("usage", new JSONObject().put("output_tokens", 3))));
+            snapshot.put("cursor", 2).put("live", JSONObject.NULL);
+            invoke("applySnapshot", snapshot);
+            View messages = (View) field("messages");
+            assertEquals(0, waitingReplies());
+            assertEquals(1, visibleText(messages, activity.getString(R.string.turn_stopped)));
+            View toggle = messages.findViewWithTag("processToggle:" + ID + ":turn:11");
+            assertTrue(toggle.isClickable()); toggle.performClick();
+            assertEquals(View.VISIBLE, messages.findViewWithTag("processBody:" + ID + ":turn:11").getVisibility());
+            assertEquals(View.VISIBLE, messages.findViewWithTag("markdown").getVisibility());
+            assertEquals(1, ((java.util.Map<?, ?>) field("replyMessages")).size());
+            assertEquals(View.VISIBLE, messages.findViewWithTag("turnUsage").getVisibility());
+        });
+    }
+
+    public void testEmptyFinishedAndLegacyRepliesNeverShowWaiting() {
+        ui(() -> {
+            int[] labels = {R.string.turn_stopped, R.string.turn_failed, R.string.turn_completed};
+            String[] states = {"stopped", "error", "complete", ""};
+            for (int i = 0; i < states.length; i++) {
+                JSONObject snapshot = snapshot().put("cursor", i + 1);
+                JSONObject reply = new JSONObject().put("seq", 12).put("role", "assistant").put("text", "");
+                if (!states[i].isEmpty()) reply.put("turnDetails", new JSONObject().put("state", states[i]));
+                snapshot.getJSONArray("messages").put(reply);
+                invoke("applySnapshot", snapshot);
+                assertEquals(0, waitingReplies());
+                if (i < labels.length) assertEquals(1, visibleText((View) field("messages"), activity.getString(labels[i])));
+            }
+        });
+    }
+
     private JSONObject readMarker(long replyAt) throws Exception {
         return new JSONObject().put("id", ID).put("lastReplyAt", replyAt).put("replyReadAt", 0);
     }

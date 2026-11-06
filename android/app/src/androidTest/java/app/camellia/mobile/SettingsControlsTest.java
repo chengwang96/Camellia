@@ -43,6 +43,20 @@ public class SettingsControlsTest extends InstrumentationTestCase {
                 android.graphics.drawable.GradientDrawable fill = (android.graphics.drawable.GradientDrawable) input.getBackground().getCurrent();
                 assertEquals(style.field, fill.getColor().getDefaultColor());
                 assertEquals(style.ink, input.getCurrentTextColor());
+                for (boolean checked : new boolean[]{false, true}) {
+                    android.widget.CheckBox choice = new android.widget.CheckBox(context);
+                    choice.setText(checked ? "多选 · Selected" : "多选 · Not selected");
+                    choice.setTextColor(style.ink); choice.setMinHeight(style.dp(48)); choice.setChecked(checked);
+                    style.selection(choice); panel.addView(choice);
+                }
+                android.widget.RadioGroup choices = new android.widget.RadioGroup(context);
+                for (boolean checked : new boolean[]{true, false}) {
+                    android.widget.RadioButton choice = new android.widget.RadioButton(context);
+                    choice.setText(checked ? "单选 · Selected" : "单选 · Not selected"); choice.setId(View.generateViewId());
+                    choice.setTextColor(style.ink); choice.setMinHeight(style.dp(48)); choice.setChecked(checked);
+                    style.selection(choice); choices.addView(choice);
+                }
+                panel.addView(choices);
                 ProgressBar progress = style.progressBar(); progress.setTag("testProgress"); progress.setProgress(42);
                 LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, Math.round(6 * context.getResources().getDisplayMetrics().density));
                 params.topMargin = Math.round(20 * context.getResources().getDisplayMetrics().density); panel.addView(progress, params);
@@ -66,6 +80,8 @@ public class SettingsControlsTest extends InstrumentationTestCase {
                 TextView feedback = dialog.getWindow().getDecorView().findViewWithTag("settingsNameError");
                 assertTrue(feedback.getGlobalVisibleRect(new android.graphics.Rect()));
             });
+            // A main-thread idle can precede the sheet's compositor animation.
+            getInstrumentation().getUiAutomation().waitForIdle(500, 5000);
             var bitmap = getInstrumentation().getUiAutomation().takeScreenshot();
             if (bitmap != null) {
                 try (var output = new java.io.FileOutputStream(new java.io.File(activity.getExternalFilesDir(null), dark ? "settings-controls-dark.png" : "settings-controls-light.png"))) {

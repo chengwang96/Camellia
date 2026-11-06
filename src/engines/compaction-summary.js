@@ -57,7 +57,7 @@ const byKey = (first, second) => {
 async function runSummaryPipeline({ units, previous = '', budget, request, onProgress = () => {}, onCheckpoint = () => {},
   onOverflow, stopped = () => false, concurrency = DEFAULT_CONCURRENCY, maxRequests = DEFAULT_MAX_REQUESTS,
   maxShrinks = DEFAULT_MAX_SHRINKS, maxDepth = DEFAULT_MAX_DEPTH, maxSummaryChars = Infinity, maxOutputTokens = OUTPUT_TOKEN_CEILING,
-  cache = new Map(), onCacheHit = () => {} }) {
+  cache = new Map(), onCacheHit = () => {}, waitForSettlement = false }) {
   if (typeof request !== 'function') throw new Error('Compaction summaries need a request function');
   let current = budget, requests = 0, shrinks = 0;
   let failure = null;
@@ -207,7 +207,12 @@ async function runSummaryPipeline({ units, previous = '', budget, request, onPro
         slots[next.index] = await one(next.task, depth);
       }
     }).map(worker => worker.catch(fail));
-    try { await Promise.all(workers); }
+    try {
+      if (waitForSettlement) {
+        await Promise.allSettled(workers);
+        if (failure) throw failure;
+      } else await Promise.all(workers);
+    }
     finally { source.return?.(); }
     return slots.flat();
   };
@@ -273,7 +278,10 @@ async function runSummaryPipeline({ units, previous = '', budget, request, onPro
         if (accepted) progress('reduce', 1);
       }
     }).map(worker => worker.catch(fail));
-    await Promise.all(workers);
+    if (waitForSettlement) {
+      await Promise.allSettled(workers);
+      if (failure) throw failure;
+    } else await Promise.all(workers);
     return merged.length === 1 ? merged[0] : merge(merged, depth + 1);
   };
 

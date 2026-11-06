@@ -36,16 +36,21 @@ bridge = """(() => {
     : payload => window.testCall(method, payload) });
 })();"""
 
-def wait_saved(page, source):
-    page.wait_for_function("""async source => {
+def wait_saved(page, source, mode=None):
+    page.wait_for_function("""async ({source, mode}) => {
       const state = await window.dshDesktop.apiRouterGetState();
-      return state.webTools?.provider === source && !saving && !isDirty();
-    }""", arg=source)
+      return state.webTools?.provider === source && (!mode || state.webTools?.fetchMode === mode) && !saving && !isDirty();
+    }""", arg={'source': source, 'mode': mode})
 
-def expect_synced(page, value):
+def expect_synced(page, value, mode=None):
     for prefix in ['webTools', 'networkWebTools']:
         expect(page.locator('#' + prefix + 'Provider')).to_have_value(value)
+        expect(page.locator('#' + prefix + 'FetchRow')).to_have_js_property('hidden', value == 'native')
+        if mode:
+            expect(page.locator('#' + prefix + 'FetchMode')).to_have_value(mode)
     assert page.locator('#webToolsHint').text_content() == page.locator('#networkWebToolsHint').text_content()
+    if mode:
+        assert page.locator('#webToolsFetchHint').text_content() == page.locator('#networkWebToolsFetchHint').text_content()
 
 def provider(id, url='https://api.deepseek.com/v1', enabled=True):
     return {'id': id, 'name': 'DeepSeek ' + id, 'type': 'deepseek', 'baseUrl': url, 'enabled': enabled,
@@ -65,6 +70,8 @@ try:
         page.wait_for_load_state('networkidle')
         source = page.locator('#webToolsProvider')
         network_source = page.locator('#networkWebToolsProvider')
+        mode = page.locator('#webToolsFetchMode')
+        network_mode = page.locator('#networkWebToolsFetchMode')
         expect_synced(page, 'native')
         for view, prefix in [('models', 'webTools'), ('network', 'networkWebTools')]:
             page.locator('[data-view=' + view + ']').click()
@@ -84,25 +91,31 @@ try:
         expect(source).to_be_enabled()
         expect(source.locator('option')).to_have_count(3)
         source.select_option('deepseek:official')
-        wait_saved(page, 'deepseek')
-        expect_synced(page, 'deepseek:official')
+        wait_saved(page, 'deepseek', 'deepseek')
+        expect_synced(page, 'deepseek:official', 'deepseek')
         assert rpc('apiRouterGetState')['result']['webTools']['providerId'] == 'official'
         assert 'fixture-private' not in page.content()
         page.reload()
         page.wait_for_load_state('networkidle')
-        expect_synced(page, 'deepseek:official')
+        expect_synced(page, 'deepseek:official', 'deepseek')
 
-        # The Network entry uses the same persisted setting in both directions.
+        # Both pages persist the fetch mode and retain it when switching accounts.
         page.locator('[data-view=network]').click()
         expect(network_source).to_be_visible()
         network_source.select_option('deepseek:second')
-        wait_saved(page, 'deepseek')
-        expect_synced(page, 'deepseek:second')
+        wait_saved(page, 'deepseek', 'deepseek')
+        expect_synced(page, 'deepseek:second', 'deepseek')
         assert rpc('apiRouterGetState')['result']['webTools']['providerId'] == 'second'
         page.reload()
         page.wait_for_load_state('networkidle')
         page.locator('[data-view=network]').click()
-        expect_synced(page, 'deepseek:second')
+        expect_synced(page, 'deepseek:second', 'deepseek')
+        network_mode.select_option('auto')
+        wait_saved(page, 'deepseek', 'auto')
+        expect_synced(page, 'deepseek:second', 'auto')
+        network_source.select_option('deepseek:official')
+        wait_saved(page, 'deepseek', 'auto')
+        expect_synced(page, 'deepseek:official', 'auto')
         network_source.select_option('native')
         wait_saved(page, 'native')
         expect_synced(page, 'native')
@@ -113,15 +126,24 @@ try:
         source.select_option('deepseek:official')
         expect(source).to_be_disabled()
         expect(network_source).to_be_disabled()
-        expect_synced(page, 'deepseek:official')
+        expect(mode).to_be_disabled()
+        expect(network_mode).to_be_disabled()
+        expect_synced(page, 'deepseek:official', 'deepseek')
         page.locator('[data-view=network]').click()
         expect(network_source).to_be_visible()
-        expect_synced(page, 'deepseek:official')
+        expect_synced(page, 'deepseek:official', 'deepseek')
         page.wait_for_function("typeof window.releaseWebSave === 'function'")
         page.evaluate('window.deferWebSave = false; window.releaseWebSave()')
-        wait_saved(page, 'deepseek')
+        wait_saved(page, 'deepseek', 'deepseek')
         expect(source).to_be_enabled()
         expect(network_source).to_be_enabled()
+        page.locator('[data-view=models]').click()
+        mode.select_option('auto')
+        wait_saved(page, 'deepseek', 'auto')
+        expect_synced(page, 'deepseek:official', 'auto')
+        page.reload()
+        page.wait_for_load_state('networkidle')
+        expect_synced(page, 'deepseek:official', 'auto')
 
         screenshots = 0
         for language in ['en', 'zh-CN']:
@@ -133,11 +155,13 @@ try:
                     for view, prefix in [('models', 'webTools'), ('network', 'networkWebTools')]:
                         page.locator('[data-view=' + view + ']').click()
                         page.locator('#' + prefix + 'Section').scroll_into_view_if_needed()
-                        expect_synced(page, 'deepseek:official')
+                        expect_synced(page, 'deepseek:official', 'auto')
                         assert page.evaluate('document.documentElement.scrollWidth <= innerWidth'), (view, language, theme, width)
                         expect(page.locator('#' + prefix + 'Title')).to_have_text('网页搜索与抓取' if language == 'zh-CN' else 'Web search and fetch')
-                        box = page.locator('#' + prefix + 'Provider').bounding_box()
-                        assert box['x'] >= 0 and box['x'] + box['width'] <= width
+                        expect(page.locator('#' + prefix + 'FetchMode option:checked')).to_have_text('智能回退（推荐）' if language == 'zh-CN' else 'Smart fallback (recommended)')
+                        for control in ['Provider', 'FetchMode']:
+                            box = page.locator('#' + prefix + control).bounding_box()
+                            assert box['x'] >= 0 and box['x'] + box['width'] <= width
                         page.screenshot(path=str(output / f'{view}-{language}-{theme}-{width}.png'))
                         screenshots += 1
 
@@ -161,6 +185,7 @@ try:
         expect_synced(page, 'deepseek:second')
         for prefix in ['webTools', 'networkWebTools']:
             expect(page.locator('#' + prefix + 'Provider option:checked')).to_be_disabled()
+            expect(page.locator('#' + prefix + 'FetchMode')).to_be_disabled()
             expect(page.locator('#' + prefix + 'AddApi')).to_have_js_property('hidden', False)
         expect(page.locator('#webToolsAddApi')).to_be_visible()
         source.select_option('native')
@@ -170,8 +195,8 @@ try:
         browser.close()
     (output / 'verification.json').write_text(json.dumps({'passed': True, 'screenshots': screenshots,
         'checks': ['missing key on both pages', 'official accounts only', 'bidirectional synchronization',
-                   'persistence from both pages', 'navigation during save', 'save failure and retry',
-                   'disabled account', 'English and Chinese', 'light and dark', 'narrow layout'],
+                   'fetch mode persistence from both pages', 'fetch mode retained across accounts', 'navigation during save',
+                   'save failure and retry', 'disabled account', 'English and Chinese', 'light and dark', 'narrow layout'],
         'paidRequests': 0}, indent=2), encoding='utf-8')
     print(f'DeepSeek web settings: real IPC, bidirectional synchronization, persistence, failure recovery and {screenshots} layout checks passed')
 finally:

@@ -77,16 +77,19 @@ final class ExecutionProcessView extends LinearLayout {
         String title = onlyThinking ? live ? tr("正在思考", "Thinking") : tr("思考已完成", "Thinking completed")
             : live ? tr("执行过程 · 进行中", "Execution process · Running") : tr("执行过程", "Execution process");
         String summary = title + (tools > 0 ? " · " + tools + tr(" 次工具调用", " tool calls") : ""); caption.setText(summary);
-        boolean completed = !live && details != null && details.completed();
-        if (completed) caption.setText(details.duration == null ? getContext().getString(R.string.turn_completed)
-            : getContext().getString(R.string.turn_completion_elapsed, details.elapsed()));
-        icon.setVisibility(completed ? GONE : VISIBLE); rule.setVisibility(completed ? VISIBLE : GONE);
-        header.setPadding(completed ? 0 : style.dp(12), style.dp(8), completed ? 0 : style.dp(12), style.dp(8));
+        boolean terminal = !live && details != null && details.terminal();
+        if (terminal) {
+            int label = details.state.equals("stopped") ? R.string.turn_stopped : details.state.equals("error") ? R.string.turn_failed : R.string.turn_completed;
+            int elapsed = details.state.equals("stopped") ? R.string.turn_stopped_elapsed : details.state.equals("error") ? R.string.turn_failed_elapsed : R.string.turn_completion_elapsed;
+            caption.setText(details.duration == null ? getContext().getString(label) : getContext().getString(elapsed, details.elapsed()));
+        }
+        icon.setVisibility(terminal ? GONE : VISIBLE); rule.setVisibility(terminal ? VISIBLE : GONE);
+        header.setPadding(terminal ? 0 : style.dp(12), style.dp(8), terminal ? 0 : style.dp(12), style.dp(8));
         header.setClickable(entries.length() > 0); header.setFocusable(entries.length() > 0);
-        caption.setTextColor(completed ? style.faint : style.muted);
-        if (completed) setBackgroundColor(android.graphics.Color.TRANSPARENT);
+        caption.setTextColor(terminal ? style.faint : style.muted);
+        if (terminal) setBackgroundColor(android.graphics.Color.TRANSPARENT);
         else { GradientDrawable border = style.rounded(style.background); border.setStroke(style.dp(1), ModelPickerPopup.blend(style.background, style.muted, .22f)); setBackground(border); }
-        setVisibility(entries.length() == 0 && !completed ? GONE : VISIBLE); renderBody();
+        setVisibility(entries.length() == 0 && !terminal ? GONE : VISIBLE); renderBody();
     }
 
     private void renderBody() {

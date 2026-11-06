@@ -23,13 +23,18 @@ test('web settings default to native, survive restart and partial saves, and nev
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'web-tools-')); t.after(() => removeTree(root));
   assert.deepEqual(normalizeConfig({}).webTools, { provider: 'native' });
   const selected = configured();
+  assert.equal(selected.webTools.fetchMode, 'deepseek');
   const partial = normalizeConfig({ providers: publicState(selected).providers }, selected);
   const file = path.join(root, 'routes.json'); writeConfig(file, partial);
   assert.deepEqual(loadConfig(file).webTools, selected.webTools);
   const state = publicState(partial);
   assert.equal(JSON.stringify(state).includes('private-official'), false);
   assert.equal(availableProviders(state)[0].id, 'official');
-  for (const webTools of [null, [], {}, { provider: 'other' }, { provider: 'deepseek' }, { provider: 'deepseek', providerId: '__proto__' }])
+  for (const fetchMode of ['auto', 'local']) {
+    assert.equal(normalizeConfig({ providers: [provider()], webTools: { provider: 'deepseek', providerId: 'official', fetchMode } }).webTools.fetchMode, fetchMode);
+  }
+  for (const webTools of [null, [], {}, { provider: 'other' }, { provider: 'deepseek' }, { provider: 'deepseek', providerId: '__proto__' },
+    { provider: 'deepseek', providerId: 'official', fetchMode: 'other' }])
     assert.throws(() => normalizeConfig({ providers: [], webTools }));
   assert.deepEqual(normalizeConfig({ providers: [], webTools: { provider: 'native' } }, selected).webTools, { provider: 'native' });
 });
@@ -217,4 +222,110 @@ for (const enabled of [false, true]) test('stdio MCP exposes web tools only when
   assert.equal(calls.length, enabled ? 1 : 0);
   if (enabled) assert.equal(JSON.parse(result.content[0].text).results[0].url, row.url);
   assert.equal(JSON.stringify(bridge.config).includes('private-official'), false);
+});
+
+
+test('smart fallback returns the local source, connection mode and DeepSeek failure reason', async () => {
+  const config = configured(); config.webTools.fetchMode = 'auto';
+  let cloudCalls = 0, localCalls = 0;
+  const service = createWebTools({ getConfig: () => config, getConnectionMode: () => 'auto',
+    fetchImpl: async () => { cloudCalls++; return new Response('private-official', { status: 404 }); },
+    localFetch: { fetchPage: async url => { localCalls++; return { title: 'Local title', content: '# Local content', final_url: url + '/final' }; } } });
+  const page = await service.call('camellia_web_fetch', { url: row.url });
+  assert.equal(page.ok, true); assert.equal(page.provider, 'local'); assert.equal(page.content, '# Local content');
+  assert.equal(page.final_url, row.url + '/final'); assert.equal(page.connection_mode, 'auto');
+  assert.equal(page.fallback_from, 'deepseek'); assert.equal(page.fallback_reason, 'web_page_unavailable');
+  assert.equal(cloudCalls, 1); assert.equal(localCalls, 1);
+  assert.equal(JSON.stringify(page).includes('private-official'), false);
+});
+
+test('local-only fetch makes no DeepSeek page request while search still uses the selected account', async () => {
+  const config = configured(); config.webTools.fetchMode = 'local';
+  const cloudCalls = [];
+  const service = createWebTools({ getConfig: () => config,
+    fetchImpl: async (url, options) => { cloudCalls.push({ url, options }); return Response.json({ results: [row] }); },
+    localFetch: { fetchPage: async url => ({ title: 'Local', content: 'Local page', final_url: url }) } });
+  const page = await service.call('camellia_web_fetch', { url: row.url });
+  assert.equal(page.provider, 'local'); assert.equal(page.fallback_from, undefined); assert.equal(cloudCalls.length, 0);
+  const found = await service.call('camellia_web_search', { query: 'news' });
+  assert.equal(found.provider, 'deepseek'); assert.equal(cloudCalls.length, 1);
+  assert.equal(cloudCalls[0].url, 'https://api.deepseek.com/v1/tools/search');
+  assert.equal(cloudCalls[0].options.headers.Authorization, 'Bearer private-official');
+});
+
+test('smart fallback does not duplicate successful, blocked, authentication, billing or DOCX requests', async () => {
+  for (const [status, payload, url] of [[200, { title: 'Cloud', content: 'DeepSeek page' }, row.url],
+    [401, {}, row.url], [402, {}, row.url], [403, {}, row.url], [404, {}, 'https://example.com/file.docx']]) {
+    const config = configured(); config.webTools.fetchMode = 'auto';
+    let localCalls = 0;
+    const service = createWebTools({ getConfig: () => config,
+      fetchImpl: async () => status === 200 ? Response.json(payload) : new Response('private-official', { status }),
+      localFetch: { fetchPage: async () => { localCalls++; return { title: 'Local', content: 'Local', final_url: row.url }; } } });
+    if (status === 200) {
+      const page = await service.call('camellia_web_fetch', { url });
+      assert.equal(page.provider, 'deepseek'); assert.equal(page.content, 'DeepSeek page');
+    } else await assert.rejects(service.call('camellia_web_fetch', { url }));
+    assert.equal(localCalls, 0, `status ${status}`);
+  }
+});
+
+test('smart fallback covers unreadable pages, rate limits, service failures, network failures and empty content', async () => {
+  const cases = [new Response('missing', { status: 404 }), new Response('limited', { status: 429 }),
+    new Response('failed', { status: 500 }), Object.assign(new Error('private network detail'), { name: 'TimeoutError' }),
+    Response.json({ title: 'Empty', content: '' }), Response.json({})];
+  for (const outcome of cases) {
+    const config = configured(); config.webTools.fetchMode = 'auto';
+    let localCalls = 0;
+    const service = createWebTools({ getConfig: () => config,
+      fetchImpl: async () => { if (outcome instanceof Error) throw outcome; return outcome.clone(); },
+      localFetch: { fetchPage: async url => { localCalls++; return { title: 'Recovered', content: 'Local recovery', final_url: url }; } } });
+    const page = await service.call('camellia_web_fetch', { url: row.url });
+    assert.equal(page.provider, 'local'); assert.equal(page.content, 'Local recovery'); assert.equal(localCalls, 1);
+  }
+});
+
+test('a failed local fallback retains safe primary and local diagnostics', async () => {
+  const config = configured(); config.webTools.fetchMode = 'auto';
+  const service = createWebTools({ getConfig: () => config,
+    fetchImpl: async () => new Response('private-official: raw upstream detail', { status: 404 }),
+    localFetch: { fetchPage: async () => { throw Object.assign(new Error('Proxy unavailable'), { provider: 'local', code: 'web_fetch_network', retryable: true }); } } });
+  await assert.rejects(service.call('camellia_web_fetch', { url: row.url }), error => {
+    assert.equal(error.provider, 'local'); assert.equal(error.fallback_from, 'deepseek');
+    assert.equal(error.fallback_reason, 'web_page_unavailable'); assert.equal(error.deepseek_error.status, 404);
+    assert.match(error.message, /HTTP 404/); assert.match(error.message, /Local fallback also failed: Proxy unavailable/);
+    assert.doesNotMatch(error.message, /private-official|raw upstream detail/);
+    return true;
+  });
+});
+
+test('large local fallback content obeys the same IPC budget', async () => {
+  const config = configured(); config.webTools.fetchMode = 'local';
+  const service = createWebTools({ getConfig: () => config, fetchImpl: async () => { throw new Error('Must not call DeepSeek'); },
+    localFetch: { fetchPage: async url => ({ title: 'Large', content: ('🌸\n\u0000"\\').repeat(20000), final_url: url }) } });
+  const page = await service.call('camellia_web_fetch', { url: row.url });
+  assert.equal(page.truncated, true); assert.ok(Buffer.byteLength(JSON.stringify(page)) < 100000);
+  assert.ok(!page.content.includes('�')); assert.doesNotThrow(() => JSON.parse(JSON.stringify(page)));
+});
+
+
+test('proxy DNS permission follows the current network mode after service creation', async () => {
+  const keys = ['CAMELLIA_NETWORK_MODE', 'CAMELLIA_NETWORK_PROXY', 'NODE_USE_ENV_PROXY'];
+  const saved = Object.fromEntries(keys.map(key => [key, process.env[key]]));
+  try {
+    process.env.CAMELLIA_NETWORK_MODE = 'direct'; process.env.CAMELLIA_NETWORK_PROXY = ''; process.env.NODE_USE_ENV_PROXY = '0';
+    const config = configured(); config.webTools.fetchMode = 'local';
+    const permissions = [];
+    const service = createWebTools({ getConfig: () => config, localFetch: { fetchPage: async (url, options) => {
+      permissions.push(options.allowProxyDns); return { title: 'Local', content: 'Page', final_url: url };
+    } } });
+    process.env.CAMELLIA_NETWORK_MODE = 'auto'; process.env.CAMELLIA_NETWORK_PROXY = 'http://127.0.0.1:7890/';
+    await service.call('camellia_web_fetch', { url: row.url });
+    process.env.CAMELLIA_NETWORK_MODE = 'direct'; process.env.CAMELLIA_NETWORK_PROXY = '';
+    await service.call('camellia_web_fetch', { url: row.url });
+    assert.deepEqual(permissions, [true, false]);
+  } finally {
+    for (const key of keys) {
+      if (saved[key] === undefined) delete process.env[key]; else process.env[key] = saved[key];
+    }
+  }
 });

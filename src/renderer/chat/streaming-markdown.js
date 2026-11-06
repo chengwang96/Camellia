@@ -135,15 +135,20 @@
       return this.cut;
     }
     line(line) {
-      if (!this.fence && !this.math && /^(?: {4}|\t)\S|^ {4}\s*\S/.test(line)) { this.indented = true; return; }
+      if (this.fence) {
+        const closing = line.match(/^ {0,3}(`{3,})[ \t]*$/);
+        if (closing && closing[1].length >= this.fence.length) this.fence = '';
+        return;
+      }
+      if (!this.math && /^(?: {4}|\t)\S|^ {4}\s*\S/.test(line)) { this.indented = true; return; }
       if (line.trim()) this.indented = false;
       // A list marker is block syntax, rather than an open emphasis delimiter.
       line = line.replace(/^\s{0,3}[*+-]\s+/, '');
       if (/^\s{0,3}([-*_])(?:\s*\1){2,}\s*$/.test(line)) return;
+      const fence = line.match(/^ {0,3}(`{3,})/);
+      if (fence) { this.fence = fence[1]; return; }
       let inlineCode = false;
       for (let i = 0; i < line.length; i++) {
-        if (line.startsWith('```', i)) { this.fence = this.fence ? '' : '```'; i += 2; continue; }
-        if (this.fence) continue;
         if (this.math) {
           if (line.startsWith(this.math, i)) { i++; this.math = ''; }
           // Escaped TeX dollars and row spacing (\\[2pt]) do not close math.
@@ -157,6 +162,7 @@
           else i++;
           continue;
         }
+        if (line.startsWith('```', i)) { i += 2; continue; }
         if (line[i] === '`') { inlineCode = !inlineCode; continue; }
         if (inlineCode) continue;
         if (line.startsWith('$$', i)) { this.math = '$$'; i++; continue; }

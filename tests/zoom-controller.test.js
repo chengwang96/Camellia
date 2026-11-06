@@ -11,7 +11,8 @@ const { readJson, writeJson } = require('../src/shared/json-store');
 
 function content() {
   let level = 0;
-  return Object.assign(new EventEmitter(), { isDestroyed: () => false, getZoomLevel: () => level, setZoomLevel: next => { level = next; } });
+  return Object.assign(new EventEmitter(), { isDestroyed: () => false, getZoomLevel: () => level, setZoomLevel: next => { level = next; },
+    messages: [], send(channel, payload) { this.messages.push({ channel, payload }); } });
 }
 test('keyboard and wheel persist one zoom level across pages, windows and controller restarts', t => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'camellia-zoom-'));
@@ -45,6 +46,20 @@ test('an attached surface can keep a fixed zoom offset across zoom changes and n
   assert.equal(zoom.factorAt(-1), 1.2 ** 0.5);
   zoom.set(-100);
   assert.equal(embedded.getZoomLevel(), zoom.level, 'Offsets clamp at the minimum zoom level');
+});
+
+test('zoom changes publish each surface scale for the floating indicator', () => {
+  const zoom = createZoomController({ loadConfig: () => ({}), saveConfig: () => {} });
+  const host = content(), embedded = content();
+  zoom.attach(host); zoom.attach(embedded, -1);
+  assert.equal(host.messages.length, 0, 'Initial attachment does not display the indicator');
+  zoom.adjust(1);
+  assert.equal(host.messages.at(-1).channel, 'dsh:zoom-changed');
+  assert.ok(Math.abs(host.messages.at(-1).payload.zoomFactor - 1.2 ** 0.5) < 0.000001);
+  assert.ok(Math.abs(embedded.messages.at(-1).payload.zoomFactor - 1.2 ** -0.5) < 0.000001);
+  host.emit('before-input-event', { preventDefault() {} }, { type: 'keyDown', control: true, key: '0' });
+  assert.equal(host.messages.at(-1).payload.zoomFactor, 1);
+  assert.ok(Math.abs(embedded.messages.at(-1).payload.zoomFactor - 1.2 ** -1) < 0.000001);
 });
 
 test('discussion URL changes restore the selected zoom without rewriting the preference', () => {

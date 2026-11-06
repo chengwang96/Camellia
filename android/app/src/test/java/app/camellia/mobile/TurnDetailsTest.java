@@ -33,4 +33,13 @@ public class TurnDetailsTest {
         assertFalse(details.completed()); assertFalse(details.hasUsage()); assertNull(details.duration);
         assertFalse(new TurnDetails(null).hasUsage());
     }
+
+    @Test public void stoppedAndFailedAreTerminalWithoutClaimingSuccess() throws Exception {
+        for (String state : new String[] {"stopped", "error", "complete"}) {
+            TurnDetails details = new TurnDetails(new JSONObject().put("state", state));
+            assertTrue(details.terminal()); assertEquals(state.equals("complete"), details.completed());
+        }
+        assertFalse(new TurnDetails(null).terminal());
+        assertFalse(new TurnDetails(new JSONObject().put("state", "running")).terminal());
+    }
 }

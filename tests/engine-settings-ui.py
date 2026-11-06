@@ -13,6 +13,16 @@ def rpc(method, payload=None):
     return response['result']
 
 bridge = """window.dshDesktop = new Proxy({}, {get: (_, method) => method.startsWith('on') ? () => () => {} : payload => window.testRpc(method, payload)});"""
+def assert_single_line_options(select):
+    select.click()
+    rows = select.evaluate("""select => [...select.options].map(option => {
+      const rect = option.getBoundingClientRect(), style = getComputedStyle(option);
+      return {text:option.textContent,height:rect.height,left:rect.left,right:rect.right,whiteSpace:style.whiteSpace};
+    })""")
+    assert all(row['whiteSpace'] == 'nowrap' for row in rows), rows
+    assert len({round(row['height']) for row in rows}) == 1, rows
+    assert all(row['left'] >= 0 and row['right'] <= select.evaluate('innerWidth') for row in rows), rows
+    select.press('Escape')
 try:
     rpc('configureTestApi')
     with sync_playwright() as p:
@@ -69,6 +79,7 @@ try:
         page.locator('[data-field=thinkingBudget]').select_option('')
         page.locator('#saveEngine').click(); expect(page.locator('#saveEngine')).to_be_disabled()
         assert rpc('engineSettingsGet',{'engine':'grok'})['desktop']['thinkingBudget']==''
+        page.locator('[data-field=thinkingBudget]').select_option('high')
         for language in ['en','zh-CN']:
             page.evaluate('language => CamelliaI18n.setLanguage(language)',language)
             for width in [1160,850,700,390,320]:
@@ -79,6 +90,13 @@ try:
                 expect(page.locator('[data-engine=grok]')).to_be_visible()
                 assert page.locator('.engine-tabs [data-engine]').evaluate_all(
                     'els => new Set(els.map(el => Math.round(el.getBoundingClientRect().top))).size') == 1, (language,width,'engine tabs wrap')
+                assert_single_line_options(page.locator('[data-field=thinkingBudget]'))
+        level = page.locator('[data-field=thinkingBudget]')
+        level.evaluate("select => select.add(new Option('An exceptionally long reasoning level label that must remain on one line', 'fixture'))")
+        assert_single_line_options(level)
+        level.evaluate('select => select.options[select.options.length - 1].remove()')
+        page.locator('[data-field=thinkingBudget]').select_option('')
+        page.locator('#saveEngine').click(); expect(page.locator('#saveEngine')).to_be_disabled()
         page.set_viewport_size({'width':1160,'height':900})
         for scheme in ['light','dark']:
             page.emulate_media(color_scheme=scheme)

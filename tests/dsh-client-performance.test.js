@@ -55,7 +55,8 @@ test('client startup patch preserves bundle bytes, revisions, maps and HMR updat
 });
 
 test('pinned DSH settings, module and locale integrations apply together and remain idempotent', {
-  skip: !['0.2.0-rc.2', '0.2.1-rc.2'].includes(version) && 'Requires the pinned client packages',
+  // A new runtime pin must exercise the adapter, even before it is supported.
+  skip: !version && 'Requires the pinned client packages',
 }, t => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'camellia-dsh-integration-'));
   t.after(() => removeTree(root));
@@ -77,7 +78,7 @@ test('pinned DSH settings, module and locale integrations apply together and rem
   assert.deepEqual(Object.entries(packages).map(([name, entry]) => fs.readFileSync(path.join(root, 'node_modules/@deepseek-ai', name, entry), 'utf8')), outputs);
 });
 
-test('0.2 client preserves lazy scripts, source maps and shared responses after the line-scan patch', { skip: !['0.2.0-rc.2', '0.2.1-rc.2'].includes(version) && 'Requires the 0.2 client' }, async () => {
+test('0.2 client preserves lazy scripts, source maps and shared responses after the line-scan patch', { skip: (!version || version.startsWith('0.1.')) && 'Requires the 0.2 client' }, async () => {
   const original = fs.readFileSync(fs.existsSync(file + '.workbench-original') ? file + '.workbench-original' : file, 'utf8');
   const before = functions(original), after = functions(patch(original, version));
   for (const source of ['', 'a', '\n', '猫🐈\r\nsecond\n', 'line\n'.repeat(10000)]) assert.equal(after.newlineCount(source), before.newlineCount(source));

@@ -83,6 +83,7 @@ final class SettingsChoiceDialog extends AlertDialog {
                 }
             });
             TextView label = text(labels[index], Palette.TEXT_ROW, style.ink); label.setPadding(0, 0, dp(12), 0);
+            label.setSingleLine(true); label.setEllipsize(android.text.TextUtils.TruncateAt.END); row.setTooltipText(labels[index]);
             label.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
             if (index == selected) label.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
             row.addView(label, new LinearLayout.LayoutParams(0, -2, 1));

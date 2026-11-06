@@ -40,6 +40,8 @@ struct SettingsChoicePanel: View {
                             .font(.system(size: Palette.textRow,
                                           weight: index == selected ? .medium : .regular))
                             .foregroundColor(Palette.ink)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
                             Spacer(minLength: 0)
                             Text(index == selected ? "✓" : "")
                                 .font(.system(size: Palette.textRow, weight: .medium))
@@ -55,6 +57,7 @@ struct SettingsChoicePanel: View {
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
+                    .help(localizeLabels ? Text(LocalizedStringKey(labels[index])) : Text(labels[index]))
                     .accessibilityAddTraits(index == selected ? .isSelected : [])
                 }
             }

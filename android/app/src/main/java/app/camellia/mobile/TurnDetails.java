@@ -29,6 +29,7 @@ final class TurnDetails {
         return value != null && value == Math.floor(value) ? value.longValue() : null;
     }
     boolean completed() { return state.equals("complete"); }
+    boolean terminal() { return completed() || state.equals("stopped") || state.equals("error"); }
     boolean hasUsage() { return input != null || output != null || cacheRead != null || cacheWrite != null; }
     long total() { return value(input) + value(output) + value(cacheRead) + value(cacheWrite); }
     Double cacheHit() {

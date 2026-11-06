@@ -456,7 +456,7 @@ struct ConversationListView: View {
                 Button { toggle(conversation.id) } label: {
                     HStack(spacing: 12) {
                         Image(systemName: selection.contains(conversation.id) ? "checkmark.circle.fill" : "circle")
-                            .foregroundColor(selection.contains(conversation.id) ? Palette.accent : Palette.muted)
+                            .foregroundColor(selection.contains(conversation.id) ? Palette.ink : Palette.selectedBorder)
                         ConversationRowView(conversation: conversation, unread: model.isUnread(conversation))
                     }
                 }

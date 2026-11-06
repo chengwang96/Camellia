@@ -7,9 +7,9 @@ const os = require('node:os');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
 const { removeTree } = require('./test-fs.cjs');
-const { textPaths, toolPaths, toolRoots, toolDirectories, collector } = require('../src/shared/turn-artifacts');
+const { textPaths, toolPaths, toolRoots, toolDirectories, commandOutputPaths, reportedOutputPaths, collector } = require('../src/shared/turn-artifacts');
 const { resolveArtifacts } = require('../src/main/turn-artifacts');
-const { sortArtifacts, documentFormat, artifactStore, VISIBLE_ARTIFACT_LIMIT } = require('../src/shared/turn-artifacts');
+const { sortArtifacts, documentFormat, artifactStore, referencedArtifacts, VISIBLE_ARTIFACT_LIMIT } = require('../src/shared/turn-artifacts');
 
 test('artifact updates refresh one row across path-only records, canonical aliases and file replacements', () => {
   const files = artifactStore();
@@ -90,6 +90,18 @@ test('final file references include spaces, Unicode and links but not web links 
   assert.deepEqual(toolPaths('Read', { path: 'input.pdf' }), []);
   assert.deepEqual(toolPaths('apply_patch', '*** Begin Patch\n*** Add File: new.txt\n*** Update File: old.md\n*** Delete File: removed.txt'), ['new.txt', 'old.md']);
   assert.deepEqual(toolPaths('fileChange', { changes: [{ path: 'new.svg', kind: 'add' }, { path: 'gone.svg', kind: 'delete' }] }), ['new.svg']);
+});
+
+test('stored and searched files require a final answer reference', () => {
+  const files = [
+    { path: 'C:/history/论文收录自查表.md', canonicalPath: 'C:\\REAL\\论文收录自查表.md' },
+    { path: 'C:/history/王诚_中文简历_职称版.tex' },
+    { path: 'C:/history/报告.pdf' },
+  ];
+  assert.deepEqual(referencedArtifacts(files, '已清理完成。', 'win32'), []);
+  assert.deepEqual(referencedArtifacts(files, '找到 `报告.pdf`。', 'win32'), [files[2]]);
+  assert.deepEqual(referencedArtifacts(files, '找到 `论文收录自查表.md`。', 'win32'), [files[0]]);
+  assert.deepEqual(referencedArtifacts(['C:/history/报告.pdf'], '[报告](<C:/history/%E6%8A%A5%E5%91%8A.pdf>)', 'win32'), ['C:/history/报告.pdf']);
 });
 
 test('only successful writes become tool artifacts across event formats', () => {
@@ -398,4 +410,130 @@ test('a network or device path is never probed on the filesystem', t => {
   // A device path such as \\?\C:\outputs\report.pdf is a local shape and must not
   // be misread as a network path (it is simply not a match).
   assert.deepEqual(resolveArtifacts({ cwd, text: String.raw`\\?\C:\outputs\report.pdf` }), []);
+});
+
+test('command output paths require explicit output evidence and ignore inputs and listings', () => {
+  assert.deepEqual([...commandOutputPaths({ command: 'ffmpeg -i input.mp4 -c copy out.mp4' })], ['out.mp4']);
+  assert.deepEqual([...commandOutputPaths({ command: 'python render.py --mp4 out/a.mp4 --plot out/a.png' })],
+    ['out/a.mp4', 'out/a.png']);
+  assert.deepEqual(new Set(commandOutputPaths({ command: 'cd project && python render.py --mp4 out/a.mp4' })),
+    new Set(['project/out/a.mp4', 'out/a.mp4']));
+  assert.deepEqual([...commandOutputPaths({ command: 'python train.py > out/report.pdf' })], ['out/report.pdf']);
+  assert.deepEqual([...commandOutputPaths({ command: "python -c \"import imageio_ffmpeg; imageio_ffmpeg.write_frames('out/a.mp4')\"" })],
+    ['out/a.mp4']);
+  assert.deepEqual([...commandOutputPaths({ command: 'python render.py --video out/a.mp4' })], ['out/a.mp4']);
+  assert.deepEqual([...commandOutputPaths({ command: 'python train.py --log out/train.log' })], []);
+  assert.deepEqual([...commandOutputPaths({ command: 'python train.py --save model.pt' })], []);
+  assert.deepEqual([...commandOutputPaths({ command: 'ffmpeg -i input.mp4' })], []);
+  assert.deepEqual([...commandOutputPaths({ command: 'ls out/*.mp4' })], []);
+  assert.deepEqual([...commandOutputPaths({ command: 'cat input.mp4 > /dev/null' })], []);
+});
+
+test('tool output paths need a write line and keep the output side of an arrow', () => {
+  assert.deepEqual([...reportedOutputPaths("wrote out/a.mp4 (150 frames)\nOutput #0, mp4, to 'out/b.mp4':")],
+    ['out/a.mp4', 'out/b.mp4']);
+  assert.deepEqual([...reportedOutputPaths('input.mp4 -> output.mp4')], ['output.mp4']);
+  assert.deepEqual([...reportedOutputPaths('converted out/a.mp4 -> h264 (High)')], ['out/a.mp4']);
+  assert.deepEqual([...reportedOutputPaths('wrote out/a.mp4 from input.mp4')], ['out/a.mp4']);
+  assert.deepEqual([...reportedOutputPaths('output.mp4 -> result.mp4')], ['result.mp4']);
+  assert.deepEqual([...reportedOutputPaths('out/a.mp4\nout/b.mp4')], []);
+  assert.deepEqual([...reportedOutputPaths('-rw-r--r-- 1 user 597K out/a.mp4')], []);
+  assert.deepEqual([...reportedOutputPaths('error: could not write out/a.mp4')], []);
+  assert.deepEqual([...reportedOutputPaths('skip out/a.mp4 already h264')], []);
+  assert.deepEqual([...reportedOutputPaths('saved notes.md')], []);
+  assert.deepEqual([...reportedOutputPaths('wrote node_modules/pkg/a.png')], []);
+  assert.deepEqual([...reportedOutputPaths('wrote out/a.mp4:')], ['out/a.mp4']);
+});
+
+test('collector keeps command outputs only for successful tools and applies a changed directory', () => {
+  const state = collector();
+  state.capture({ type: 'gui:tool', id: 'one', name: 'Bash',
+    input: { command: 'cd project && python render.py --mp4 out/a.mp4' }, output: 'wrote out/a.mp4', status: 'completed' });
+  assert.deepEqual([...state.paths], []);
+  assert.deepEqual(new Set(state.outputs), new Set(['project/out/a.mp4', 'out/a.mp4']));
+  state.capture({ type: 'gui:tool', id: 'two', name: 'Bash',
+    input: { command: 'python render.py --mp4 out/b.mp4' }, output: 'wrote out/b.mp4', status: 'failed' });
+  assert.deepEqual(new Set(state.outputs), new Set(['project/out/a.mp4', 'out/a.mp4']));
+  const read = collector();
+  read.capture({ type: 'gui:tool', id: 'read', name: 'Read', input: { path: 'run.log' },
+    output: 'wrote out/a.mp4', status: 'completed' });
+  assert.deepEqual([...read.outputs], []);
+  const quiet = collector({ deriveOutputs: false });
+  quiet.capture({ type: 'gui:tool', id: 'quiet', name: 'Bash',
+    input: { command: 'python render.py --mp4 out/a.mp4' }, output: 'wrote out/a.mp4', status: 'completed' });
+  assert.deepEqual([...quiet.outputs], []);
+  const execution = collector();
+  execution.capture({ type: 'gui:tool', id: 'exec', name: 'commandExecution',
+    input: { input: 'python render.py --mp4 out/c.mp4' }, output: 'wrote out/c.mp4', status: 'completed' });
+  assert.deepEqual([...execution.outputs], ['out/c.mp4']);
+});
+
+test('native tool results feed the same successful-output collector', () => {
+  const state = collector();
+  state.capture({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 'one', name: 'Bash',
+    input: { command: 'cd project && python render.py --mp4 out/a.mp4' } }] } });
+  state.capture({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'one',
+    content: [{ type: 'text', text: 'wrote out/a.mp4' }] }] } });
+  assert.deepEqual(new Set(state.outputs), new Set(['project/out/a.mp4', 'out/a.mp4']));
+  state.capture({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 'two', name: 'Bash',
+    input: { command: 'python render.py --mp4 out/b.mp4' } }] } });
+  state.capture({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'two', is_error: true,
+    content: 'wrote out/b.mp4' }] } });
+  assert.deepEqual(new Set(state.outputs), new Set(['project/out/a.mp4', 'out/a.mp4']));
+});
+
+test('command outputs resolve only when recent, non-empty and inside the turn roots', t => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'camellia-command-output-'));
+  const other = fs.mkdtempSync(path.join(os.tmpdir(), 'camellia-command-output-other-'));
+  t.after(() => removeTree(cwd));
+  t.after(() => removeTree(other));
+  fs.mkdirSync(path.join(cwd, 'out'));
+  const video = path.join(cwd, 'out', 'video.mp4');
+  fs.writeFileSync(video, 'video');
+  const old = path.join(cwd, 'out', 'old.mp4');
+  fs.writeFileSync(old, 'old');
+  fs.utimesSync(old, new Date(Date.now() - 3600000), new Date(Date.now() - 3600000));
+  const empty = path.join(cwd, 'out', 'empty.mp4');
+  fs.writeFileSync(empty, '');
+  const notes = path.join(cwd, 'out', 'notes.md');
+  fs.writeFileSync(notes, 'notes');
+  fs.mkdirSync(path.join(cwd, 'node_modules', 'pkg'), { recursive: true });
+  const ignored = path.join(cwd, 'node_modules', 'pkg', 'ignored.mp4');
+  fs.writeFileSync(ignored, 'ignored');
+  fs.mkdirSync(path.join(cwd, 'tmp'));
+  const scratch = path.join(cwd, 'tmp', 'scratch.mp4');
+  fs.writeFileSync(scratch, 'scratch');
+  const since = Date.now() - 5000;
+  const result = resolveArtifacts({ cwd, outputPaths: [video, old, empty, notes, ignored, scratch, 'out/video.mp4'], since });
+  assert.deepEqual(result.map(file => file.name), ['video.mp4']);
+  assert.deepEqual(resolveArtifacts({ cwd, outputPaths: [video] }), [], 'a command output needs a turn start time');
+  assert.deepEqual(resolveArtifacts({ cwd: other, outputPaths: [video], since }), [],
+    'a command output needs a root that contains it');
+});
+
+test('Git Bash drive paths resolve as Windows drive paths', { skip: process.platform !== 'win32' }, t => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'camellia-command-output-git-bash-'));
+  const other = fs.mkdtempSync(path.join(os.tmpdir(), 'camellia-command-output-git-bash-other-'));
+  t.after(() => removeTree(cwd));
+  t.after(() => removeTree(other));
+  fs.mkdirSync(path.join(cwd, 'out'));
+  const video = path.join(cwd, 'out', 'video.mp4');
+  fs.writeFileSync(video, 'video');
+  const drive = cwd.replace(/\\/g, '/').replace(/^([a-z]):/i, '/$1');
+  const result = resolveArtifacts({ cwd: other, roots: [drive + '/out'],
+    outputPaths: [drive + '/out/video.mp4'], since: Date.now() - 5000 });
+  assert.deepEqual(result.map(file => file.name), ['video.mp4']);
+});
+
+test('a command relative output prefers the command directory over the workspace', t => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'camellia-command-output-prefer-'));
+  const project = fs.mkdtempSync(path.join(os.tmpdir(), 'camellia-command-output-project-'));
+  t.after(() => removeTree(cwd));
+  t.after(() => removeTree(project));
+  for (const root of [cwd, project]) {
+    fs.mkdirSync(path.join(root, 'out'));
+    fs.writeFileSync(path.join(root, 'out', 'video.mp4'), root);
+  }
+  const result = resolveArtifacts({ cwd, roots: [project], outputPaths: ['out/video.mp4'], since: Date.now() - 5000 });
+  assert.deepEqual(result.map(file => file.path), [path.join(project, 'out', 'video.mp4')]);
 });

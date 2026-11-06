@@ -107,7 +107,7 @@ final class ModelPickerPopup {
     }
 
     private View row(String title, String subtitle, String icon, boolean checked, String tag, Runnable action) {
-        return new ChatChoiceRow(context, chinese, ink, muted, accent, title, subtitle, icon, checked, tag, action);
+        return new ChatChoiceRow(context, chinese, ink, muted, title, subtitle, icon, checked, tag, action);
     }
 
     static int blend(int base, int tint, float fraction) {

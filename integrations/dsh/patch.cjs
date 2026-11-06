@@ -5,8 +5,8 @@ const patchClientPerformance = require('./client-performance.cjs');
 module.exports = function patchDsh(runtimeDir) {
   const plugin = path.join(runtimeDir, 'node_modules/@deepseek-ai/dsh-client-ui-settings-general');
   const version = JSON.parse(fs.readFileSync(path.join(plugin, 'package.json'))).version;
-  if (!['0.1.5-rc.2', '0.2.0-rc.2', '0.2.1-rc.2'].includes(version)) throw new Error(`The DSH settings integration does not support ${version}. Use the runtime version pinned by this project.`);
-  const modern = ['0.2.0-rc.2', '0.2.1-rc.2'].includes(version);
+  if (!['0.1.5-rc.2', '0.2.0-rc.2', '0.2.1-rc.2', '0.2.2-rc.1'].includes(version)) throw new Error(`The DSH settings integration does not support ${version}. Use the runtime version pinned by this project.`);
+  const modern = ['0.2.0-rc.2', '0.2.1-rc.2', '0.2.2-rc.1'].includes(version);
   const file = path.join(plugin, 'lib/client.js');
   const original = file + '.workbench-original';
   if (!fs.existsSync(original)) fs.copyFileSync(file, original);
