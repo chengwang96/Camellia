@@ -7,7 +7,8 @@ const vm = require('node:vm');
 const { patchKimiHistory } = require('../src/engines/kimi-native-history');
 const { patchKimiAcpTurns } = require('../src/engines/kimi-acp-turns');
 
-const runtime = path.resolve(__dirname, '../runtimes/kimi/node_modules/@moonshot-ai/kimi-code/dist/main.mjs');
+const runtime = path.resolve(process.env.CAMELLIA_TEST_KIMI_RUNTIME
+  || path.join(__dirname, '../runtimes/kimi/node_modules/@moonshot-ai/kimi-code/dist/main.mjs'));
 const source = fs.existsSync(runtime) ? fs.readFileSync(runtime, 'utf8') : null;
 let NativeSession;
 async function fixture() {

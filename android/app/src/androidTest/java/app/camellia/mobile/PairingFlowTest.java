@@ -35,7 +35,7 @@ public class PairingFlowTest extends InstrumentationTestCase {
     private TextView action() { return activity.getWindow().getDecorView().findViewWithTag("pairRequest"); }
     private String status() { return ((TextView) activity.getWindow().getDecorView().findViewWithTag("connectionStatus")).getText().toString(); }
     private void await(Condition condition) throws Exception {
-        long deadline = android.os.SystemClock.uptimeMillis() + 15000;
+        long deadline = android.os.SystemClock.uptimeMillis() + 40000;
         AtomicBoolean done = new AtomicBoolean();
         while (!done.get() && android.os.SystemClock.uptimeMillis() < deadline) {
             ui(() -> done.set(condition.get()));
@@ -151,7 +151,8 @@ public class PairingFlowTest extends InstrumentationTestCase {
                 }
                 current.onPreviewFrame(frame, (android.hardware.Camera) field(current, "camera"));
             });
-            await(() -> Boolean.TRUE.equals(field(activity, "foreground")) && Boolean.TRUE.equals(field(activity, "pairingBusy")));
+            await(() -> Boolean.TRUE.equals(field(activity, "foreground")) && Boolean.TRUE.equals(field(activity, "pairingBusy"))
+                && !action().isEnabled() && !input("pairCode").isEnabled());
             ui(() -> {
                 assertEquals("100.64.0.1", input("pairAddress").getText().toString());
                 assertEquals("43129", input("pairPort").getText().toString());

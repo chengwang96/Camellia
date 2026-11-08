@@ -5,7 +5,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { ClaudeHistory } = require('../src/engines/claude-history');
 const { writeJson } = require('../src/shared/json-store');
-const { createHarness } = require('./claude-harness.cjs');
+const { createHarness } = require('./main-process-harness.cjs');
 
 test('1,350 conversations are paged by group, collapsed workspaces read no heads and older sessions remain accessible', async t => {
   const h = createHarness(); t.after(() => h.cleanup());

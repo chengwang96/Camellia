@@ -4,7 +4,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { createHarness } = require('./claude-harness.cjs');
+const { createHarness } = require('./main-process-harness.cjs');
 const { writeJson } = require('../src/shared/json-store');
 const { createGoogleAccount } = require('../src/engines/antigravity/subscription');
 

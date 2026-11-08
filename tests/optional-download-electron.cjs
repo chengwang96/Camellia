@@ -39,7 +39,7 @@ async function main() {
     require('node:vm').runInNewContext(fs.readFileSync(entry, 'utf8'), {
       require: id => id === 'electron' ? electron : packagedRequire(id), module: { exports: {} },
       __dirname: path.dirname(entry), __filename: entry, process: runtimeProcess,
-      Buffer, URL, console, setTimeout, clearTimeout, setInterval, clearInterval,
+      Buffer, URL, console, setTimeout, clearTimeout, setInterval, clearInterval, setImmediate, clearImmediate,
     }, { filename: entry });
     await app.whenReady();
     async function wait(check) {

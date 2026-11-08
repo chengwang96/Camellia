@@ -170,7 +170,7 @@ test('long native compaction is protected and starts retention when it completes
 });
 
 test('desktop driver wiring refreshes the actual Claude pool and preserves native history on release', async t => {
-  const { createHarness } = require('./claude-harness.cjs');
+  const { createHarness } = require('./main-process-harness.cjs');
   const h = createHarness(); t.after(h.cleanup); h.configureApi();
   let now = 0; const pool = h.api.claudeSessions; pool.now = () => now;
   const manager = h.api.sharedConversations;

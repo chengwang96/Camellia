@@ -5,6 +5,8 @@ and persistence; Camellia owns credentials, workspace metadata and presentation.
 """
 
 import asyncio
+import base64
+import binascii
 import json
 import os
 from pathlib import Path
@@ -245,14 +247,22 @@ class Bridge:
         temporary.replace(file)
 
     async def prompt(self, params):
-        if any(part["type"] == "image" for part in params["prompt"]):
-            raise ValueError("Image attachments are not supported by the current Antigravity SDK connection. Use Claude or Kimi for image conversations.")
-        if not self.agent:
-            await self.open_agent()
         content = []
         for part in params["prompt"]:
             if part["type"] == "text":
                 content.append(part["text"])
+            elif part["type"] == "image":
+                if part["mimeType"] not in types.SUPPORTED_IMAGE_MIMES:
+                    raise ValueError("Antigravity SDK image input requires PNG, JPEG or WebP. Convert this attachment before sending.")
+                try:
+                    data = base64.b64decode(part["data"], validate=True)
+                except (ValueError, TypeError, binascii.Error) as error:
+                    raise ValueError("Invalid Antigravity image data") from error
+                content.append(types.Image(data=data, mime_type=part["mimeType"]))
+            else:
+                raise ValueError("Unsupported Antigravity input: " + str(part["type"]))
+        if not self.agent:
+            await self.open_agent()
         try:
             response = await self.agent.chat(content)
             async for chunk in response.chunks:
@@ -282,7 +292,7 @@ class Bridge:
             return
         try:
             if method == "initialize":
-                result = {"protocolVersion": 1, "agentCapabilities": {"loadSession": True},
+                result = {"protocolVersion": 1, "agentCapabilities": {"loadSession": True, "promptCapabilities": {"image": True}},
                           "agentInfo": {"name": "Camellia Antigravity", "version": "0.3.0"}}
             elif method in ("session/new", "session/resume", "session/fork"):
                 if self.preparation:

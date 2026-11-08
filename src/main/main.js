@@ -59,6 +59,7 @@ const { attachImageContextMenu } = require('./image-context-menu');
 const { describePreview } = require('./file-preview');
 const { ENGINES: SUBSCRIPTION_MODEL_ENGINES } = require('../shared/subscription-models');
 const { revealInFileManager } = require('./reveal-file');
+const { detectVSCodeInstallations, validateVSCodeExecutable, openWorkspaceInVSCode } = require('./vscode-launcher');
 const { resolveArtifacts } = require('./turn-artifacts');
 const { readOfficePreview } = require('./office-preview');
 const { isOleWorkbook, readXlsPreview } = require('./xls-preview');
@@ -235,6 +236,7 @@ function defaultConfig() {
     claude: {},             // Claude Code GUI settings
     language: 'en',         // Workbench UI language, independent of the engines' prompts.
     chatContentWidth: 'standard', // Conversation column width: standard | wide | full
+    vscodePath: '',         // Empty selects the first installed VS Code; otherwise an absolute executable path.
     computerName: '',       // Display name of this computer, shared with paired phones.
     downloadProxy: { mode: 'direct', url: '' },
     subscriptionAutoRefresh: {}, // Per-engine opt-out from the background quota cadence.
@@ -1965,7 +1967,7 @@ if (!gotSingleInstanceLock) {
       conversations: conversationPreferences(config), autoRefreshBalances: accountRefreshEnabled(config), accountRefreshMinutes: accountRefreshMinutes(config),
       subscriptionAutoRefresh: { antigravity: subscriptionAutoRefreshEnabled('antigravity', config), codex: subscriptionAutoRefreshEnabled('codex', config), kimi: subscriptionAutoRefreshEnabled('kimi', config) },
       closeToTray: config.closeToTray === true,
-      memoryDirectory: config.memoryDirectory || '',
+      memoryDirectory: config.memoryDirectory || '', vscodePath: config.vscodePath || '',
       quickSwitchModels: config.quickSwitchModels || {},
       quickSwitchConnections: config.quickSwitchConnections || {},
       quickSwitchLevels: config.quickSwitchLevels || {},
@@ -1994,6 +1996,7 @@ if (!gotSingleInstanceLock) {
       if (payload && Object.prototype.hasOwnProperty.call(payload, 'computerName')) patch.computerName = normalizeComputerName(payload.computerName);
       if (payload && Object.prototype.hasOwnProperty.call(payload, 'chatContentWidth')) patch.chatContentWidth = normalizeChatContentWidth(payload.chatContentWidth);
       if (payload && Object.prototype.hasOwnProperty.call(payload, 'memoryDirectory')) patch.memoryDirectory = validateMemoryDirectory(payload.memoryDirectory);
+      if (payload && Object.prototype.hasOwnProperty.call(payload, 'vscodePath')) patch.vscodePath = validateVSCodeExecutable(payload.vscodePath);
       if (payload?.quickSwitchModels !== undefined) {
         const models = payload.quickSwitchModels;
         if (!models || typeof models !== 'object' || Array.isArray(models)) throw new Error('Invalid quick-switch models');
@@ -2682,6 +2685,7 @@ if (!gotSingleInstanceLock) {
     const filters = (() => {
       if (kind === 'dsh') return [{ name: 'dsh bin.js', extensions: ['js'] }, { name: "All files", extensions: ['*'] }];
       if (kind === 'node' && process.platform === 'win32') return [{ name: 'node.exe', extensions: ['exe'] }, { name: "All files", extensions: ['*'] }];
+      if (kind === 'vscode' && process.platform === 'win32') return [{ name: 'VS Code executable', extensions: ['exe'] }, { name: "All files", extensions: ['*'] }];
       return [{ name: "All files", extensions: ['*'] }];
     })();
     const owner = settingsWindow && !settingsWindow.isDestroyed() ? settingsWindow : (mainWindow && !mainWindow.isDestroyed() ? mainWindow : undefined);
@@ -2720,7 +2724,7 @@ if (!gotSingleInstanceLock) {
       if (file.kind === 'spreadsheet' && isOleWorkbook(file.path)) file.office = readXlsPreview(file.path);
       else if (isLegacy && isWordDocument(file.path)) file.office = readDocPreview(file.path);
       else if (isLegacy && isLegacyPresentation(file.path)) file.office = readPptPreview(file.path);
-      else if (['word', 'presentation', 'spreadsheet'].includes(file.kind)) file.office = await readOfficePreview(file.path, file.kind);
+      else if (['word', 'presentation', 'spreadsheet'].includes(file.kind)) file.office = await readOfficePreview(file.path, file.kind, normalizeLanguage(loadConfig().language));
       return { ok: true, file };
     }
     catch (error) { return { ok: false, error: error?.message || String(error) }; }
@@ -2731,6 +2735,20 @@ if (!gotSingleInstanceLock) {
       const sessionCwd = payload?.sessionId ? sharedConversations.get(payload.sessionId).cwd : '';
       const cwd = sessionCwd || payload?.cwd || '';
       return { ok: true, files: resolveArtifacts({ paths: payload?.paths, explicitPaths: payload?.explicitPaths, outputPaths: payload?.outputPaths, text: payload?.text, cwd, roots: payload?.roots, since: payload?.since }) };
+    } catch (error) { return { ok: false, error: error?.message || String(error) }; }
+  });
+
+  ipcMain.handle('dsh:vscode-installations', () => {
+    try { return { ok: true, installations: detectVSCodeInstallations({ platform: process.platform, env: process.env, home: os.homedir() }) }; }
+    catch (error) { return { ok: false, error: error?.message || String(error) }; }
+  });
+
+  ipcMain.handle('dsh:open-in-vscode', async (_event, workspacePath) => {
+    try {
+      const opened = await openWorkspaceInVSCode(workspacePath, {
+        vscodePath: loadConfig().vscodePath || '', platform: process.platform, env: process.env, home: os.homedir(), spawnProcess: spawn,
+      });
+      return { ok: true, ...opened };
     } catch (error) { return { ok: false, error: error?.message || String(error) }; }
   });
 

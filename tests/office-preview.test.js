@@ -127,6 +127,24 @@ test('Word component runs only nonce-authorized scripts in an isolated offline d
   assert.doesNotMatch(await zip.file('word/_rels/document.xml.rels').async('string'), /External|example.com/);
 });
 
+test('Word component status copy follows the selected language without mixing languages', async t => {
+  const file = archive(t, {
+    'word/document.xml': '<w:document xmlns:w="word"><w:body><w:p><w:r><w:t>Report</w:t></w:r></w:p></w:body></w:document>',
+  });
+  const english = await readOfficePreview(file, 'word', 'en');
+  const chinese = await readOfficePreview(file, 'word', 'zh-CN');
+  assert.match(english.wordHtml, /<html lang="en">/);
+  assert.match(english.wordHtml, />Rendering document…</);
+  assert.match(english.wordHtml, /Rendering is taking longer than expected\. You can close the preview\./);
+  assert.match(english.wordHtml, /Cannot render this document\. Open with the system app\./);
+  assert.doesNotMatch(english.wordHtml, /正在渲染文档|渲染耗时较长|无法渲染此文档/);
+  assert.match(chinese.wordHtml, /<html lang="zh-CN">/);
+  assert.match(chinese.wordHtml, />正在渲染文档…</);
+  assert.match(chinese.wordHtml, /渲染耗时较长，可关闭预览。/);
+  assert.match(chinese.wordHtml, /无法渲染此文档，请使用系统软件打开。/);
+  assert.doesNotMatch(chinese.wordHtml, /Rendering document…|Rendering is taking longer than expected|Cannot render this document/);
+});
+
 test('Excel renders merges, row and column sizing, frozen panes and date systems', async t => {
   const file = archive(t, {
     'xl/workbook.xml': '<workbook xmlns:r="rel"><workbookPr date1904="1"/><sheets><sheet name="Layout" r:id="sheet"/></sheets></workbook>',

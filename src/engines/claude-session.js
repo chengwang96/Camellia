@@ -35,6 +35,7 @@ class ClaudeSession {
     this.childTools = new Map();
     this.agentCalls = new Map();
     this.childControls = new Map();
+    this.backgroundTasks = new Map();
   }
 
   start() {
@@ -70,6 +71,7 @@ class ClaudeSession {
       this.dead = true;
       this.stdoutBuf += this.stdoutDecoder.end();
       this.drain(true);
+      this.clearBackgroundTasks();
       const stderr = this.stderrDecoder.end().trimEnd();
       if (stderr) this.log(`[claude stderr] ${stderr}`);
       for (const [id, task] of this.children) this.childUpdate(id, { canReply: false, canStop: false, approvals: [],
@@ -168,14 +170,19 @@ class ClaudeSession {
     }
     if (this.compaction) return;
     if (obj.type === 'system' && obj.subtype === 'background_tasks_changed') {
+      this.backgroundTasks.clear();
       for (const task of obj.tasks || []) {
+        this.observeBackgroundTask(task.task_id, task);
         if (task.task_type && !/agent|workflow|teammate/.test(task.task_type)) continue;
         this.subagents.native(task.task_id, { title: task.description, status: 'running', canReply: false, canStop: true,
           ...(!this.children.has(this.subagents.resolve(task.task_id)) ? { turnId: 'child-start-' + ++this.controlSeq } : {}) });
       }
+      this.publishBackgroundTasks();
       return;
     }
     if (obj.type === 'system' && ['task_started', 'task_progress', 'task_notification', 'task_updated'].includes(obj.subtype) && obj.task_id) {
+      this.observeBackgroundTask(obj.task_id, { ...obj, ...obj.patch });
+      this.publishBackgroundTasks();
       if (obj.task_type && !/agent|workflow|teammate/.test(obj.task_type)) return;
       const known = this.subagents.resolve(obj.task_id);
       if (obj.subtype !== 'task_started' && !this.children.has(known) && !obj.subagent_type && !this.agentCalls.has(obj.tool_use_id)) return;
@@ -350,6 +357,25 @@ class ClaudeSession {
     return this.subagents.update(id, update);
   }
 
+  observeBackgroundTask(id, task) {
+    if (typeof id !== 'string' || !id) return;
+    const status = nativeStatus(task.status) || 'running';
+    if (['completed', 'failed', 'stopped', 'unavailable'].includes(status)) this.backgroundTasks.delete(id);
+    else this.backgroundTasks.set(id, { id, description: String(task.description || this.backgroundTasks.get(id)?.description || '').slice(0, 500),
+      kind: task.task_type || this.backgroundTasks.get(id)?.kind || '', status, canStop: true });
+  }
+
+  publishBackgroundTasks() { this.sendChannel({ type: 'gui:background-work', tasks: [...this.backgroundTasks.values()] }); }
+  clearBackgroundTasks() {
+    if (!this.backgroundTasks.size) return;
+    this.backgroundTasks.clear(); this.publishBackgroundTasks();
+  }
+
+  async stopBackgroundTasks(taskIds) {
+    if (this.dead || this.closed) throw new Error('Background tasks are no longer connected');
+    await Promise.all(taskIds.filter(id => this.backgroundTasks.has(id)).map(id => this.stopNativeTask(id)));
+  }
+
   async controlChild(id, { operation, approvalId, response, expectedTurnId }) {
     const task = this.children.get(id);
     if (!task || this.dead) throw new Error('This subtask is no longer connected');
@@ -359,17 +385,22 @@ class ClaudeSession {
     }
     if (task.turnId !== expectedTurnId) throw new Error('The subtask changed; refresh before responding');
     if (operation !== 'stop' || !task.canStop) throw new Error('This subtask does not support that action');
+    return this.stopNativeTask(this.subagents.nativeId(id));
+  }
+
+  async stopNativeTask(taskId) {
     const requestId = 'gui-child-' + ++this.controlSeq;
     await new Promise((resolve, reject) => {
       const timer = this.setTimer(() => { this.childControls.delete(requestId); reject(new Error('The subtask stop was not confirmed')); }, 12000);
       timer?.unref?.(); this.childControls.set(requestId, { resolve, reject, timer });
-      if (!this.write({ type: 'control_request', request_id: requestId, request: { subtype: 'stop_task', task_id: this.subagents.nativeId(id) } })) {
+      if (!this.write({ type: 'control_request', request_id: requestId, request: { subtype: 'stop_task', task_id: taskId } })) {
         this.childControls.delete(requestId); this.clearTimer(timer); reject(new Error('Claude input channel is closed'));
       }
     });
   }
 
   kill() {
+    this.clearBackgroundTasks();
     if (this.compaction) this.complete({ type: 'result', subtype: 'stopped', is_error: true, result: 'Claude process stopped during compaction' });
     this.dead = true;
     this.closed = true;

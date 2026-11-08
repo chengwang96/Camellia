@@ -32,7 +32,7 @@ async function main() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'camellia-shared-native-'));
   const appRoot = path.resolve(__dirname, '..');
   const runtimes = createRuntimeManager({ root: appRoot, installRoot: appRoot, node: () => process.execPath });
-  let config = { codex: { connection: 'api', apiModel: 'fixture-model', permissionMode: 'default' }, antigravity: { model: 'fixture-model' }, dshChat: { model: 'fixture-model' } }, router, manager;
+  let config = { codex: { connection: 'api', apiModel: 'fixture-model', permissionMode: 'default' }, antigravity: { model: 'fixture-model' }, dshChat: { model: 'fixture-model', permissionMode: 'bypassPermissions' } }, router, manager;
   const requests = [], logs = [], instances = [], route = {}, held = new Map();
   let holdConcurrent = true;
   const server = http.createServer(async (req, res) => {

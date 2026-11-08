@@ -59,6 +59,34 @@ test('interactive model selection pins the requested model and available effort'
   assert.throws(() => selection(catalog, 'missing'), /invalid model selection/);
 });
 
+test('Google subscription image prompts reach native media with text and bytes intact', async () => {
+  const { bridge, calls } = fixture();
+  bridge.turn = null;
+  bridge.prepare = async () => {};
+  bridge.selected = { supportsImages: true, modelOrAlias: { model: 'VISION' } };
+  let sent = false;
+  bridge.rpc = async (method, params) => {
+    calls.push({ method, params });
+    if (method === 'GetCascadeTrajectory') return { numTotalSteps: 0 };
+    if (method === 'SendUserCascadeMessage') { sent = true; return {}; }
+    if (method === 'GetAllCascadeTrajectories') return { trajectorySummaries: {
+      root: { status: 'CASCADE_RUN_STATUS_IDLE', stepCount: sent ? 2 : 0 },
+    } };
+    if (method === 'GetCascadeTrajectorySteps') return { steps: [] };
+    assert.fail('Unexpected native method: ' + method);
+  };
+  const data = Buffer.from('native-image-bytes').toString('base64');
+  const result = await bridge.prompt([{ type: 'text', text: 'Inspect reference' }, { type: 'image', mimeType: 'image/png', data }]);
+  assert.equal(result.stopReason, 'end_turn');
+  assert.deepEqual(calls.find(call => call.method === 'SendUserCascadeMessage').params, {
+    cascadeId: 'root', items: [{ text: 'Inspect reference' }], media: [{ mimeType: 'image/png', inlineData: data }],
+    cascadeConfig: { plannerConfig: { planModel: 'VISION' } },
+  });
+  bridge.selected.supportsImages = false;
+  await assert.rejects(bridge.prompt([{ type: 'image', mimeType: 'image/png', data }]), /model does not support image input/);
+  assert.equal(calls.filter(call => call.method === 'SendUserCascadeMessage').length, 1, 'Unsupported models must not receive a text-only substitute');
+});
+
 test('interactive preparation stops on a split login prompt and reports sign-in instead of timing out', { timeout: 5000 }, async t => {
   const fs = require('node:fs'), os = require('node:os');
   const { EventEmitter } = require('node:events'), { PassThrough } = require('node:stream');

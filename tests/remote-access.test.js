@@ -72,6 +72,43 @@ async function request(gateway, endpoint, { token, method = 'GET', payload, head
   return { status: response.status, body: await response.json() };
 }
 
+test('mobile background stops carry native identities, retain receipts and enforce device scope and permission', async context => {
+  const h = fixture(context), credential = h.pair(), device = h.access.authenticate(credential.token);
+  const calls = [];
+  const session = { gen: 72, sessionId: 'background-native', running: false, sendUserMessage() { session.running = true; return true; },
+    async stopBackgroundTasks(ids) {
+      calls.push(ids);
+      h.manager.capture('codex', { type: 'gui:background-work', conversationId: h.visible.id, runId: session.gen, tasks: [] });
+    } };
+  h.manager.drivers.codex.ensure = () => session;
+  const pool = new (require('../src/engines/session-pool').SessionPool)();
+  pool.set({ conversationId: h.visible.id }, session); h.manager.drivers.codex.sessions = pool;
+  const run = await h.manager.send('codex', { sessionId: h.visible.id, prompt: 'Work in the background' });
+  const tasks = [{ id: 'shell', status: 'running', canStop: true }];
+  const capture = () => h.manager.capture('codex', { type: 'gui:background-work', conversationId: h.visible.id, runId: session.gen, tasks });
+  capture(); session.running = false;
+  h.manager.capture('codex', { type: 'result', conversationId: h.visible.id, runId: session.gen, subtype: 'success', result: 'Started' });
+  await run.done;
+  const snapshot = h.reader.snapshot(device, h.visible.id);
+  const targets = snapshot.conversation.backgroundWork.tasks.map(({ id, engine, runId }) => ({ id, engine, runId }));
+  assert.deepEqual(targets, [{ id: 'shell', engine: 'codex', runId: 72 }]);
+  const payload = { action: 'stop-background-work', requestId: require('node:crypto').randomUUID(), instanceId: h.gateway.instanceId, tasks: targets };
+  assert.equal((await h.commands.execute(device, h.visible.id, payload, h.gateway.instanceId)).ok, true);
+  assert.equal(h.manager.backgroundStatus(h.visible.id), null);
+  assert.equal((await h.commands.execute(device, h.visible.id, payload, h.gateway.instanceId)).ok, true);
+  assert.deepEqual(calls, [['shell']]);
+  assert.equal(h.commands.receipt(device, payload.requestId).ok, true);
+  capture();
+  const stale = await h.commands.execute(device, h.visible.id, { ...payload, requestId: require('node:crypto').randomUUID(), tasks: [{ ...targets[0], runId: 71 }] }, h.gateway.instanceId);
+  assert.equal(stale.ok, false); assert.ok(stale.error);
+  assert.equal(calls.length, 1);
+  await assert.rejects(h.commands.execute(device, h.visible.id, { ...payload, tasks: [{ ...targets[0], command: 'must not be accepted' }] }, h.gateway.instanceId), /Invalid background/);
+  await assert.rejects(h.commands.execute(device, h.hidden.id, { ...payload, requestId: require('node:crypto').randomUUID() }, h.gateway.instanceId), /not found/);
+  h.access.devices.find(row => row.id === device.id).permission = 'read';
+  await assert.rejects(h.commands.execute(device, h.visible.id, { ...payload, requestId: require('node:crypto').randomUUID() }, h.gateway.instanceId), /Control permission/);
+  assert.equal(calls.length, 1);
+});
+
 test('mobile snapshots and older pages retain recorded turn details without exposing settings', context => {
   const { manager, reader, access, pair, visible } = fixture(context);
   const device = access.authenticate(pair().token);

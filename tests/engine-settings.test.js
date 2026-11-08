@@ -92,7 +92,7 @@ test('invalid or stale Grok settings do not partially overwrite defaults or inst
 });
 
 test('desktop IPC exposes Grok settings, blocks running sessions and retires idle sessions after saving', async t => {
-  const { createHarness } = require('./claude-harness.cjs');
+  const { createHarness } = require('./main-process-harness.cjs');
   const h = createHarness(); t.after(() => h.cleanup());
   const driver = h.api.sharedConversations.drivers.grok;
   let retired = false;
@@ -157,6 +157,7 @@ test('Kimi settings reach the actual spawn config with MCP, hooks and tools pres
   const config = parse(fs.readFileSync(path.join(home, 'config.toml'), 'utf8'), 'toml');
   assert.equal(config.loop_control.max_attempts_per_step, 8); assert.equal(config.tools.enable_view_image, false);
   assert.deepEqual(Object.keys(config.providers), ['workbench']); assert.deepEqual(Object.keys(config.models), ['model-exact']);
+  assert.deepEqual(config.models['model-exact'].capabilities, ['image_in']);
   assert.equal(JSON.parse(fs.readFileSync(path.join(home, 'mcp.json'))).mcpServers.fixture.command, 'test');
   assert.equal(spec.env.KIMI_CODE_HOME, process.platform === 'win32' ? fs.realpathSync.native(home) : home);
   const tunedHome = path.join(f.home, 'isolated-tuned');

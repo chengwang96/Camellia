@@ -138,8 +138,9 @@ test('unknown Kimi native layouts do not receive a steer bridge', t => {
   assert.deepEqual(prepareKimiRuntime(runtime), { file: runtime, nativeHistory: false, nativeSteer: false });
 });
 
-const pinnedRuntime = path.resolve(__dirname, '../runtimes/kimi/node_modules/@moonshot-ai/kimi-code/dist/main.mjs');
-test('the pinned Kimi runtime supports independent and composed steer bridges', { skip: !fs.existsSync(pinnedRuntime) }, () => {
+const pinnedRuntime = path.resolve(process.env.CAMELLIA_TEST_KIMI_RUNTIME
+  || path.join(__dirname, '../runtimes/kimi/node_modules/@moonshot-ai/kimi-code/dist/main.mjs'));
+test('the selected Kimi runtime supports independent and composed steer bridges', { skip: !fs.existsSync(pinnedRuntime) }, () => {
   const native = fs.readFileSync(pinnedRuntime, 'utf8');
   assert.ok(patchKimiSteer(native));
   const history = patchKimiHistory(native);
@@ -147,4 +148,28 @@ test('the pinned Kimi runtime supports independent and composed steer bridges', 
   const combined = patchKimiSteer(history);
   assert.ok(combined.includes('session/camellia_steer'));
   assert.ok(combined.includes('session/camellia_fork_undo'));
+});
+
+test('verified Kimi upgrades load queue, error, history and steer adapters through runtime preparation', { skip: !fs.existsSync(pinnedRuntime) }, t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kimi-verified-runtime-'));
+  t.after(() => removeTree(root));
+  const native = fs.readFileSync(pinnedRuntime, 'utf8');
+  for (const version of ['2.4.0', '2.4.1', '2.5.1', '2.5.2']) {
+    const directory = path.join(root, version);
+    fs.mkdirSync(path.join(directory, 'dist'), { recursive: true });
+    fs.writeFileSync(path.join(directory, 'package.json'), JSON.stringify({ name: '@moonshot-ai/kimi-code', version }));
+    const runtime = path.join(directory, 'dist/main.mjs');
+    fs.writeFileSync(runtime, native);
+    const prepared = prepareKimiRuntime(runtime);
+    assert.equal(prepared.nativeHistory, true, `Kimi ${version} must retain the history and queued-prompt adapter`);
+    assert.equal(prepared.nativeSteer, true, `Kimi ${version} must retain immediate instructions`);
+    assert.equal(prepared.nativeBackgroundTasks, true, `Kimi ${version} must expose native background task controls`);
+    assert.notEqual(prepared.file, runtime);
+    const patched = fs.readFileSync(prepared.file, 'utf8');
+    assert.match(patched, /camelliaQueuedPrompt/);
+    assert.match(patched, /Kimi turn failed/);
+    assert.match(patched, /session\/camellia_steer/);
+    assert.match(patched, /session\/camellia_fork_undo/);
+    assert.equal(fs.readFileSync(runtime, 'utf8'), native);
+  }
 });

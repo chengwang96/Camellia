@@ -272,7 +272,7 @@ test('the real desktop preload and main IPC require confirmation and return the 
         throw new Error('Unexpected native method: ' + method);
       } }) });
   });
-  const h = require('./claude-harness.cjs').createHarness();
+  const h = require('./main-process-harness.cjs').createHarness();
   t.after(async () => { await h.api.codex.shutdown(); h.cleanup(); });
   let bridge;
   const ipc = new EventEmitter(); ipc.invoke = (channel, payload) => h.call(channel.slice(4), payload);

@@ -14,6 +14,7 @@
 " 刷新额度失败，请稍后重新查询。" = " Refresh failed. Check the quota again later.";
 " 块" = "";
 " 块…" = " chunks completed…";
+" 块；正在扫描历史…" = " chunks completed; scanning history…";
 " 当前内容可能是缓存。" = " Displayed content may be cached.";
 " 成功，失败 " = " successful, failed ";
 " 操作可能已经执行，请核对后解除待确认。" = " The action may have executed. Inspect it before resolving the pending record.";
@@ -105,6 +106,7 @@
 "保存设置并重新启动电脑上的 Camellia" = "Save settings and relaunch Camellia on this computer";
 "保持期间会显示通知，可能增加耗电；到时自动断开，返回应用后重新连接，系统也可能提前结束后台运行。" = "A notification is shown while active, which may use more battery. The connection drops at the limit and reconnects when you return; Android may also end background activity earlier.";
 "停止" = "Stop";
+"停止后台任务" = "Stop background tasks";
 "停止当前任务并暂停待发送队列，不撤销已经执行的文件操作；关联的自动任务可能暂停。" = "Stops this run and pauses queued messages without undoing completed file operations. Related automatic tasks may be paused.";
 "停止当前任务？" = "Stop the current run?";
 "停止此子任务" = "Stop this subtask";
@@ -182,6 +184,8 @@
 "可切换应用或锁屏；网络中断需重新下载。" = "Switch apps or lock your phone; a network interruption requires downloading again.";
 "名称" = "Name";
 "名称最多 200 字。" = "Name must be at most 200 characters.";
+"后台任务" = "Background tasks";
+"后台任务 · %d" = "Background tasks · %d";
 "后台最多保持 5 分钟，短暂切换应用后可直接继续。" = "Keep the connection for up to 5 minutes in the background so you can return quickly.";
 "回到最新消息" = "Back to latest messages";
 "回复中断" = "Interrupted";

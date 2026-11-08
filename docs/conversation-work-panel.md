@@ -12,6 +12,18 @@ Tasks show their actual state: ready, preparing, running, waiting, completed, fa
 
 A subtask card also appears below its initiating user turn. Active tasks initially expand and completed tasks initially collapse. Manual expansion is preserved while progress changes. Attention counts remain visible when collapsed. The main assistant reply retains the final combined answer.
 
+### Background tasks
+
+Kimi and Claude report background work independently of the visible reply. The transcript status row and sidebar indicator remain visible after the reply completes; while another reply is running, the row keeps its background-task label and controls. Shell tasks appear here rather than as agent cards.
+
+**Stop background tasks** uses Kimi's native agent task service or Claude's acknowledged `stop_task` control. It targets the controllable tasks displayed at the time of the click, including work retained from a previous harness. Newly started tasks and the current reply remain independent. Controls carry the owning engine and process generation so an old click cannot stop a replacement session. The row disappears only after native termination events; failures keep the tasks visible and offer a retry. The button uses the work panel's existing stop control, wraps at compact widths, and supports Chinese, English, dark mode and keyboard focus.
+
+This control is separate from Goal mode and scheduled tasks. Other harnesses retain their existing child-task controls below; a native CLI's background-command feature alone does not mean its ACP/app-server transport exposes a separate workbench stop operation.
+
+Android and iOS offer the same action in a compact row above the remote composer when the host advertises `stop-background-work`. Both send only the displayed controllable task identities (`id`, owning `engine`, native `runId`) and retain the row until the host reports termination. Read-only, disconnected and pending-operation states disable the action. Android uses its durable stop-command slot; iOS uses its ordinary durable command journal. Unconfirmed requests reuse their original ID and receipt. Old hosts retain the existing display-only background note. This requires both the updated desktop/server gateway and updated phone app; Android build 105 includes the control.
+
+Checks: `node --test tests/kimi-background.test.js tests/claude-session.test.js tests/shared-conversations.test.js`, `node tests/kimi-cli-smoke.cjs`, and `python tests/background-work-ui.py`. The Kimi smoke test starts and stops a real background shell with a loopback model endpoint, then continues the same native session.
+
 ## Mobile
 
 Android and iOS show compact cards below the initiating turn, with at most three preview rows and a link to the full list. A child opens its own page with goal, progress, result, approvals, supported reply/stop controls and expandable execution history. The parent view stays mounted, so returning preserves its draft and reading position. Children keep updating while the page is open. A pending request remains visible even if the turn card is collapsed.

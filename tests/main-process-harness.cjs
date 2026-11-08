@@ -59,6 +59,8 @@ function createHarness(existingRoot, { respondToInterrupts = false, clearGoogleC
       }
     } });
     proc.kill = () => { proc.killed = true; };
+    proc.unref = () => { proc.unrefed = true; };
+    if (options.detached) queueMicrotask(() => proc.emit('spawn'));
     processes.push(proc);
     return proc;
   }

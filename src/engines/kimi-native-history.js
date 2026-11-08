@@ -101,7 +101,7 @@ const cache = new Map();
 function prepareKimiHistory(runtime) {
   try {
     const metadata = JSON.parse(fs.readFileSync(path.resolve(path.dirname(runtime), '../package.json'), 'utf8'));
-    if (metadata.name !== '@moonshot-ai/kimi-code' || !['2.4.0', '2.4.1', '2.5.1'].includes(metadata.version)) return null;
+    if (metadata.name !== '@moonshot-ai/kimi-code' || !['2.4.0', '2.4.1', '2.5.1', '2.5.2'].includes(metadata.version)) return null;
     const stat = fs.statSync(runtime), key = runtime + ':' + stat.size + ':' + stat.mtimeMs;
     if (cache.has(key) && fs.existsSync(cache.get(key))) return cache.get(key);
     const source = fs.readFileSync(runtime, 'utf8'), patched = patchKimiHistory(source);

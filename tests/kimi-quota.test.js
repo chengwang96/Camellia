@@ -4,7 +4,7 @@ const assert = require('node:assert/strict');
 const { EventEmitter } = require('node:events');
 const { PassThrough } = require('node:stream');
 const { readKimiQuota, normalizeKimiQuota } = require('../src/engines/kimi-quota');
-const { createHarness } = require('./claude-harness.cjs');
+const { createHarness } = require('./main-process-harness.cjs');
 const { readJson, writeJson } = require('../src/shared/json-store');
 const path = require('node:path');
 

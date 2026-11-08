@@ -25,7 +25,7 @@ class DshSession extends AcpSession {
   }
 }
 // Match the pinned DSH provider default. 8K can truncate a reasoning-only reply
-// before the model emits code or a tool call, ending the native turn early.
+// before the model emits code or a tool call, forcing a continuation before useful work starts.
 const DSH_MAX_OUTPUT_TOKENS = 32768;
 // The three universal levels as DSH permission presets (sandbox × approval).
 const DSH_PRESETS = {
@@ -47,10 +47,14 @@ function dshAcpSpec({ runtime, home, model, route, permissionMode, env, nativeCo
     ...nativeConfig,
     ...(webTools ? { 'tool-web': { ...nativeConfig['tool-web'], search: false, fetch: false } } : {}),
     'agent-default-model': { provider: 'api-pool', model },
+    acp: { ...nativeConfig.acp, provider: 'api-pool', model },
     permission: { presets: DSH_PRESETS, defaultPreset: nativeMode('dsh', permissionMode, 'auto') },
     'llm-pi-ai': { providers: { 'api-pool': { displayName: 'Camellia API', apiKeyEnv: 'DSH_API_ROUTER_KEY',
       api: 'anthropic-messages', baseURL: route.baseUrl, defaultContextWindow: 65536, defaultMaxTokens: DSH_MAX_OUTPUT_TOKENS,
-      models: [{ id: model, reasoningEfforts: canThink ? reasoningEfforts : false }] } } },
+      // The shared router carries images for custom models, just as the other
+      // API harnesses do. DSH cannot infer that from its built-in catalog for
+      // the synthetic api-pool provider. Upstream still validates model support.
+      models: [{ id: model, input: ['text', 'image'], reasoningEfforts: canThink ? reasoningEfforts : false }] } } },
   } });
   const childEvents = /^(?:0\.[2-9]|[1-9]\.)/.test(String(runtime.version || ''));
   if (childEvents) {

@@ -3,6 +3,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { nativeHistoryModule } = require('./native-history-module');
 const { patchKimiHistory } = require('./kimi-native-history');
+const { patchKimiBackground } = require('./kimi-background');
 
 const handlers = `
 function camelliaSteerParams(params) {
@@ -62,17 +63,19 @@ const cache = new Map();
 function prepareKimiRuntime(runtime) {
   try {
     const metadata = JSON.parse(fs.readFileSync(path.resolve(path.dirname(runtime), '../package.json'), 'utf8'));
-    const supported = metadata.name === '@moonshot-ai/kimi-code' && ['2.4.0', '2.4.1', '2.5.1'].includes(metadata.version);
+    const supported = metadata.name === '@moonshot-ai/kimi-code' && ['2.4.0', '2.4.1', '2.5.1', '2.5.2'].includes(metadata.version);
     const stat = fs.statSync(runtime), key = runtime + ':' + stat.size + ':' + stat.mtimeMs;
     if (cache.has(key) && fs.existsSync(cache.get(key).file)) return cache.get(key);
     const source = fs.readFileSync(runtime, 'utf8');
     const history = supported ? patchKimiHistory(source) : null;
     const steered = supported ? patchKimiSteer(history || source) : null;
-    const patched = steered || history;
+    const background = supported && history ? patchKimiBackground(steered || history) : null;
+    const patched = background || steered || history;
     const result = {
       file: patched ? nativeHistoryModule(runtime, patched) : runtime,
       nativeHistory: Boolean(history),
       nativeSteer: Boolean(steered),
+      ...(background ? { nativeBackgroundTasks: true } : {}),
     };
     cache.set(key, result);
     return result;

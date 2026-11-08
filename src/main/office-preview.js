@@ -13,7 +13,7 @@ const children = (node, name) => Array.from(node.childNodes || []).filter(child 
 const descendants = (node, name) => Array.from(node.getElementsByTagName('*')).filter(child => child.localName === name);
 const runs = node => descendants(node, 't').map(part => part.textContent).join('');
 
-async function readOfficePreview(filePath, kind) {
+async function readOfficePreview(filePath, kind, language = 'en') {
   if (!['word', 'presentation', 'spreadsheet'].includes(kind)) throw new Error('Unsupported Office preview format.');
   if (fs.statSync(filePath).size > 100 * 1024 * 1024) throw new Error('This Office file is too large to preview.');
   const archive = await unzipper.Open.file(filePath);
@@ -134,7 +134,7 @@ async function readOfficePreview(filePath, kind) {
   const sheets = [];
   const reader = { xml, relationships, image, sheets, truncated: false };
   const html = await renderOfficeDocument(kind, reader, sections);
-  const wordHtml = kind === 'word' ? await wordPreview(entries, bytes, xml) : undefined;
+  const wordHtml = kind === 'word' ? await wordPreview(entries, bytes, xml, language) : undefined;
   return { sections, truncated: truncated || reader.truncated, html, wordHtml, sheets };
 }
 

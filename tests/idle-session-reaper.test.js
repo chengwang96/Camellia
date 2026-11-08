@@ -60,6 +60,22 @@ test('an independent child keeps its native process alive after the parent turn 
   h.advance(101); assert.deepEqual(await h.reaper.sweep(), ['parent']);
 });
 
+test('a registered background task keeps its engine process alive until it ends', async () => {
+  const h = harness(), tasks = new Map([['t1', { id: 't1', status: 'running' }]]);
+  h.add('bg', { backgroundTasks: tasks, shutdown: async () => {} });
+  h.advance(1000);
+  // The reply is over, but the shell it left behind still lives in this
+  // process: an idle window must not kill the task the user is watching.
+  assert.deepEqual(await h.reaper.sweep(), []);
+  tasks.clear();
+  h.pool.touch({ conversationId: 'bg' });
+  assert.deepEqual(await h.reaper.sweep(), []);
+  h.advance(99);
+  assert.deepEqual(await h.reaper.sweep(), []);
+  h.advance(1);
+  assert.deepEqual(await h.reaper.sweep(), ['bg']);
+});
+
 test('a function timeout tracks the live retention setting between sweeps', async () => {
   let now = 5000, minutes = 30;
   const pool = new SessionPool({ now: () => now });

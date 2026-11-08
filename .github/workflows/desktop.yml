@@ -88,10 +88,13 @@ jobs:
         timeout-minutes: 10
         run: node --test --test-force-exit tests/*.test.js
       - name: Native API thinking controls
-        timeout-minutes: 10
+        timeout-minutes: 20
         env:
           CAMELLIA_RUNTIME_ROOT: ${{ github.workspace }}
         run: node tests/harness-thinking-smoke.cjs
+      - name: Native image input across all six harnesses
+        timeout-minutes: 10
+        run: npm run test:images
       - name: Diagnostic pipe disconnection
         run: node tests/diagnostic-output-electron.cjs
       - name: Electron smoke test

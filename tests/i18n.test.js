@@ -2,7 +2,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { translate, normalizeLanguage } = require('../src/shared/i18n');
-const { createHarness } = require('./claude-harness.cjs');
+const { createHarness } = require('./main-process-harness.cjs');
 
 test('UI translations preserve values and fall back to English for unknown copy', () => {
   assert.equal(normalizeLanguage(undefined), 'en');
@@ -15,6 +15,20 @@ test('UI translations preserve values and fall back to English for unknown copy'
   assert.equal(translate('Mobile access', 'zh-CN'), '手机访问');
   assert.equal(translate('Pair your phone to access this computer', 'zh-CN'), '配对手机，远程访问这台电脑');
   assert.equal(translate('Ready', 'en'), 'Ready');
+});
+
+test('command, navigation and preview copy is localized in both languages', () => {
+  const copy = {
+    'Find files on this computer and download them': '查找此电脑上的文件并下载',
+    'Context usage': '上下文用量',
+    'CLI servers': 'CLI 服务器',
+    'Conversations': '会话',
+    'Worksheet': '工作表',
+  };
+  for (const [source, translated] of Object.entries(copy)) {
+    assert.equal(translate(source, 'zh-CN'), translated);
+    assert.equal(translate(source, 'en'), source);
+  }
 });
 
 test('language preference persists, broadcasts, and preserves other settings', () => {

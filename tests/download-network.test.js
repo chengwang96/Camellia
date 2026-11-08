@@ -11,7 +11,7 @@ const path = require('node:path');
 const { createHash } = require('node:crypto');
 const { downloadSettings, createDownloadConnection } = require('../src/main/download-network');
 const { createRuntimeManager } = require('../src/main/runtime-manager');
-const { createHarness } = require('./claude-harness.cjs');
+const { createHarness } = require('./main-process-harness.cjs');
 const { BAD_PORTS } = require('./bad-ports.cjs');
 
 async function networkFixture(t) {

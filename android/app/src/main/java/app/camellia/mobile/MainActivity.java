@@ -67,7 +67,9 @@ public final class MainActivity extends Activity {
     private JSONObject outgoingMessage;
     private long commandCheckDeadline;
     private long listCommandDeadline;
-    private boolean canCommandReceipts, canStopStart, canIncremental;
+    private boolean canCommandReceipts, canStopStart, canStopBackgroundWork, canIncremental;
+    private LinearLayout backgroundWorkBar;
+    private TextView backgroundWorkLabel, backgroundWorkStop;
     private boolean canListQuery;
     private String capabilityAddress = "", remoteListQuery = "";
     private JSONObject remotePreparation;
@@ -1712,7 +1714,11 @@ public final class MainActivity extends Activity {
         String title = conversation.optString("title");
         String state = conversation.optString("activity", "");
         boolean unread = replies().unread(credentials, conversation);
-        String indicator = state.equals("running") || state.equals("permission") || state.equals("question") ? activity(conversation) : "";
+        boolean working = state.equals("running") || state.equals("permission") || state.equals("question");
+        // Work that outlives its reply still belongs in the state column: it is
+        // the one sign the desktop is busy while the row would otherwise read
+        // as idle. A live reply keeps the column, as it does on the desktop.
+        String indicator = working || RemoteWorkStatus.backgroundCount(conversation) > 0 ? activity(conversation) : "";
         if (unread) indicator += (indicator.isEmpty() ? "" : " · ") + tr("新消息", "New reply");
         if (conversation.optBoolean("pinned")) indicator += (indicator.isEmpty() ? "" : " · ") + tr("已置顶", "Pinned");
         ConversationRow card = new ConversationRow(this, chatStyle, !conversation.isNull("workspaceId") && !conversation.optString("workspaceId").isEmpty(),
@@ -1892,6 +1898,7 @@ public final class MainActivity extends Activity {
         canCommandReceipts = capabilities.contains("\"command-receipts\"");
         canCodexReset = info.optString("permission").equals("control") && capabilities.contains("\"codex-reset-credits\"");
         canStopStart = capabilities.contains("\"stop-start\"");
+        canStopBackgroundWork = capabilities.contains("\"stop-background-work\"");
         canIncremental = capabilities.contains("\"incremental-snapshots\"");
         canListQuery = capabilities.contains("\"list-query\""); capabilityAddress = credentials.optString("address");
         canDiscussions = info.optString("permission").equals("control") && capabilities.contains("\"discussions\"");
@@ -2347,7 +2354,7 @@ public final class MainActivity extends Activity {
         String activity = conversation.optString("activity", "");
         if (activity.equals("running")) return tr("正在运行", "Running");
         if (activity.equals("permission") || activity.equals("question")) return tr("等待电脑处理", "Waiting for desktop input");
-        return tr("空闲", "Idle");
+        return RemoteWorkStatus.backgroundCount(conversation) > 0 ? tr("后台任务", "Background tasks") : tr("空闲", "Idle");
     }
 
     private void detailScreen() {
@@ -2386,6 +2393,26 @@ public final class MainActivity extends Activity {
         queueBar = column(); queueBar.setTag("remoteMessageQueue");
         queueBar.setVisibility(View.GONE); content.addView(queueBar);
         LinearLayout composerBar = bottomBar("composerBar");
+        boolean stackBackgroundControls = getResources().getConfiguration().screenWidthDp < 360 || getResources().getConfiguration().fontScale > 1.15f;
+        backgroundWorkBar = new LinearLayout(this); backgroundWorkBar.setOrientation(stackBackgroundControls ? LinearLayout.VERTICAL : LinearLayout.HORIZONTAL);
+        backgroundWorkBar.setGravity(Gravity.CENTER_VERTICAL); backgroundWorkBar.setPadding(dp(12), dp(4), dp(12), dp(4));
+        backgroundWorkBar.setBackground(rounded(surface)); backgroundWorkBar.setTag("remoteBackgroundWork");
+        backgroundWorkBar.setVisibility(View.GONE);
+        backgroundWorkLabel = text("", Palette.TEXT_NOTE, muted);
+        backgroundWorkLabel.setPadding(0, 0, dp(8), 0);
+        backgroundWorkLabel.setMaxLines(2); backgroundWorkLabel.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        backgroundWorkBar.addView(backgroundWorkLabel, new LinearLayout.LayoutParams(stackBackgroundControls ? -1 : 0, -2, stackBackgroundControls ? 0 : 1));
+        backgroundWorkStop = text(tr("停止后台任务", "Stop background tasks"), Palette.TEXT_NOTE, ink);
+        backgroundWorkStop.setTag("remoteBackgroundStop"); backgroundWorkStop.setGravity(Gravity.CENTER);
+        backgroundWorkStop.setMinHeight(dp(40)); backgroundWorkStop.setPadding(dp(8), 0, dp(8), 0);
+        backgroundWorkStop.setBackground(interactive(surface)); backgroundWorkStop.setFocusable(true);
+        backgroundWorkStop.setContentDescription(tr("停止后台任务", "Stop background tasks"));
+        backgroundWorkStop.setOnClickListener(view -> stopBackgroundWork());
+        LinearLayout.LayoutParams stopBackgroundParams = new LinearLayout.LayoutParams(-2, -2); stopBackgroundParams.gravity = Gravity.END;
+        backgroundWorkBar.addView(backgroundWorkStop, stopBackgroundParams);
+        LinearLayout dock = (LinearLayout) composerBar.getParent();
+        LinearLayout.LayoutParams backgroundParams = new LinearLayout.LayoutParams(-1, -2); backgroundParams.setMargins(0, 0, 0, dp(6));
+        dock.addView(backgroundWorkBar, dock.indexOfChild(composerBar), backgroundParams);
         latest = button(tr("回到最新消息", "Back to latest messages"), this::loadLatest, false);
         latest.setTag("remoteLatestMessages"); latest.setVisibility(View.GONE);
         latest.setBackgroundColor(Color.TRANSPARENT); latest.setTextSize(Palette.TEXT_SMALL); composerBar.addView(latest);
@@ -3242,7 +3269,7 @@ public final class MainActivity extends Activity {
         if (!connected) value = tr("等待同步会话…", "Waiting for conversation sync…");
         else if (pending != null) {
             JSONObject payload = pending.optJSONObject("payload");
-            value = payload != null && payload.optString("action").equals("stop") ? tr("正在停止…", "Stopping…")
+            value = payload != null && payload.optString("action").startsWith("stop") ? tr("正在停止…", "Stopping…")
                 : tr("操作待确认…", "Awaiting action confirmation…");
         } else if (commandBusy) value = tr("正在提交操作…", "Submitting action…");
         else value = RemoteWorkStatus.conversation(displayedConversation, lastLive, remoteCompaction, chinese);
@@ -3259,6 +3286,7 @@ public final class MainActivity extends Activity {
 
     private void updateControls() {
         updateWorkStatus();
+        updateBackgroundWorkControls();
         if (subtaskPage != null) subtaskPage.setControlAvailable(connected && controlAllowed && !commandBusy && pendingCommand() == null);
         if (sendButton == null || conversationId == null) return;
         boolean pending = (pendingCommand() != null);
@@ -3315,6 +3343,29 @@ public final class MainActivity extends Activity {
     private boolean remoteBusy() {
         return lastLive != null || displayedConversation != null && !displayedConversation.isNull("activity")
             && !displayedConversation.optString("activity").isEmpty();
+    }
+
+    private void updateBackgroundWorkControls() {
+        if (backgroundWorkBar == null || !screen.equals("detail")) return;
+        int count = RemoteWorkStatus.backgroundCount(displayedConversation);
+        boolean show = canStopBackgroundWork && count > 0;
+        backgroundWorkBar.setVisibility(show ? View.VISIBLE : View.GONE);
+        if (!show) return;
+        backgroundWorkLabel.setText(String.format(tr("后台任务 · %d", "Background tasks · %d"), count));
+        boolean stopping = RemotePendingCommands.get(credentials, conversationId, true) != null;
+        backgroundWorkStop.setText(stopping ? tr("正在停止…", "Stopping…") : tr("停止后台任务", "Stop background tasks"));
+        boolean available = connected && controlAllowed && !commandBusy && pendingCommand() == null && !stopping
+            && RemoteWorkStatus.stoppableBackgroundTasks(displayedConversation).length() > 0;
+        backgroundWorkStop.setEnabled(available); backgroundWorkStop.setAlpha(available ? 1f : .45f);
+    }
+
+    private void stopBackgroundWork() {
+        if (!canStopBackgroundWork || !connected || !controlAllowed || commandBusy || pendingCommand() != null
+                || RemotePendingCommands.get(credentials, conversationId, true) != null) return;
+        JSONArray tasks = RemoteWorkStatus.stoppableBackgroundTasks(displayedConversation);
+        if (tasks.length() == 0) return;
+        try { submitCommand(command("stop-background-work").put("tasks", tasks)); }
+        catch (Exception error) { reportError("无法停止后台任务，请重试。", "Could not stop background tasks. Retry.", error); }
     }
 
     private void applyQueue(JSONObject value) {
@@ -3724,7 +3775,7 @@ public final class MainActivity extends Activity {
     }
 
     private void submitCommand(JSONObject payload) throws Exception {
-        boolean stop = payload.optString("action").equals("stop") || payload.optString("action").equals("stop-start");
+        boolean stop = payload.optString("action").equals("stop") || payload.optString("action").equals("stop-start") || payload.optString("action").equals("stop-background-work");
         if (!foreground || !connected || !controlAllowed || (!stop && (commandBusy || pendingCommand() != null))
                 || stop && RemotePendingCommands.get(credentials, conversationId, true) != null) return;
         JSONObject saved = new JSONObject(credentials.toString());

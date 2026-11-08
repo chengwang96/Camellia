@@ -44,10 +44,11 @@ public struct RemoteCapabilities: OptionSet, Sendable {
     public static let stopStart = Self(rawValue: 1 << 12)
     public static let listQuery = Self(rawValue: 1 << 13)
     public static let codexResetCredits = Self(rawValue: 1 << 14)
+    public static let stopBackgroundWork = Self(rawValue: 1 << 15)
 
     /// These actions additionally require `permission == "control"`.
     /// The gateway further restricts reset credits to full-device control.
-    public static let needsControl: Self = [.create, .createWorkspace, .move, .archive, .conversationActions, .fork, .codexResetCredits]
+    public static let needsControl: Self = [.create, .createWorkspace, .move, .archive, .conversationActions, .fork, .codexResetCredits, .stopBackgroundWork]
 
     public init(_ names: [String]) {
         var value = Self()
@@ -60,6 +61,7 @@ public struct RemoteCapabilities: OptionSet, Sendable {
             case "stop-start": value.insert(.stopStart)
             case "list-query": value.insert(.listQuery)
             case "codex-reset-credits": value.insert(.codexResetCredits)
+            case "stop-background-work": value.insert(.stopBackgroundWork)
             case "create-workspace": value.insert(.createWorkspace)
             case "move": value.insert(.move)
             case "archive": value.insert(.archive)
@@ -249,6 +251,97 @@ public enum ConversationActivity: String, Sendable {
     }
 }
 
+/// One long-running task the desktop keeps going after its reply has finished.
+public struct RemoteBackgroundTask: Sendable, Hashable, Identifiable {
+    public let id: String
+    public let description: String
+    public let kind: String
+    public let status: String
+    public let engine: String
+    public let runId: Int64
+    public let canStop: Bool
+
+    public init(_ json: JSONObject) {
+        id = json.text("id")
+        description = json.text("description")
+        kind = json.text("kind")
+        status = json.text("status")
+        engine = json.text("engine")
+        runId = json.long("runId")
+        canStop = json.bool("canStop")
+    }
+
+    public init(id: String, description: String, kind: String = "", status: String = "", engine: String = "", runId: Int64 = 0, canStop: Bool = false) {
+        self.id = id
+        self.description = description
+        self.kind = kind
+        self.status = status
+        self.engine = engine
+        self.runId = runId
+        self.canStop = canStop
+    }
+
+    /// The shape it was read from, so the list cache keeps the note it draws.
+    public var json: [String: Any] {
+        ["id": id, "description": description, "kind": kind, "status": status,
+         "engine": engine, "runId": runId, "canStop": canStop]
+    }
+
+    public var stopTarget: [String: Any]? {
+        guard canStop, !id.isEmpty, runId > 0,
+              ["claude", "codex", "dsh", "kimi", "antigravity", "grok"].contains(engine) else { return nil }
+        return ["id": id, "engine": engine, "runId": runId]
+    }
+}
+
+/// Background work the desktop is still running for a conversation.
+///
+/// The desktop sends this beside `activity`, not inside it: the reply and the
+/// work behind it end at different times, and a row that only knew `activity`
+/// would read as idle while Kimi was still running an experiment.
+public struct RemoteBackgroundWork: Sendable, Hashable {
+    public let engine: String
+    public let tasks: [RemoteBackgroundTask]
+
+    public init(engine: String, tasks: [RemoteBackgroundTask]) {
+        self.engine = engine
+        self.tasks = tasks
+    }
+
+    /// Nil when the payload carries no usable task, so an empty object never
+    /// draws a note or changes a row's signature.
+    public init?(_ json: JSONObject) {
+        let tasks = json.objects("tasks").map(RemoteBackgroundTask.init).filter { !$0.id.isEmpty }
+        guard !tasks.isEmpty else { return nil }
+        engine = json.text("engine")
+        self.tasks = tasks
+    }
+
+    /// Part of the row's prefetch signature: a task finishing changes what the
+    /// phone would draw even when `seq` and `updatedAt` have not moved.
+    public var signature: String {
+        tasks.map { "\($0.engine):\($0.runId):\($0.id):\($0.status):\($0.canStop):\($0.description)" }.joined(separator: ",")
+    }
+
+    public var stopTargets: [[String: Any]] { tasks.compactMap(\.stopTarget) }
+
+    public var json: [String: Any] {
+        ["engine": engine, "tasks": tasks.map(\.json)]
+    }
+
+    /// The one-line dock note, matching the desktop's wording and Android's.
+    public func note(chinese: Bool) -> String {
+        let detail: String
+        if tasks.count > 1 {
+            detail = chinese ? "\(tasks.count) 个任务" : "\(tasks.count) tasks"
+        } else {
+            detail = tasks[0].description.isEmpty ? tasks[0].id : tasks[0].description
+        }
+        let base = chinese ? "后台工作仍在运行" : "Background work still running"
+        return detail.isEmpty ? base : "\(base) · \(detail)"
+    }
+}
+
 public struct RemoteConversation: Sendable, Identifiable, Hashable {
     public let id: String
     public let title: String
@@ -256,6 +349,9 @@ public struct RemoteConversation: Sendable, Identifiable, Hashable {
     /// can reject a stale client.
     public let seq: Int64
     public let activity: ConversationActivity?
+    /// Work still running after the reply. A live activity keeps the row's one
+    /// state slot, as it does on the desktop; this is what the row falls back to.
+    public let backgroundWork: RemoteBackgroundWork?
     public let pinned: Bool
     public let workspaceId: String?
     /// Nil when the row omitted it; an explicit empty name must not be
@@ -270,6 +366,7 @@ public struct RemoteConversation: Sendable, Identifiable, Hashable {
         title = json.text("title")
         seq = json.long("seq")
         activity = ConversationActivity.of(json)
+        backgroundWork = json.object("backgroundWork").flatMap(RemoteBackgroundWork.init)
         pinned = json.bool("pinned")
         workspaceId = json.string("workspaceId")
         workspaceName = json.isNull("workspaceName") ? nil : json.text("workspaceName")
@@ -281,7 +378,19 @@ public struct RemoteConversation: Sendable, Identifiable, Hashable {
     public var isIdle: Bool { activity == nil }
 
     /// A version signature for the prefetch cache.
-    public var signature: String { "\(seq):\(updatedAt):\(activity?.rawValue ?? "")" }
+    ///
+    /// Background work is part of it because a task finishing changes what the
+    /// row draws without moving `seq` or `updatedAt`.
+    public var signature: String {
+        "\(seq):\(updatedAt):\(activity?.rawValue ?? ""):\(backgroundWork?.signature ?? "")"
+    }
+
+    /// The dock's one-line note for work that outlived its reply, or nil when
+    /// a reply is live and already owns that line.
+    public func backgroundNote(chinese: Bool, replying: Bool) -> String? {
+        guard !replying, activity == nil, let backgroundWork else { return nil }
+        return backgroundWork.note(chinese: chinese)
+    }
 
     /// The shape it was read from, so the list cache can store a row and read
     /// it back through `init(_:)`.
@@ -301,6 +410,7 @@ public struct RemoteConversation: Sendable, Identifiable, Hashable {
             "updatedAt": updatedAt,
         ]
         if let activity { value["activity"] = activity.rawValue }
+        if let backgroundWork { value["backgroundWork"] = backgroundWork.json }
         if let workspaceId { value["workspaceId"] = workspaceId }
         if let workspaceName { value["workspaceName"] = workspaceName }
         return value

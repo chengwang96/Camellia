@@ -3,7 +3,7 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { EventEmitter } = require('node:events');
 const { ClaudeSession } = require('../src/engines/claude-session');
-const { createHarness } = require('./claude-harness.cjs');
+const { createHarness } = require('./main-process-harness.cjs');
 const path = require('node:path');
 const { normalizeConfig, writeConfig } = require('../src/api/api-router-config');
 
@@ -51,6 +51,38 @@ test('Claude recovers missed task starts from the native background snapshot and
   assert.equal(f.session.children.size, 1); assert.equal(f.session.children.get('child').status, 'running');
   f.session.emitLine(JSON.stringify({ type: 'system', subtype: 'task_notification', task_id: 'child', status: 'completed', summary: 'Audit passed' }));
   assert.equal(f.session.children.get('child').result, 'Audit passed');
+});
+
+test('Claude stops background shells through native task control without interrupting the parent', async t => {
+  const f = fixture(t), send = row => f.session.emitLine(JSON.stringify(row));
+  f.session.running = true;
+  send({ type: 'system', subtype: 'background_tasks_changed', tasks: [
+    { task_id: 'shell', task_type: 'local_bash', description: 'Run evaluation' },
+    { task_id: 'keep', task_type: 'local_bash', description: 'Keep server running' },
+  ] });
+  assert.equal(f.events.findLast(event => event.type === 'gui:background-work').tasks.length, 2);
+  assert.equal(f.session.children.size, 0);
+  const stopped = f.session.stopBackgroundTasks(['shell']);
+  const request = f.writes.at(-1);
+  assert.deepEqual(request.request, { subtype: 'stop_task', task_id: 'shell' });
+  send({ type: 'control_response', response: { request_id: request.request_id, subtype: 'success' } });
+  await stopped;
+  assert.equal(f.session.backgroundTasks.size, 2, 'an acknowledgement is not a terminal event');
+  send({ type: 'system', subtype: 'task_notification', task_id: 'shell', status: 'stopped' });
+  assert.deepEqual([...f.session.backgroundTasks.keys()], ['keep']);
+  assert.equal(f.session.running, true); assert.equal(f.session.cancelled, false);
+  f.proc.emit('close', 0);
+  assert.equal(f.events.findLast(event => event.type === 'gui:background-work').tasks.length, 0);
+});
+
+test('Claude background stop errors retain the task so it can be retried', async t => {
+  const f = fixture(t);
+  f.session.emitLine(JSON.stringify({ type: 'system', subtype: 'task_started', task_id: 'shell', task_type: 'local_bash' }));
+  const stopped = f.session.stopBackgroundTasks(['shell']);
+  const request = f.writes.at(-1);
+  f.session.emitLine(JSON.stringify({ type: 'control_response', response: { request_id: request.request_id, subtype: 'error', error: 'Cannot stop task' } }));
+  await assert.rejects(stopped, /Cannot stop/);
+  assert.equal(f.session.backgroundTasks.size, 1);
 });
 
 test('Claude Agent calls remain visible without lifecycle starts and bind native IDs without duplicate cards', async t => {

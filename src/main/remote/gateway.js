@@ -273,6 +273,7 @@ class RemoteGateway {
     if (this.commands) capabilities.push('interactive-approvals', 'next-turn-settings', 'subagents');
     if (this.commands) capabilities.push('fork', 'switch-engine', 'compact', 'find', 'resend', 'automation-control', 'message-queue');
     if (this.commands) capabilities.push('command-receipts', 'stop-start', 'incremental-snapshots');
+    if (this.commands && this.reader.manager.stopBackgroundWork) capabilities.push('stop-background-work');
     if (this.commands && fullControl && this.reader.manager.drivers.codex?.resetCredits) capabilities.push('codex-reset-credits');
     capabilities.push('list-query');
     return { protocol: 1, permission: device.permission, capabilities,

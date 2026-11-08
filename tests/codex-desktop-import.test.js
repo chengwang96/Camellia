@@ -655,7 +655,7 @@ test('desktop IPC lists changed imports and updates them in place', async t => {
   const statePath = mod.desktopStatePath;
   mod.desktopStatePath = () => file;
   t.after(() => { mod.desktopStatePath = statePath; });
-  const { createHarness } = require('./claude-harness.cjs');
+  const { createHarness } = require('./main-process-harness.cjs');
   const harness = createHarness();
   t.after(() => harness.cleanup());
   assert.equal((await harness.call('codex-desktop-sessions')).sessions[0].action, 'import');

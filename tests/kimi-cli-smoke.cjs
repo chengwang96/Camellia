@@ -219,6 +219,9 @@ async function run() {
       assert.equal((await turn('SMOKE background')).subtype, 'success');
       assert.ok(events.some(event => event.type === 'gui:background-work'
         && event.tasks.some(task => task.description === 'Wait for the loopback background fixture')));
+      // Persist the foreground completion before launching its background
+      // follow-up, which otherwise hides that boundary from the usage meter.
+      await session.usageMeter.flush();
       fs.writeFileSync(path.join(cwd, 'release-bg.txt'), 'release');
       let reachedTimer;
       try {
@@ -276,7 +279,31 @@ async function run() {
     }
     await create();
     assert.equal((await turn('SMOKE after provider error')).subtype, 'success');
-    console.log(`PASS: real Kimi Code ${runtimeVersion} ACP, same-model quota failover, streamed thought/text, Read/Write/Bash, approve/deny, cancel, native resume/fork, background follow-up with queued reply/cancel, terminal quota/model/auth errors and recovery, isolated history and config. Local endpoints only.`);
+    // Stop a real native background shell after the visible reply. This uses
+    // the engine's task API, without stopping/restarting the session or asking
+    // a model to issue a kill command.
+    await create();
+    fs.rmSync(path.join(cwd, 'release-bg.txt'), { force: true });
+    backgroundParentReplied = false;
+    assert.equal((await turn('SMOKE background')).subtype, 'success');
+    const ids = [...session.backgroundTasks.keys()];
+    assert.equal(ids.length, 1);
+    assert.equal(session.spec.nativeBackgroundTasks, true);
+    const backgroundStopIndex = events.length;
+    await session.stopBackgroundTasks(ids);
+    const stopDeadline = Date.now() + 10000;
+    while (session.backgroundTasks.size && Date.now() < stopDeadline) await new Promise(resolve => setTimeout(resolve, 20));
+    assert.equal(session.backgroundTasks.size, 0, 'Native termination must clear the background status');
+    assert.ok(events.slice(backgroundStopIndex).some(event => event.type === 'gui:background-work' && event.tasks.length === 0));
+    assert.equal(session.dead, false); assert.equal(session.running, false);
+    // The task notification may already have started a native follow-up. Let
+    // it finish, then prove the same session still answers a new user turn.
+    const followupDeadline = Date.now() + 5000;
+    while (!finishBackground && Date.now() < followupDeadline) await new Promise(resolve => setTimeout(resolve, 20));
+    finishBackground?.(); finishBackground = undefined;
+    backgroundParentReplied = false;
+    assert.equal((await turn('SMOKE after background stop')).subtype, 'success');
+    console.log(`PASS: real Kimi Code ${runtimeVersion} ACP, same-model quota failover, streamed thought/text, Read/Write/Bash, approve/deny, cancel, native resume/fork, background follow-up with queued reply/cancel, native background shell stop and continued conversation, terminal quota/model/auth errors and recovery, isolated history and config. Local endpoints only.`);
   } finally {
     fs.writeFileSync(path.join(cwd, 'release-bg.txt'), 'release');
     finishBackground?.();

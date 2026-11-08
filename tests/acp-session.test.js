@@ -388,3 +388,64 @@ test('ACP stores inline image capability from the initialize result', async t =>
   await session.open();
   assert.deepEqual(session.promptCapabilities, { image: true, audio: false, embeddedContext: true });
 });
+
+test('ACP automatically continues output-token truncation with native progress intact', async t => {
+  const { proc, session } = fixture(t), prompts = [], events = [];
+  session.ready = Promise.resolve(); session.sessionId = 'dsh-native'; session.spec.modeEngine = 'dsh';
+  session.onEvent = event => events.push(event);
+  proc.stdin.on('data', chunk => {
+    for (const line of chunk.toString().trim().split('\n')) {
+      const request = JSON.parse(line);
+      assert.equal(request.method, 'session/prompt'); prompts.push(request.params);
+      const notify = update => proc.stdout.write(JSON.stringify({ method: 'session/update',
+        params: { sessionId: session.sessionId, update } }) + '\n');
+      if (prompts.length === 1) {
+        notify({ sessionUpdate: 'tool_call', toolCallId: 'extract', title: 'pwsh', status: 'completed' });
+        notify({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'First ' } });
+      } else {
+        assert.equal(session.tools.get('extract').status, 'completed');
+        notify({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'Second' } });
+      }
+      proc.stdout.write(JSON.stringify({ id: request.id,
+        result: { stopReason: prompts.length === 1 ? 'max_tokens' : 'end_turn' } }) + '\n');
+    }
+  });
+  const done = new Promise(resolve => { session.onResult = resolve; });
+  session.sendUserMessage('Audit all links');
+  const result = await done;
+  assert.equal(result.subtype, 'success'); assert.equal(result.is_error, false);
+  assert.equal(result.result, 'First Second'); assert.equal(prompts.length, 2);
+  assert.deepEqual(prompts[0].prompt, [{ type: 'text', text: 'Audit all links' }]);
+  assert.equal(prompts[1].sessionId, 'dsh-native');
+  assert.match(prompts[1].prompt[0].text, /output token limit/);
+  assert.match(prompts[1].prompt[0].text, /without restarting or duplicating completed work/);
+  assert.equal(events.filter(event => event.type === 'result').length, 1);
+  assert.equal(session.dead, false);
+  const history = fs.readFileSync(session.historyFile(), 'utf8').trim().split('\n').map(JSON.parse);
+  assert.equal(history.filter(row => row.type === 'user').length, 1);
+});
+
+test('ACP bounds output-token continuation and leaves other stop reasons untouched', async t => {
+  for (const stopReason of ['max_tokens', 'refusal', 'max_turn_requests']) {
+    const { session } = fixture(t); let calls = 0;
+    session.ready = Promise.resolve(); session.sessionId = 'dsh-native'; session.spec.modeEngine = 'dsh';
+    session.request = async () => {
+      calls++;
+      session.update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: stopReason } });
+      return { stopReason };
+    };
+    const done = new Promise(resolve => { session.onResult = resolve; });
+    session.sendUserMessage('Continue'); const result = await done;
+    assert.equal(calls, stopReason === 'max_tokens' ? 4 : 1);
+    assert.equal(result.subtype, stopReason); assert.equal(result.is_error, true);
+  }
+});
+
+test('ACP cancellation wins over output-token recovery', async t => {
+  const { session } = fixture(t); let calls = 0;
+  session.ready = Promise.resolve(); session.sessionId = 'dsh-native'; session.spec.modeEngine = 'dsh';
+  session.request = async () => { calls++; session.cancelled = true; return { stopReason: 'max_tokens' }; };
+  const done = new Promise(resolve => { session.onResult = resolve; });
+  session.sendUserMessage('Continue'); const result = await done;
+  assert.equal(calls, 1); assert.equal(result.subtype, 'stopped'); assert.equal(result.is_error, false);
+});

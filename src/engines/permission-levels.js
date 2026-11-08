@@ -23,14 +23,18 @@ const NATIVE_VALUES = {
   kimi: ['default', 'plan', 'auto', 'yolo'],
   antigravity: ['default', 'acceptEdits', 'plan', 'bypassPermissions'],
   grok: ['default', 'auto', 'bypassPermissions', 'plan'],
-  dsh: ['default', 'bypassPermissions'],
+  dsh: ['default', 'read-only', 'workspace-write', 'danger-full-access', 'bypassPermissions'],
 };
+const LEGACY_NATIVE = { dsh: { default: 'workspace-write', bypassPermissions: 'danger-full-access' } };
 function valid(engine, value) {
   return LEVELS.includes(value) || (NATIVE_VALUES[engine] || []).includes(value);
 }
 function nativeMode(engine, value, fallback = 'ask') {
   if (LEVELS.includes(value)) return TO_NATIVE[engine][value];
-  if (valid(engine, value)) return value;
+  if (valid(engine, value)) return LEGACY_NATIVE[engine]?.[value] || value;
   return TO_NATIVE[engine][fallback] || TO_NATIVE[engine].ask;
 }
-module.exports = { LEVELS, valid, nativeMode };
+function fullAccess(engine, value) {
+  return nativeMode(engine, value) === TO_NATIVE[engine]?.full;
+}
+module.exports = { LEVELS, valid, nativeMode, fullAccess };

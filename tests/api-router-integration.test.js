@@ -5,7 +5,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const http = require('node:http');
 const yaml = require('js-yaml');
-const {createHarness} = require('./claude-harness.cjs');
+const {createHarness} = require('./main-process-harness.cjs');
 const {loadConfig, writeConfig, normalizeConfig} = require('../src/api/api-router-config');
 const {BAD_PORTS} = require('./bad-ports.cjs');
 async function freePort() { for (;;) { const s=http.createServer(); await new Promise(r=>s.listen(0,'127.0.0.1',r)); const p=s.address().port; await new Promise(r=>s.close(r)); if (!BAD_PORTS.has(p)) return p; } }
@@ -58,7 +58,7 @@ test('DSH pool injection preserves sibling providers, permissions and the select
   assert.equal(next['llm-pi-ai'].providers['api-pool'].baseURL,'http://127.0.0.1:19098');
   assert.equal(next['llm-pi-ai'].providers['api-pool'].api,'anthropic-messages');
   assert.equal(next['llm-pi-ai'].providers.ollama.baseURL,'http://127.0.0.1:19098/v1');
-  assert.deepEqual(next['llm-pi-ai'].providers['api-pool'].models,[{id:'kimi-k3'}]);
+  assert.deepEqual(next['llm-pi-ai'].providers['api-pool'].models,[{id:'kimi-k3',input:['text','image']}]);
 });
 test('Claude pins all CLI model tiers to the chosen model and clears direct API credentials',t=>{
   const h=createHarness(); t.after(()=>h.cleanup());

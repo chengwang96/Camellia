@@ -8,6 +8,60 @@ import android.widget.TextView;
 import org.json.JSONObject;
 
 public class RemoteConversationStatusTest extends InstrumentationTestCase {
+    public void testEnglishBackgroundStopLayout() { backgroundStopLayout(false); }
+    public void testChineseBackgroundStopLayout() { backgroundStopLayout(true); }
+
+    private void backgroundStopLayout(boolean zh) {
+        ui(() -> {
+            field("chinese", zh); field("conversationId", "status-test");
+            var detail = MainActivity.class.getDeclaredMethod("detailScreen"); detail.setAccessible(true); detail.invoke(activity);
+            field("displayedConversation", new JSONObject().put("id", "status-test").put("backgroundWork",
+                new JSONObject().put("tasks", new org.json.JSONArray().put(new JSONObject().put("id", "shell").put("engine", "kimi").put("runId", 7).put("canStop", true)))));
+            field("canStopBackgroundWork", true); field("connected", true); field("controlAllowed", true);
+            var update = MainActivity.class.getDeclaredMethod("updateControls"); update.setAccessible(true); update.invoke(activity);
+        });
+        getInstrumentation().waitForIdleSync();
+        ui(() -> {
+            View root = activity.getWindow().getDecorView(), bar = root.findViewWithTag("remoteBackgroundWork");
+            PageTransitions transitions = root.findViewWithTag("pageTransitions");
+            if (transitions != null) transitions.finishTransition();
+            TextView stop = root.findViewWithTag("remoteBackgroundStop");
+            assertTrue(stop.isEnabled()); assertTrue(stop.getWidth() > 0); assertTrue(bar.getWidth() <= root.getWidth());
+            TextView label = (TextView) ((android.widget.LinearLayout) bar).getChildAt(0);
+            assertTrue(label.getWidth() > 0); assertNotNull(label.getLayout());
+            for (int line = 0; line < label.getLayout().getLineCount(); line++) assertEquals(0, label.getLayout().getEllipsisCount(line));
+            assertEquals(zh ? "停止后台任务" : "Stop background tasks", stop.getText().toString());
+            android.graphics.Bitmap bitmap = android.graphics.Bitmap.createBitmap(root.getWidth(), root.getHeight(), android.graphics.Bitmap.Config.ARGB_8888);
+            root.draw(new android.graphics.Canvas(bitmap));
+            try (var output = new java.io.FileOutputStream(new java.io.File(activity.getExternalFilesDir(null), "background-work-" + (zh ? "zh" : "en") + ".png"))) {
+                assertTrue(bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, output));
+            } finally { bitmap.recycle(); }
+        });
+    }
+
+    public void testBackgroundStopControlTracksHostCapabilityConnectionAndNativeState() {
+        ui(() -> {
+            field("conversationId", "status-test");
+            var detail = MainActivity.class.getDeclaredMethod("detailScreen"); detail.setAccessible(true); detail.invoke(activity);
+            field("displayedConversation", new JSONObject().put("id", "status-test").put("backgroundWork",
+                new JSONObject().put("tasks", new org.json.JSONArray().put(new JSONObject().put("id", "shell").put("engine", "kimi").put("runId", 7).put("canStop", true)))));
+            var update = MainActivity.class.getDeclaredMethod("updateControls"); update.setAccessible(true);
+            field("canStopBackgroundWork", true); update.invoke(activity);
+            View root = activity.getWindow().getDecorView();
+            TextView stop = root.findViewWithTag("remoteBackgroundStop");
+            assertNotNull(stop); assertFalse(stop.isEnabled());
+            assertEquals(View.VISIBLE, root.findViewWithTag("remoteBackgroundWork").getVisibility());
+            field("connected", true); field("controlAllowed", true); update.invoke(activity);
+            assertTrue(stop.isEnabled());
+            field("commandBusy", true); update.invoke(activity); assertFalse(stop.isEnabled());
+            field("commandBusy", false); field("controlAllowed", false); update.invoke(activity); assertFalse(stop.isEnabled());
+            field("canStopBackgroundWork", false); update.invoke(activity);
+            assertEquals(View.GONE, root.findViewWithTag("remoteBackgroundWork").getVisibility());
+            field("canStopBackgroundWork", true); field("displayedConversation", new JSONObject().put("id", "status-test")); update.invoke(activity);
+            assertEquals(View.GONE, root.findViewWithTag("remoteBackgroundWork").getVisibility());
+        });
+    }
+
     private MainActivity activity;
     private SharedPreferences preferences;
     private RemoteReplyState replies;
@@ -73,6 +127,20 @@ public class RemoteConversationStatusTest extends InstrumentationTestCase {
             conversation.put("activity", "running");
             badge = card(conversation).findViewWithTag("conversationStatus:status-test");
             assertEquals("正在运行", badge.getText().toString());
+        });
+    }
+
+    public void testBackgroundTasksShowWhenTheReplyIsOver() {
+        ui(() -> {
+            JSONObject conversation = conversation().put("backgroundWork", new JSONObject().put("engine", "kimi")
+                .put("tasks", new org.json.JSONArray().put(new JSONObject().put("id", "task-1").put("description", "Run the analysis"))));
+            TextView badge = card(conversation).findViewWithTag("conversationStatus:status-test");
+            assertEquals("后台任务 · 新消息", badge.getText().toString());
+            assertTrue(card(conversation).getContentDescription().toString().contains("后台任务"));
+            // A running reply keeps the one state column, as on the desktop.
+            conversation.put("activity", "running");
+            badge = card(conversation).findViewWithTag("conversationStatus:status-test");
+            assertEquals("正在运行 · 新消息", badge.getText().toString());
         });
     }
 

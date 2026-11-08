@@ -138,7 +138,7 @@ test('unknown native layouts and runtimes retain the compatible path', t => {
   const runtime = path.join(root, 'dist', 'main.mjs'); fs.writeFileSync(runtime, source);
   assert.equal(prepareKimiHistory(runtime), null);
   assert.equal(prepareDshHistory({ file: path.join(root, 'not-installed.js') }), null);
-  for (const version of ['2.4.0', '2.4.1', '2.5.1']) {
+  for (const version of ['2.4.0', '2.4.1', '2.5.1', '2.5.2']) {
     fs.writeFileSync(path.join(root, 'package.json'), JSON.stringify({ name: '@moonshot-ai/kimi-code', version }));
     const patched = prepareKimiHistory(runtime);
     assert.ok(patched, `Kimi ${version} must load the verified ACP bridge`);

@@ -74,7 +74,7 @@ function syncPoolProvider(file, { active, port, models, hasOllama }) {
       defaultContextWindow: 65536, defaultMaxTokens: 8192,
     };
     for (const [key, value] of Object.entries(fields)) pool.set(key, value);
-    pool.set('models', doc.createNode(models.map(id => ({ id }))));
+    pool.set('models', doc.createNode(models.map(id => ({ id, input: ['text', 'image'] }))));
     if (!doc.has('agent-default-model')) doc.set('agent-default-model', doc.createNode({ provider: 'api-pool', model: models[0] }));
     changed = true;
   }

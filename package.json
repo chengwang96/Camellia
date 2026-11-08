@@ -39,6 +39,7 @@
     "setup:codex": "node scripts/prepare-runtimes.cjs codex",
     "test:codex": "node tests/codex-smoke.cjs",
     "test:subagents": "node tests/native-subagents-smoke.cjs",
+    "test:images": "node tests/native-images-smoke.cjs",
     "test:tools": "node tests/tools-native-audit.cjs"
   },
   "devDependencies": {
@@ -189,7 +190,7 @@
     "cheerio": "^1.2.0",
     "docx-preview": "^0.4.1",
     "jszip": "^3.10.1",
-    "katex": "^0.17.0",
+    "katex": "^0.19.1",
     "markdown-it": "^14.1.1",
     "markdown-it-footnote": "^4.0.0",
     "markdown-it-texmath": "^1.0.0",

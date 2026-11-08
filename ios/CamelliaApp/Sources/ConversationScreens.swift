@@ -852,7 +852,13 @@ struct ConversationRowView: View {
         switch conversation.activity {
         case .running: parts.append(model.usesChinese ? "正在运行" : "Running")
         case .permission, .question: parts.append(model.usesChinese ? "等待电脑处理" : "Waiting for desktop input")
-        case nil: break
+        case nil:
+            // Work that outlives its reply is the only sign a row is busy while
+            // the desktop is not replying. Android draws the same word here;
+            // the desktop puts it where the row's clock would be.
+            if conversation.backgroundWork != nil {
+                parts.append(model.usesChinese ? "后台任务" : "Background tasks")
+            }
         }
         if unread { parts.append(model.usesChinese ? "新消息" : "New messages") }
         if conversation.pinned { parts.append(model.usesChinese ? "已置顶" : "Pinned") }
@@ -912,7 +918,14 @@ struct StreamBar: View {
                let error = model.listError {
                 return error
             }
-            return model.openId == nil ? nil : model.historyStatus
+            guard model.openId != nil else { return nil }
+            if let status = model.historyStatus { return status }
+            // A finished reply can leave work running on the desktop. The live
+            // card is gone by then, so the dock is the one line left to say the
+            // computer is still busy.
+            return model.transcript.conversation?.backgroundNote(
+                chinese: model.usesChinese,
+                replying: model.transcript.live != nil || model.transcript.preparation != nil)
         case .reconnecting(let delay, _):
             return model.usesChinese
                 ? "正在重连（\(Int(delay)) 秒后），当前显示上次同步内容。"
@@ -1201,6 +1214,7 @@ struct ConversationDetailView: View {
                     // Android's automation and queue bars precede the composer;
                     // the shared one-line connection status follows it.
                     RemoteStatusBars().environmentObject(model)
+                    RemoteBackgroundBar().environmentObject(model)
                     Composer(onAttach: { showAttachPanel = true },
                              onModelPicker: { remotePopup = .models },
                              onPermission: { remotePopup = .permissions })
@@ -2145,6 +2159,43 @@ private struct ApprovalCard: View {
 }
 
 // MARK: - Composer
+
+private struct RemoteBackgroundBar: View {
+    @EnvironmentObject private var model: AppModel
+    @Environment(\.sizeCategory) private var sizeCategory
+
+    private var heading: some View {
+        Text(verbatim: (model.usesChinese ? "后台任务 · " : "Background tasks · ")
+             + String(model.transcript.conversation?.backgroundWork?.tasks.count ?? 0))
+            .font(.system(size: Palette.textNote))
+            .foregroundColor(Palette.muted)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .lineLimit(2)
+    }
+
+    private var stopButton: some View {
+        CapsuleButton(title: "停止后台任务", systemImage: "stop", prominent: false, enabled: model.canStopBackgroundWork,
+                      action: model.stopBackgroundWork)
+            .accessibilityIdentifier("remoteBackgroundStop")
+    }
+
+    var body: some View {
+        if model.access.capabilities.contains(.stopBackgroundWork),
+           model.transcript.conversation?.backgroundWork != nil {
+            Group {
+                if UIScreen.main.bounds.width < 360 || sizeCategory > .large {
+                    VStack(alignment: .trailing, spacing: 4) { heading; stopButton }
+                } else {
+                    HStack(spacing: 8) { heading; stopButton }
+                }
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 4)
+            .background(RoundedRectangle(cornerRadius: Palette.smallRadius, style: .continuous).fill(Palette.surface))
+            .accessibilityIdentifier("remoteBackgroundWork")
+        }
+    }
+}
 
 private struct RemoteModelAnchorKey: PreferenceKey {
     static var defaultValue: CGRect? = nil

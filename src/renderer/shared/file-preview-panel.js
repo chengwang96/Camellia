@@ -103,7 +103,7 @@ window.CamelliaFilePreview = { create({ fileViewer, inputCard, mdRender, setStat
         frame.srcdoc = '<!doctype html><meta http-equiv="Content-Security-Policy" content="default-src \'none\'; img-src data:; style-src \'unsafe-inline\'; script-src \'none\'; frame-src \'none\'; connect-src \'none\'; form-action \'none\'; base-uri \'none\'">' + file.office.html;
         if (file.office.sheets?.length) {
           const select = document.createElement('select');
-          select.setAttribute('aria-label', 'Worksheet / 工作表'); select.className = 'office-sheet-select';
+          select.setAttribute('aria-label', 'Worksheet'); select.dataset.i18nAttrs = 'aria-label'; select.className = 'office-sheet-select';
           file.office.sheets.forEach((sheet, index) => select.append(new Option(sheet.title, String(index))));
           const prefix = frame.srcdoc.slice(0, frame.srcdoc.indexOf('<body>') + 6);
           const showSheet = () => { frame.srcdoc = prefix + file.office.sheets[Number(select.value)].html + '</body></html>'; };

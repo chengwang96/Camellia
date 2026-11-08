@@ -8,7 +8,7 @@ from pathlib import Path
 from playwright.sync_api import sync_playwright, expect
 
 repo = Path(__file__).resolve().parents[1]
-driver = subprocess.Popen(['node', str(repo / 'tests/claude-ui-driver.cjs')], stdin=subprocess.PIPE,
+driver = subprocess.Popen(['node', str(repo / 'tests/desktop-ui-driver.cjs')], stdin=subprocess.PIPE,
                           stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8')
 
 def rpc(method, payload=None):

@@ -29,8 +29,10 @@ const { memoryInstructions } = require('./global-memory');
 const { ConversationHistory, FLAGS: HISTORY_FLAGS, contextRow: historyContextRow } = require('./conversation-history');
 const { retainEvent, isStreamingToolEvent } = require('./tool-history');
 const { appendText } = require('../shared/file-open');
+const { fullAccess } = require('./permission-levels');
 
 const ENGINES = ['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'grok'];
+const presentationInstructions = 'Camellia image presentation: To intentionally show an image in the conversation, put ![concise alt text](image-path) in the final response at the desired location. Use an absolute path or a workspace-relative path, wrapping paths with spaces in <...>. Only this explicit Markdown image syntax requests an inline preview. For an image that is merely an output artifact, use a normal [label](path) link instead; never turn file references or image-reading tool results into inline previews automatically.\n\n';
 
 // History hits are prepended to the filesystem reply, each labelled with the
 // conversation that produced it, so the user recognizes where the file came
@@ -194,6 +196,7 @@ class SharedConversations {
     this.goalBridges = new Map();
     this.controlStarts = new Map();
     this.backgroundWork = new Map();
+    this.backgroundStops = new Map();
     this.recoveryWarnings = [];
     const onLoadError = error => this.recordLoadError(error);
     this.tasks = new ScheduledTasks({ file: path.join(dir, 'tasks', 'state.json'), log,
@@ -325,7 +328,47 @@ class SharedConversations {
     if (a?.permissions.size) return [...a.permissions.values()].some(event => !event.questions?.length) ? 'permission' : 'question';
     return this.busy(id) ? 'running' : null;
   }
-  backgroundStatus(id) { return this.backgroundWork.get(id) || null; }
+  backgroundStatus(id) {
+    const groups = [...(this.backgroundWork.get(id)?.values() || [])];
+    const tasks = groups.flatMap(group => group.tasks.map(task => ({ ...task, engine: group.engine, runId: group.session.gen,
+      canStop: task.canStop && !group.session.dead })));
+    return tasks.length ? { engine: groups[0].engine, tasks } : null;
+  }
+
+  async stopBackgroundWork({ sessionId, tasks } = {}) {
+    this.get(sessionId);
+    if (!Array.isArray(tasks) || !tasks.length || tasks.length > 600
+        || tasks.some(task => typeof task?.id !== 'string' || !task.id || !ENGINES.includes(task.engine) || !Number.isSafeInteger(task.runId)))
+      throw new Error('Choose the background tasks to stop');
+    if (this.backgroundStops.has(sessionId)) return this.backgroundStops.get(sessionId);
+    const targets = new Map();
+    for (const task of tasks) {
+      const group = this.backgroundWork.get(sessionId)?.get(task.engine);
+      if (!group?.tasks.some(row => row.id === task.id)) continue; // Already ended.
+      const current = this.drivers[task.engine]?.sessions?.get?.({ conversationId: sessionId });
+      if (group.session.gen !== task.runId || current && current !== group.session)
+        throw new Error('Background tasks changed. Refresh the conversation and retry.');
+      if (group.session.dead || !group.tasks.find(row => row.id === task.id)?.canStop || !group.session.stopBackgroundTasks)
+        throw new Error('Background task control is unavailable. Update the engine and retry.');
+      if (!targets.has(group.session)) targets.set(group.session, []);
+      targets.get(group.session).push(task.id);
+    }
+    const stop = Promise.resolve().then(async () => {
+      const results = await Promise.allSettled([...targets].map(([session, ids]) => session.stopBackgroundTasks(ids)));
+      const failed = results.find(result => result.status === 'rejected');
+      if (failed) throw failed.reason;
+      const pending = () => tasks.some(task => {
+        const group = this.backgroundWork.get(sessionId)?.get(task.engine);
+        return group?.session.gen === task.runId && group.tasks.some(row => row.id === task.id);
+      });
+      const deadline = Date.now() + this.stopTimeoutMs;
+      while (pending() && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 25));
+      if (pending()) throw new Error('Background tasks have not confirmed they stopped. Retry or check their progress.');
+      return { ok: true };
+    }).finally(() => { if (this.backgroundStops.get(sessionId) === stop) this.backgroundStops.delete(sessionId); });
+    this.backgroundStops.set(sessionId, stop);
+    return stop;
+  }
   publishActivity(id) {
     const c = this.get(id);
     const engine = this.active.get(id)?.engine || this.recovering.get(id)?.engine || c.currentEngine;
@@ -366,7 +409,7 @@ class SharedConversations {
   }
 
   toolInstructions() {
-    return goalToolInstructions + (this.webTools?.enabled() ? '\n' + require('./web-tools').instructions : '');
+    return presentationInstructions + goalToolInstructions + (this.webTools?.enabled() ? '\n' + require('./web-tools').instructions : '');
   }
 
   callGoalTool(id, name, args, options) {
@@ -1624,11 +1667,18 @@ class SharedConversations {
       : [...this.active.values()].find(run => run.engine === engine && run.session?.gen === event.runId);
     if (event.type === 'gui:background-work' && event.conversationId) {
       const c = this.items.get(event.conversationId);
-      if (!c || a && (a.engine !== engine || (a.session ? event.runId !== a.session.gen : event.runId != null))) return false;
-      if (!a && event.session_id && c.segments[engine]?.nativeId !== event.session_id) return false;
+      if (!c) return false;
+      const groups = this.backgroundWork.get(c.id) || new Map();
+      const current = this.drivers[engine]?.sessions?.get?.({ conversationId: c.id });
+      const session = current || (a?.engine === engine ? a.session : null) || groups.get(engine)?.session;
+      if (!session || event.runId !== session.gen || event.session_id && event.session_id !== session.sessionId) return false;
       const tasks = (Array.isArray(event.tasks) ? event.tasks : []).filter(task => typeof task?.id === 'string' && task.id)
-        .map(task => ({ id: task.id, description: String(task.description || ''), kind: String(task.kind || ''), status: String(task.status || '') }));
-      if (tasks.length) this.backgroundWork.set(c.id, { engine, tasks });
+        .map(task => ({ id: task.id, description: String(task.description || ''), kind: String(task.kind || ''), status: String(task.status || ''),
+          canStop: task.canStop !== false && typeof session.stopBackgroundTasks === 'function' }));
+      if (session.dead && tasks.length) return false;
+      if (tasks.length) groups.set(engine, { engine, tasks, session });
+      else groups.delete(engine);
+      if (groups.size) this.backgroundWork.set(c.id, groups);
       else this.backgroundWork.delete(c.id);
       this.publishActivity(c.id);
       return true;
@@ -1893,7 +1943,7 @@ class SharedConversations {
     if (event.type === 'gui:tool' || event.type === 'gui:plan' || event.type === 'user') {
       this.append(c, { role: 'tool', engine, text: JSON.stringify(event), internal: a.internal || isStreamingToolEvent(event) });
     }
-    if (event.type === 'gui:permission' && a.settings.permissionMode === 'full' && !event.questions?.length
+    if (event.type === 'gui:permission' && fullAccess(engine, a.settings.permissionMode) && !event.questions?.length
         && a.session?.answerPermission(event.requestId, true)) return true;
     if (event.type === 'gui:permission') { a.permissions.set(event.requestId, event); this.publishActivity(c.id); }
     let toolBoundary = false;
@@ -3198,6 +3248,7 @@ class SharedConversations {
     this.validateEngine(engine);
     if (['send', 'goal-start', 'goal-resume', 'compact', 'find', 'task-resume'].includes(action)) this.assertAvailable(engine);
     switch (action) {
+      case 'stop-background-work': return this.stopBackgroundWork(payload);
       case 'subagent-command': return this.subagentCommand(payload.sessionId, payload);
       case 'remote-queue-remove': return this.remoteQueue?.remove(payload.sessionId, payload.queueId) || { ok: false, error: 'Remote queue unavailable' };
       case 'remote-queue-resume': return this.remoteQueue?.resume(payload.sessionId) || { ok: false, error: 'Remote queue unavailable' };

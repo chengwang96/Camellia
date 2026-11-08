@@ -9,7 +9,7 @@ const { removeTree } = require('./test-fs.cjs');
 const { createRuntimeManager } = require('../src/main/runtime-manager');
 const { antigravitySpawnSpec } = require('../src/engines/antigravity');
 const { readJson, writeJson } = require('../src/shared/json-store');
-const { createHarness } = require('./claude-harness.cjs');
+const { createHarness } = require('./main-process-harness.cjs');
 
 function fixture(context, options = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'camellia-custom-runtime-'));

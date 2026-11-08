@@ -6,7 +6,7 @@ const path = require('node:path');
 const os = require('node:os');
 const { createRuntimeManager, ENGINES } = require('../src/main/runtime-manager');
 const { createRuntimeUpdates } = require('../src/main/runtime-updates');
-const { createHarness } = require('./claude-harness.cjs');
+const { createHarness } = require('./main-process-harness.cjs');
 const { removeTree } = require('./test-fs.cjs');
 
 function put(file, content = '') {

@@ -206,7 +206,7 @@ Opening settings does not download an engine. DSH's native panel shows a downloa
 
 **Engine Settings → Antigravity** provides permission and instruction controls plus a JSON editor for `mcpServers` and `skillsPaths`. The SDK uses `<app-data>/antigravity/settings.json`. Changes apply to the next message.
 
-This SDK connection currently supports text and code, but does not forward image inputs. Camellia rejects image attachments before sending a request. The Gemini provider can still process images through other compatible engines.
+This SDK connection forwards PNG, JPEG and WebP images through the SDK's native image input. GIF is not accepted by the current SDK; convert it to a supported format before sending. Image understanding still depends on the selected model.
 
 - **Default permissions:** file inspection is allowed; modifications and other tools request approval.
 - **Auto-accept edits:** file creation and editing are allowed; command execution still requests approval.

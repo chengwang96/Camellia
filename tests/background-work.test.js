@@ -1,0 +1,38 @@
+'use strict';
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const { createHarness } = require('./main-process-harness.cjs');
+
+test('desktop IPC stops the displayed background task through its pooled native session and can continue chatting', async t => {
+  const h = createHarness(); t.after(() => h.cleanup());
+  h.configureApi();
+  h.api.sharedConversations.prepare = async () => {};
+  h.api.sharedConversations.generateTitle = async () => '';
+  const command = (action, payload) => h.call('conversation-command', { engine: 'claude', action, payload });
+  const run = await command('send', { prompt: 'Run the evaluation in the background' });
+  assert.equal(run.ok, true, run.error);
+  const native = h.api.claudeSessions.get({ conversationId: run.sessionId });
+  const proc = h.processes.findLast(item => item.messages.some(message => message.type === 'user'));
+  const emit = row => proc.stdout.emit('data', JSON.stringify(row) + '\n');
+  emit({ type: 'system', subtype: 'background_tasks_changed', tasks: [{ task_id: 'evaluation', task_type: 'local_bash', description: 'Evaluation' }] });
+  h.finishTurn(proc);
+  const view = await command('load-session', run.sessionId);
+  assert.equal(view.backgroundWork.tasks.length, 1);
+  assert.equal(view.backgroundWork.tasks[0].canStop, true);
+  assert.equal(h.api.sharedConversations.busy(run.sessionId), false);
+  const stopped = command('stop-background-work', { sessionId: run.sessionId, tasks: view.backgroundWork.tasks });
+  await new Promise(setImmediate);
+  const request = proc.messages.at(-1);
+  assert.deepEqual(request.request, { subtype: 'stop_task', task_id: 'evaluation' });
+  emit({ type: 'control_response', response: { request_id: request.request_id, subtype: 'success' } });
+  assert.ok(h.api.sharedConversations.backgroundStatus(run.sessionId));
+  emit({ type: 'system', subtype: 'task_updated', task_id: 'evaluation', patch: { status: 'stopped' } });
+  assert.equal((await stopped).ok, true);
+  assert.equal(h.api.sharedConversations.backgroundStatus(run.sessionId), null);
+  assert.equal(proc.killed, false);
+  assert.equal(proc.messages.some(message => message.request?.subtype === 'interrupt'), false);
+  const next = await command('send', { sessionId: run.sessionId, prompt: 'Continue with the same context' });
+  assert.equal(next.ok, true, next.error);
+  assert.equal(h.api.claudeSessions.get({ conversationId: run.sessionId }), native);
+  h.finishTurn(proc);
+});

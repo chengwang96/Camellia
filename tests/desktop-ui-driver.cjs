@@ -3,7 +3,7 @@ const readline = require('node:readline');
 const http = require('node:http');
 const path = require('node:path');
 const { readJson, writeJson } = require('../src/shared/json-store');
-const { createHarness } = require('./claude-harness.cjs');
+const { createHarness } = require('./main-process-harness.cjs');
 let priceRefreshOffline = false;
 const openedExternalPaths = [];
 function createUiHarness(root) {
@@ -22,6 +22,11 @@ function createUiHarness(root) {
 }
 let h = createUiHarness();
 const fixtures = { alpha: h.folder('Alpha Project'), beta: h.folder('Beta Project') };
+for (const [key, relative] of Object.entries({ vscode: 'Programs/Microsoft VS Code/Code.exe', vscodeInsiders: 'Programs/Microsoft VS Code Insiders/Code - Insiders.exe', vscodeCustom: 'Custom VS Code/Code.exe' })) {
+  fixtures[key] = path.join(h.home, relative);
+  require('node:fs').mkdirSync(path.dirname(fixtures[key]), { recursive: true });
+  require('node:fs').writeFileSync(fixtures[key], 'VS Code UI fixture');
+}
 fixtures.legacy = h.seedSession('legacy-chat', fixtures.alpha, '已有的独立会话');
 const conversation = h.api.sharedConversations.create('claude', null, '已有的独立会话', fixtures.alpha);
 h.api.sharedConversations.append(conversation, { role: 'user', engine: 'claude', text: '已有的独立会话' });
@@ -51,7 +56,7 @@ const methods = {
   workbenchSettings: 'workbench-settings', workbenchSaveSettings: 'workbench-save-settings',
   settingsOverlay: 'settings-overlay',
   savePastedText: 'save-pasted-text',
-  openFileExternally: 'open-file-externally',
+  openFileExternally: 'open-file-externally', openInVSCode: 'open-in-vscode', vscodeInstallations: 'vscode-installations',
 };
 let testUpstream = null;
 let nativeBackend = null;
@@ -137,7 +142,7 @@ rl.on('line', async (line) => {
       fixtures[payload + 'Relocated'] = next;
       result = next;
     }
-    else if (method === 'pickFile') result = { canceled: false, path: fixtures.alphaRelocated || fixtures.alpha };
+    else if (method === 'pickFile') result = { canceled: false, path: payload?.kind === 'vscode' ? fixtures.vscodeInsiders : fixtures.alphaRelocated || fixtures.alpha };
     else if (method === 'pickAttachments') result = { canceled: false, paths: [path.join(fixtures.alpha, 'image.png'), path.join(fixtures.alpha, 'notes.txt')] };
     else if (method === 'finishTurn') { result = [...h.api.sharedConversations.active.keys()].at(-1); h.finishTurn(); }
     else if (method === 'seedLongHistory') {
@@ -176,7 +181,7 @@ rl.on('line', async (line) => {
     }
     else if (method === 'lastProcess') {
       const proc = h.processes.at(-1);
-      result = proc ? { cwd: proc.cwd, args: proc.args, id: proc.sid } : null;
+      result = proc ? { exe: proc.exe, cwd: proc.cwd, args: proc.args, id: proc.sid, unrefed: proc.unrefed } : null;
     } else if (method === 'restart') {
       const root = h.root;
       h.api.sharedConversations.pauseGoals();
@@ -247,6 +252,7 @@ rl.on('line', async (line) => {
       let request = payload;
       if (['grokAccountSelect', 'grokAccountRefresh', 'grokAccountRemove', 'grokSignOut'].includes(method)) request = { id: payload };
       if (method === 'grokAccountLabel') request = { id: payload[0], label: payload[1] };
+      if (!methods[method]) throw new Error('Unmapped test IPC: ' + method);
       result = await h.call(methods[method], request);
     }
     const events = h.events.splice(0);

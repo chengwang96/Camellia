@@ -351,6 +351,15 @@ test('chat renders prompts with the same Markdown rules as replies', () => {
   assert.doesNotMatch(chatRenderer()('![shot](javascript:alert(1))'), /<img\b/);
 });
 
+test('only explicit image syntax promotes a file reference into the conversation', () => {
+  const render = chatRenderer();
+  const files = render('[Artifact](artifacts/chart.png)\n\nReadMediaFile inspected `artifacts/source.png`.');
+  assert.doesNotMatch(files, /<img\b/);
+  assert.match(files, /<a [^>]*data-chat-file="D:\/Code\/DSH\/artifacts\/chart.png"[^>]*>Artifact<\/a>/);
+  const shown = render('Here is the result:\n\n![Chart](artifacts/chart.png)');
+  assert.equal((shown.match(/<img\b/g) || []).length, 1);
+});
+
 test('remote images render with a no-referrer hint and non-images stay literal', () => {
   const render = chatRenderer();
   assert.match(render('![chart](https://example.com/chart.png)'),

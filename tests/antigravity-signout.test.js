@@ -8,7 +8,7 @@ const { setImmediate: nextTurn } = require('node:timers/promises');
 const { createGoogleAccount, runCli } = require('../src/engines/antigravity/subscription');
 const { clearGoogleCredentials } = require('../src/engines/antigravity/credentials');
 const { createAntigravity } = require('../src/engines/antigravity');
-const { createHarness } = require('./claude-harness.cjs');
+const { createHarness } = require('./main-process-harness.cjs');
 const { writeJson, readJson } = require('../src/shared/json-store');
 
 const quota = JSON.stringify({ command: { data: { groups: [{ name: 'Gemini Models', buckets: [{ window: 'weekly', remaining_fraction: 0.8 }] }] } } });

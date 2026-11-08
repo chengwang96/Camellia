@@ -25,14 +25,17 @@ function fixture(t) {
     const archives = ['win-x64.zip', 'win-arm64.zip', 'darwin-x64.tar.gz', 'darwin-arm64.tar.gz'].map(suffix => `node-${version}-${suffix}`);
     return new Response(file === 'SHASUMS256.txt' ? archives.map(name => `${checksum(name)}  ${name}`).join('\n') : payload(file));
   };
+  const expectedTar = windows => windows && process.platform === 'win32'
+    ? path.win32.join(process.env.SystemRoot || process.env.SYSTEMROOT || 'C:\\Windows', 'System32', 'tar.exe')
+    : 'tar';
   const run = (command, args, options) => {
     const archiveArg = args[1];
     const archiveName = path.basename(archiveArg);
-    assert.equal(command, 'tar');
+    const windows = archiveName.endsWith('.zip');
+    assert.equal(command, expectedTar(windows));
     assert.ok(path.isAbsolute(options.cwd));
     assert.ok(fs.statSync(options.cwd).isDirectory());
     assert.deepEqual(fs.readFileSync(path.join(options.cwd, archiveName)), payload(archiveName));
-    const windows = archiveName.endsWith('.zip');
     const source = path.join(args[3], archiveName.replace(/\.zip$|\.tar\.gz$/, ''));
     const node = path.join(source, windows ? 'node.exe' : 'bin/node');
     const npm = path.join(source, windows ? 'node_modules/npm' : 'lib/node_modules/npm');

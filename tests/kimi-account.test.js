@@ -318,6 +318,7 @@ test('subscription spawn keeps official account models and search without API ov
   assert.equal(config.services.moonshot_search.oauth.key, 'oauth/kimi-code');
   assert.equal(config.services.moonshot_search.base_url, 'https://api.kimi.com/coding/search');
   assert.equal(config.models['kimi-code/coding'].max_context_size, 262144);
+  assert.deepEqual(config.models['kimi-code/coding'].capabilities, ['thinking', 'always_thinking', 'image_in']);
   assert.equal(config.loop_control.max_steps_per_turn, 500); assert.equal(config.secondary_model, undefined);
   assert.doesNotMatch(JSON.stringify(config) + JSON.stringify(spec), /external-key|search-key|api-token|override\.invalid/);
   assert.equal(spec.env.CUSTOM_VAR, 'keep'); assert.equal(env.KIMI_API_KEY, 'external-key');

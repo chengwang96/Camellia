@@ -94,6 +94,7 @@
     arrange('generalPage', [
       ['shared-memory', ['#memoryDirectory']],
       ['appearance', ['#language', '#theme', '#chatContentWidth']],
+      ['workspace-tools', ['#vscodeChoice']],
       ['quota-refresh', ['#autoRefreshBalances', '#accountRefreshMinutes', '#antigravityAutoRefresh']],
       ['background-routing', ['#closeToTray']],
       ['conversation-handoff', ['#conversationMode', '#conversationHandoffHelp', '.setting-note', '#conversationWarn', '#conversationOriginSetting']],

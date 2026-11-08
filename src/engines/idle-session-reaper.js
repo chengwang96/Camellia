@@ -27,7 +27,11 @@ class IdleSessionReaper {
     const changed = record.activity !== activity;
     if (changed) { record.activity = activity; record.at = activity.at; }
     const activeChild = [...(session.children?.values() || [])].some(task => ['starting', 'running', 'waiting'].includes(task.status));
-    if (session.running || activeChild || this.isBlocked(id)) { record.busy = true; return false; }
+    // A background task runs inside its engine process, not in a transcript:
+    // releasing the session kills the work the reply promised would continue,
+    // and the UI would have to drop a row that still says it is running.
+    const backgroundWork = (session.backgroundTasks?.size || 0) > 0;
+    if (session.running || activeChild || backgroundWork || this.isBlocked(id)) { record.busy = true; return false; }
     // A busy-to-idle transition without a lifecycle notification still earns a
     // full idle window. Notified completions retain their precise event time.
     if (record.busy && !changed) record.at = this.now();

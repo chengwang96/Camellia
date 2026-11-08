@@ -50,7 +50,8 @@ function nativeCall(ctx, operation, options = {}) {
     // echo/exit work in both native Bash (Claude/Kimi) and pwsh.
     const command = engine === 'claude' && process.argv.includes('--complex-shell')
       ? 'echo "=== fixture references ==="; grep -rn "ARDS/tex\\|ARDS\\\\tex\\|build_compile_test\\|/tex/fig\\|tex/ards" "' + ctx.cwd.replace(/\\/g, '/') + '" 2>/dev/null | head -20; echo "(empty = no script depends on it)"; echo; find "' + ctx.cwd.replace(/\\/g, '/') + '" -maxdepth 2 -name ".git" 2>/dev/null; echo EXPECTED_SHELL_ERROR_7; exit 7'
-      : 'echo EXPECTED_SHELL_ERROR_7; exit 7';
+      : engine === 'antigravity' ? 'echo EXPECTED_SHELL_ERROR_7; sleep 1; exit 7'
+        : 'echo EXPECTED_SHELL_ERROR_7; exit 7';
     args = engine === 'antigravity' ? { CommandLine: command, Cwd: ctx.cwd, WaitMsBeforeAsync: 10000, ...annotation }
       : engine === 'codex' ? { cmd: command, login: false }
       : { command, description: 'Exercise a known failing command' };

@@ -3140,6 +3140,20 @@ final class AppModel: ObservableObject {
     }
 
     // MARK: - Queue and automation
+    var canStopBackgroundWork: Bool {
+        canDrive && access.capabilities.contains(.stopBackgroundWork)
+            && !commandBusy && !hasPendingDetailOperation && !stopBusy && current?.pendingStop == nil
+            && !(transcript.conversation?.backgroundWork?.stopTargets.isEmpty ?? true)
+    }
+
+    func stopBackgroundWork() {
+        guard canStopBackgroundWork, let id = openId, let session,
+              let tasks = transcript.conversation?.backgroundWork?.stopTargets, !tasks.isEmpty else { return }
+        deliver(session: session, action: "stop-background-work", conversationId: id,
+                payload: ["instanceId": transcript.instanceId, "tasks": tasks],
+                outcome: { [weak self] in self?.report($0) })
+    }
+
     func subtaskCommand(_ task: RemoteSubtask, operation: String, extra: [String: Any] = [:]) {
         guard canDrive, !commandBusy, !hasPendingDetailOperation,
               let id = openId, let session,

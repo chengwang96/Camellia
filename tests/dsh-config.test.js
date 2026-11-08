@@ -4,7 +4,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const YAML = require('yaml');
-const { createHarness } = require('./claude-harness.cjs');
+const { createHarness } = require('./main-process-harness.cjs');
 const { readCredential, syncPoolProvider, cleanupLegacyRoute, dshLaunchArgs } = require('../src/engines/dsh-config');
 const { dshAcpSpec } = require('../src/engines/dsh-session');
 
@@ -14,6 +14,33 @@ function setup(t, source = '') {
   fs.writeFileSync(file, source);
   return { home, file, read: () => YAML.parse(fs.readFileSync(file, 'utf8'), { merge: true }) };
 }
+
+test('DSH API models declare image input and ACP initializes against the selected pool model', t => {
+  const h = setup(t);
+  const nativeConfig = { acp: { provider: 'personal', model: 'old', sessionListPageSize: 10 } };
+  dshAcpSpec({ runtime: { file: path.join(h.home, 'missing-runtime.js'), version: '0.2.2-rc.1' },
+    home: h.home, model: 'custom-vision-alias', route: { baseUrl: 'http://localhost:8788' }, nativeConfig });
+  const patch = YAML.parse(fs.readFileSync(path.join(h.home, 'camellia-runtime.patch.yml'), 'utf8'));
+  assert.deepEqual(patch.find(entry => entry.id === 'acp').config,
+    { provider: 'api-pool', model: 'custom-vision-alias', sessionListPageSize: 10 });
+  assert.deepEqual(patch.find(entry => entry.id === 'llm-pi-ai').config.providers['api-pool'].models[0].input, ['text', 'image']);
+  assert.deepEqual(nativeConfig.acp, { provider: 'personal', model: 'old', sessionListPageSize: 10 });
+  syncPoolProvider(h.file, { active: true, port: 8788, models: ['custom-vision-alias'], hasOllama: false });
+  assert.deepEqual(h.read()['llm-pi-ai'].providers['api-pool'].models, [{ id: 'custom-vision-alias', input: ['text', 'image'] }]);
+});
+
+test('DSH legacy permission values map to supported native presets', t => {
+  const h = setup(t);
+  for (const [permissionMode, expected] of [
+    ['default', 'workspace-write'], ['bypassPermissions', 'danger-full-access'],
+    ['full', 'danger-full-access'], ['read-only', 'read-only'],
+  ]) {
+    dshAcpSpec({ runtime: { file: path.join(h.home, 'lib/bin.js'), version: '0.2.0' }, home: h.home,
+      model: 'fixture', route: { baseUrl: 'http://localhost:8788' }, permissionMode });
+    const patch = YAML.parse(fs.readFileSync(path.join(h.home, 'camellia-runtime.patch.yml'), 'utf8'));
+    assert.equal(patch.find(entry => entry.id === 'permission').config.defaultPreset, expected);
+  }
+});
 
 test('DSH selected DeepSeek tools suppress its native web tools without changing user settings', t => {
   const h = setup(t);

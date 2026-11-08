@@ -69,6 +69,67 @@ test('background work remains visible after a reply without making the conversat
   assert.equal(h.manager.load('kimi', run.sessionId).backgroundWork, null);
 });
 
+test('background stopping waits for native termination, preserves new tasks and leaves the active reply running', async t => {
+  const h = fixture(t), run = await h.manager.send('kimi', { prompt: 'Start background tasks' });
+  const session = h.manager.active.get(run.sessionId).session;
+  const event = tasks => h.manager.capture('kimi', { type: 'gui:background-work', conversationId: run.sessionId, runId: session.gen, tasks });
+  const task = id => ({ id, description: id, status: 'running', canStop: true });
+  let acknowledge;
+  const calls = [];
+  session.stopBackgroundTasks = ids => { calls.push(ids); return new Promise(resolve => { acknowledge = resolve; }); };
+  event([task('original')]);
+  const targets = h.manager.backgroundStatus(run.sessionId).tasks;
+  let settled = false;
+  const stopped = h.manager.command('kimi', 'stop-background-work', { sessionId: run.sessionId, tasks: targets }).then(value => { settled = true; return value; });
+  await h.flush();
+  event([task('original'), task('new')]);
+  acknowledge(); await h.flush();
+  assert.equal(settled, false); assert.equal(session.running, true);
+  event([task('new')]);
+  assert.deepEqual(await stopped, { ok: true });
+  assert.deepEqual(calls, [['original']]);
+  assert.deepEqual(h.manager.backgroundStatus(run.sessionId).tasks.map(task => task.id), ['new']);
+  assert.equal(h.manager.active.has(run.sessionId), true);
+  session.stopBackgroundTasks = async () => { throw new Error('Task rejected stop'); };
+  await assert.rejects(h.manager.stopBackgroundWork({ sessionId: run.sessionId, tasks: h.manager.backgroundStatus(run.sessionId).tasks }), /rejected/);
+  assert.equal(h.manager.backgroundStatus(run.sessionId).tasks.length, 1);
+  assert.equal(h.manager.backgroundStops.size, 0);
+  h.finish('kimi');
+});
+
+test('background stops reject stale process generations and keep harnesses isolated after a switch', async t => {
+  const h = fixture(t), run = await h.manager.send('kimi', { prompt: 'Start work' });
+  const session = h.manager.active.get(run.sessionId).session;
+  session.stopBackgroundTasks = async () => { throw new Error('Must not be called'); };
+  const capture = (engine, owner, tasks) => h.manager.capture(engine, { type: 'gui:background-work', conversationId: run.sessionId, runId: owner.gen, tasks });
+  capture('kimi', session, [{ id: 'same-id', canStop: true }]);
+  const old = h.manager.backgroundStatus(run.sessionId).tasks;
+  h.finish('kimi');
+  h.manager.get(run.sessionId).currentEngine = 'claude';
+  const claude = await h.manager.send('claude', { sessionId: run.sessionId, prompt: 'Continue here' });
+  const next = h.manager.active.get(run.sessionId).session;
+  capture('claude', next, [{ id: 'claude-task' }]);
+  assert.equal(h.manager.backgroundStatus(run.sessionId).tasks.length, 2);
+  assert.equal(capture('kimi', { gen: session.gen + 100 }, []), false);
+  assert.equal(h.manager.backgroundStatus(run.sessionId).tasks.length, 2);
+  session.gen += 100;
+  await assert.rejects(h.manager.stopBackgroundWork({ sessionId: run.sessionId, tasks: old }), /changed/);
+  capture('kimi', session, []);
+  assert.deepEqual(h.manager.backgroundStatus(run.sessionId).tasks.map(task => task.id), ['claude-task']);
+  h.finish('claude'); await claude.done;
+});
+
+test('background stop receipts alone never remove tasks or report a successful stop', async t => {
+  const h = fixture(t, { stopTimeoutMs: 5 }), run = await h.manager.send('kimi', { prompt: 'Work' });
+  const session = h.manager.active.get(run.sessionId).session;
+  session.stopBackgroundTasks = async () => {};
+  h.manager.capture('kimi', { type: 'gui:background-work', conversationId: run.sessionId, runId: session.gen, tasks: [{ id: 'still-running' }] });
+  h.finish('kimi'); await run.done;
+  await assert.rejects(h.manager.stopBackgroundWork({ sessionId: run.sessionId, tasks: h.manager.backgroundStatus(run.sessionId).tasks }), /not confirmed/);
+  assert.equal(h.manager.backgroundStatus(run.sessionId).tasks.length, 1);
+  assert.equal(h.manager.busy(run.sessionId), false);
+});
+
 for (const engine of ['claude', 'dsh', 'kimi', 'grok', 'antigravity']) test(`${engine} native child identity merges persist once and preserve the initiating turn`, async t => {
   const h = fixture(t), result = await h.manager.send(engine, { prompt: 'Delegate the fixture task' });
   const active = h.manager.active.get(result.sessionId), conversation = h.manager.get(result.sessionId);
@@ -86,6 +147,20 @@ for (const engine of ['claude', 'dsh', 'kimi', 'grok', 'antigravity']) test(`${e
   h.finish(engine);
   assert.equal(h.manager.load(engine, conversation.id).subagents.length, 1);
   assert.equal(h.restart().subagentView(conversation.id)[0].result, 'Native child answer');
+});
+
+test('image preview guidance reaches user turns without coupling previews to artifacts or tool reads', async t => {
+  const h = fixture(t, { createGoalBridge: async () => ({ close() {} }) });
+  t.after(() => h.manager.closeGoalTools());
+  const run = await h.manager.send('codex', { prompt: 'Create a plot' });
+  const prompt = h.sent[0].prompt;
+  assert.match(prompt, /^Camellia image presentation:/);
+  assert.match(prompt, /!\[concise alt text\]\(image-path\)/);
+  assert.match(prompt, /Only this explicit Markdown image syntax requests an inline preview/);
+  assert.match(prompt, /merely an output artifact/);
+  assert.match(prompt, /image-reading tool results/);
+  assert.ok(prompt.endsWith('Create a plot'));
+  h.finish('codex'); await run.done;
 });
 
 test('changing web source refreshes session tools while preserving the conversation and checking turn tokens', async t => {
@@ -7084,6 +7159,24 @@ test('full permissions resolve background tool and plan approvals without a rend
   assert.equal(f.manager.activity(run.sessionId), 'question');
   assert.deepEqual(session.permissions, ['plan-approval', true]);
   f.finish('kimi');
+});
+
+test('legacy full-access modes auto-resolve approvals before publishing a waiting state', async t => {
+  for (const [engine, permissionMode] of [
+    ['dsh', 'bypassPermissions'], ['dsh', 'danger-full-access'], ['kimi', 'yolo'], ['claude', 'bypassPermissions'],
+  ]) {
+    const f = fixture(t);
+    f.drivers[engine].settings = () => ({ model: 'fixture', permissionMode });
+    const run = await f.manager.send(engine, { prompt: 'Repair the workspace permission' });
+    const active = f.manager.active.get(run.sessionId), session = active.session;
+    f.manager.capture(engine, { type: 'gui:permission', requestId: 'workspace-repair', runId: session.gen, toolName: 'pwsh' });
+    assert.deepEqual(session.permissions, ['workspace-repair', true], engine + ' ' + permissionMode);
+    assert.equal(active.permissions.size, 0);
+    assert.equal(f.manager.activity(run.sessionId), 'running');
+    assert.equal(f.events.some(event => event.type === 'gui:permission'), false);
+    assert.equal(f.events.some(event => event.type === 'conversation:activity' && ['permission', 'question'].includes(event.activity)), false);
+    f.finish(engine);
+  }
 });
 
 test('permissions and live snapshots are addressed by conversation and run, including duplicate request IDs', async t => {

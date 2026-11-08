@@ -211,10 +211,20 @@ class AcpSession extends StreamingSession {
           throw new Error(`${this.name} did not advertise inline image prompts; send this message without the image or use an engine with image input.`);
         parts.push({ type: 'image', mimeType, data: fs.readFileSync(attachment.path).toString('base64') });
       }
-      const response = await this.request('session/prompt', { sessionId: this.sessionId, prompt: parts }, 0);
-      if (this.childHistory) await this.childHistory.poll().catch(error => this.log('Kimi subtasks: ' + error.message));
+      let response;
+      let continuations = 0;
+      for (;;) {
+        const continuation = continuations > 0;
+        response = await this.request('session/prompt', { sessionId: this.sessionId, prompt: continuation
+          ? [{ type: 'text', text: 'The previous response reached the output token limit. Continue the same task from the current native conversation and tool state. Resume at the interruption point without restarting or duplicating completed work, and keep making progress toward the original request.' }]
+          : parts }, 0);
+        if (this.childHistory) await this.childHistory.poll().catch(error => this.log('Kimi subtasks: ' + error.message));
+        if (!this.running || this.cancelled || response.stopReason !== 'max_tokens' || continuations >= 3) break;
+        continuations++;
+        this.log(`${this.name}: output token limit reached; continuing (${continuations}/3)`);
+      }
       const stopped = this.cancelled || response.stopReason === 'cancelled';
-      const failed = ['refusal', 'max_tokens', 'max_turn_requests'].includes(response.stopReason);
+      const failed = !stopped && ['refusal', 'max_tokens', 'max_turn_requests'].includes(response.stopReason);
       // A queued/no-launch acknowledgement is not a successful model reply.
       // Keep tool-only work valid, but surface empty Kimi turns so Goal mode's
       // bounded error retries cannot become an endless stream of blank turns.
@@ -296,7 +306,7 @@ class AcpSession extends StreamingSession {
       if (!task || typeof task.id !== 'string' || !task.id) return;
       if (update.terminated || ['completed', 'failed', 'timed_out', 'killed', 'lost', 'cancelled', 'stopped'].includes(task.status)) this.backgroundTasks.delete(task.id);
       else this.backgroundTasks.set(task.id, { id: task.id, description: String(task.description || '').slice(0, 500),
-        kind: String(task.kind || ''), status: String(task.status || '') });
+        kind: String(task.kind || ''), status: String(task.status || ''), canStop: this.spec.nativeBackgroundTasks === true });
       this.emit({ type: 'gui:background-work', tasks: [...this.backgroundTasks.values()] });
       return;
     }

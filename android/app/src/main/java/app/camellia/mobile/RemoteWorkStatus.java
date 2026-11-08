@@ -16,6 +16,56 @@ final class RemoteWorkStatus {
         return label(zh, "等待审批", "Waiting for approval");
     }
 
+    /** The tasks the desktop still runs after its reply, or null when it sent none. */
+    private static JSONArray backgroundTasks(JSONObject conversation) {
+        JSONObject work = conversation == null ? null : conversation.optJSONObject("backgroundWork");
+        return work == null ? null : work.optJSONArray("tasks");
+    }
+
+    /** How many background tasks are still running, ignoring malformed entries. */
+    static int backgroundCount(JSONObject conversation) {
+        JSONArray tasks = backgroundTasks(conversation);
+        int count = 0;
+        for (int i = 0; i < size(tasks); i++) {
+            JSONObject task = tasks.optJSONObject(i);
+            if (task != null && !task.optString("id").isEmpty()) count++;
+        }
+        return count;
+    }
+
+    /** Exact native identities from the current host snapshot; old hosts are display-only. */
+    static JSONArray stoppableBackgroundTasks(JSONObject conversation) {
+        JSONArray tasks = backgroundTasks(conversation), targets = new JSONArray();
+        for (int i = 0; i < size(tasks); i++) {
+            JSONObject task = tasks.optJSONObject(i);
+            if (task == null || !task.optBoolean("canStop") || task.optString("id").isEmpty()
+                    || task.optLong("runId", 0) <= 0 || !java.util.Arrays.asList("claude", "codex", "dsh", "kimi", "antigravity", "grok").contains(task.optString("engine"))) continue;
+            try { targets.put(new JSONObject().put("id", task.getString("id")).put("engine", task.getString("engine")).put("runId", task.getLong("runId"))); }
+            catch (org.json.JSONException ignored) { /* A malformed identity is never sent as a stop command. */ }
+        }
+        return targets;
+    }
+
+    /**
+     * The dock note for work that outlives its reply. Empty while a reply is
+     * live, because the footer has one line and the reply owns it then.
+     */
+    static String background(JSONObject conversation, boolean zh) {
+        JSONArray tasks = backgroundTasks(conversation);
+        int count = backgroundCount(conversation);
+        if (count == 0) return "";
+        String detail = "";
+        if (count > 1) detail = label(zh, count + " 个任务", count + " tasks");
+        else for (int i = 0; i < size(tasks); i++) {
+            JSONObject task = tasks.optJSONObject(i);
+            if (task == null || task.optString("id").isEmpty()) continue;
+            detail = task.optString("description", "");
+            if (detail.isEmpty()) detail = task.optString("id");
+            break;
+        }
+        return label(zh, "后台工作仍在运行", "Background work still running") + (detail.isEmpty() ? "" : " · " + detail);
+    }
+
     private static boolean workingTool(JSONArray process, boolean typed) {
         for (int i = 0; i < size(process); i++) {
             JSONObject item = process.optJSONObject(i); if (item == null) continue;
@@ -35,7 +85,7 @@ final class RemoteWorkStatus {
         if (compaction != null && compaction.optString("state").equals("running")) return label(zh, "正在压缩上下文…", "Compacting context…");
         if (live != null && workingTool(live.optJSONArray("process"), true)) return label(zh, "正在执行工具…", "Running tools…");
         if (live != null || activity.equals("running")) return label(zh, "正在回复…", "Replying…");
-        return "";
+        return background(conversation, zh);
     }
 
     static String discussion(JSONObject group, boolean zh) {

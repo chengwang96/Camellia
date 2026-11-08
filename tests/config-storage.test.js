@@ -5,7 +5,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { readJson, writeJson } = require('../src/shared/json-store');
 const { normalizeConfig, publicState } = require('../src/api/api-router-config');
-const { createHarness } = require('./claude-harness.cjs');
+const { createHarness } = require('./main-process-harness.cjs');
 
 test('atomic configuration replacement leaves original data and no temporary files after a failed rename', t => {
   const h = createHarness(); t.after(() => h.cleanup());

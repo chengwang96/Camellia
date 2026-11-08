@@ -344,6 +344,15 @@ function createClaudeSidebar({ $, context, contextBusy, canChangeContext, canRea
           setStatus(error.message);
         }
       } },
+      { label: 'Open in VS Code', disabled: ws.missing || !ws.path, run: async () => {
+        try {
+          const result = await window.dshDesktop.openInVSCode(ws.path);
+          if (!result?.ok) throw new Error(result?.error || 'Could not open the workspace in VS Code.');
+        } catch (error) {
+          await loadSessionHistory();
+          setStatus(window.CamelliaI18n.t(error.message));
+        }
+      } },
       { label: "Rename workspace", run: () => openWorkspaceDialog(ws) },
       { label: 'Relocate folder…', disabled: contextBusy(), run: () => openWorkspaceDialog(ws, 'relocate') },
       { label: "Remove workspace (keep sessions)", disabled: contextBusy(), run: () => removeWorkspace(ws, false) },

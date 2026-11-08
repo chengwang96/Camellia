@@ -15,6 +15,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
   let running = false;
   let conversationActivity = null;
   let backgroundWork = null;
+  const backgroundStops = new Map();
   let currentRunId = null;
   let acceptSessionEvents = false;
   let restoringRun = true;
@@ -2447,10 +2448,31 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     const first = tasks[0] || {};
     const detail = tasks.length > 1 ? window.CamelliaI18n.t('{0} background tasks').replace('{0}', tasks.length)
       : first.description || first.id || '';
-    return window.CamelliaI18n.t('Reply completed · background work still running') + (detail ? ' · ' + detail : '');
+    return window.CamelliaI18n.t(running ? 'Background tasks' : 'Reply completed · background work still running') + (detail ? ' · ' + detail : '');
+  }
+  const backgroundTaskKey = tasks => tasks.map(({ engine, runId, id }) => JSON.stringify([engine, runId, id])).sort().join('\n');
+  async function stopBackgroundWork() {
+    const sessionId = context.sessionId, tasks = backgroundWork?.tasks || [];
+    if (!sessionId || !tasks.length || backgroundStops.get(sessionId)?.pending) return;
+    const state = { pending: true, error: '', key: backgroundTaskKey(tasks) }; backgroundStops.set(sessionId, state);
+    const targets = tasks.filter(task => task.canStop).map(({ id, engine, runId }) => ({ id, engine, runId }));
+    renderBackgroundWork();
+    try {
+      const result = await window.dshDesktop.conversationCommand({ engine: harnessId, action: 'stop-background-work', payload: { sessionId, tasks: targets } });
+      if (!result?.ok) throw new Error(result?.error || 'Could not stop background tasks. Retry.');
+    } catch (error) { state.error = error.message; }
+    finally {
+      state.pending = false;
+      if (!state.error) backgroundStops.delete(sessionId);
+      if (context.sessionId === sessionId) renderBackgroundWork();
+    }
   }
   function renderBackgroundWork() {
-    const tasks = running ? [] : backgroundWork?.tasks || [];
+    const tasks = backgroundWork?.tasks || [];
+    let state = backgroundStops.get(context.sessionId);
+    if (state && !state.pending && state.key !== backgroundTaskKey(tasks)) {
+      backgroundStops.delete(context.sessionId); state = null;
+    }
     const was = nearBottom();
     let row = chat.querySelector('.background-work-status');
     if (!tasks.length) { row?.remove(); return; }
@@ -2460,10 +2482,21 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       row.className = 'background-work-status';
       row.setAttribute('role', 'status');
       row.setAttribute('aria-live', 'polite');
-      row.innerHTML = '<span class="background-work-pulse" aria-hidden="true"></span><span class="background-work-text"></span>';
+      row.innerHTML = '<span class="background-work-pulse" aria-hidden="true"></span><span class="background-work-text"></span>'
+        + '<button type="button" class="work-action work-stop background-work-stop"></button><span class="background-work-error" role="alert" hidden></span>';
+      row.querySelector('.background-work-stop').onclick = () => void stopBackgroundWork();
       chat.appendChild(row);
     }
     const label = row.querySelector('.background-work-text');
+    label.title = tasks.map(task => task.description || task.id).join('\n');
+    const stop = row.querySelector('.background-work-stop');
+    stop.hidden = !tasks.some(task => task.canStop);
+    stop.disabled = Boolean(state?.pending);
+    stop.textContent = window.CamelliaI18n.t(state?.pending ? 'Stopping…' : 'Stop background tasks');
+    stop.setAttribute('aria-label', window.CamelliaI18n.t('Stop background tasks'));
+    const error = row.querySelector('.background-work-error');
+    error.hidden = !state?.error;
+    error.textContent = state?.error ? window.CamelliaI18n.t(state.error) : '';
     if (label.textContent !== text) {
       label.textContent = text;
       maybeScroll(was);

@@ -68,6 +68,8 @@ Antigravity uses `LocalOpenAIAgentConfig` against Camellia's local router. `src/
 
 The Antigravity bridge enforces permissions through the SDK's policy hook and checks image input against the installed SDK/model capability. Native smoke tests cover permissions, image handling, shell execution, MCP, cancellation, and independent session forks; retain those checks when updating the SDK.
 
+`npm run test:images` exercises all six installed harnesses against a loopback model through the shared router. It checks native image transmission, decoded pixels, multiple attachments, follow-up history, process restart/resume, and image-only input. DSH is also checked without the history extension. The SDK image primitive accepts PNG, JPEG and WebP; the other API transports also exercise GIF. These checks verify transport, not a live model's vision accuracy or subscription access.
+
 Google subscription mode uses `src/engines/antigravity/cli-bridge.cjs` under bundled Node. It translates the official CLI's stream-json protocol into ACP, maps Camellia's `agy-` session IDs to native conversation IDs, and converts cumulative usage to per-turn counts. Authentication remains in the official CLI. The native CLI settings are managed alongside the other engines' settings. No OAuth token extraction or internal Google gateway emulation is used. Both adapters are unpacked from ASAR.
 
 Run `npm run setup:antigravity:subscription` and `npm run test:antigravity:subscription` to verify the real CLI against a local Gemini fixture with an isolated home directory. This covers model parsing, multi-turn streaming, persisted resume, file tools, explicit review rules, and cancellation. It does not validate a live Google subscription. The bundled-runtime install smoke test also installs and checks this connection; base-package verification asserts that neither CLI nor Python is bundled.
@@ -122,7 +124,7 @@ python -m playwright install chromium
 python tests/desktop-ui.py
 python tests/api-settings-ui.py
 python tests/engine-settings-ui.py
-python tests/claude-workspaces-ui.py
+python tests/workspaces-ui.py
 python tests/conversation-retention-ui.py
 ```
 

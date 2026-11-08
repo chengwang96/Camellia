@@ -9,7 +9,7 @@ repo = Path(__file__).resolve().parents[1]
 ui_root = Path(os.environ.get('CAMELLIA_UI_ROOT', repo))
 driver_root = Path(os.environ.get('CAMELLIA_DRIVER_ROOT', repo))
 artifacts = repo / 'artifacts/model-routing-options-20261007'
-driver = subprocess.Popen(['node', str(driver_root / 'tests/claude-ui-driver.cjs')],
+driver = subprocess.Popen(['node', str(driver_root / 'tests/desktop-ui-driver.cjs')],
                           stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                           text=True, encoding='utf-8')
 fail_next_save = False

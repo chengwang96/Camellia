@@ -10,7 +10,7 @@ fixture = next(ast.literal_eval(n.value) for n in module.body if isinstance(n, a
 node = next(n for n in module.body if isinstance(n, ast.Assign) and any(isinstance(t, ast.Name) and t.id=='bridge' for t in n.targets))
 picture = repo/'assets/icon-256.png'
 fixture['cwd'] = repo.as_posix()
-fixture['messages'][-1]['text'] = f'Local image preview:\n\n![Camellia]({picture.as_posix()})\n\n![Missing](assets/missing-inline-test.png)'
+fixture['messages'][-1]['text'] = f'Local image preview:\n\n![Camellia]({picture.as_posix()})\n\n[Artifact only](assets/icon-256.png)\n\n`ReadMediaFile assets/icon-256.png`\n\n![Missing](assets/missing-inline-test.png)'
 bridge = ast.literal_eval(node.value.func.value).replace('FIXTURE', json.dumps(fixture))
 bridge += """const imageCommand = window.dshDesktop.conversationCommand;
 window.dshDesktop.conversationCommand = request => request.action === 'task-list' ? Promise.resolve({ok:true,tasks:[]}) : imageCommand(request);
@@ -27,6 +27,9 @@ with sync_playwright() as p:
         img=page.locator('#chat img.chat-inline-image').first
         img.scroll_into_view_if_needed()
         page.wait_for_function("document.querySelector('#chat img.chat-inline-image')?.naturalWidth > 0")
+        expect(page.locator('#chat img.chat-inline-image')).to_have_count(1)
+        expect(page.get_by_role('link',name='Artifact only',exact=True)).to_be_visible()
+        expect(page.locator('#chat code',has_text='ReadMediaFile assets/icon-256.png')).to_be_visible()
         expect(page.locator('#chat .chat-image-fallback')).to_have_text('Missing')
         img.focus();page.keyboard.press('Enter')
         expect(page.locator('#fileViewer')).to_be_visible()

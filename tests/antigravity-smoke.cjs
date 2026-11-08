@@ -137,9 +137,11 @@ async function run() {
     fs.writeFileSync(imageFile, Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jZ5kAAAAASUVORK5CYII=', 'base64'));
     const beforeImage = requests.length;
     const imageResult = await turn('SMOKE image', [{ path: imageFile, isImage: true }]);
-    assert.equal(imageResult.subtype, 'error');
-    assert.match(imageResult.result, /Antigravity did not advertise inline image prompts/);
-    assert.equal(requests.length, beforeImage, 'Unsupported images must not silently become text-only API requests');
+    success(imageResult);
+    assert.ok(requests.length > beforeImage);
+    assert.ok(requests.at(-1).body.messages.some(message => Array.isArray(message.content)
+      && message.content.some(part => part.type === 'image_url' && /^data:image\//.test(part.image_url?.url))),
+    'The SDK must forward inline images to the selected model');
     await create({}, 'default', mcpSettings);
     success(await turn('SMOKE mcp'));
     assert.ok(requests.at(-1).body.messages.some(m => m.role === 'tool' && JSON.stringify(m.content).includes('camellia-mcp-7391')));
@@ -151,7 +153,7 @@ async function run() {
     assert.equal((await stopped).subtype, 'stopped');
     const toolStates = new Map(events.filter(e => e.type === 'gui:tool').map(e => [e.id, e.status]));
     assert.ok([...toolStates.values()].every(status => ['completed', 'failed'].includes(status)), 'Tool cards must finish after approval or denial');
-    console.log('PASS: Antigravity SDK streams, executes file/shell/MCP tools, reports unsupported images, honors approvals and plan mode, resumes/forks independently, cancels, and uses only same-model routes.');
+    console.log('PASS: Antigravity SDK streams, executes file/shell/MCP tools, forwards images, honors approvals and plan mode, resumes/forks independently, cancels, and uses only same-model routes.');
   } finally {
     await session?.shutdown(); await router.stop();
     server.closeAllConnections(); await new Promise(resolve => server.close(resolve));

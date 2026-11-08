@@ -180,7 +180,7 @@ test('legacy observed tokens and explicit limits affect budgets but legacy estim
 });
 
 test('desktop conversations read persisted evidence through the main-process capacity service', t => {
-  const h = require('./claude-harness.cjs').createHarness();
+  const h = require('./main-process-harness.cjs').createHarness();
   t.after(() => h.cleanup());
   const { normalizeConfig, writeConfig } = require('../src/api/api-router-config');
   const config = normalizeConfig({ enabled: true, providers: [{ id: 'local', protocol: 'dual', baseUrl: 'https://mock.invalid/v1',

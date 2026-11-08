@@ -3,7 +3,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
-const { createHarness } = require('./claude-harness.cjs');
+const { createHarness } = require('./main-process-harness.cjs');
 
 test('main-process Claude conversations retain separate processes, route overlays and event destinations', async t => {
   const h = createHarness(); t.after(() => h.cleanup()); h.configureApi();

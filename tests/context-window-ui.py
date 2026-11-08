@@ -20,7 +20,7 @@ srv = HTTPServer(('127.0.0.1', 0), Catalog)
 threading.Thread(target=srv.serve_forever, daemon=True).start()
 upstream = f'http://127.0.0.1:{srv.server_address[1]}'
 
-driver = subprocess.Popen(['node', str(repo/'tests/claude-ui-driver.cjs')], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8')
+driver = subprocess.Popen(['node', str(repo/'tests/desktop-ui-driver.cjs')], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8')
 def rpc(method, payload=None):
     driver.stdin.write(json.dumps({'method': method, 'payload': payload})+'\n'); driver.stdin.flush()
     line = driver.stdout.readline()

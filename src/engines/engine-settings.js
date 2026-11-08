@@ -66,7 +66,7 @@ function routeKimi(config, { route, model, contextWindow = 131072 }) {
   if (!route || !model) return config;
   return { ...config, default_model: model,
     providers: { ...config.providers, workbench: { type: 'openai', base_url: route.baseUrl + '/v1', api_key: route.authToken } },
-    models: { ...config.models, [model]: { provider: 'workbench', model, max_context_size: contextWindow } } };
+    models: { ...config.models, [model]: { provider: 'workbench', model, max_context_size: contextWindow, capabilities: ['image_in'] } } };
 }
 function createEngineSettings({ home, claudeHome, dshHome, kimiHome, antigravityHome, codexHome, grokHome, getDesktop, saveDesktop, getRoute }) {
   const claudeDir = claudeHome || path.join(home, '.claude');

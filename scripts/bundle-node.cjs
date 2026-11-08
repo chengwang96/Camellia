@@ -54,7 +54,10 @@ async function bundleNode({ target, platform, arch, root = path.resolve(__dirnam
     }
     const nodeEntry = windows ? 'node.exe' : 'bin/node';
     const npmEntry = windows ? 'node_modules/npm' : 'lib/node_modules/npm';
-    run('tar', [windows ? '-xf' : '-xzf', path.basename(archive), '-C', temp,
+    const tar = windows && process.platform === 'win32'
+      ? path.win32.join(process.env.SystemRoot || process.env.SYSTEMROOT || 'C:\\Windows', 'System32', 'tar.exe')
+      : 'tar';
+    run(tar, [windows ? '-xf' : '-xzf', path.basename(archive), '-C', temp,
       `${name}/${nodeEntry}`, `${name}/${npmEntry}`, `${name}/LICENSE`],
       { cwd: path.dirname(archive), windowsHide: true, encoding: 'utf8', timeout: 120000 });
     const source = path.join(temp, name);

@@ -11,6 +11,13 @@ const { matchesPrompt, nativeEditOptions } = require('./native-edit-boundary');
 const { harnessThinkingRoute } = require('../api/harness-thinking');
 
 class KimiSession extends AcpSession {
+  async stopBackgroundTasks(taskIds) {
+    if (!this.spec.nativeBackgroundTasks || this.dead || !this.sessionId)
+      throw new Error('Background task control is unavailable. Update the engine and retry.');
+    const ids = taskIds.filter(id => this.backgroundTasks.has(id));
+    if (ids.length) await this.request('session/camellia_stop_background', { sessionId: this.sessionId, taskIds: ids }, 15000);
+  }
+
   async steerUserMessage(prompt, attachments = []) {
     if (!this.spec.nativeSteer) throw new Error('This engine connection does not support immediate instructions. Your message has been retained.');
     if (!this.running || this.dead || this.cancelled || !this.sessionId)
@@ -146,7 +153,7 @@ function kimiSpawnSpec({ home, runtime, model, contextWindow = 131072, route, co
   writeText(path.join(home, 'mcp.json'), mcp || '{"mcpServers":{}}');
   const bridge = prepareKimiRuntime(runtime);
   return { args: [bridge.file, 'acp'], env: { ...kimiEnvironment(home, env), KIMI_DISABLE_TELEMETRY: merged.telemetry ? '0' : '1' }, modeEngine: 'kimi',
-    nativeHistory: bridge.nativeHistory, nativeSteer: bridge.nativeSteer,
+    nativeHistory: bridge.nativeHistory, nativeSteer: bridge.nativeSteer, nativeBackgroundTasks: bridge.nativeBackgroundTasks === true,
     ...(connection !== 'subscription' && thinkingBudget !== undefined ? { applyThinking: false } : {}) };
 }
 

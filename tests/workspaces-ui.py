@@ -1,6 +1,6 @@
 """Browser regression against real main-process IPC and a fake local Claude CLI.
 
-Run: python tests/claude-workspaces-ui.py [--screenshot PATH]
+Run: python tests/workspaces-ui.py [--screenshot PATH]
 Requires Python Playwright and its Chromium browser; no API credentials needed.
 """
 import argparse
@@ -14,7 +14,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument('--screenshot', type=Path)
 args = parser.parse_args()
 repo = Path(__file__).resolve().parents[1]
-driver = subprocess.Popen(['node', str(repo / 'tests/claude-ui-driver.cjs')], stdin=subprocess.PIPE,
+driver = subprocess.Popen(['node', str(repo / 'tests/desktop-ui-driver.cjs')], stdin=subprocess.PIPE,
                           stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8')
 
 def rpc(method, payload=None):
@@ -43,7 +43,7 @@ bridge = r"""
   window.dshDesktop = new Proxy({}, { get: (_, method) => {
     if (method === 'platform') return window.testPlatform || 'win32';
     if (method === 'discussion') return async () => ({ok:true,groups:[]});
-    if (['onDiscussionEvent', 'onNetworkHealth', 'onChatContentWidthChanged', 'onDiscussionNavigate'].includes(method)) return () => () => {};
+    if (['onDiscussionEvent', 'onNetworkHealth', 'onChatContentWidthChanged', 'onDiscussionNavigate', 'onSettingsOverlay'].includes(method)) return () => () => {};
     if (method === 'onEngineSettingsChanged') return () => () => {};
     if (method === 'onLanguageChanged') return () => () => {};
     if (method === 'onArchivedChanged') return () => () => {};
@@ -105,6 +105,28 @@ try:
                 assert rpc('openedExternalPaths')['result'][-1] == fixtures['alpha']
                 assert page.evaluate('context.sessionId') is None
         page.evaluate("window.testPlatform = 'win32'; window.CamelliaI18n.setLanguage('en')")
+
+        # VS Code auto-detection and an explicitly selected installation use the real launcher IPC.
+        for language, label in [('en', 'Open in VS Code'), ('zh-CN', '在 VS Code 中打开')]:
+            page.evaluate('(language) => window.CamelliaI18n.setLanguage(language)', language)
+            page.locator(f'section[data-workspace-id="{alpha}"] .ws-row .session-more').last.click()
+            action = page.get_by_role('menuitem', name=label, exact=True)
+            expect(action).to_be_enabled()
+            if language == 'en':
+                action.click()
+                page.wait_for_function("() => window.testCall('lastProcess').then(proc => proc && proc.unrefed)")
+                launched = rpc('lastProcess')['result']
+                assert launched['exe'] == fixtures['vscode']
+                assert launched['args'] == [fixtures['alpha']]
+            else:
+                page.keyboard.press('Escape')
+        assert rpc('workbenchSaveSettings', {'vscodePath': fixtures['vscodeInsiders']})['result']['ok']
+        page.evaluate("window.CamelliaI18n.setLanguage('en')")
+        page.locator(f'section[data-workspace-id="{alpha}"] .ws-row .session-more').last.click()
+        page.get_by_role('menuitem', name='Open in VS Code', exact=True).click()
+        page.wait_for_function("expected => window.testCall('lastProcess').then(proc => proc && proc.exe === expected)", arg=fixtures['vscodeInsiders'])
+        assert rpc('lastProcess')['result']['args'] == [fixtures['alpha']]
+        assert rpc('workbenchSaveSettings', {'vscodePath': ''})['result']['ok']
 
         # Drafts stay under their workspace; send uses that directory and records ID.
         expect(page.locator(f'section[data-workspace-id="{alpha}"] #sessionCurrent')).to_be_visible()
@@ -219,6 +241,7 @@ try:
         expect(missing_row.locator('.ws-missing-label')).to_be_visible()
         page.get_by_role('button', name='Alpha Project workspace actions', exact=True).click()
         expect(page.get_by_role('menuitem', name='Open in File Explorer', exact=True)).to_be_disabled()
+        expect(page.get_by_role('menuitem', name='Open in VS Code', exact=True)).to_be_disabled()
         page.get_by_role('menuitem', name='Relocate folder…', exact=True).click()
         page.locator('#wsPath').fill(previous_alpha)
         page.locator('#wsCreate').click()
@@ -377,7 +400,7 @@ try:
         expect(page.locator('.turn-body .md').last).to_contain_text('结尾')
         expect(page.locator('.cursor')).to_have_count(0)
         assert page.evaluate(r"fileUrl('C:\\文档 #1\\why?.png')").endswith('%23' + '1/why%3F.png')
-        assert page.evaluate(r"mdRender('\x01999\x01')") == '\x01999\x01'
+        assert page.evaluate(r"mdRender('\x01999\x01')") == '<p class="md-paragraph">\x01999\x01</p>'
         table_html = page.evaluate(r"mdRender('| Model | Score |\n| :--- | ---: |\n| **AutoARDS** | `9.5` |\n| TOMA | 8 |')")
         assert '<table class="md-table">' in table_html
         assert '<strong>AutoARDS</strong>' in table_html
@@ -403,7 +426,7 @@ try:
         section.locator('.ws-row').click()
         paged_first = rpc('fixtures')['result']['pagedSessions'][0]
         section.locator(f'[data-sid="{paged_first}"]').click()
-        assert 'active' in section.locator('.ws-row').get_attribute('class')
+        expect(section.locator('.ws-row')).to_have_class(re.compile(r'active'))
         expect(page.locator('#chat')).to_contain_text('分页会话 0')
 
         # The goal chip retains start/pause/resume/complete/clear behavior.

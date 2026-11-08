@@ -4,7 +4,7 @@ const assert = require('node:assert/strict');
 const path = require('node:path');
 const fs = require('node:fs');
 const { ClaudeGoal, verifySignal } = require('../src/engines/claude-goal');
-const { createHarness } = require('./claude-harness.cjs');
+const { createHarness } = require('./main-process-harness.cjs');
 
 function setup(t, extra = {}) {
   const h = createHarness(); t.after(() => h.cleanup());

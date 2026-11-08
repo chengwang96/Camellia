@@ -112,7 +112,7 @@ class RemoteCommands {
     const managing = ['rename', 'pin', 'delete'].includes(action);
     const validTarget = managing ? id === null : ['archive', 'restore'].includes(action) ? id === null && typeof payload.conversationId === 'string'
       : ['create', 'create-workspace', 'delete-workspace', 'rename-workspace'].includes(action) ? id === null : id !== null;
-    if (typeof requestId !== 'string' || !/^[a-f0-9-]{36}$/.test(requestId) || !['send', 'resend', 'stop', 'stop-start', 'approve', 'create', 'create-workspace', 'delete-workspace', 'rename-workspace', 'configure', 'move', 'archive', 'restore', 'rename', 'pin', 'delete', 'fork', 'switch-engine', 'compact', 'find', 'goal-control', 'task-control', ...QUEUE_ACTIONS, 'subagent-command', 'codex-reset-preview', 'codex-reset-consume'].includes(action) || !validTarget) fail(400, 'Invalid command');
+    if (typeof requestId !== 'string' || !/^[a-f0-9-]{36}$/.test(requestId) || !['send', 'resend', 'stop', 'stop-start', 'stop-background-work', 'approve', 'create', 'create-workspace', 'delete-workspace', 'rename-workspace', 'configure', 'move', 'archive', 'restore', 'rename', 'pin', 'delete', 'fork', 'switch-engine', 'compact', 'find', 'goal-control', 'task-control', ...QUEUE_ACTIONS, 'subagent-command', 'codex-reset-preview', 'codex-reset-consume'].includes(action) || !validTarget) fail(400, 'Invalid command');
     const fields = ['requestId', 'action', 'instanceId', ...(action === 'move' ? ['workspaceId', 'targetSessionId', 'placement'] : action === 'archive' ? ['conversationId', 'expectedSeq'] : action === 'create-workspace' ? ['name', 'path'] : action === 'configure' ? ['settings', 'expectedSettings'] : action === 'create' ? ['workspaceId', 'engine'] : action === 'send' || action === 'resend' ? ['prompt', 'expectedSeq', ...(payload.editSeq === undefined ? [] : ['editSeq']), ...(payload.image === undefined ? [] : ['image']), ...(payload.images === undefined ? [] : ['images'])] : action === 'stop' ? ['runId'] : ['runId', 'approvalId', 'fingerprint', 'allow'])];
     if (managing) fields.splice(3, fields.length - 3, 'targets', ...(action === 'rename' ? ['title'] : action === 'pin' ? ['pinned'] : []));
     if (action === 'delete-workspace') fields.splice(3, fields.length - 3, 'workspaceId', 'expectedName');
@@ -127,6 +127,14 @@ class RemoteCommands {
     if (QUEUE_ACTIONS.includes(action)) fields.splice(3, fields.length - 3, ...(action === 'queue-resume' ? [] : ['queueId']),
       ...(action === 'queue-edit' ? ['prompt', 'expectedText'] : action === 'queue-steer' ? ['runId', 'goalId'] : []));
     if (action === 'stop-start') fields.splice(3, fields.length - 3, 'startId');
+    if (action === 'stop-background-work') {
+      fields.splice(3, fields.length - 3, 'tasks');
+      if (!Array.isArray(payload.tasks) || !payload.tasks.length || payload.tasks.length > 600 || payload.tasks.some(task =>
+        !task || typeof task.id !== 'string' || !task.id || task.id.length > 200
+        || !['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'grok'].includes(task.engine)
+        || !Number.isSafeInteger(task.runId) || task.runId <= 0 || Object.keys(task).some(key => !['id', 'engine', 'runId'].includes(key))))
+        fail(400, 'Invalid background tasks');
+    }
     if (action === 'codex-reset-preview') fields.splice(3);
     if (action === 'codex-reset-consume') fields.splice(3, fields.length - 3, 'accountId', 'confirmed', 'confirmationToken');
     if (Object.keys(payload).some(key => !fields.includes(key))) fail(400, 'Unsupported command field');
@@ -242,6 +250,8 @@ class RemoteCommands {
     }
     const conversationId = ['archive', 'restore'].includes(payload.action) ? payload.conversationId : id;
     const conversation = payload.action === 'restore' ? this.authorizeArchive(deviceId, conversationId) : this.authorize(deviceId, conversationId), manager = this.reader.manager;
+    if (payload.action === 'stop-background-work')
+      return { ...await manager.stopBackgroundWork({ sessionId: id, tasks: payload.tasks }), state: 'accepted' };
     if (payload.action === 'subagent-command') {
       if (!['reply', 'stop', 'approve'].includes(payload.operation)) fail(400, 'Unsupported subtask action');
       const task = manager.subagentView(id).find(task => task.id === payload.taskId && task.engine === payload.engine);

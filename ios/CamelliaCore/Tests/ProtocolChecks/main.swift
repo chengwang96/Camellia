@@ -1162,6 +1162,69 @@ do {
 }
 
 do {
+    // Background work is what a finished reply leaves behind. It is not
+    // `activity`: the reply is over while Kimi is still running the experiment,
+    // and a row that folded the two together would read as idle.
+    let work = RemoteBackgroundWork(JSONObject(dictionary: [
+        "engine": "kimi",
+        "tasks": [["id": "t1", "description": "Run the analysis", "status": "running"],
+                  ["id": "", "description": "malformed"]],
+    ]))
+    checkEqual(work?.tasks.count ?? 0, 1, "a background task without an id is dropped like the desktop's filter")
+    checkEqual(work?.tasks.first?.description ?? "", "Run the analysis", "a task keeps its description")
+
+    let busy = RemoteConversation(JSONObject(dictionary: [
+        "id": "c1",
+        "backgroundWork": ["engine": "kimi", "tasks": [["id": "t1", "description": "Run the analysis"]]],
+    ]))
+    checkEqual(busy.backgroundNote(chinese: false, replying: false) ?? "",
+               "Background work still running · Run the analysis",
+               "a finished reply with background work says so on the dock")
+    checkEqual(busy.backgroundNote(chinese: true, replying: false) ?? "",
+               "后台工作仍在运行 · Run the analysis", "and does so in Chinese")
+    check(busy.backgroundNote(chinese: false, replying: true) == nil,
+          "a live reply owns the dock line")
+    check(busy.backgroundNote(chinese: false, replying: false) != nil,
+          "and yields it again when the reply ends")
+
+    let running = RemoteConversation(JSONObject(dictionary: [
+        "id": "c2", "activity": "running",
+        "backgroundWork": ["engine": "kimi", "tasks": [["id": "t1"]]],
+    ]))
+    check(running.backgroundNote(chinese: false, replying: false) == nil,
+          "an active reply's own word wins over background work")
+
+    let cached = RemoteConversation(JSONObject(dictionary: busy.json))
+    checkEqual(cached.backgroundWork?.tasks.first?.id ?? "", "t1",
+               "the list cache round trip keeps background work")
+    checkEqual(cached.signature, busy.signature, "a cached row keeps its signature")
+    let other = RemoteConversation(JSONObject(dictionary: [
+        "id": "c1",
+        "backgroundWork": ["engine": "kimi", "tasks": [["id": "t2", "status": "running"]]],
+    ]))
+    check(cached.signature != other.signature,
+          "a different background task invalidates a prefetched snapshot")
+    check(RemoteBackgroundWork(JSONObject(dictionary: ["tasks": []])) == nil,
+          "an empty task list draws nothing")
+
+    let controlled = RemoteBackgroundWork(JSONObject(dictionary: ["engine": "kimi", "tasks": [
+        ["id": "shell", "engine": "kimi", "runId": 7, "canStop": true, "command": "private"],
+        ["id": "shell", "engine": "claude", "runId": 8, "canStop": true],
+        ["id": "old-host"], ["id": "missing-run", "engine": "kimi", "canStop": true],
+    ]]))!
+    checkEqual(controlled.stopTargets.count, 2, "only confirmed native identities can be stopped")
+    checkEqual(controlled.stopTargets.first?["engine"] as? String, "kimi", "the task owns its harness")
+    checkEqual(controlled.stopTargets.first?["runId"] as? Int64, 7, "stop targets retain the process generation")
+    checkEqual(controlled.stopTargets.first?.count, 3, "stop targets exclude private command text")
+    let roundtrip = RemoteBackgroundWork(JSONObject(dictionary: controlled.json))!
+    checkEqual(roundtrip.signature, controlled.signature, "list caching preserves stop capabilities and ownership")
+    let caps = RemoteCapabilities(["stop-background-work"])
+    check(caps.allows(.stopBackgroundWork, permission: .control), "background stop requires advertised capability")
+    check(!caps.allows(.stopBackgroundWork, permission: .read), "read-only clients cannot stop background work")
+    check(!RemoteCapabilities([]).contains(.stopBackgroundWork), "old desktops do not offer the stop control")
+}
+
+do {
     let capabilities = RemoteCapabilities(["create", "attachments", "image"])
     check(capabilities.allows(.attachments, permission: .read), "attachments do not need control")
     check(!capabilities.allows(.create, permission: .read), "creating needs control")

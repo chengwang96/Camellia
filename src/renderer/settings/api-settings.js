@@ -1313,6 +1313,74 @@ $('chooseMemoryDirectory').onclick = async () => {
     await saveMemoryDirectory();
   } catch (error) { status(error.message, true); }
 };
+const VSCODE_CUSTOM = '__custom__';
+let vscodePreferences = { path: '', installations: [] }, vscodeSaveQueue = Promise.resolve();
+function renderVSCodeSettings() {
+  const t = window.CamelliaI18n.t, select = $('vscodeChoice');
+  select.replaceChildren();
+  const automatic = document.createElement('option');
+  automatic.value = ''; automatic.dataset.i18n = ''; automatic.textContent = 'Auto-detect'; select.appendChild(automatic);
+  for (const installation of vscodePreferences.installations) {
+    const option = document.createElement('option');
+    option.value = installation.path; option.textContent = installation.name; option.title = installation.path;
+    select.appendChild(option);
+  }
+  const custom = document.createElement('option');
+  custom.value = VSCODE_CUSTOM; custom.dataset.i18n = ''; custom.textContent = 'Custom path…'; select.appendChild(custom);
+  const selected = vscodePreferences.installations.find(item => item.path === vscodePreferences.path);
+  select.value = vscodePreferences.path && !selected ? VSCODE_CUSTOM : vscodePreferences.path;
+  $('vscodeCustomPath').hidden = select.value !== VSCODE_CUSTOM;
+  if (select.value === VSCODE_CUSTOM) $('vscodePath').value = vscodePreferences.path;
+  const detected = selected || (!vscodePreferences.path ? vscodePreferences.installations[0] : null);
+  $('vscodeDetectedPath').textContent = detected?.path || vscodePreferences.path || t('No VS Code installation detected.');
+  select.title = detected?.path || vscodePreferences.path || '';
+}
+async function refreshVSCodeSettings(savedPath) {
+  try {
+    const result = await api.vscodeInstallations();
+    if (!result.ok) throw new Error(result.error);
+    vscodePreferences = { path: savedPath || '', installations: result.installations || [] };
+  } catch (error) {
+    vscodePreferences = { path: savedPath || '', installations: [] };
+    status(window.CamelliaI18n.t(error.message), true);
+  }
+  renderVSCodeSettings();
+}
+function saveVSCodePath(value) {
+  vscodeSaveQueue = vscodeSaveQueue.then(async () => {
+    try {
+      const result = await api.workbenchSaveSettings({ vscodePath: value });
+      if (!result.ok) throw new Error(result.error);
+      vscodePreferences.path = value.trim();
+      renderVSCodeSettings();
+      status('Preferences saved');
+    } catch (error) {
+      status(window.CamelliaI18n.t(error.message), true);
+      if ($('vscodeChoice').value !== VSCODE_CUSTOM) renderVSCodeSettings();
+    }
+  });
+  return vscodeSaveQueue;
+}
+$('vscodeChoice').addEventListener('change', () => {
+  const custom = $('vscodeChoice').value === VSCODE_CUSTOM;
+  $('vscodeCustomPath').hidden = !custom;
+  if (custom) {
+    $('vscodePath').value = vscodePreferences.path;
+    $('vscodePath').focus();
+  } else void saveVSCodePath($('vscodeChoice').value);
+});
+$('vscodePath').addEventListener('change', () => {
+  if ($('vscodeChoice').value === VSCODE_CUSTOM) void saveVSCodePath($('vscodePath').value);
+});
+$('chooseVscodePath').onclick = async () => {
+  try {
+    const result = await api.pickFile({ kind: 'vscode', title: 'Choose VS Code executable' });
+    if (result.canceled || !result.path) return;
+    $('vscodeChoice').value = VSCODE_CUSTOM; $('vscodeCustomPath').hidden = false;
+    $('vscodePath').value = result.path;
+    await saveVSCodePath(result.path);
+  } catch (error) { status(window.CamelliaI18n.t(error.message), true); }
+};
 function syncThemeChoices() {
   const value = $('theme').value;
   for (const button of document.querySelectorAll('[data-theme-choice]')) {
@@ -1484,6 +1552,7 @@ async function refreshPreferences() {
     $('antigravityAutoRefresh').checked = preferences.subscriptionAutoRefresh?.antigravity !== false;
     $('chatContentWidth').value = preferences.chatContentWidth || 'standard';
     $('memoryDirectory').value = preferences.memoryDirectory || '';
+    void refreshVSCodeSettings(preferences.vscodePath);
     $('accountRefreshMinutes').value = String(preferences.accountRefreshMinutes || 15);
     $('conversationMode').value = preferences.conversations?.mode || 'direct'; $('conversationWarn').checked = !!preferences.conversations?.warnOnSwitch;
     $('conversationOriginSetting').checked = !!preferences.conversations?.showOrigin;

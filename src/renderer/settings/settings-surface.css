@@ -54,6 +54,13 @@ input:not([type=checkbox]), textarea { border-radius: 10px; }
 .theme-choices button { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; min-height: 84px; padding: 16px 8px; border: 1px solid var(--settings-card-stroke); border-radius: 16px; font-weight: 400; white-space: normal; }
 .theme-choices button[aria-pressed=true] { background: var(--settings-control-fill); border-color: var(--settings-selected-stroke); }
 .theme-choices svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+.vscode-setting { align-items: flex-start; flex-wrap: wrap; }
+.vscode-setting > div:first-child { flex: 1 1 280px; }
+.vscode-setting > .vscode-controls { flex: 0 1 360px; display: flex; flex-direction: column; align-items: stretch; gap: 8px; }
+.vscode-controls select { width: 100%; min-width: 0; text-overflow: ellipsis; }
+.vscode-custom-path { display: flex; gap: 8px; }
+.vscode-custom-path input { flex: 1; min-width: 0; }
+.vscode-detected-path { overflow-wrap: anywhere; }
 /* Selection controls keep native form semantics without platform-specific paint. */
 input[type=checkbox] {
   appearance: none; display: inline-grid; place-items: center; vertical-align: middle;
@@ -146,6 +153,9 @@ dialog::backdrop { background: var(--dsw-alias-bg-mask-1); }
   .memory-folder { flex-wrap: wrap; }
   .memory-folder input { flex: 1 1 180px; }
   .memory-folder button { margin-left: auto; }
+  .vscode-setting > .vscode-controls { flex-basis: 100%; }
+  .vscode-custom-path { flex-wrap: wrap; }
+  .vscode-custom-path input { flex-basis: 180px; }
   .theme-choices { gap: 6px; }
   .theme-choices button { min-height: 76px; padding: 12px 4px; font-size: 12px; border-radius: 12px; }
 }
