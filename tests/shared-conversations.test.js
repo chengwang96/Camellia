@@ -48,6 +48,27 @@ function fixture(t, overrides = {}) {
     restart: () => { manager = new SharedConversations(args); return manager; } };
 }
 
+test('Kimi native task follow-up creates a persisted reply and a normal completion event', async t => {
+  const h = fixture(t), run = await h.manager.send('kimi', { prompt: 'Build APK' });
+  const session = h.sent.at(-1).session;
+  h.drivers.kimi.sessions = { get: () => session, touch() {} };
+  h.finish('kimi', 'success', 'Building in background');
+  const before = h.manager.rows(h.manager.get(run.sessionId));
+  const emit = event => h.manager.capture('kimi', { conversationId: run.sessionId, session_id: session.sessionId, runId: session.gen, ...event });
+  assert.equal(emit({ type: 'gui:background-turn' }), true);
+  assert.equal(h.manager.busy(run.sessionId), true);
+  assert.equal(h.events.at(-1).background, true);
+  emit({ type: 'result', subtype: 'success', result: 'APK verified. Download APK.' });
+  const after = h.manager.rows(h.manager.get(run.sessionId));
+  assert.equal(after.filter(row => row.role === 'user').length, 1);
+  assert.equal(after.length, before.length + 1);
+  assert.equal(after.at(-1).text, 'APK verified. Download APK.');
+  assert.equal(h.manager.busy(run.sessionId), false);
+  assert.ok(h.manager.get(run.sessionId).lastReplyAt);
+  assert.equal(h.events.filter(event => event.type === 'result').length, 2);
+  assert.equal(emit({ type: 'gui:background-turn', runId: session.gen + 1 }), false);
+});
+
 test('background work remains visible after a reply without making the conversation busy', async t => {
   const h = fixture(t), run = await h.manager.send('kimi', { prompt: 'Evaluate in the background' });
   const active = h.manager.active.get(run.sessionId), nativeId = active.session.sessionId;
@@ -128,6 +149,22 @@ test('background stop receipts alone never remove tasks or report a successful s
   await assert.rejects(h.manager.stopBackgroundWork({ sessionId: run.sessionId, tasks: h.manager.backgroundStatus(run.sessionId).tasks }), /not confirmed/);
   assert.equal(h.manager.backgroundStatus(run.sessionId).tasks.length, 1);
   assert.equal(h.manager.busy(run.sessionId), false);
+});
+
+for (const mode of ['dead', 'replaced', 'released']) test('background work drops a ' + mode + ' process even when its final notification is lost', async t => {
+  const h = fixture(t), run = await h.manager.send('kimi', { prompt: 'Work' });
+  const session = h.manager.active.get(run.sessionId).session;
+  let current = session;
+  h.drivers.kimi.sessions = { get: () => current, touch() {} };
+  h.manager.capture('kimi', { type: 'gui:background-work', conversationId: run.sessionId, runId: session.gen,
+    tasks: [{ id: 'old-work', status: 'running' }] });
+  h.finish('kimi'); await run.done;
+  if (mode === 'dead') session.dead = true;
+  else current = mode === 'replaced' ? { gen: session.gen + 1 } : null;
+  h.manager.publishActivity(run.sessionId);
+  assert.equal(h.manager.backgroundStatus(run.sessionId), null);
+  assert.equal(h.manager.backgroundWork.has(run.sessionId), false);
+  assert.equal(h.events.findLast(event => event.type === 'conversation:activity').backgroundWork, null);
 });
 
 for (const engine of ['claude', 'dsh', 'kimi', 'grok', 'antigravity']) test(`${engine} native child identity merges persist once and preserve the initiating turn`, async t => {

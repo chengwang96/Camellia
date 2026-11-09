@@ -74,6 +74,24 @@ public class RemoteApi {
 
     public void download(String path, String token, java.io.OutputStream output, long expectedSize, DownloadProgress progress) throws IOException {
         if (expectedSize < 0) throw new IOException("Invalid file size");
+        int retries = 0;
+        while (true) {
+            try { downloadOnce(path, token, output, expectedSize, progress); return; }
+            catch (Failure error) {
+                if (error.status != 429 || retries >= 5 || cancelled) throw error;
+                retryPause(retries++);
+            }
+        }
+    }
+
+    private void retryPause(int retry) throws IOException {
+        long delay = 200L * (1L << retry) + java.util.concurrent.ThreadLocalRandom.current().nextLong(100);
+        try { Thread.sleep(delay); }
+        catch (InterruptedException error) { Thread.currentThread().interrupt(); throw new IOException("Download retry interrupted", error); }
+        if (cancelled) throw new IOException("Download cancelled");
+    }
+
+    void downloadOnce(String path, String token, java.io.OutputStream output, long expectedSize, DownloadProgress progress) throws IOException {
         if (EmbeddedNetwork.enabled()) {
             tailnet.Response response = embeddedOpen(path, token, null);
             try (InputStream source = input(response)) {

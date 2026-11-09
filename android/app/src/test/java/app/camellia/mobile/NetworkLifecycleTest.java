@@ -151,7 +151,7 @@ public class NetworkLifecycleTest {
         Token old = lifecycle.node().get(2, TimeUnit.SECONDS);
         lifecycle.background(); blockQueue();
         CompletableFuture<Void> expiry = lifecycle.expire();
-        lifecycle.foreground(); clock.addAndGet(300_001);
+        lifecycle.foreground(); clock.addAndGet(1_800_001);
         queueRelease.countDown(); expiry.get(2, TimeUnit.SECONDS);
         assertSame(old, lifecycle.node().get(2, TimeUnit.SECONDS)); assertFalse(old.closed);
     }
@@ -160,7 +160,7 @@ public class NetworkLifecycleTest {
         Token old = lifecycle.node().get(2, TimeUnit.SECONDS);
         lifecycle.background(); blockQueue();
         CompletableFuture<Void> expiry = lifecycle.expire();
-        lifecycle.retainTransfer(); clock.addAndGet(300_001);
+        lifecycle.retainTransfer(); clock.addAndGet(1_800_001);
         queueRelease.countDown(); expiry.get(2, TimeUnit.SECONDS);
         assertSame(old, lifecycle.node().get(2, TimeUnit.SECONDS));
         lifecycle.releaseTransfer(); lifecycle.expire().get(2, TimeUnit.SECONDS);
@@ -170,17 +170,17 @@ public class NetworkLifecycleTest {
 
     @Test public void foregroundAfterExpiredRetentionReplacesNodeButActiveDownloadPreservesIt() throws Exception {
         Token first = lifecycle.node().get(2, TimeUnit.SECONDS);
-        lifecycle.background(); clock.addAndGet(300_001); lifecycle.foreground();
+        lifecycle.background(); clock.addAndGet(1_800_001); lifecycle.foreground();
         Token second = lifecycle.node().get(2, TimeUnit.SECONDS);
         assertTrue(first.closed); assertNotSame(first, second);
-        lifecycle.background(); lifecycle.retainTransfer(); clock.addAndGet(300_001); lifecycle.foreground();
+        lifecycle.background(); lifecycle.retainTransfer(); clock.addAndGet(1_800_001); lifecycle.foreground();
         assertSame(second, lifecycle.node().get(2, TimeUnit.SECONDS)); lifecycle.releaseTransfer();
     }
 
     @Test public void startupFinishingAfterRetentionExpiryIsClosedWithoutPublication() throws Exception {
         backend.blockCreation(); CompletableFuture<Token> old = lifecycle.node();
         assertTrue(backend.createStarted.await(1, TimeUnit.SECONDS));
-        lifecycle.background(); clock.addAndGet(300_001); backend.createRelease.countDown();
+        lifecycle.background(); clock.addAndGet(1_800_001); backend.createRelease.countDown();
         cancelled(old); assertEquals(1, backend.closed);
         lifecycle.foreground(); assertEquals(2, lifecycle.node().get(2, TimeUnit.SECONDS).id);
     }

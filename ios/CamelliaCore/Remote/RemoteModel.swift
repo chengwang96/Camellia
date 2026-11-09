@@ -324,6 +324,7 @@ public struct RemoteBackgroundWork: Sendable, Hashable {
     }
 
     public var stopTargets: [[String: Any]] { tasks.compactMap(\.stopTarget) }
+    public var statusUnknown: Bool { tasks.contains { $0.status == "unknown" } }
 
     public var json: [String: Any] {
         ["engine": engine, "tasks": tasks.map(\.json)]
@@ -337,7 +338,9 @@ public struct RemoteBackgroundWork: Sendable, Hashable {
         } else {
             detail = tasks[0].description.isEmpty ? tasks[0].id : tasks[0].description
         }
-        let base = chinese ? "后台工作仍在运行" : "Background work still running"
+        let base = statusUnknown
+            ? (chinese ? "后台任务状态未知 · 正在重试" : "Background task status unknown · retrying")
+            : (chinese ? "后台工作仍在运行" : "Background work still running")
         return detail.isEmpty ? base : "\(base) · \(detail)"
     }
 }

@@ -857,7 +857,9 @@ struct ConversationRowView: View {
             // the desktop is not replying. Android draws the same word here;
             // the desktop puts it where the row's clock would be.
             if conversation.backgroundWork != nil {
-                parts.append(model.usesChinese ? "后台任务" : "Background tasks")
+                parts.append(conversation.backgroundWork?.statusUnknown == true
+                    ? (model.usesChinese ? "后台状态未知" : "Background status unknown")
+                    : (model.usesChinese ? "后台任务" : "Background tasks"))
             }
         }
         if unread { parts.append(model.usesChinese ? "新消息" : "New messages") }
@@ -1106,7 +1108,8 @@ struct ConversationDetailView: View {
                                         onOpenArtifacts: { reference in
                                             artifactSelection = ArtifactSelection(seq: row.id, reference: reference)
                                             showArtifacts = true
-                                        })
+                                        },
+                                        images: model.inlineImageLoader(seq: row.id))
                                 .id(row.id)
                             if row.message.role == .user {
                                 let tasks = model.transcript.subagents.filter { $0.userSeq == row.id }
@@ -1527,6 +1530,7 @@ private struct MessageView: View {
     let editable: Bool
     let onEdit: () -> Void
     let onOpenArtifacts: (String) -> Void
+    var images: InlineImageLoader? = nil
 
     var body: some View {
         VStack(alignment: row.message.role == .user ? .trailing : .leading, spacing: 6) {
@@ -1559,7 +1563,7 @@ private struct MessageView: View {
                             .foregroundColor(Palette.ink)
                     }
                 } else {
-                    AsyncMarkdownView(text: row.message.text)
+                    AsyncMarkdownView(text: row.message.text, images: images)
                         .textSelection(.enabled)
                 }
             }
@@ -2165,7 +2169,9 @@ private struct RemoteBackgroundBar: View {
     @Environment(\.sizeCategory) private var sizeCategory
 
     private var heading: some View {
-        Text(verbatim: (model.usesChinese ? "后台任务 · " : "Background tasks · ")
+        Text(verbatim: (model.transcript.conversation?.backgroundWork?.statusUnknown == true
+             ? (model.usesChinese ? "后台状态未知 · " : "Background status unknown · ")
+             : (model.usesChinese ? "后台任务 · " : "Background tasks · "))
              + String(model.transcript.conversation?.backgroundWork?.tasks.count ?? 0))
             .font(.system(size: Palette.textNote))
             .foregroundColor(Palette.muted)

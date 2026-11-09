@@ -167,7 +167,7 @@ public final class SettingsActivity extends Activity {
         settingsStyle.note(content, tr("选择并授权一次，后续下载自动保存；同名文件自动编号。", "Authorize a folder once to save future downloads there. Duplicate names receive a number."));
         LinearLayout remote = settingsStyle.group(content, tr("远程控制", "Remote control"));
         settingsStyle.toggle(remote, tr("短暂离开时保持连接", "Keep connection while away"),
-            tr("后台最多保持 5 分钟，短暂切换应用后可直接继续。", "Keep the connection for up to 5 minutes in the background so you can return quickly."),
+            tr("后台最多保持 30 分钟，短暂切换应用后可直接继续。", "Keep the connection for up to 30 minutes in the background so you can return quickly."),
             "preference:remoteKeepAlive", RemoteKeepAliveService.enabled(this), (view, checked) -> {
                 MobilePreferences.set(this, "remoteKeepAlive", checked ? "enabled" : "disabled");
                 if (!checked) RemoteKeepAliveService.finish(this, false);

@@ -68,3 +68,20 @@ test('stopping the run removes no placeholder and keeps the ticker stopped', () 
   assert.equal(state.stopTicker, 1);
   assert.equal(state.runStatus.length, 1);
 });
+
+test('a native background follow-up starts a fresh reply without repeating the user bubble', () => {
+  const start = source.indexOf("    if (ev.type === 'conversation:started') {");
+  const end = source.indexOf('    if (currentRunId != null', start);
+  const handle = source.slice(start, end);
+  for (const background of [false, true]) {
+    const users = [], state = { ev: { type: 'conversation:started', runId: 2, userSeq: 1, prompt: 'Build', background },
+      currentRunId: 1, turnEl: {}, blocks: {}, pendingTools: {}, clearTextChoice() {},
+      addUser: text => users.push(text), setRunning(value) { state.running = value; } };
+    vm.createContext(state);
+    vm.runInContext('(function () {' + handle + '})()', state);
+    assert.equal(state.currentRunId, 2);
+    assert.equal(state.running, true);
+    assert.equal(state.turnEl, null);
+    assert.deepEqual(users, background ? [] : ['Build']);
+  }
+});

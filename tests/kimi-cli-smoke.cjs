@@ -209,10 +209,8 @@ async function run() {
     assert.equal((await history.list()).length, 2);
     assert.equal((await turn('SMOKE image attachment', [{ path: image, isImage: true }])).subtype, 'success');
     assert.match(JSON.stringify(requests.at(-1).body.messages), /data:image\/png;base64/);
-    // Native task completion starts a turn without an ACP prompt. Submit the
-    // next request while that turn is active: its launch is undefined/queued,
-    // but ACP must stay pending and deliver the queued turn's eventual reply.
-    for (const cancelQueued of [false, true]) {
+    // Task completion must become a visible run without a user status check.
+    {
       fs.rmSync(path.join(cwd, 'release-bg.txt'), { force: true });
       backgroundParentReplied = false;
       const backgroundReached = new Promise(resolve => { backgroundStarted = resolve; });
@@ -230,27 +228,20 @@ async function run() {
         })]);
       } finally { clearTimeout(reachedTimer); }
       const updateIndex = events.length;
-      let queuedFinished = false;
-      const queuedPrompt = cancelQueued ? 'SMOKE cancel queued request' : 'SMOKE queued after background';
-      const queued = turn(queuedPrompt).then(value => { queuedFinished = true; return value; });
-      // Wait for the queued acknowledgement, rather than relying only on a
-      // sleep while the prompt might not have reached the native engine yet.
-      const queuedDeadline = Date.now() + 5000;
-      while (!events.slice(updateIndex).some(event => event.type === 'gui:prompt-queue')) {
-        assert.ok(Date.now() < queuedDeadline, 'Queued prompt was not acknowledged: ' + JSON.stringify(events.slice(updateIndex).map(event => ({ type: event.type, eventType: event.event?.type, subtype: event.subtype, tasks: event.tasks }))));
-        await new Promise(resolve => setTimeout(resolve, 20));
-      }
-      await new Promise(resolve => setTimeout(resolve, 100));
-      assert.equal(queuedFinished, false, 'A queued acknowledgement must not finish the ACP turn');
-      if (cancelQueued) {
-        session.interrupt();
-        assert.equal((await queued).subtype, 'stopped');
-      }
+      assert.equal(session.running, true, 'The native follow-up is now a visible run');
+      assert.ok(events.some(event => event.type === 'gui:background-turn'));
+      assert.equal(session.sendUserMessage('Do not overwrite background verification'), false);
+      let resultTimer;
+      const completed = new Promise((resolve, reject) => {
+        done = event => { clearTimeout(resultTimer); resolve(event); };
+        resultTimer = setTimeout(() => reject(new Error('Background reply did not finish')), 15000);
+      });
       finishBackground(); finishBackground = undefined;
-      const queuedResult = cancelQueued ? await turn('SMOKE after cancelled queue') : await queued;
-      assert.equal(queuedResult.subtype, 'success'); assert.match(queuedResult.result, /Kimi smoke reply/);
+      const backgroundResult = await completed;
+      assert.equal(backgroundResult.subtype, 'success');
+      assert.match(backgroundResult.result, /Kimi smoke reply/);
       assert.ok(events.slice(updateIndex).some(event => event.event?.delta?.type === 'text_delta'));
-      if (cancelQueued) assert.ok(!requests.some(row => JSON.stringify(row.body.messages).includes(queuedPrompt)), 'Cancelled queued prompt must never run later');
+      assert.equal((await turn('SMOKE after background reply')).subtype, 'success');
     }
     assert.equal(requests.some(r => r.key === 'Bearer never-use'), false);
     const config = fs.readFileSync(path.join(home, 'config.toml'), 'utf8');
@@ -295,15 +286,18 @@ async function run() {
     while (session.backgroundTasks.size && Date.now() < stopDeadline) await new Promise(resolve => setTimeout(resolve, 20));
     assert.equal(session.backgroundTasks.size, 0, 'Native termination must clear the background status');
     assert.ok(events.slice(backgroundStopIndex).some(event => event.type === 'gui:background-work' && event.tasks.length === 0));
-    assert.equal(session.dead, false); assert.equal(session.running, false);
+    assert.equal(session.dead, false);
     // The task notification may already have started a native follow-up. Let
     // it finish, then prove the same session still answers a new user turn.
     const followupDeadline = Date.now() + 5000;
     while (!finishBackground && Date.now() < followupDeadline) await new Promise(resolve => setTimeout(resolve, 20));
     finishBackground?.(); finishBackground = undefined;
+    const settledDeadline = Date.now() + 10000;
+    while (session.running && Date.now() < settledDeadline) await new Promise(resolve => setTimeout(resolve, 20));
+    assert.equal(session.running, false);
     backgroundParentReplied = false;
     assert.equal((await turn('SMOKE after background stop')).subtype, 'success');
-    console.log(`PASS: real Kimi Code ${runtimeVersion} ACP, same-model quota failover, streamed thought/text, Read/Write/Bash, approve/deny, cancel, native resume/fork, background follow-up with queued reply/cancel, native background shell stop and continued conversation, terminal quota/model/auth errors and recovery, isolated history and config. Local endpoints only.`);
+    console.log(`PASS: real Kimi Code ${runtimeVersion} ACP, same-model quota failover, streamed thought/text, Read/Write/Bash, approve/deny, cancel, native resume/fork, unsolicited background follow-up and usage, native background shell stop and continued conversation, terminal quota/model/auth errors and recovery, isolated history and config. Local endpoints only.`);
   } finally {
     fs.writeFileSync(path.join(cwd, 'release-bg.txt'), 'release');
     finishBackground?.();

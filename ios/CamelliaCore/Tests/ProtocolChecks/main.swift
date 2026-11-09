@@ -1218,6 +1218,14 @@ do {
     checkEqual(controlled.stopTargets.first?.count, 3, "stop targets exclude private command text")
     let roundtrip = RemoteBackgroundWork(JSONObject(dictionary: controlled.json))!
     checkEqual(roundtrip.signature, controlled.signature, "list caching preserves stop capabilities and ownership")
+    let unknown = RemoteBackgroundWork(JSONObject(dictionary: ["engine": "kimi", "tasks": [
+        ["id": "shell", "engine": "kimi", "runId": 7, "canStop": true, "status": "unknown"],
+    ]]))!
+    check(unknown.statusUnknown, "unverified work never claims to be running")
+    checkEqual(unknown.note(chinese: false), "Background task status unknown · retrying · shell", "unknown work says it will retry")
+    checkEqual(unknown.note(chinese: true), "后台任务状态未知 · 正在重试 · shell", "unknown work has Chinese wording")
+    checkEqual(unknown.stopTargets.count, 1, "an unverified task keeps its native stop target")
+    check(RemoteBackgroundWork(JSONObject(dictionary: unknown.json))!.statusUnknown, "unknown work survives cache round trips")
     let caps = RemoteCapabilities(["stop-background-work"])
     check(caps.allows(.stopBackgroundWork, permission: .control), "background stop requires advertised capability")
     check(!caps.allows(.stopBackgroundWork, permission: .read), "read-only clients cannot stop background work")
@@ -2610,6 +2618,29 @@ do {
     checkEqual(ArtifactReferences.priority(of: "x.HTML"), 1, "an HTML file is promoted by extension, not by kind")
     checkEqual(ArtifactReferences.priority(of: "x.pdf"), 2, "a PDF is not")
 }
+
+// MARK: - Inline image references
+
+for reference in [
+    "assets/icon-1024.png",
+    "D:/Code/Camellia/assets/photo.JPEG",
+    "file:///D:/Code/Camellia/assets/photo.webp",
+    "https://example.com/chart.png?size=large#preview",
+] {
+    check(InlineImageReference.isSupported(reference), "accept inline image \(reference)")
+}
+for reference in [
+    "assets/readme.md",
+    "assets/vector.svg",
+    "data:image/png;base64,AAAA",
+    "https://user:secret@example.com/chart.png",
+    "https://example.com/chart.txt",
+] {
+    check(!InlineImageReference.isSupported(reference), "refuse inline image \(reference)")
+}
+checkEqual(InlineImageReference.remoteURL("https://example.com/chart.png")?.host, "example.com",
+           "an explicit web image uses its own host without desktop credentials")
+check(InlineImageReference.remoteURL("assets/icon-1024.png") == nil, "a workspace image is not a web request")
 
 // MARK: - Attachment store
 

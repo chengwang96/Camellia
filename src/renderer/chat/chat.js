@@ -2448,7 +2448,8 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     const first = tasks[0] || {};
     const detail = tasks.length > 1 ? window.CamelliaI18n.t('{0} background tasks').replace('{0}', tasks.length)
       : first.description || first.id || '';
-    return window.CamelliaI18n.t(running ? 'Background tasks' : 'Reply completed · background work still running') + (detail ? ' · ' + detail : '');
+    const uncertain = tasks.some(task => task.status === 'unknown');
+    return window.CamelliaI18n.t(uncertain ? 'Background task status unknown · retrying' : running ? 'Background tasks' : 'Reply completed · background work still running') + (detail ? ' · ' + detail : '');
   }
   const backgroundTaskKey = tasks => tasks.map(({ engine, runId, id }) => JSON.stringify([engine, runId, id])).sort().join('\n');
   async function stopBackgroundWork() {
@@ -2487,6 +2488,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       row.querySelector('.background-work-stop').onclick = () => void stopBackgroundWork();
       chat.appendChild(row);
     }
+    row.classList.toggle('background-work-unknown', tasks.some(task => task.status === 'unknown'));
     const label = row.querySelector('.background-work-text');
     label.title = tasks.map(task => task.description || task.id).join('\n');
     const stop = row.querySelector('.background-work-stop');
@@ -2754,7 +2756,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
         clearTextChoice();
         currentRunId = ev.runId;
         turnEl = null; blocks = {}; pendingTools = {};
-        addUser(ev.displayText ?? ev.prompt, ev.attachments, { seq: ev.userSeq, at: Date.now() });
+        if (!ev.background) addUser(ev.displayText ?? ev.prompt, ev.attachments, { seq: ev.userSeq, at: Date.now() });
         setRunning(true);
       }
       return;

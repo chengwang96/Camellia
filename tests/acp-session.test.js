@@ -24,6 +24,58 @@ function fixture(t) {
   return { proc, session };
 }
 
+test('Kimi idle task follow-up streams and saves a result without a new user message', async t => {
+  const { session } = fixture(t), events = [];
+  session.sessionId = 'kimi-background'; session.spec.modeEngine = 'kimi';
+  session.onEvent = event => events.push(event); session.onResult = () => {};
+  const receive = update => session.receive({ method: 'session/update', params: { sessionId: session.sessionId, update } });
+  receive({ sessionUpdate: 'camellia_background_turn', state: 'started', turnId: 2 });
+  assert.equal(session.running, true);
+  receive({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'APK verified' } });
+  receive({ sessionUpdate: 'camellia_background_turn', state: 'ended', turnId: 2, stopReason: 'end_turn' });
+  assert.equal(session.running, false);
+  assert.equal(events[0].type, 'gui:background-turn');
+  assert.equal(events.at(-1).type, 'result');
+  assert.equal(events.at(-1).result, 'APK verified');
+  const rows = fs.readFileSync(session.historyFile(), 'utf8').trim().split('\n').map(JSON.parse);
+  assert.deepEqual(rows.map(row => row.type), ['assistant']);
+  assert.equal(rows[0].message.content[0].text, 'APK verified');
+});
+
+test('Kimi waits for a task follow-up that races the original prompt response', async t => {
+  const { session } = fixture(t);
+  session.sessionId = 'kimi-background'; session.spec.modeEngine = 'kimi'; session.ready = Promise.resolve();
+  session.request = async () => {
+    session.update({ sessionUpdate: 'camellia_background_turn', state: 'started', turnId: 2 });
+    return { stopReason: 'end_turn' };
+  };
+  let result;
+  session.onResult = event => { result = event; };
+  session.sendUserMessage('Build');
+  await new Promise(setImmediate);
+  assert.equal(result, undefined);
+  session.update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'Build verified' } });
+  session.update({ sessionUpdate: 'camellia_background_turn', state: 'ended', turnId: 2, stopReason: 'end_turn' });
+  await new Promise(setImmediate);
+  assert.equal(result.result, 'Build verified');
+  assert.equal(result.subtype, 'success');
+});
+
+test('Kimi background follow-up cancellation and failures settle the visible run', t => {
+  for (const cancelled of [false, true]) {
+    const { session } = fixture(t), results = [];
+    session.sessionId = 'kimi-background'; session.onResult = event => results.push(event);
+    session.update({ sessionUpdate: 'camellia_background_turn', state: 'started', turnId: 2 });
+    if (cancelled) session.interrupt();
+    session.update({ sessionUpdate: 'camellia_background_turn', state: 'ended', turnId: 2,
+      stopReason: cancelled ? 'cancelled' : 'error', error: 'Verification failed' });
+    assert.equal(session.running, false);
+    assert.equal(results[0].subtype, cancelled ? 'stopped' : 'error');
+    assert.equal(results[0].is_error, !cancelled);
+    if (!cancelled) assert.equal(results[0].result, 'Verification failed');
+  }
+});
+
 test('ACP shutdown never signals a failed spawn without a positive child PID', t => {
   const { proc, session } = fixture(t);
   let kills = 0;
@@ -142,6 +194,30 @@ test('Kimi queue and idle background notices remain status events rather than re
   assert.equal(events.filter(event => event.type === 'gui:prompt-queue').length, 1);
   assert.deepEqual(events.filter(event => event.type === 'gui:background-work').map(event => event.tasks.length), [1, 0]);
   assert.equal(events.some(event => event.event?.delta?.text?.includes('finishing background work')), false);
+});
+
+test('Kimi read-only background snapshots settle missed ends and recover from unavailable status reads', async t => {
+  const { session } = fixture(t), calls = [], events = [];
+  session.sessionId = 'kimi-fixture'; session.spec.modeEngine = 'kimi'; session.spec.nativeBackgroundTasks = true;
+  session.onEvent = event => events.push(event);
+  const start = id => session.update({ sessionUpdate: 'camellia_background_task', task: { id, status: 'running' } });
+  start('done'); start('waiting');
+  session.request = async (method, params) => { calls.push({ method, params }); return { tasks: [
+    { id: 'done', status: 'completed' }, { id: 'waiting', status: 'running' },
+  ] }; };
+  await session.backgroundMonitor.check();
+  assert.deepEqual([...session.backgroundTasks.keys()], ['waiting']);
+  assert.equal(calls[0].method, 'session/camellia_read_background');
+  assert.equal(calls[0].params.sessionId, session.sessionId);
+  session.request = async () => { throw new Error('Disconnected'); };
+  await session.backgroundMonitor.check();
+  assert.equal(session.backgroundTasks.get('waiting').status, 'unknown');
+  assert.equal(events.at(-1).tasks[0].canStop, true);
+  session.request = async () => ({ tasks: [] });
+  await session.backgroundMonitor.check();
+  assert.equal(session.backgroundTasks.size, 0);
+  assert.equal(session.backgroundMonitor.timer, null);
+  assert.equal(session.running, false);
 });
 
 test('Kimi JSON-RPC provider errors reach the result chip instead of the empty-response fallback', async t => {
@@ -425,6 +501,26 @@ test('ACP automatically continues output-token truncation with native progress i
   assert.equal(history.filter(row => row.type === 'user').length, 1);
 });
 
+test('ACP rejects inconsistent output-token responses without hiding earlier progress', async t => {
+  const { session } = fixture(t); let calls = 0;
+  session.ready = Promise.resolve(); session.sessionId = 'dsh-native'; session.spec.modeEngine = 'dsh';
+  session.spec.maxOutputTokens = 32768;
+  session.request = async () => {
+    calls++;
+    session.update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'Reading files.' } });
+    session.update({ sessionUpdate: 'tool_call', toolCallId: 'read', title: 'read', status: 'completed' });
+    session.update({ sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text: 'I' } });
+    return { stopReason: 'max_tokens' };
+  };
+  const done = new Promise(resolve => { session.onResult = resolve; });
+  session.sendUserMessage('Continue'); const result = await done;
+  assert.equal(calls, 1);
+  assert.equal(result.subtype, 'error'); assert.equal(result.is_error, true);
+  assert.match(result.result, /1 character of output.*32768 tokens.*response is inconsistent/);
+  assert.doesNotMatch(result.result, /Reading files/);
+  assert.equal(session.text, 'Reading files.');
+});
+
 test('ACP bounds output-token continuation and leaves other stop reasons untouched', async t => {
   for (const stopReason of ['max_tokens', 'refusal', 'max_turn_requests']) {
     const { session } = fixture(t); let calls = 0;
@@ -438,6 +534,9 @@ test('ACP bounds output-token continuation and leaves other stop reasons untouch
     session.sendUserMessage('Continue'); const result = await done;
     assert.equal(calls, stopReason === 'max_tokens' ? 4 : 1);
     assert.equal(result.subtype, stopReason); assert.equal(result.is_error, true);
+    const message = { max_tokens: 'after 3 automatic continuations', refusal: 'refused the request',
+      max_turn_requests: 'native turn-request limit' }[stopReason];
+    assert.match(result.result, new RegExp(message));
   }
 });
 

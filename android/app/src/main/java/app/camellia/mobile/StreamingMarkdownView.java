@@ -15,6 +15,7 @@ final class StreamingMarkdownView extends LinearLayout {
         Thread thread = new Thread(task, "markdown-parser"); thread.setDaemon(true); return thread;
     });
     private final Handler handler = new Handler(Looper.getMainLooper());
+    private final MarkdownView renderer;
     private final MarkdownView.Session session;
     private final Runnable dispatch = this::dispatch;
     private MarkdownStream stream;
@@ -27,7 +28,14 @@ final class StreamingMarkdownView extends LinearLayout {
 
     StreamingMarkdownView(Context context, MarkdownView renderer, Listener listener) {
         super(context); setOrientation(VERTICAL); setLayoutParams(new LinearLayout.LayoutParams(-1, -2));
+        this.renderer = renderer;
         setTag("markdown"); session = renderer.session(this); this.listener = listener;
+    }
+
+    void imageLoader(MarkdownView.ImageLoader loader) {
+        if (disposed) { loader.close(); return; }
+        renderer.imageLoader(loader);
+        String value = source; restart(); history(value);
     }
 
     void update(String value, boolean finished) {
@@ -82,7 +90,7 @@ final class StreamingMarkdownView extends LinearLayout {
 
     void dispose() {
         disposed = true; revision++; handler.removeCallbacks(dispatch); scheduled = false;
-        source = ""; stream = null; if (listener != null) listener.close(); listener = null;
+        source = ""; stream = null; renderer.close(); if (listener != null) listener.close(); listener = null;
     }
 
     void restart() {

@@ -33,6 +33,15 @@ final class RemoteWorkStatus {
         return count;
     }
 
+    static boolean backgroundUnknown(JSONObject conversation) {
+        JSONArray tasks = backgroundTasks(conversation);
+        for (int i = 0; i < size(tasks); i++) {
+            JSONObject task = tasks.optJSONObject(i);
+            if (task != null && !task.optString("id").isEmpty() && task.optString("status").equals("unknown")) return true;
+        }
+        return false;
+    }
+
     /** Exact native identities from the current host snapshot; old hosts are display-only. */
     static JSONArray stoppableBackgroundTasks(JSONObject conversation) {
         JSONArray tasks = backgroundTasks(conversation), targets = new JSONArray();
@@ -55,6 +64,7 @@ final class RemoteWorkStatus {
         int count = backgroundCount(conversation);
         if (count == 0) return "";
         String detail = "";
+        boolean uncertain = backgroundUnknown(conversation);
         if (count > 1) detail = label(zh, count + " 个任务", count + " tasks");
         else for (int i = 0; i < size(tasks); i++) {
             JSONObject task = tasks.optJSONObject(i);
@@ -63,7 +73,8 @@ final class RemoteWorkStatus {
             if (detail.isEmpty()) detail = task.optString("id");
             break;
         }
-        return label(zh, "后台工作仍在运行", "Background work still running") + (detail.isEmpty() ? "" : " · " + detail);
+        return (uncertain ? label(zh, "后台任务状态未知 · 正在重试", "Background task status unknown · retrying")
+                : label(zh, "后台工作仍在运行", "Background work still running")) + (detail.isEmpty() ? "" : " · " + detail);
     }
 
     private static boolean workingTool(JSONArray process, boolean typed) {

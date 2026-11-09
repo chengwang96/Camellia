@@ -7,6 +7,8 @@ const { isTailscaleIPv4 } = require('./tailscale');
 const { listArtifacts, openArtifact } = require('./artifacts');
 const { pipeline } = require('node:stream/promises');
 const { MAX_REQUEST } = require('./attachments');
+const DOWNLOAD_GLOBAL_LIMIT = 32;
+const DOWNLOAD_DEVICE_LIMIT = 8;
 
 function number(value, fallback) {
   if (value === null) return fallback;
@@ -315,10 +317,14 @@ class RemoteGateway {
     this.json(response, 200, { ...result, ...this.stamp() });
   }
   async download(response, device, conversationId, id, discussion = false) {
-    if (this.downloads.size >= 8 || [...this.downloads].filter(entry => entry.device.id === device.id).length >= 2) fail(429, 'Too many downloads');
+    if (this.downloads.size >= DOWNLOAD_GLOBAL_LIMIT || [...this.downloads].filter(entry => entry.device.id === device.id).length >= DOWNLOAD_DEVICE_LIMIT) fail(429, 'Too many downloads');
     const entry = { response, device };
     this.downloads.add(entry);
     let file;
+    response.once('close', () => {
+      this.downloads.delete(entry);
+      if (file?.handle) file.handle.close().catch(() => {});
+    });
     try {
       file = discussion ? await this.discussions.openArtifact(device, conversationId, id) : await openArtifact(this.reader, device, conversationId, id);
       if (response.destroyed) return;

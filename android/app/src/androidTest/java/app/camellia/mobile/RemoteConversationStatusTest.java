@@ -10,13 +10,19 @@ import org.json.JSONObject;
 public class RemoteConversationStatusTest extends InstrumentationTestCase {
     public void testEnglishBackgroundStopLayout() { backgroundStopLayout(false); }
     public void testChineseBackgroundStopLayout() { backgroundStopLayout(true); }
+    public void testEnglishUnknownBackgroundLayout() { backgroundStopLayout(false, true); }
+    public void testChineseUnknownBackgroundLayout() { backgroundStopLayout(true, true); }
 
     private void backgroundStopLayout(boolean zh) {
+        backgroundStopLayout(zh, false);
+    }
+
+    private void backgroundStopLayout(boolean zh, boolean unknown) {
         ui(() -> {
             field("chinese", zh); field("conversationId", "status-test");
             var detail = MainActivity.class.getDeclaredMethod("detailScreen"); detail.setAccessible(true); detail.invoke(activity);
             field("displayedConversation", new JSONObject().put("id", "status-test").put("backgroundWork",
-                new JSONObject().put("tasks", new org.json.JSONArray().put(new JSONObject().put("id", "shell").put("engine", "kimi").put("runId", 7).put("canStop", true)))));
+                new JSONObject().put("tasks", new org.json.JSONArray().put(new JSONObject().put("id", "shell").put("engine", "kimi").put("runId", 7).put("canStop", true).put("status", unknown ? "unknown" : "running")))));
             field("canStopBackgroundWork", true); field("connected", true); field("controlAllowed", true);
             var update = MainActivity.class.getDeclaredMethod("updateControls"); update.setAccessible(true); update.invoke(activity);
         });
@@ -28,12 +34,13 @@ public class RemoteConversationStatusTest extends InstrumentationTestCase {
             TextView stop = root.findViewWithTag("remoteBackgroundStop");
             assertTrue(stop.isEnabled()); assertTrue(stop.getWidth() > 0); assertTrue(bar.getWidth() <= root.getWidth());
             TextView label = (TextView) ((android.widget.LinearLayout) bar).getChildAt(0);
+            assertEquals(unknown ? (zh ? "后台状态未知 · 1" : "Background status unknown · 1") : (zh ? "后台任务 · 1" : "Background tasks · 1"), label.getText().toString());
             assertTrue(label.getWidth() > 0); assertNotNull(label.getLayout());
             for (int line = 0; line < label.getLayout().getLineCount(); line++) assertEquals(0, label.getLayout().getEllipsisCount(line));
             assertEquals(zh ? "停止后台任务" : "Stop background tasks", stop.getText().toString());
             android.graphics.Bitmap bitmap = android.graphics.Bitmap.createBitmap(root.getWidth(), root.getHeight(), android.graphics.Bitmap.Config.ARGB_8888);
             root.draw(new android.graphics.Canvas(bitmap));
-            try (var output = new java.io.FileOutputStream(new java.io.File(activity.getExternalFilesDir(null), "background-work-" + (zh ? "zh" : "en") + ".png"))) {
+            try (var output = new java.io.FileOutputStream(new java.io.File(activity.getExternalFilesDir(null), "background-work-" + (unknown ? "unknown-" : "") + (zh ? "zh" : "en") + ".png"))) {
                 assertTrue(bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, output));
             } finally { bitmap.recycle(); }
         });

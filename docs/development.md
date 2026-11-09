@@ -74,7 +74,7 @@ Google subscription mode uses `src/engines/antigravity/cli-bridge.cjs` under bun
 
 Run `npm run setup:antigravity:subscription` and `npm run test:antigravity:subscription` to verify the real CLI against a local Gemini fixture with an isolated home directory. This covers model parsing, multi-turn streaming, persisted resume, file tools, explicit review rules, and cancellation. It does not validate a live Google subscription. The bundled-runtime install smoke test also installs and checks this connection; base-package verification asserts that neither CLI nor Python is bundled.
 
-See [DSH integration](../integrations/dsh/README.md) and [Kimi runtime](../runtimes/kimi/README.md) for implementation details.
+See [DSH integration](engines/deepseek-harness.md) and [Kimi runtime](engines/kimi.md) for implementation details.
 
 ## Agent discussions on desktop
 

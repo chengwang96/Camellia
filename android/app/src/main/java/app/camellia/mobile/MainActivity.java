@@ -45,6 +45,7 @@ public final class MainActivity extends Activity {
     @Override public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
         locationConsent.permissionResult(requestCode);
+        InlineImageGallery.permissionResult(this, requestCode, grantResults);
     }
     private final ExecutorService worker = Executors.newFixedThreadPool(2);
     private final ExecutorService commandWorker = Executors.newFixedThreadPool(2);
@@ -77,6 +78,7 @@ public final class MainActivity extends Activity {
     private JSONObject listRefreshSnapshot;
     private boolean listRefreshBusy;
     private JSONObject credentials = new JSONObject();
+    private java.util.function.Function<Long, MarkdownView.ImageLoader> inlineImageFactory = seq -> new InlineRemoteImages(this, credentials.optString("address"), credentials.optString("token"), this.conversationId, seq);
     private long editingSeq = -1;
     private String editingText = "";
     private RemoteApi api;
@@ -90,7 +92,6 @@ public final class MainActivity extends Activity {
     private int background, surface, ink, muted, accent;
     private LinearLayout root, content, messages;
     private PageTransitions pages;
-    private MarkdownView markdown;
     private final LinkedHashMap<String, View> renderedMessages = new LinkedHashMap<>();
     private final LinkedHashMap<String, ReplyMessage> replyMessages = new LinkedHashMap<>();
     private final LinkedHashMap<String, String> renderedText = new LinkedHashMap<>();
@@ -271,7 +272,6 @@ public final class MainActivity extends Activity {
         artifactDownloads = new ArtifactDownloads(this, saved);
         background = chatStyle.background; surface = chatStyle.surface; ink = chatStyle.ink; muted = chatStyle.muted; accent = chatStyle.accent;
         getWindow().setStatusBarColor(background); getWindow().setNavigationBarColor(background);
-        markdown = new MarkdownView(this, ink, muted, surface, accent);
         if (android.os.Build.VERSION.SDK_INT >= 27 && !dark) getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR | View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR);
         store = new ComputerStore(new CredentialStore(this));
         listCache = RemoteListCache.get(this);
@@ -413,6 +413,7 @@ public final class MainActivity extends Activity {
         if (composerAttachments != null) composerAttachments.close();
         RemoteKeepAliveService.finish(this, false);
         artifactDownloads.close();
+        InlineImageGallery.close(this);
         if (listCache != null) listCache.flush();
         prefetch.close();
         worker.shutdownNow(); commandWorker.shutdownNow(); urgentWorker.shutdownNow(); statusWorker.shutdownNow(); networkWorker.shutdownNow(); super.onDestroy();
@@ -2354,7 +2355,8 @@ public final class MainActivity extends Activity {
         String activity = conversation.optString("activity", "");
         if (activity.equals("running")) return tr("正在运行", "Running");
         if (activity.equals("permission") || activity.equals("question")) return tr("等待电脑处理", "Waiting for desktop input");
-        return RemoteWorkStatus.backgroundCount(conversation) > 0 ? tr("后台任务", "Background tasks") : tr("空闲", "Idle");
+        return RemoteWorkStatus.backgroundUnknown(conversation) ? tr("后台状态未知", "Background status unknown")
+            : RemoteWorkStatus.backgroundCount(conversation) > 0 ? tr("后台任务", "Background tasks") : tr("空闲", "Idle");
     }
 
     private void detailScreen() {
@@ -2618,7 +2620,7 @@ public final class MainActivity extends Activity {
         applyQueue(snapshot);
         renderMessages(lastLive);
         renderAutomation(snapshot);
-        if (foreground) replies().markRead(credentials, conversation);
+        if (foreground && snapshot.optJSONArray("messages") != null && snapshot.optJSONArray("messages").length() > 0) replies().markRead(credentials, conversation);
         syncReplyRead(conversation);
         renderApprovals(); updateControls();
         updateOlderControl();
@@ -2951,7 +2953,12 @@ public final class MainActivity extends Activity {
         ExecutionProcessView process;
         TextView waiting, truncated;
         String turn, artifactText = "";
-        long at, run;
+        long at, run, imageSeq = -1;
+    }
+    private MarkdownView replyMarkdown(boolean live, boolean assistant, long seq) {
+        MarkdownView.ImageLoader loader = !live && assistant && seq > 0
+            ? inlineImageFactory.apply(seq) : null;
+        return new MarkdownView(this, ink, muted, surface, accent, loader);
     }
     private void addReply(String key, String value, boolean truncated, JSONArray process, boolean live, String turn, long at, long seq, boolean assistant, JSONObject details) {
         long run = live && lastLive != null ? lastLive.optLong("runId") : 0;
@@ -2970,12 +2977,18 @@ public final class MainActivity extends Activity {
             binding.truncated = text(tr("内容过长，仅显示末尾片段。", "Long message: showing the final portion."), 12, accent); binding.block.addView(binding.truncated);
             binding.waiting = text(tr("等待输出…", "Waiting for output…"), 15, ink); binding.block.addView(binding.waiting);
             ScrollView target = scroll;
-            binding.body = new StreamingMarkdownView(this, markdown, new MarkdownScrollAnchor(target, () -> scroll == target && screen.equals("detail") && pendingScrollView != target));
+            binding.imageSeq = live || !assistant ? -1 : seq;
+            binding.body = new StreamingMarkdownView(this, replyMarkdown(live, assistant, seq), new MarkdownScrollAnchor(target, () -> scroll == target && screen.equals("detail") && pendingScrollView != target));
             binding.block.addView(binding.body); binding.artifacts = column(); binding.block.addView(binding.artifacts);
             ReplyMessage owner = binding;
             binding.wrapper = chatStyle.messageWithFooter(binding.block, false, owner.body::source, at, chinese);
             binding.at = at;
             if (live) binding.body.update(value, false); else binding.body.history(value);
+        }
+        long imageSeq = live || !assistant ? -1 : seq;
+        if (imageSeq > 0 && binding.imageSeq != imageSeq && InlineRemoteImages.hasSupportedImage(value)) {
+            binding.body.imageLoader(inlineImageFactory.apply(imageSeq));
+            binding.imageSeq = imageSeq;
         }
         binding.run = run; binding.process.update(process, live, new TurnDetails(details));
         TurnUsage.bind(binding.wrapper, live ? null : details, chinese);
@@ -3351,7 +3364,8 @@ public final class MainActivity extends Activity {
         boolean show = canStopBackgroundWork && count > 0;
         backgroundWorkBar.setVisibility(show ? View.VISIBLE : View.GONE);
         if (!show) return;
-        backgroundWorkLabel.setText(String.format(tr("后台任务 · %d", "Background tasks · %d"), count));
+        backgroundWorkLabel.setText(String.format(RemoteWorkStatus.backgroundUnknown(displayedConversation)
+            ? tr("后台状态未知 · %d", "Background status unknown · %d") : tr("后台任务 · %d", "Background tasks · %d"), count));
         boolean stopping = RemotePendingCommands.get(credentials, conversationId, true) != null;
         backgroundWorkStop.setText(stopping ? tr("正在停止…", "Stopping…") : tr("停止后台任务", "Stop background tasks"));
         boolean available = connected && controlAllowed && !commandBusy && pendingCommand() == null && !stopping

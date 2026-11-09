@@ -113,6 +113,20 @@ with sync_playwright() as playwright:
         assert stop.bounding_box()['width'] > 80
         page.screenshot(path=str(preview / f'background-work-{language}-{theme}-{width}.png'), animations='disabled')
 
+        page.emulate_media(reduced_motion='no-preference')
+        page.evaluate("""() => {
+          const value = {engine:'kimi',tasks:[{id:'uncertain',engine:'kimi',runId:7,canStop:true,status:'unknown'}]};
+          setFixtureBackground(value);
+          sendEvent({type:'conversation:activity',activity:null,backgroundWork:value});
+        }""")
+        expect(page.locator('.background-work-text')).to_contain_text('后台任务状态未知 · 正在重试' if language == 'zh-CN' else 'Background task status unknown · retrying')
+        expect(page.locator('.background-work-status')).to_have_class('background-work-status background-work-unknown')
+        expect(page.locator('[data-sid="shared-fixture"] .session-item-time')).to_have_text('后台状态未知' if language == 'zh-CN' else 'Background status unknown')
+        expect(stop).to_be_enabled()
+        assert page.locator('.background-work-pulse').evaluate("el => getComputedStyle(el).animationName") == 'none'
+        assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
+        page.screenshot(path=str(preview / f'background-work-unknown-{language}-{theme}-{width}.png'), animations='disabled')
+
     page.evaluate("""() => {
       const value = {engine:'grok',tasks:[{id:'uncontrolled',engine:'grok',runId:2,canStop:false,status:'running'}]};
       sendEvent({type:'conversation:activity',activity:null,backgroundWork:value});

@@ -1035,6 +1035,8 @@
   "Background work in progress · request queued": "后台工作仍在进行 · 当前请求已排队",
   "Reply completed · background work still running": "回复已完成 · 后台工作仍在运行",
   "Background tasks": "后台任务",
+  "Background task status unknown · retrying": "后台任务状态未知 · 正在重试",
+  "Background status unknown": "后台状态未知",
   "Stop background tasks": "停止后台任务",
   "Could not stop background tasks. Retry.": "未能停止后台任务，请重试。",
   "Background tasks have not confirmed they stopped. Retry or check their progress.": "尚未确认后台任务已停止，请重试或查看任务进度。",

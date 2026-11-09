@@ -45,6 +45,37 @@ async function fixture() {
 }
 const settle = () => new Promise(resolve => setImmediate(resolve));
 
+test('Kimi forwards native task follow-up replies after the user prompt has finished', { skip: !source }, async () => {
+  const h = await fixture();
+  const first = h.native.driveTurn([]);
+  h.emit('turn.started', { turnId: 1, promptId: h.submissions[0].promptId });
+  h.emit('turn.ended', { turnId: 1, reason: 'completed' });
+  await first;
+  h.emit('turn.started', { turnId: 2, origin: { kind: 'task', taskId: 'build' } });
+  h.emit('assistant.delta', { turnId: 2, delta: 'Build verified. Download the APK.' });
+  h.emit('turn.ended', { turnId: 2, reason: 'completed' });
+  assert.equal(h.updates[0].update.state, 'started');
+  assert.equal(h.updates[1].update.content.text, 'Build verified. Download the APK.');
+  assert.equal(h.updates[2].update.state, 'ended');
+  assert.equal(h.updates[2].update.stopReason, 'end_turn');
+  assert.equal(h.native.driver, undefined);
+});
+
+test('Kimi task follow-up does not settle or steal a queued user prompt', { skip: !source }, async () => {
+  const h = await fixture();
+  const queued = h.native.driveTurn([]);
+  const promptId = h.submissions[0].promptId;
+  h.emit('turn.started', { turnId: 2, origin: { kind: 'background_task', taskId: 'build' } });
+  h.emit('assistant.delta', { turnId: 2, delta: 'Build complete' });
+  h.emit('turn.ended', { turnId: 2, reason: 'failed', error: { message: 'Verification failed' } });
+  assert.equal(h.native.driver.promptId, promptId);
+  assert.equal(h.updates.at(-1).update.error, 'Verification failed');
+  h.emit('turn.started', { turnId: 3, promptId });
+  h.emit('assistant.delta', { turnId: 3, delta: 'User reply' });
+  h.emit('turn.ended', { turnId: 3, reason: 'completed' });
+  assert.equal((await queued).stopReason, 'end_turn');
+});
+
 test('Kimi queued prompt waits for its own turn and forwards its reply, ignoring a background turn', { skip: !source }, async () => {
   const h = await fixture();
   let finished = false;

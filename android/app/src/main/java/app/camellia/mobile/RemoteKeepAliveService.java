@@ -14,7 +14,7 @@ import android.os.PowerManager;
 import android.os.SystemClock;
 
 public final class RemoteKeepAliveService extends Service {
-    static final long MAX_DURATION = 5 * 60_000L;
+    static final long MAX_DURATION = NetworkLifecycle.RETENTION_MS;
     private static final String CHANNEL = "remote-connection";
     private static final int NOTICE = 705;
     private static final Handler handler = new Handler(Looper.getMainLooper());
@@ -94,7 +94,7 @@ public final class RemoteKeepAliveService extends Service {
         try {
             startForeground(NOTICE, new Notification.Builder(this, CHANNEL).setSmallIcon(R.drawable.ic_connection)
                 .setContentTitle(tr("远程连接已暂时保留", "Remote connection kept active"))
-                .setContentText(tr("离开后最多保持 5 分钟，返回即可继续。", "Kept for up to 5 minutes while away. Return to continue."))
+                .setContentText(tr("离开后最多保持 30 分钟，返回即可继续。", "Kept for up to 30 minutes while away. Return to continue."))
                 .setContentIntent(content).setOnlyAlertOnce(true).setOngoing(true)
                 .addAction(new Notification.Action.Builder(null, tr("断开", "Disconnect"), stop).build()).build());
             session = intent == null ? 0 : intent.getLongExtra("deadline", 0);

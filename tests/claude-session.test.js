@@ -53,6 +53,189 @@ test('Claude recovers missed task starts from the native background snapshot and
   assert.equal(f.session.children.get('child').result, 'Audit passed');
 });
 
+test('Claude keeps background lifecycle events flowing during context compaction', async t => {
+  const f = fixture(t), send = row => f.session.emitLine(JSON.stringify({ type: 'system', ...row }));
+  send({ subtype: 'task_started', task_id: 'child', task_type: 'local_agent' });
+  send({ subtype: 'task_started', task_id: 'shell', task_type: 'local_bash' });
+  const compacted = f.session.compact();
+  send({ subtype: 'task_notification', task_id: 'child', status: 'completed', summary: 'Audit passed' });
+  send({ subtype: 'task_updated', task_id: 'shell', patch: { status: 'failed' } });
+  send({ subtype: 'compact_boundary' });
+  f.session.emitLine(JSON.stringify({ type: 'result', subtype: 'success' }));
+  await compacted;
+  assert.equal(f.session.backgroundTasks.size, 0);
+  assert.equal(f.session.children.get('child').status, 'completed');
+  assert.equal(f.session.children.get('child').result, 'Audit passed');
+  assert.equal(f.results.length, 0, 'compaction must not become a parent reply');
+});
+
+test('Claude snapshots respect terminal states and preserve completed results across stale updates', t => {
+  const f = fixture(t), send = row => f.session.emitLine(JSON.stringify({ type: 'system', ...row }));
+  send({ subtype: 'background_tasks_changed', tasks: [
+    { task_id: 'child', task_type: 'local_agent' }, { task_id: 'shell', task_type: 'local_bash' },
+  ] });
+  send({ subtype: 'task_notification', task_id: 'child', status: 'completed', summary: 'Audit passed' });
+  send({ subtype: 'task_updated', task_id: 'shell', patch: { status: 'killed' } });
+  for (const status of ['completed', undefined, 'running']) {
+    send({ subtype: 'background_tasks_changed', tasks: [
+      { task_id: 'child', task_type: 'local_agent', status }, { task_id: 'shell', task_type: 'local_bash', status },
+    ] });
+    send({ subtype: 'task_progress', task_id: 'child', summary: 'Late progress' });
+    send({ subtype: 'task_progress', task_id: 'shell', summary: 'Late progress' });
+    assert.equal(f.session.backgroundTasks.size, 0);
+    assert.equal(f.session.children.get('child').status, 'completed');
+    assert.equal(f.session.children.get('child').result, 'Audit passed');
+    assert.equal(f.session.children.get('child').canStop, false);
+  }
+  send({ subtype: 'background_tasks_changed', tasks: [
+    { task_id: 'failed-child', task_type: 'local_agent', status: 'failed' },
+    { task_id: 'waiting-child', task_type: 'local_agent', status: 'waiting' },
+  ] });
+  assert.equal(f.session.children.get('failed-child').status, 'failed');
+  assert.equal(f.session.children.get('failed-child').canStop, false);
+  assert.equal(f.session.children.get('waiting-child').status, 'waiting');
+  assert.deepEqual([...f.session.backgroundTasks.keys()], ['waiting-child']);
+});
+
+test('Claude marks a child missing from an authoritative background snapshot unavailable until native evidence arrives', t => {
+  const f = fixture(t), send = row => f.session.emitLine(JSON.stringify({ type: 'system', ...row }));
+  send({ subtype: 'background_tasks_changed', tasks: [{ task_id: 'child', task_type: 'local_agent' }] });
+  send({ subtype: 'background_tasks_changed', tasks: [] });
+  assert.equal(f.session.backgroundTasks.size, 0);
+  assert.equal(f.session.children.get('child').status, 'unavailable');
+  assert.equal(f.session.children.get('child').canStop, false);
+  assert.equal(f.session.children.get('child').result, undefined, 'absence is not evidence of success');
+  send({ subtype: 'task_progress', task_id: 'child', status: 'running', summary: 'Still working' });
+  assert.equal(f.session.children.get('child').status, 'running');
+  send({ subtype: 'task_notification', task_id: 'child', status: 'failed', summary: 'Native failure' });
+  assert.equal(f.session.children.get('child').status, 'failed');
+  assert.equal(f.session.backgroundTasks.size, 0);
+});
+
+test('Claude preserves child approval waits and native tool completion across task snapshots', t => {
+  const f = fixture(t), send = row => f.session.emitLine(JSON.stringify(row));
+  send({ type: 'system', subtype: 'task_started', task_id: 'waiting', task_type: 'local_agent' });
+  f.session.onControlRequest({ request_id: 'approval', request: { subtype: 'can_use_tool', agent_id: 'waiting', tool_name: 'Bash', input: { command: 'test' } } });
+  send({ type: 'system', subtype: 'task_progress', task_id: 'waiting', summary: 'Needs permission' });
+  assert.equal(f.session.children.get('waiting').status, 'waiting');
+  send({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 'call', name: 'Agent', input: { description: 'Audit files' } }] } });
+  send({ type: 'user', tool_use_result: { agentId: 'finished', status: 'completed' },
+    message: { content: [{ type: 'tool_result', tool_use_id: 'call', content: 'Audit passed' }] } });
+  send({ type: 'system', subtype: 'background_tasks_changed', tasks: [
+    { task_id: 'waiting', task_type: 'local_agent' }, { task_id: 'finished', task_type: 'local_agent' },
+  ] });
+  const finished = f.session.children.get(f.session.subagents.resolve('finished'));
+  assert.equal(finished.status, 'completed');
+  assert.equal(finished.result, 'Audit passed');
+  assert.equal(f.session.children.get('waiting').status, 'waiting');
+  assert.equal(f.session.children.get('waiting').approvals.length, 1);
+  assert.deepEqual([...f.session.backgroundTasks.keys()], ['waiting']);
+});
+
+test('Claude can resume a completed native agent in a new tool call without reviving its previous turn', t => {
+  const f = fixture(t), send = row => f.session.emitLine(JSON.stringify(row));
+  const launch = (id, input) => send({ type: 'assistant', message: { content: [{ type: 'tool_use', id, name: 'Agent', input }] } });
+  launch('first', { description: 'Audit files', run_in_background: true });
+  send({ type: 'system', subtype: 'task_started', task_id: 'worker', tool_use_id: 'first', task_type: 'local_agent' });
+  send({ type: 'system', subtype: 'task_notification', task_id: 'worker', status: 'completed', summary: 'First result' });
+  f.session.sendUserMessage('Continue the audit');
+  launch('second', { resume: 'worker', prompt: 'Check the remaining files', run_in_background: true });
+  send({ type: 'system', subtype: 'task_started', task_id: 'worker', tool_use_id: 'second', task_type: 'local_agent' });
+  const task = f.session.children.get(f.session.subagents.resolve('worker'));
+  assert.equal(task.status, 'running');
+  assert.equal(task.result, '');
+  assert.equal(f.session.backgroundTasks.get('worker').status, 'running');
+  send({ type: 'system', subtype: 'task_notification', task_id: 'worker', status: 'completed', summary: 'Second result' });
+  assert.equal(f.session.backgroundTasks.size, 0);
+  assert.equal(f.session.children.get(task.id).result, 'Second result');
+});
+
+test('Claude native run IDs admit a resumed task and reject late events from its previous run', t => {
+  const f = fixture(t), send = row => f.session.emitLine(JSON.stringify({ type: 'system', task_id: 'worker', ...row }));
+  send({ subtype: 'task_started', run_id: 'run-001', task_type: 'local_agent' });
+  send({ subtype: 'task_notification', run_id: 'run-001', status: 'completed', summary: 'First result' });
+  send({ subtype: 'task_started', run_id: 'run-002', task_type: 'local_agent' });
+  send({ subtype: 'task_notification', run_id: 'run-001', status: 'completed', summary: 'Late old result' });
+  send({ subtype: 'background_tasks_changed', tasks: [{ task_id: 'worker', run_id: 'run-001', task_type: 'local_agent' }] });
+  assert.equal(f.session.backgroundTasks.get('worker').status, 'running');
+  assert.equal(f.session.children.get('worker').turnId, 'run-002');
+  assert.equal(f.session.children.get('worker').result, '');
+  send({ subtype: 'task_notification', run_id: 'run-002', status: 'completed', summary: 'Second result' });
+  assert.equal(f.session.backgroundTasks.size, 0);
+  assert.equal(f.session.children.get('worker').result, 'Second result');
+});
+
+test('Claude foreground children are not reconciled as background tasks until natively backgrounded', t => {
+  const f = fixture(t), send = row => f.session.emitLine(JSON.stringify({ type: 'system', task_id: 'worker', ...row }));
+  send({ subtype: 'task_started', is_backgrounded: false, task_type: 'local_agent' });
+  send({ subtype: 'task_progress', summary: 'Still working in foreground' });
+  assert.equal(f.session.backgroundTasks.size, 0);
+  assert.equal(f.session.children.get('worker').status, 'running');
+  send({ subtype: 'task_updated', patch: { is_backgrounded: true } });
+  assert.equal(f.session.backgroundTasks.get('worker').status, 'running');
+  send({ subtype: 'task_notification', status: 'completed' });
+  assert.equal(f.session.backgroundTasks.size, 0);
+});
+
+test('Claude background refresh waits for a native level snapshot and fences newer events from an older read', async t => {
+  const f = fixture(t), send = row => f.session.emitLine(JSON.stringify(row));
+  f.session.sendUserMessage('Keep the parent running');
+  send({ type: 'system', subtype: 'task_started', task_id: 'old', task_type: 'local_bash' });
+  const checked = f.session.backgroundMonitor.check(); await Promise.resolve();
+  const request = f.writes.at(-1);
+  assert.equal(request.request.subtype, 'initialize');
+  send({ type: 'control_response', response: { request_id: request.request_id, subtype: 'success' } });
+  assert.equal(f.session.backgroundTasks.has('old'), true, 'a successful refresh ack is not a task snapshot');
+  send({ type: 'system', subtype: 'task_started', task_id: 'new', task_type: 'local_bash' });
+  send({ type: 'system', subtype: 'task_notification', task_id: 'old', status: 'completed' });
+  send({ type: 'system', subtype: 'background_tasks_changed', tasks: [{ task_id: 'old', task_type: 'local_bash' }] });
+  await checked;
+  assert.deepEqual([...f.session.backgroundTasks.keys()], ['new']);
+  assert.equal(f.session.running, true);
+  assert.equal(f.results.length, 0);
+  assert.equal(f.writes.some(row => ['interrupt', 'stop_task'].includes(row.request?.subtype)), false);
+});
+
+test('Claude missing refresh snapshots become unknown and a subsequent native snapshot recovers', async t => {
+  const f = fixture(t), send = row => f.session.emitLine(JSON.stringify(row));
+  send({ type: 'system', subtype: 'task_started', task_id: 'worker', task_type: 'local_agent' });
+  let checked = f.session.backgroundMonitor.check(); await Promise.resolve();
+  let request = f.writes.at(-1);
+  send({ type: 'control_response', response: { request_id: request.request_id, subtype: 'success' } });
+  f.session.backgroundMonitor.controller.abort(); await checked;
+  assert.equal(f.session.backgroundTasks.get('worker').status, 'unknown');
+  assert.equal(f.session.backgroundTasks.get('worker').canStop, true);
+  assert.equal(f.session.children.get('worker').status, 'unavailable');
+  assert.equal(f.session.backgroundRead, null);
+  checked = f.session.backgroundMonitor.check(); await Promise.resolve();
+  request = f.writes.at(-1);
+  send({ type: 'control_response', response: { request_id: request.request_id, subtype: 'success' } });
+  send({ type: 'system', subtype: 'background_tasks_changed', tasks: [{ task_id: 'worker', task_type: 'local_agent' }] });
+  await checked;
+  assert.equal(f.session.backgroundTasks.get('worker').status, 'running');
+  assert.equal(f.session.children.get('worker').status, 'running');
+  checked = f.session.backgroundMonitor.check(); await Promise.resolve();
+  f.session.backgroundMonitor.controller.abort(); await checked;
+  assert.equal(f.session.backgroundTasks.get('worker').status, 'unknown');
+  send({ type: 'system', subtype: 'task_progress', task_id: 'worker', summary: 'New native progress' });
+  assert.equal(f.session.backgroundTasks.get('worker').status, 'running');
+  assert.equal(f.session.children.get('worker').status, 'running');
+});
+
+for (const mode of ['close', 'stdin-error', 'kill']) test('Claude clears idle background work and disconnects children on ' + mode, t => {
+  const f = fixture(t);
+  f.session.emitLine(JSON.stringify({ type: 'system', subtype: 'task_started', task_id: 'worker', task_type: 'local_agent' }));
+  if (mode === 'close') f.proc.emit('close', 1);
+  else if (mode === 'stdin-error') f.proc.stdin.emit('error', new Error('EPIPE'));
+  else f.session.kill();
+  assert.equal(f.session.backgroundTasks.size, 0);
+  assert.equal(f.events.findLast(event => event.type === 'gui:background-work').tasks.length, 0);
+  assert.equal(f.session.children.get('worker').status, 'unavailable');
+  assert.equal(f.session.children.get('worker').canStop, false);
+  assert.equal(f.session.dead, true);
+  assert.equal(f.results.length, 0, 'background teardown must not invent another parent reply');
+});
+
 test('Claude stops background shells through native task control without interrupting the parent', async t => {
   const f = fixture(t), send = row => f.session.emitLine(JSON.stringify(row));
   f.session.running = true;
@@ -312,6 +495,42 @@ test('Allow all still collects AskUserQuestion answers and preserves the native 
   assert.deepEqual(f.writes.at(-1).response.response, { behavior: 'deny', message: 'Questions skipped' });
 });
 
+test('Claude empty successful replies become errors while restored background work stays visible', t => {
+  const f = fixture(t, { sessionId: 'native-session' });
+  f.session.sendUserMessage('Continue the goal and tasks');
+  const send = row => f.session.emitLine(JSON.stringify(row));
+  send({ type: 'system', subtype: 'init', session_id: 'native-session' });
+  send({ type: 'system', subtype: 'background_tasks_changed', tasks: [
+    { task_id: 'prevalidate', task_type: 'local_bash', description: 'Prevalidate round 109', status: 'running' },
+  ] });
+  const usage = { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 };
+  send({ type: 'result', subtype: 'success', result: '', usage });
+  assert.equal(f.results[0].subtype, 'empty_response');
+  assert.equal(f.results[0].is_error, true);
+  assert.equal(f.results[0].result, 'Claude returned no reply or tool activity.');
+  assert.deepEqual(f.results[0].usage, usage);
+  assert.equal(f.session.backgroundTasks.get('prevalidate').description, 'Prevalidate round 109');
+});
+
+test('Claude retains valid text and tool turns but rejects blank, thinking-only or child-only replies', t => {
+  for (const kind of ['text', 'stream', 'tool', 'result', 'blank', 'whitespace', 'thinking', 'child']) {
+    const f = fixture(t);
+    f.session.sendUserMessage('Continue');
+    const send = row => f.session.emitLine(JSON.stringify(row));
+    if (kind === 'text') send({ type: 'assistant', message: { content: [{ type: 'text', text: 'Done' }] } });
+    if (kind === 'stream') send({ type: 'stream_event', event: { delta: { type: 'text_delta', text: 'Done' } } });
+    if (kind === 'tool') send({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 'read', name: 'Read', input: {} }] } });
+    if (kind === 'child') send({ type: 'assistant', parent_tool_use_id: 'background-task', message: { content: [{ type: 'text', text: 'Child progress' }] } });
+    if (['whitespace', 'thinking'].includes(kind)) send({ type: 'assistant', message: {
+      content: [{ type: kind === 'thinking' ? 'thinking' : 'text', [kind === 'thinking' ? 'thinking' : 'text']: kind === 'thinking' ? 'Working' : ' \n' }],
+    } });
+    send({ type: 'result', subtype: 'success', result: kind === 'result' ? 'Done' : '' });
+    const valid = ['text', 'stream', 'tool', 'result'].includes(kind);
+    assert.equal(f.results[0].subtype, valid ? 'success' : 'empty_response', kind);
+    assert.equal(Boolean(f.results[0].is_error), !valid, kind);
+  }
+});
+
 test('a user stop normalizes native error results and clears the cancellation watchdog', t => {
   const f = fixture(t); f.session.sendUserMessage('work');
   f.session.emitLine('{"type":"system","subtype":"init"}');
@@ -321,7 +540,7 @@ test('a user stop normalizes native error results and clears the cancellation wa
   assert.equal(f.results[0].subtype, 'stopped');
   assert.equal(f.results[0].is_error, false);
   assert.equal(f.timers.size, 0);
-  f.session.sendUserMessage('next'); f.session.emitLine('{"type":"result","subtype":"success"}');
+  f.session.sendUserMessage('next'); f.session.emitLine('{"type":"result","subtype":"success","result":"Next done"}');
   assert.equal(f.results[1].subtype, 'success');
 });
 

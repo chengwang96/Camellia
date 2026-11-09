@@ -6,6 +6,17 @@ import org.junit.Test;
 import static org.junit.Assert.*;
 
 public class RemoteWorkStatusTest {
+    @Test public void unknownBackgroundStatusRetainsStopTargetsAndRecoversWithoutClaimingCompletion() throws Exception {
+        JSONObject task = new JSONObject().put("id", "task").put("status", "unknown").put("engine", "kimi").put("runId", 7).put("canStop", true);
+        JSONObject conversation = new JSONObject().put("backgroundWork", new JSONObject().put("tasks", new JSONArray().put(task)));
+        assertTrue(RemoteWorkStatus.backgroundUnknown(conversation));
+        assertEquals("Background task status unknown · retrying · task", RemoteWorkStatus.background(conversation, false));
+        assertEquals("后台任务状态未知 · 正在重试 · task", RemoteWorkStatus.background(conversation, true));
+        assertEquals(1, RemoteWorkStatus.stoppableBackgroundTasks(conversation).length());
+        task.put("status", "running");
+        assertFalse(RemoteWorkStatus.backgroundUnknown(conversation));
+        assertEquals("Background work still running · task", RemoteWorkStatus.background(conversation, false));
+    }
     @Test public void backgroundStopTargetsKeepOnlyExplicitlyControllableNativeIdentities() throws Exception {
         JSONArray tasks = new JSONArray()
             .put(new JSONObject().put("id", "kimi-task").put("engine", "kimi").put("runId", 7).put("canStop", true).put("command", "private"))

@@ -24,6 +24,7 @@ const { removeTree } = require('./test-fs.cjs');
 
 async function run() {
   const background = process.argv.includes('--background');
+  const reconcile = process.argv.includes('--reconcile');
   const swarm = process.argv.includes('--swarm');
   const parallel = Math.min(16, Math.max(1, Number(process.argv.find(value => value.startsWith('--parallel='))?.split('=')[1] || (swarm ? 2 : 1))));
   const selected = process.argv.slice(2).filter(value => !value.startsWith('--'));
@@ -113,6 +114,25 @@ async function run() {
         exe: ['kimi', 'dsh'].includes(engine) ? process.execPath : runtime.file, spawn,
         history: new ClaudeHistory(path.join(root, engine, 'history')), log: value => logs.push(value), onSessionId() {},
         onEvent: event => events.push(event), onResult: value => done?.(value) });
+      let dropped = 0;
+      if (reconcile && engine === 'claude') {
+        const original = session.emitLine.bind(session);
+        session.emitLine = line => {
+          let event; try { event = JSON.parse(line); } catch { return original(line); }
+          if (event.type === 'system' && (event.subtype === 'task_notification'
+              || event.subtype === 'task_updated' && ['completed', 'failed', 'killed'].includes(event.patch?.status)
+              || event.subtype === 'background_tasks_changed' && !event.tasks?.length && !session.backgroundRead)) {
+            dropped++; return;
+          }
+          return original(line);
+        };
+      } else if (reconcile && engine === 'kimi') {
+        const original = session.update.bind(session);
+        session.update = update => {
+          if (update.sessionUpdate === 'camellia_background_task' && update.terminated) { dropped++; return; }
+          return original(update);
+        };
+      }
       try {
         session.start();
         const result = await new Promise((resolve, reject) => {
@@ -121,6 +141,33 @@ async function run() {
           session.sendUserMessage('PARENT_SUBAGENT_FIXTURE: Spawn one native child to return the fixture marker.');
         });
         const expected = engine === 'claude' ? parallel : swarm && ['kimi', 'antigravity'].includes(engine) ? 2 : 1;
+        if (reconcile) {
+          assert.ok(['claude', 'kimi'].includes(engine));
+          const deadline = Date.now() + 10000;
+          while (!dropped && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 25));
+          assert.ok(dropped > 0, 'The fixture must actually drop native completion events');
+          // Kimi may start an automatic completion follow-up. Let that native
+          // turn settle before measuring model requests or sending another one.
+          const idleDeadline = Date.now() + 10000;
+          while (session.running && Date.now() < idleDeadline) await new Promise(resolve => setTimeout(resolve, 25));
+          assert.equal(session.running, false, 'Native task follow-up did not settle');
+          assert.ok(session.backgroundTasks.size > 0, 'The missed end must leave a running task before reconciliation');
+          const requestsBefore = childRequests;
+          await session.backgroundMonitor.check();
+          assert.equal(session.backgroundTasks.size, 0, JSON.stringify({ tasks: [...session.backgroundTasks.values()], logs: logs.slice(-5) }));
+          assert.equal(session.dead, false);
+          assert.equal(childRequests, requestsBefore, 'Status reconciliation must not call a model');
+          const continued = await new Promise((resolve, reject) => {
+            const timer = setTimeout(() => reject(new Error('Continuation timed out')), 15000);
+            done = value => { clearTimeout(timer); resolve(value); };
+            if (!session.sendUserMessage('Continue after the read-only background check.')) {
+              clearTimeout(timer); reject(new Error('Native session did not accept the continuation'));
+            }
+          });
+          assert.equal(continued.is_error, false, JSON.stringify(continued));
+          console.log('PASS: ' + engine + ' recovers deliberately dropped background terminal events through a native read, without model use or stopping the parent/session');
+          continue;
+        }
         const deadline = Date.now() + 10000;
         while ((session.children.size < expected || ![...session.children.values()].every(task => task.status === 'failed'
           || task.status === 'completed' && /Child fixture complete/i.test(task.result || ''))) && Date.now() < deadline)

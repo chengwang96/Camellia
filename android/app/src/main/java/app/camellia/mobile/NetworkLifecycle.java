@@ -14,7 +14,7 @@ final class NetworkLifecycle<N> {
         void forget() throws Exception;
     }
 
-    private static final long RETENTION_MS = 5 * 60_000;
+    static final long RETENTION_MS = 30 * 60_000L;
     private final Object lock = new Object();
     private final Backend<N> backend;
     private final ExecutorService worker;

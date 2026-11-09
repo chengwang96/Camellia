@@ -93,7 +93,8 @@ public class RemoteKeepAliveTest extends InstrumentationTestCase {
             assertTrue(RemoteKeepAliveService.active());
             assertSame(client, field("api"));
             assertEquals(generation, field("generation"));
-            assertTrue(deadline() - android.os.SystemClock.elapsedRealtime() <= 300_000);
+            long remaining = deadline() - android.os.SystemClock.elapsedRealtime();
+            assertTrue(remaining > 1_790_000 && remaining <= 1_800_000);
             long initial = deadline();
             assertTrue(RemoteKeepAliveService.begin(activity, () -> fail("Should not replace session")));
             assertEquals(initial, deadline());
@@ -197,6 +198,13 @@ public class RemoteKeepAliveTest extends InstrumentationTestCase {
     public void testGeneralSettingsTogglePersists() throws Exception {
         var settings = (SettingsActivity) getInstrumentation().startActivitySync(new Intent(activity, SettingsActivity.class)
             .putExtra("section", "general").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+        long readyDeadline = android.os.SystemClock.elapsedRealtime() + 5000;
+        while (android.os.SystemClock.elapsedRealtime() < readyDeadline) {
+            var ready = new java.util.concurrent.atomic.AtomicBoolean();
+            ui(() -> ready.set(settings.getWindow().getDecorView().findViewWithTag("preference:remoteKeepAlive") != null));
+            if (ready.get()) break;
+            Thread.sleep(25);
+        }
         try {
             ui(() -> {
                 View toggle = settings.getWindow().getDecorView().findViewWithTag("preference:remoteKeepAlive");

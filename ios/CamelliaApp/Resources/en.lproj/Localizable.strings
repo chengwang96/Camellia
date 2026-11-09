@@ -187,6 +187,8 @@
 "后台任务" = "Background tasks";
 "后台任务 · %d" = "Background tasks · %d";
 "后台最多保持 5 分钟，短暂切换应用后可直接继续。" = "Keep the connection for up to 5 minutes in the background so you can return quickly.";
+"后台状态未知" = "Background status unknown";
+"后台状态未知 · %d" = "Background status unknown · %d";
 "回到最新消息" = "Back to latest messages";
 "回复中断" = "Interrupted";
 "回复失败" = "Reply failed";

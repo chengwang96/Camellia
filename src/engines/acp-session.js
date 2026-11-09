@@ -7,7 +7,21 @@ const { StreamingSession } = require('./streaming-session');
 const { validSessionId } = require('./claude-history');
 const { failedToolResult } = require('../api/tool-results');
 const { nativeMode } = require('./permission-levels');
-const { NativeSubagents } = require('./native-subagents');
+const { NativeSubagents, nativeStatus } = require('./native-subagents');
+const { BackgroundTaskMonitor } = require('./background-task-monitor');
+
+function outputLimitMismatch(response, output, maxOutputTokens) {
+  if (response.stopReason !== 'max_tokens' || !(maxOutputTokens >= 1024) || output.tool) return false;
+  const tokens = response.usage?.output_tokens ?? response.usage?.completion_tokens;
+  return Number.isFinite(tokens) ? tokens <= 1 : output.chars <= 4;
+}
+
+function stopReasonError(stopReason) {
+  if (stopReason === 'max_tokens') return 'The output token limit was still reached after 3 automatic continuations.';
+  if (stopReason === 'refusal') return 'The model refused the request.';
+  if (stopReason === 'max_turn_requests') return 'The model reached the native turn-request limit.';
+  return '';
+}
 
 // ACP stays at the process boundary. The renderer receives the same stream and
 // session events as the other harness, never upstream keys or CLI internals.
@@ -23,6 +37,11 @@ class AcpSession extends StreamingSession {
     this.permissions = new Map();
     this.tools = new Map();
     this.backgroundTasks = new Map();
+    this.backgroundMonitor = new BackgroundTaskMonitor({ tasks: this.backgroundTasks,
+      closed: () => this.dead, log: message => this.log(this.name + ': ' + message),
+      read: (ids, signal) => this.readBackgroundTasks(ids, signal),
+      apply: (id, task) => this.observeBackgroundTask({ task: { ...this.backgroundTasks.get(id), ...task } }),
+      publish: () => this.publishBackgroundTasks() });
     this.eventSeq = 0;
     this.subagents = new NativeSubagents(spec.modeEngine || name.toLowerCase(), (task, replacesIds) => {
       for (const request of this.permissions.values()) if (replacesIds?.includes(request.subagentId)) request.subagentId = task.id;
@@ -85,6 +104,7 @@ class AcpSession extends StreamingSession {
   }
 
   receive(message) {
+    if (this.dead) return;
     if (message.method) {
       if (message.method === 'session/update' && message.params.update?.sessionUpdate === 'available_commands_update'
           && (!this.sessionId || message.params.sessionId === this.sessionId)) {
@@ -96,7 +116,7 @@ class AcpSession extends StreamingSession {
         && message.method === 'session/update' && message.params.update?.permissionBlocked === true;
       const childUpdate = message.params?.update?.sessionUpdate === 'camellia_subagent'
         && this.children.has(this.subagents.resolve(message.params.update.task?.id));
-      const backgroundUpdate = message.params?.update?.sessionUpdate === 'camellia_background_task';
+      const backgroundUpdate = ['camellia_background_task', 'camellia_background_turn'].includes(message.params?.update?.sessionUpdate);
       if (message.method === 'session/update' && message.params.sessionId === this.sessionId && (this.running || lateDenial || childUpdate || backgroundUpdate)) this.update(message.params.update);
       else if (message.id !== undefined) {
         const child = message.params?._meta?.camelliaSubagentId && this.children.get(this.subagents.resolve(message.params._meta.camelliaSubagentId));
@@ -211,27 +231,41 @@ class AcpSession extends StreamingSession {
           throw new Error(`${this.name} did not advertise inline image prompts; send this message without the image or use an engine with image input.`);
         parts.push({ type: 'image', mimeType, data: fs.readFileSync(attachment.path).toString('base64') });
       }
-      let response;
+      let response, outputLimitError = '';
       let continuations = 0;
       for (;;) {
         const continuation = continuations > 0;
+        this.promptOutput = { chars: 0, tool: false };
         response = await this.request('session/prompt', { sessionId: this.sessionId, prompt: continuation
           ? [{ type: 'text', text: 'The previous response reached the output token limit. Continue the same task from the current native conversation and tool state. Resume at the interruption point without restarting or duplicating completed work, and keep making progress toward the original request.' }]
           : parts }, 0);
+        const promptOutput = this.promptOutput;
+        this.promptOutput = null;
         if (this.childHistory) await this.childHistory.poll().catch(error => this.log('Kimi subtasks: ' + error.message));
-        if (!this.running || this.cancelled || response.stopReason !== 'max_tokens' || continuations >= 3) break;
+        outputLimitError = '';
+        if (!this.cancelled && outputLimitMismatch(response, promptOutput, this.spec.maxOutputTokens)) {
+          const tokens = response.usage?.output_tokens ?? response.usage?.completion_tokens;
+          const evidence = Number.isFinite(tokens) ? `${tokens} output token${tokens === 1 ? '' : 's'}`
+            : `${promptOutput.chars} character${promptOutput.chars === 1 ? '' : 's'} of output`;
+          outputLimitError = `${this.name} reported max_tokens after only ${evidence}, despite a configured limit of ${this.spec.maxOutputTokens} tokens. The native response is inconsistent.`;
+          this.log(outputLimitError);
+        }
+        if (!this.running || this.cancelled || response.stopReason !== 'max_tokens' || outputLimitError || continuations >= 3) break;
         continuations++;
         this.log(`${this.name}: output token limit reached; continuing (${continuations}/3)`);
       }
+      // A native task notification can start a follow-up before the prompt
+      // response crosses the process boundary. Keep its output in this run.
+      while (this.backgroundTurn) await this.backgroundTurn.done;
       const stopped = this.cancelled || response.stopReason === 'cancelled';
-      const failed = !stopped && ['refusal', 'max_tokens', 'max_turn_requests'].includes(response.stopReason);
+      const failed = !stopped && (Boolean(outputLimitError) || ['refusal', 'max_tokens', 'max_turn_requests'].includes(response.stopReason));
       // A queued/no-launch acknowledgement is not a successful model reply.
       // Keep tool-only work valid, but surface empty Kimi turns so Goal mode's
       // bounded error retries cannot become an endless stream of blank turns.
       const empty = !stopped && !failed && this.spec.modeEngine === 'kimi' && !this.hasReplyText && !this.tools.size;
-      this.finish({ subtype: stopped ? 'stopped' : failed ? response.stopReason : empty ? 'empty_response' : 'success',
+      this.finish({ subtype: stopped ? 'stopped' : outputLimitError ? 'error' : failed ? response.stopReason : empty ? 'empty_response' : 'success',
         is_error: failed || empty,
-        ...(empty ? { result: 'Kimi returned no reply or tool activity.' } : {}),
+        ...(failed || empty ? { result: outputLimitError || stopReasonError(response.stopReason) || 'Kimi returned no reply or tool activity.' } : {}),
         ...(response.usage ? { usage: response.usage } : {}) });
     } catch (error) {
       this.finish({ subtype: this.cancelled ? 'stopped' : 'error', is_error: !this.cancelled, result: error.message });
@@ -288,6 +322,36 @@ class AcpSession extends StreamingSession {
 
   update(update) {
     const kind = update.sessionUpdate;
+    if (kind === 'camellia_background_turn') {
+      if (this.dead || this.compaction) return;
+      if (update.state === 'started' && !this.cancelled) {
+        const operation = { id: update.turnId, adopted: !this.running };
+        operation.done = new Promise(resolve => { operation.resolve = resolve; });
+        this.backgroundTurn = operation;
+        if (!operation.adopted) return;
+        this.running = true;
+        this.text = ''; this.hasReplyText = false; this.tools.clear();
+        this.replayEvents = []; this.blockIndex = 0; this.activeBlock = null;
+        this.startedAt = Date.now();
+        operation.meterReady = this.usageMeter?.begin(this.sessionId, () => this.running && !this.dead);
+        this.emit({ type: 'gui:background-turn', session_id: this.sessionId });
+        this.emitStream({ type: 'message_start' });
+      } else if (update.state === 'ended' && this.backgroundTurn?.id === update.turnId) {
+        const operation = this.backgroundTurn;
+        this.backgroundTurn = null;
+        operation.resolve();
+        if (!operation.adopted) return;
+        const stopped = this.cancelled || update.stopReason === 'cancelled';
+        const failed = !stopped && update.stopReason !== 'end_turn';
+        const finish = () => this.finish({ subtype: stopped ? 'stopped' : failed ? 'error' : 'success', is_error: failed,
+          ...(failed ? { result: update.error || 'Kimi background response failed: ' + update.stopReason } : {}) });
+        if (operation.meterReady) Promise.resolve(operation.meterReady).then(finish, error => {
+          this.log(this.name + ': background usage initialization failed: ' + error.message); finish();
+        });
+        else finish();
+      }
+      return;
+    }
     if (kind === 'camellia_subagent') {
       if (!this.compaction && update.task) this.subagents.native(update.task.id, { ...update.task, canReply: false,
         canStop: this.spec.nativeChildControl === true && update.task.canStop === true });
@@ -302,12 +366,8 @@ class AcpSession extends StreamingSession {
     if (kind === 'camellia_usage') { this.usageMeter?.antigravityStep(update.stepId, update.usage); return; }
     if (kind === 'available_commands_update') { this.availableCommands = update.availableCommands; return; }
     if (kind === 'camellia_background_task') {
-      const task = update.task;
-      if (!task || typeof task.id !== 'string' || !task.id) return;
-      if (update.terminated || ['completed', 'failed', 'timed_out', 'killed', 'lost', 'cancelled', 'stopped'].includes(task.status)) this.backgroundTasks.delete(task.id);
-      else this.backgroundTasks.set(task.id, { id: task.id, description: String(task.description || '').slice(0, 500),
-        kind: String(task.kind || ''), status: String(task.status || ''), canStop: this.spec.nativeBackgroundTasks === true });
-      this.emit({ type: 'gui:background-work', tasks: [...this.backgroundTasks.values()] });
+      this.observeBackgroundTask(update);
+      this.publishBackgroundTasks();
       return;
     }
     if (this.compaction) {
@@ -329,6 +389,7 @@ class AcpSession extends StreamingSession {
     if (kind === 'agent_message_chunk' || kind === 'agent_thought_chunk') {
       if (update.content.type !== 'text') return;
       const text = update.content.text;
+      if (this.promptOutput) this.promptOutput.chars += text.length;
       const type = kind === 'agent_message_chunk' ? 'text' : 'thinking';
       if (type === 'text') {
         this.text += text;
@@ -342,6 +403,10 @@ class AcpSession extends StreamingSession {
       this.emitStream({ type: 'content_block_delta', index: this.activeBlock.index,
         delta: type === 'text' ? { type: 'text_delta', text } : { type: 'thinking_delta', thinking: text } });
     } else if (kind === 'tool_call' || kind === 'tool_call_update') {
+      if (this.promptOutput) {
+        this.promptOutput.tool = true;
+        if (['completed', 'failed'].includes(update.status)) this.promptOutput = { chars: 0, tool: false };
+      }
       this.endBlock();
       const tool = this.tools.get(update.toolCallId) || { type: 'gui:tool', id: update.toolCallId };
       if (update.title != null) tool.name = update.title;
@@ -356,6 +421,34 @@ class AcpSession extends StreamingSession {
       this.emit({ ...tool });
     } else if (kind === 'config_option_update') this.emit({ type: 'gui:config', options: update.configOptions });
     else if (kind === 'plan') this.emit({ type: 'gui:plan', entries: update.entries });
+  }
+
+  async readBackgroundTasks(ids, signal) {
+    if (this.spec.modeEngine !== 'kimi' || !this.spec.nativeBackgroundTasks || this.dead || !this.sessionId)
+      throw new Error('Native background task status is unavailable');
+    const rows = [];
+    for (let start = 0; start < ids.length; start += 100) {
+      if (signal?.aborted) throw new Error('Native background task refresh cancelled');
+      const result = await this.request('session/camellia_read_background', { sessionId: this.sessionId, taskIds: ids.slice(start, start + 100) }, 10000);
+      if (signal?.aborted) throw new Error('Native background task refresh cancelled');
+      if (!Array.isArray(result?.tasks)) throw new Error('Invalid native background task snapshot');
+      rows.push(...result.tasks.map(task => ({ ...task, status: nativeStatus(task.status) || 'unknown' })));
+    }
+    return rows;
+  }
+
+  observeBackgroundTask(update) {
+    const task = update.task;
+    if (this.dead || !task || typeof task.id !== 'string' || !task.id) return;
+    const status = nativeStatus(task.status) || (['unknown', 'unavailable'].includes(task.status) ? task.status : task.status ? 'unknown' : 'running');
+    if (update.terminated || ['completed', 'failed', 'stopped', 'unavailable'].includes(status)) this.backgroundTasks.delete(task.id);
+    else this.backgroundTasks.set(task.id, { id: task.id, description: String(task.description || '').slice(0, 500),
+      kind: String(task.kind || ''), status, canStop: this.spec.nativeBackgroundTasks === true });
+  }
+
+  publishBackgroundTasks() {
+    this.emit({ type: 'gui:background-work', tasks: [...this.backgroundTasks.values()] });
+    this.backgroundMonitor.changed();
   }
 
   answerPermission(requestId, allow, input, _message, optionId) {
@@ -406,6 +499,8 @@ class AcpSession extends StreamingSession {
   }
 
   close(error) {
+    this.backgroundMonitor.stop();
+    this.backgroundTurn?.resolve(); this.backgroundTurn = null;
     this.settleCompaction(error);
     if (this.backgroundTasks.size) {
       this.backgroundTasks.clear();

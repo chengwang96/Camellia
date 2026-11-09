@@ -20,6 +20,7 @@ Start with the [English README](../README.md) or [Simplified Chinese README](../
 | [Storage maintenance](storage-maintenance.md) | Manual cleanup and protected data. |
 | [Runtime troubleshooting](troubleshooting-runtimes.md) | Engines missing or failing to launch. |
 | [Development](development.md) | Code layout, runtime preparation, testing, and packaging. |
+| Engine runtimes | [DSH](engines/deepseek-harness.md), [Codex](engines/codex.md), [Kimi](engines/kimi.md), and [Antigravity](engines/antigravity.md). |
 
 ## Design and implementation records
 
@@ -35,6 +36,6 @@ These explain current structures and past decisions. Check the guide and current
 ## Dated investigations
 
 - [Native harness tool calls](harness-tools-audit-2026-09-16.md) and the [WBL API connectivity record](wbl-api.md).
-- [v1.0.1 release note](releases/v1.0.1.md), [v0.1.0 release note](releases/v0.1.0.md), and [archived planning documents](archive/README.md).
+- [v1.0.1 release note](releases/v1.0.1.md) and [v0.1.0 release note](releases/v0.1.0.md).
 
 `images/` contains current README screenshots captured from the renderer with local demonstration data. Run `python scripts/capture-readme-screenshots.py` from the repository root with Playwright and Chromium installed to regenerate them. Ignored `images/local/` reference captures are not part of the public documentation.

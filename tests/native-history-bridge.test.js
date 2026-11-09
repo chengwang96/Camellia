@@ -40,7 +40,7 @@ class NativeSession {
     const events = this.agent.events;
 \t\t\tthis.subscriptions.push();
   }
-  dispatchTurnEvent(event) {
+  dispatchTurnEvent(turnId, dispatch) {
     const driver = this.driver;
     driver.early.push({ event });
   }
@@ -51,6 +51,7 @@ class NativeSession {
   }
   cancel() {
     const driver = this.driver;
+    for (const pending of this.pendingPromptAborts) pending.aborted = true;
     driver.cancelRequested = true;
 \t\t\t\tthis.agent.cancel();
   }

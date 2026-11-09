@@ -860,7 +860,7 @@
   .model-pill:hover, .model-pill.open { background: var(--dsw-alias-interactive-bg-hover); }
   .model-pill .model-name { font-weight: 500; color: var(--dsw-alias-label-secondary);
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .model-pill .model-level { color: var(--dsw-alias-label-caption); }
+  .model-pill .model-level { flex-shrink: 0; white-space: nowrap; color: var(--dsw-alias-label-caption); }
   .model-pill .chev { flex-shrink: 0; opacity: .55; transition: transform var(--dt-fast); }
   .model-pill.open .chev { transform: rotate(180deg); }
 
@@ -1380,6 +1380,8 @@
   background: var(--dsw-alias-state-business-primary);
   animation: pulse 1.2s ease-in-out infinite;
 }
+.background-work-status.background-work-unknown { border-left-color: var(--dsw-alias-label-secondary); }
+.background-work-status.background-work-unknown .background-work-pulse { background: var(--dsw-alias-label-secondary); animation: none; }
 
 .md .chat-inline-image { display: block; max-width: 100%; width: auto; height: auto; max-height: 560px; object-fit: contain; object-position: left center; margin: 12px 0; border: 1px solid var(--dsw-alias-border-l2); border-radius: 10px; cursor: zoom-in; }
 .md .chat-inline-image:focus-visible { outline: 2px solid var(--dsw-static-deepseek-500); outline-offset: 3px; }

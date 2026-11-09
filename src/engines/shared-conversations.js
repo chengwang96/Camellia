@@ -329,7 +329,17 @@ class SharedConversations {
     return this.busy(id) ? 'running' : null;
   }
   backgroundStatus(id) {
-    const groups = [...(this.backgroundWork.get(id)?.values() || [])];
+    const registered = this.backgroundWork.get(id);
+    if (!registered) return null;
+    // Process replacement can suppress its predecessor's final empty event.
+    // Never present that disconnected process's last snapshot as live work.
+    for (const [engine, group] of registered) {
+      const pool = this.drivers[engine]?.sessions;
+      if (group.session.dead || typeof pool?.get === 'function' && pool.get({ conversationId: id }) !== group.session)
+        registered.delete(engine);
+    }
+    if (!registered.size) { this.backgroundWork.delete(id); return null; }
+    const groups = [...registered.values()];
     const tasks = groups.flatMap(group => group.tasks.map(task => ({ ...task, engine: group.engine, runId: group.session.gen,
       canStop: task.canStop && !group.session.dead })));
     return tasks.length ? { engine: groups[0].engine, tasks } : null;
@@ -354,7 +364,12 @@ class SharedConversations {
       targets.get(group.session).push(task.id);
     }
     const stop = Promise.resolve().then(async () => {
-      const results = await Promise.allSettled([...targets].map(([session, ids]) => session.stopBackgroundTasks(ids)));
+      const results = await Promise.allSettled([...targets].map(async ([session, ids]) => {
+        await session.stopBackgroundTasks(ids);
+        // A stop can target an already-ended task whose notification was lost.
+        // Verify through a native read while the ordinary stop deadline runs.
+        if (session.backgroundMonitor) void session.backgroundMonitor.check().catch(error => this.log('Background task check failed: ' + error.message));
+      }));
       const failed = results.find(result => result.status === 'rejected');
       if (failed) throw failed.reason;
       const pending = () => tasks.some(task => {
@@ -1662,6 +1677,26 @@ class SharedConversations {
     }
   }
   capture(engine, event) {
+    if (event.type === 'gui:background-turn' && engine === 'kimi') {
+      const c = this.items.get(event.conversationId);
+      const session = this.drivers[engine]?.sessions?.get?.({ conversationId: c?.id });
+      if (!c || !session || session.dead || session.gen !== event.runId || session.sessionId !== event.session_id
+          || this.busy(c.id) || c.currentEngine !== engine || this.stopping.has(c.id) || this.deleting.has(c.id)) return false;
+      const user = this.rows(c).findLast(row => row.role === 'user' && !row.internal);
+      if (!user) return false;
+      const settings = { ...this.settings(engine, c.id), ...c.segments[engine]?.contextSettings };
+      const facade = { gen: ++this.sequence, sessionId: c.id, opts: { workspaceId: c.workspaceId }, running: true };
+      const run = { c, engine, session, facade, settings, contextSettings: settings, nativeBackground: true,
+        userSeq: user.seq, prompt: user.text, attachments: [], events: [], permissions: new Map(), tools: new Set(),
+        eventSeq: 0, text: '', assistant: [], startedAt: Date.now(), priorCursor: c.segments[engine]?.cursor || 0 };
+      run.done = new Promise(resolve => { run.resolve = resolve; });
+      this.active.set(c.id, run); this.facades.set(c.id, facade);
+      c.pending = { engine, at: run.startedAt, internal: false }; c.updatedAt = this.stamp();
+      this.save(c); this.publishActivity(c.id);
+      this.onEvent({ type: 'conversation:started', session_id: c.id, engine, runId: facade.gen,
+        background: true, userSeq: user.seq, workspaceId: c.workspaceId });
+      return true;
+    }
     // Native generations are engine-local, so both engine and run must match.
     const a = event.conversationId ? this.active.get(event.conversationId)
       : [...this.active.values()].find(run => run.engine === engine && run.session?.gen === event.runId);

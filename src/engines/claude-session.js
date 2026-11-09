@@ -3,8 +3,10 @@
 const { StringDecoder } = require('node:string_decoder');
 const { randomUUID } = require('node:crypto');
 const { nativeMode } = require('./permission-levels');
-const { NativeSubagents, nativeStatus, contentText } = require('./native-subagents');
+const { NativeSubagents, ACTIVE, nativeStatus, contentText } = require('./native-subagents');
 const { claudeEditBoundary } = require('./native-edit-boundary');
+const { BackgroundTaskMonitor } = require('./background-task-monitor');
+const TERMINAL_TASK_STATES = new Set(['completed', 'failed', 'stopped']);
 
 // Owns one CLI process. Application state stays in main; the callbacks below
 // also make process failures and fragmented output testable without Electron.
@@ -36,6 +38,13 @@ class ClaudeSession {
     this.agentCalls = new Map();
     this.childControls = new Map();
     this.backgroundTasks = new Map();
+    this.endedBackgroundTasks = new Map();
+    this.backgroundRuns = new Map();
+    this.foregroundTasks = new Set();
+    this.backgroundMonitor = new BackgroundTaskMonitor({ tasks: this.backgroundTasks,
+      closed: () => this.dead || this.closed, log: message => this.log('claude: ' + message),
+      read: (_ids, signal) => this.readBackgroundTasks(signal),
+      apply: (id, task) => this.reconcileBackgroundTask(id, task), publish: () => this.publishBackgroundTasks() });
   }
 
   start() {
@@ -71,6 +80,7 @@ class ClaudeSession {
       this.dead = true;
       this.stdoutBuf += this.stdoutDecoder.end();
       this.drain(true);
+      this.backgroundMonitor.stop();
       this.clearBackgroundTasks();
       const stderr = this.stderrDecoder.end().trimEnd();
       if (stderr) this.log(`[claude stderr] ${stderr}`);
@@ -115,6 +125,9 @@ class ClaudeSession {
 
   complete(obj) {
     if (!this.running) return;
+    if (!this.compaction && !this.cancelled && obj.subtype === 'success' && !obj.is_error && !this.turnHasActivity && !String(obj.result || '').trim()) {
+      obj = { ...obj, subtype: 'empty_response', is_error: true, result: 'Claude returned no reply or tool activity.' };
+    }
     this.running = false;
     this.clearWatchdog();
     this.clearTimer(this.cancelTimer); this.cancelTimer = null;
@@ -150,6 +163,11 @@ class ClaudeSession {
     if (!obj || typeof obj !== 'object') return;
     if (obj.type === 'control_request') { this.onControlRequest(obj); return; }
     if (obj.type === 'control_response') {
+      if (obj.response?.request_id === this.backgroundRead?.requestId) {
+        if (obj.response.subtype === 'success') this.backgroundRead.acknowledged = true;
+        else this.backgroundRead.reject(new Error('Native background task refresh was rejected'));
+        return;
+      }
       const response = obj.response, pending = this.childControls.get(response?.request_id);
       if (pending) {
         this.childControls.delete(response.request_id); this.clearTimer(pending.timer);
@@ -163,34 +181,66 @@ class ClaudeSession {
       this.clearWatchdog();
       this.rememberSession(obj.session_id);
     }
+    const content = obj.message?.content, parentEvent = !obj.parent_tool_use_id && !obj.agent_id;
+    if (parentEvent && obj.type === 'assistant' && Array.isArray(content) && content.some(block =>
+      ['tool_use', 'server_tool_use'].includes(block.type) || block.type === 'text' && String(block.text || '').trim())) this.turnHasActivity = true;
+    if (parentEvent && obj.type === 'stream_event' && obj.event?.delta?.type === 'text_delta' && String(obj.event.delta.text || '').trim()) this.turnHasActivity = true;
     if (obj.type === 'result') { this.complete(obj); return; }
     if (obj.type === 'system' && obj.subtype === 'compact_boundary') {
       if (this.compaction) this.compaction.boundary = true;
       else this.sendChannel({ type: 'gui:compaction', state: 'completed' });
     }
-    if (this.compaction) return;
     if (obj.type === 'system' && obj.subtype === 'background_tasks_changed') {
-      this.backgroundTasks.clear();
-      for (const task of obj.tasks || []) {
-        this.observeBackgroundTask(task.task_id, task);
+      // A repeated initialize requests a read-only level snapshot. Reconcile
+      // that response only with tasks that existed before this asynchronous
+      // read, so it cannot remove work started by a newer live event.
+      if (this.backgroundRead?.acknowledged) {
+        if (!Array.isArray(obj.tasks)) this.backgroundRead.reject(new Error('Invalid native background task snapshot'));
+        else this.backgroundRead.resolve(obj.tasks.map(task => ({ id: task.task_id, description: task.description,
+          kind: task.task_type, nativeRunId: task.run_id, status: nativeStatus(task.status) || 'running' })));
+        return;
+      }
+      if (!Array.isArray(obj.tasks)) return;
+      const missing = new Set(this.backgroundTasks.keys());
+      for (const task of obj.tasks) {
+        if (!task || typeof task.task_id !== 'string' || !task.task_id) continue;
+        missing.delete(task.task_id);
+        const newRun = this.acceptBackgroundRun(task.task_id, task.run_id);
+        if (newRun === null) continue;
+        const status = this.observeBackgroundTask(task.task_id, { ...task, newRun, is_backgrounded: true });
         if (task.task_type && !/agent|workflow|teammate/.test(task.task_type)) continue;
-        this.subagents.native(task.task_id, { title: task.description, status: 'running', canReply: false, canStop: true,
-          ...(!this.children.has(this.subagents.resolve(task.task_id)) ? { turnId: 'child-start-' + ++this.controlSeq } : {}) });
+        this.subagents.native(task.task_id, { title: task.description, status, canReply: false, canStop: ACTIVE.has(status),
+          ...(task.run_id ? { turnId: task.run_id } : !this.children.has(this.subagents.resolve(task.task_id)) ? { turnId: 'child-start-' + ++this.controlSeq } : {}),
+          ...(newRun ? { result: '', approvals: [] } : {}) });
+      }
+      for (const id of missing) {
+        this.backgroundTasks.delete(id);
+        const child = this.children.get(this.subagents.resolve(id));
+        // A full snapshot proves this task is no longer tracked, not that it
+        // succeeded. A later native notification may still supply its result.
+        if (child && ACTIVE.has(child.status)) this.childUpdate(child.id, { status: 'unavailable', canStop: false, approvals: [] });
       }
       this.publishBackgroundTasks();
       return;
     }
     if (obj.type === 'system' && ['task_started', 'task_progress', 'task_notification', 'task_updated'].includes(obj.subtype) && obj.task_id) {
-      this.observeBackgroundTask(obj.task_id, { ...obj, ...obj.patch });
+      const newRun = this.acceptBackgroundRun(obj.task_id, obj.run_id);
+      if (newRun === null) return;
+      const native = { ...obj, ...obj.patch };
+      if (!native.status && (newRun || ['task_started', 'task_progress'].includes(obj.subtype))) {
+        const child = this.children.get(this.subagents.resolve(obj.task_id));
+        native.status = !newRun && ACTIVE.has(child?.status) ? child.status : 'running';
+      }
+      const status = this.observeBackgroundTask(obj.task_id, { ...native, newRun });
       this.publishBackgroundTasks();
+      if (this.endedBackgroundTasks.has(obj.task_id) && !TERMINAL_TASK_STATES.has(nativeStatus(native.status))) return;
       if (obj.task_type && !/agent|workflow|teammate/.test(obj.task_type)) return;
       const known = this.subagents.resolve(obj.task_id);
       if (obj.subtype !== 'task_started' && !this.children.has(known) && !obj.subagent_type && !this.agentCalls.has(obj.tool_use_id)) return;
-      const native = obj.patch || obj;
-      const status = nativeStatus(native.status) || this.children.get(known)?.status || 'running';
       const task = this.subagents.native(obj.task_id, { toolCallId: obj.tool_use_id,
         ...(obj.parent_task_id ? { parentId: obj.parent_task_id } : {}),
-        ...(obj.subtype === 'task_started' ? { turnId: obj.run_id || 'child-start-' + ++this.controlSeq } : {}),
+        ...(obj.run_id ? { turnId: obj.run_id } : obj.subtype === 'task_started' ? { turnId: 'child-start-' + ++this.controlSeq } : {}),
+        ...(newRun ? { result: '', approvals: [] } : {}),
         title: obj.description || undefined, goal: obj.subtype === 'task_started' ? obj.prompt || obj.description : undefined,
         progress: obj.summary || obj.description || undefined,
         status, ...(status === 'completed' ? { result: obj.summary || undefined } : {}),
@@ -201,6 +251,9 @@ class ClaudeSession {
       if (task && obj.tool_use_id) this.childTools.set(obj.tool_use_id, task.id);
       return;
     }
+    // Context compaction hides its own transcript, but must not hide lifecycle
+    // events from work that continues independently of that operation.
+    if (this.compaction) return;
     if (obj.parent_tool_use_id || obj.agent_id) {
       const id = this.subagents.resolve(obj.agent_id || this.childTools.get(obj.parent_tool_use_id));
       if (id && this.children.has(id)) {
@@ -308,6 +361,7 @@ class ClaudeSession {
       if (!media_type) throw new Error('Unsupported image format');
       content.push({ type: 'image', source: { type: 'base64', media_type, data: require('node:fs').readFileSync(file.path).toString('base64') } });
     }
+    this.turnHasActivity = false;
     this.cancelled = false;
     this.running = true;
     if (!this.initialized) {
@@ -359,13 +413,81 @@ class ClaudeSession {
 
   observeBackgroundTask(id, task) {
     if (typeof id !== 'string' || !id) return;
-    const status = nativeStatus(task.status) || 'running';
-    if (['completed', 'failed', 'stopped', 'unavailable'].includes(status)) this.backgroundTasks.delete(id);
+    const child = this.children.get(this.subagents.resolve(id));
+    if (task.newRun || task.is_backgrounded === true) this.foregroundTasks.delete(id);
+    else if (task.is_backgrounded === false) this.foregroundTasks.add(id);
+    let ended = task.newRun ? null : this.endedBackgroundTasks.get(id);
+    // An explicit Agent resume starts another turn of the same native child.
+    // Only that new tool-call identity can supersede a terminal receipt.
+    if (ended && ACTIVE.has(child?.status) && child.turnId && child.turnId !== ended.turnId) {
+      this.endedBackgroundTasks.delete(id); ended = null;
+    }
+    const status = ended?.status || (!task.newRun && TERMINAL_TASK_STATES.has(child?.status) ? child.status : null)
+      || nativeStatus(task.status) || (ACTIVE.has(child?.status) ? child.status : this.backgroundTasks.get(id)?.status) || 'running';
+    if (TERMINAL_TASK_STATES.has(status)) {
+      this.backgroundTasks.delete(id);
+      // Keep bounded terminal receipts so delayed progress/snapshots cannot
+      // revive an ended native task or an agent's previous turn.
+      this.endedBackgroundTasks.set(id, { status, turnId: child?.turnId });
+      if (this.endedBackgroundTasks.size > 2048) this.endedBackgroundTasks.delete(this.endedBackgroundTasks.keys().next().value);
+      this.foregroundTasks.delete(id);
+    } else if (status === 'unavailable' || this.foregroundTasks.has(id)) this.backgroundTasks.delete(id);
     else this.backgroundTasks.set(id, { id, description: String(task.description || this.backgroundTasks.get(id)?.description || '').slice(0, 500),
       kind: task.task_type || this.backgroundTasks.get(id)?.kind || '', status, canStop: true });
+    return status;
   }
 
-  publishBackgroundTasks() { this.sendChannel({ type: 'gui:background-work', tasks: [...this.backgroundTasks.values()] }); }
+  acceptBackgroundRun(id, runId) {
+    if (typeof runId !== 'string' || !runId) return false;
+    const previous = this.backgroundRuns.get(id);
+    // The CLI contract orders run IDs lexically; a resumed task keeps its ID.
+    if (previous && runId < previous) return null;
+    const newRun = Boolean(previous && runId > previous);
+    this.backgroundRuns.set(id, runId);
+    if (this.backgroundRuns.size > 2048) this.backgroundRuns.delete(this.backgroundRuns.keys().next().value);
+    if (newRun) this.endedBackgroundTasks.delete(id);
+    return newRun;
+  }
+
+  publishBackgroundTasks() {
+    this.sendChannel({ type: 'gui:background-work', tasks: [...this.backgroundTasks.values()] });
+    this.backgroundMonitor.changed();
+  }
+
+  readBackgroundTasks(signal) {
+    return new Promise((resolve, reject) => {
+      if (signal.aborted || this.dead || this.closed) { reject(new Error('Native background task status is unavailable')); return; }
+      const requestId = 'gui-background-' + ++this.controlSeq;
+      const finish = (callback, value) => {
+        if (this.backgroundRead?.requestId !== requestId) return;
+        this.backgroundRead = null;
+        signal.removeEventListener('abort', abort);
+        callback(value);
+      };
+      const abort = () => finish(reject, new Error('Native background task refresh timed out'));
+      this.backgroundRead = { requestId, acknowledged: false,
+        resolve: rows => finish(resolve, rows), reject: error => finish(reject, error) };
+      signal.addEventListener('abort', abort, { once: true });
+      // The CLI's repeated-initialize contract sends a full live-task snapshot
+      // immediately after its success response, even when the set is empty.
+      if (!this.write({ type: 'control_request', request_id: requestId, request: { subtype: 'initialize' } })) abort();
+    });
+  }
+
+  reconcileBackgroundTask(id, task) {
+    const child = this.children.get(this.subagents.resolve(id));
+    const status = task.status === 'running' && child?.approvals?.length ? 'waiting' : task.status;
+    const newRun = this.acceptBackgroundRun(id, task.nativeRunId);
+    if (newRun === null) return;
+    if (status === 'unavailable') this.backgroundTasks.delete(id);
+    else if (status === 'unknown') this.backgroundTasks.set(id, { ...this.backgroundTasks.get(id), status });
+    else this.observeBackgroundTask(id, { status, description: task.description, task_type: task.kind, newRun });
+    if (!child || !newRun && TERMINAL_TASK_STATES.has(child.status)) return;
+    if (status === 'unknown' && child.approvals?.length) return;
+    this.childUpdate(child.id, { status: status === 'unknown' ? 'unavailable' : status,
+      ...(task.nativeRunId ? { turnId: task.nativeRunId } : {}), ...(newRun ? { result: '', approvals: [] } : {}),
+      canStop: ACTIVE.has(status), ...(!ACTIVE.has(status) ? { approvals: [] } : {}) });
+  }
   clearBackgroundTasks() {
     if (!this.backgroundTasks.size) return;
     this.backgroundTasks.clear(); this.publishBackgroundTasks();
@@ -400,9 +522,11 @@ class ClaudeSession {
   }
 
   kill() {
+    this.backgroundMonitor.stop();
     this.clearBackgroundTasks();
     if (this.compaction) this.complete({ type: 'result', subtype: 'stopped', is_error: true, result: 'Claude process stopped during compaction' });
     this.dead = true;
+    this.subagents.disconnect();
     this.closed = true;
     this.running = false;
     this.permissions.clear();

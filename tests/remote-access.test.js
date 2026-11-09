@@ -1243,6 +1243,30 @@ test('artifact listing resolves the same roots as the desktop and paginates with
   await assert.rejects(openArtifact(reader, device, visible.id, file.id), /not found/);
 });
 
+test('artifact downloads allow eight concurrent readers and release closed connections', async context => {
+  const { root, manager, gateway, visible, pair } = fixture(context);
+  const filename = path.join(root, 'large.pdf');
+  const descriptor = fs.openSync(filename, 'w'); fs.ftruncateSync(descriptor, 32 * 1024 * 1024); fs.closeSync(descriptor);
+  manager.append(visible, { role: 'assistant', text: '`large.pdf`' });
+  const { token } = pair(); await gateway.start('127.0.0.1', 0);
+  const route = `/v1/conversations/${visible.id}/artifacts`;
+  const file = (await request(gateway, route, { token })).body.artifacts[0];
+  const readers = [];
+  for (let index = 0; index < 8; index++) readers.push(await fetch(gateway.url + route + '/' + file.id, { headers: { Authorization: `Bearer ${token}` } }));
+  assert.deepEqual(readers.map(response => response.status), Array(8).fill(200));
+  assert.equal(gateway.downloads.size, 8);
+  const overflow = await fetch(gateway.url + route + '/' + file.id, { headers: { Authorization: `Bearer ${token}` } });
+  assert.equal(overflow.status, 429); await overflow.body?.cancel();
+  await readers[0].body.cancel();
+  for (let attempt = 0; attempt < 100 && gateway.downloads.size >= 8; attempt++) await new Promise(resolve => setTimeout(resolve, 10));
+  assert.equal(gateway.downloads.size, 7);
+  const next = await fetch(gateway.url + route + '/' + file.id, { headers: { Authorization: `Bearer ${token}` } });
+  assert.equal(next.status, 200); readers.push(next);
+  for (const response of readers) await response.body?.cancel();
+  for (let attempt = 0; attempt < 100 && gateway.downloads.size; attempt++) await new Promise(resolve => setTimeout(resolve, 10));
+  assert.equal(gateway.downloads.size, 0);
+});
+
 test('revocation interrupts in-flight artifact downloads and releases their handles', async context => {
   const { root, manager, gateway, access, visible, pair } = fixture(context);
   const filename = path.join(root, 'large.pdf');

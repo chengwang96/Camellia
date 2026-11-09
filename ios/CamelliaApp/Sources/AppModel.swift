@@ -241,6 +241,7 @@ final class AppModel: ObservableObject {
     }
 
     private var session: RemoteSession?
+    let inlineImages = InlineImageCache()
     private var remoteScreenActive = false
     private var listFetchId: UUID?
     private var deferredListRefresh = false
@@ -3545,6 +3546,11 @@ final class AppModel: ObservableObject {
     }
 
     // MARK: - Artifacts
+
+    func inlineImageLoader(seq: Int64) -> InlineImageLoader? {
+        guard let session, let conversationId = openId, seq > 0 else { return nil }
+        return InlineImageLoader(session: session, conversationId: conversationId, seq: seq, cache: inlineImages)
+    }
 
     func beginArtifactSheet(selection: ArtifactSelection? = nil) {
         artifactSheetOpen = true

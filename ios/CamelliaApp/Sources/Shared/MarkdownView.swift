@@ -20,6 +20,7 @@ struct MarkdownView: View {
 
 private struct BlockView: View {
     let block: MarkdownBlock
+    @Environment(\.inlineImageLoader) private var loader
 
     var body: some View {
         switch block {
@@ -29,10 +30,14 @@ private struct BlockView: View {
                 .foregroundColor(Palette.ink)
                 .padding(.top, 4)
         case .paragraph(let inline):
-            Text(MarkdownAttributed.build(inline))
-                .font(.body)
-                .foregroundColor(Palette.ink)
-                .fixedSize(horizontal: false, vertical: true)
+            if loader != nil && hasImage(inline) {
+                MarkdownInlineContent(inline: inline)
+            } else {
+                Text(MarkdownAttributed.build(inline))
+                    .font(.body)
+                    .foregroundColor(Palette.ink)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         case .code(let language, let text):
             CodeBlock(language: language, text: text)
         case .list(let ordered, let start, let items):
@@ -43,6 +48,54 @@ private struct BlockView: View {
             Divider().padding(.vertical, 4)
         case .table(let rows):
             TableView(rows: rows)
+        }
+    }
+
+    private func hasImage(_ nodes: [MarkdownInline]) -> Bool {
+        nodes.contains { node in
+            if case .image = node { return true }
+            return false
+        }
+    }
+}
+
+private struct MarkdownInlineContent: View {
+    let inline: [MarkdownInline]
+
+    private enum Part {
+        case text([MarkdownInline])
+        case image(alt: [MarkdownInline], destination: String)
+    }
+
+    private var parts: [Part] {
+        var result: [Part] = []
+        var text: [MarkdownInline] = []
+        for node in inline {
+            switch node {
+            case .image(let alt, let destination):
+                if !text.isEmpty { result.append(.text(text)); text = [] }
+                result.append(.image(alt: alt, destination: destination))
+            default:
+                text.append(node)
+            }
+        }
+        if !text.isEmpty { result.append(.text(text)) }
+        return result
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            ForEach(Array(parts.enumerated()), id: \.offset) { _, part in
+                switch part {
+                case .text(let nodes):
+                    Text(MarkdownAttributed.build(nodes))
+                        .font(.body)
+                        .foregroundColor(Palette.ink)
+                        .fixedSize(horizontal: false, vertical: true)
+                case .image(let alt, let destination):
+                    InlineImageView(alt: alt, destination: destination)
+                }
+            }
         }
     }
 }
@@ -88,9 +141,7 @@ enum MarkdownAttributed {
                 }
                 result.append(piece)
             case .image(let alt, _):
-                // Images are not fetched: a reply would otherwise make requests
-                // to hosts the user never chose. The alt text is shown instead,
-                // which is what Android does too.
+                // Paragraph images use InlineImageView; other positions retain their alt text.
                 result.append(AttributedString("["))
                 result.append(build(alt))
                 result.append(AttributedString("]"))

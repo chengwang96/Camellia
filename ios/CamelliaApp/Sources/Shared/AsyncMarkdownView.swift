@@ -102,10 +102,12 @@ final class MarkdownRenderModel: ObservableObject {
 struct AsyncMarkdownView: View {
     let text: String
     var streaming = false
+    var images: InlineImageLoader? = nil
     @StateObject private var model = MarkdownRenderModel()
 
     var body: some View {
         MarkdownView(document: model.document ?? MarkdownDocument(blocks: [], truncated: true, source: text))
+            .environment(\.inlineImageLoader, images)
             .onAppear { model.update(text, streaming: streaming) }
             .onChange(of: text) { model.update($0, streaming: streaming) }
             .onChange(of: streaming) { model.update(text, streaming: $0) }

@@ -84,7 +84,7 @@ public final class EmbeddedNetwork {
     }
     public static void background() {
         lifecycle.background();
-        handler.removeCallbacks(shutdown); handler.postDelayed(shutdown, 5 * 60_000);
+        handler.removeCallbacks(shutdown); handler.postDelayed(shutdown, NetworkLifecycle.RETENTION_MS);
     }
 
     static void endBackground() {

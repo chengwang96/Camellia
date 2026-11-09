@@ -201,7 +201,7 @@ public class RemoteConnectionTest extends InstrumentationTestCase {
         ui(() -> {
             EmbeddedNetwork.background();
             long remaining = lifecycle.backgroundDeadline() - android.os.SystemClock.elapsedRealtime();
-            assertTrue(remaining > 290_000 && remaining <= 300_000);
+            assertTrue(remaining > 1_790_000 && remaining <= 1_800_000);
             EmbeddedNetwork.foreground();
             assertEquals(0L, lifecycle.backgroundDeadline());
         });

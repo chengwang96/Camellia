@@ -5,6 +5,7 @@ import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.Context;
 import android.content.Intent;
+import android.graphics.Bitmap;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
@@ -45,12 +46,34 @@ final class MarkdownView {
     private final Context context;
     private final int ink, muted, surface, accent;
     private final boolean chinese;
+    interface ImageCallback {
+        void loaded(Bitmap bitmap);
+        void failed();
+    }
+    interface ImageLoader {
+        void load(String reference, ImageCallback callback);
+        void close();
+    }
     private int blocks;
+    private ImageLoader imageLoader;
+    private Node imagesAsViewsParent;
 
     MarkdownView(Context context, int ink, int muted, int surface, int accent) {
+        this(context, ink, muted, surface, accent, null);
+    }
+
+    MarkdownView(Context context, int ink, int muted, int surface, int accent, ImageLoader imageLoader) {
         this.context = context; this.ink = ink; this.muted = muted; this.surface = surface; this.accent = accent;
+        this.imageLoader = imageLoader;
         chinese = context.getResources().getConfiguration().getLocales().get(0).getLanguage().equals("zh");
     }
+
+    void imageLoader(ImageLoader loader) {
+        if (imageLoader == loader) return;
+        if (imageLoader != null) imageLoader.close(); imageLoader = loader;
+    }
+
+    void close() { if (imageLoader != null) imageLoader.close(); imageLoader = null; }
 
     private int dp(float value) { return Math.round(value * context.getResources().getDisplayMetrics().density); }
     private String tr(String zh, String en) { return chinese ? zh : en; }
@@ -148,7 +171,7 @@ final class MarkdownView {
                     } else if (chunk.node instanceof MarkdownMath.Block) {
                         TextView view = binding.views.get(0).findViewWithTag("markdownMathText");
                         setInline(view, formula((MarkdownMath.Block) chunk.node));
-                    } else if ((chunk.node instanceof Paragraph || chunk.node instanceof Heading || chunk.node instanceof HtmlBlock) && binding.views.size() == 1) {
+                    } else if ((chunk.node instanceof Paragraph || chunk.node instanceof Heading || chunk.node instanceof HtmlBlock) && binding.views.size() == 1 && binding.views.get(0) instanceof TextView) {
                         TextView view = (TextView) binding.views.get(0);
                         setInline(view, chunk.node instanceof HtmlBlock ? ((HtmlBlock) chunk.node).getLiteral() : inline(chunk.node));
                         if (chunk.node instanceof Heading) view.setTextSize(Math.max(16, 25 - ((Heading) chunk.node).getLevel() * 2));
@@ -280,6 +303,7 @@ final class MarkdownView {
             target.addView(line, params); return;
         }
         if (node instanceof HtmlBlock) { target.addView(text(((HtmlBlock) node).getLiteral(), 15)); return; }
+        if (node instanceof Paragraph && imageLoader != null && imageParagraph(node, target)) return;
         TextView view = text(inline(node), node instanceof Heading ? Math.max(16, 25 - ((Heading) node).getLevel() * 2) : 15);
         if (node instanceof Heading) {
             view.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL)); view.setPadding(0, dp(12), 0, dp(6));
@@ -288,6 +312,30 @@ final class MarkdownView {
             view.setPadding(0, dp(4), 0, dp(12));
         }
         target.addView(view);
+    }
+
+    private boolean imageParagraph(Node paragraph, LinearLayout target) {
+        boolean found = false;
+        for (Node child = paragraph.getFirstChild(); child != null; child = child.getNext()) if (child instanceof Image) { found = true; break; }
+        if (!found) return false;
+        imagesAsViewsParent = paragraph;
+        SpannableStringBuilder remaining;
+        try { remaining = inline(paragraph); }
+        finally { imagesAsViewsParent = null; }
+        if (remaining.length() > 0) target.addView(text(remaining, 15));
+        for (Node child = paragraph.getFirstChild(); child != null; child = child.getNext()) {
+            if (!(child instanceof Image)) continue;
+            Image image = (Image) child; String destination = image.getDestination();
+            if (!InlineRemoteImages.supported(destination)) { target.addView(text(imageText(image), 15)); continue; }
+            String alt = inline(image).toString(); if (alt.isEmpty()) alt = ArtifactReferences.name(destination);
+            target.addView(new InlineImageView(context, alt, destination, ink, imageLoader), new LinearLayout.LayoutParams(-1, -2));
+        }
+        return true;
+    }
+
+    private SpannableStringBuilder imageText(Image image) {
+        SpannableStringBuilder value = new SpannableStringBuilder(tr("[图片：", "[Image: "));
+        appendChildren(image, value, 1); value.append(']'); return value;
     }
 
     private SpannableStringBuilder inline(Node parent) {
@@ -306,7 +354,7 @@ final class MarkdownView {
             else if (child instanceof HardLineBreak) target.append('\n');
             else if (child instanceof HtmlInline) target.append(((HtmlInline) child).getLiteral());
             else if (child instanceof Image) {
-                target.append(tr("[图片：", "[Image: ")); appendChildren(child, target, depth + 1); target.append(']');
+                if (parent != imagesAsViewsParent) target.append(imageText((Image) child));
             } else appendChildren(child, target, depth + 1);
             if (target.length() == start) continue;
             if (child instanceof StrongEmphasis) span(target, new StyleSpan(Typeface.BOLD), start);

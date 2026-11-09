@@ -295,9 +295,10 @@ function createClaudeSidebar({ $, context, contextBusy, canChangeContext, canRea
     }
     const activity = s?.activity;
     const background = !activity && Boolean(s?.backgroundWork?.tasks?.length);
+    const uncertain = background && s.backgroundWork.tasks.some(task => task.status === 'unknown');
     item.dataset.activity = activity || '';
-    item.dataset.background = background ? 'running' : '';
-    item.querySelector('.session-item-time').textContent = activity === 'permission' ? 'Needs approval' : activity === 'question' ? 'Needs input' : activity ? 'Working' : background ? 'Background tasks' : s ? relTime(s.mtimeMs) : 'Now';
+    item.dataset.background = uncertain ? 'unknown' : background ? 'running' : '';
+    item.querySelector('.session-item-time').textContent = activity === 'permission' ? 'Needs approval' : activity === 'question' ? 'Needs input' : activity ? 'Working' : uncertain ? 'Background status unknown' : background ? 'Background tasks' : s ? relTime(s.mtimeMs) : 'Now';
     const open = () => {
       const wrongHarness = Boolean(s?.currentEngine && s.currentEngine !== harnessId);
       if (s && (discussionOpening() || s.id !== context.sessionId || wrongHarness || ['permission', 'question'].includes(s.activity)))

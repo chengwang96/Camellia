@@ -87,6 +87,29 @@ with sync_playwright() as playwright:
             page.evaluate('LEVELS.pop()')
         reasoning_menu(['Default', 'Low', 'High', 'Max']).get_by_text('Default', exact=True).click()
         page.wait_for_function("settings.thinkingBudget===''")
+        if engine == 'antigravity':
+            long_model = 'claude-opus-4-6-thinking (refreshed with an intentionally long label)'
+            page.evaluate("""async model => {
+              router.models.push(model);
+              router.modelThinking[model] = {values:['low','high'],default:'high'};
+              refreshRouter(router);
+              await persistModel(model);
+              currentLevel = 'default'; renderModelPill();
+              CamelliaI18n.setLanguage('zh-CN');
+            }""", long_model)
+            expect(page.locator('#modelPillName')).to_have_text(long_model)
+            expect(page.locator('#modelPillLevel')).to_have_text('默认')
+            layout = page.locator('#modelPill').evaluate("""pill => {
+              const name = pill.querySelector('.model-name'), level = pill.querySelector('.model-level');
+              const range = document.createRange(); range.selectNodeContents(level);
+              return {lines:range.getClientRects().length, whiteSpace:getComputedStyle(level).whiteSpace,
+                nameClipped:name.scrollWidth > name.clientWidth};
+            }""")
+            assert layout == {'lines':1, 'whiteSpace':'nowrap', 'nameClipped':True}, layout
+            page.evaluate("""async () => {
+              CamelliaI18n.setLanguage('en-US');
+              await persistModel('glm-5.3');
+            }""")
         if engine != 'claude':
             page.evaluate("acceptSessionEvents=true; handleEvent({type:'gui:config',session_id:null,options:[{id:'reasoning_effort',currentValue:'',options:[{value:'medium',name:'Medium'}]}]})")
             assert page.evaluate('LEVELS.map(level=>level.id)') == ['', 'low', 'high', 'max']

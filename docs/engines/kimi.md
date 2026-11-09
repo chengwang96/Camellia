@@ -3,7 +3,7 @@
 Official runtime: [MoonshotAI/kimi-code](https://github.com/MoonshotAI/kimi-code), MIT.
 This workbench pins `@moonshot-ai/kimi-code` to **2.4.0** and talks to its ACP stdio server.
 The shared conversation adapter adds version-checked bridges to native undo and mid-turn steering;
-see [native conversation history](../../docs/design/native-conversation-history.md). Steering uses the same image conversion as a normal ACP prompt, confirms the native turn before acknowledging the instruction, and records accepted instructions in both native and portable history.
+see [native conversation history](../design/native-conversation-history.md). Steering uses the same image conversion as a normal ACP prompt, confirms the native turn before acknowledging the instruction, and records accepted instructions in both native and portable history.
 
 Kimi is an optional download. Choose it on the home screen or in Settings → Engine Settings,
 or run `npm run setup:kimi` from source. Root dependency installation does not download it.

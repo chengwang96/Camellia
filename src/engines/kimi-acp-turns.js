@@ -40,6 +40,18 @@ function patchKimiAcpTurns(source) {
           task: { id: info.taskId, description: info.description, kind: info.kind, status: info.status } } });
       };
       this.subscriptions.push(events.on("turn.started", event => {
+        if (["task", "background_task"].includes(event.origin?.kind)) {
+          const finish = result => {
+            this.camelliaBackgroundDriver = undefined;
+            this.emit({ sessionId: this.sessionId, update: { sessionUpdate: "camellia_background_turn",
+              state: "ended", turnId: event.turnId, ...result } });
+          };
+          this.camelliaBackgroundDriver = { turnId: event.turnId, settled: false,
+            resolve: finish, reject: error => finish({ stopReason: "error", error: error.message }) };
+          this.emit({ sessionId: this.sessionId, update: { sessionUpdate: "camellia_background_turn",
+            state: "started", turnId: event.turnId } });
+          return;
+        }
         const driver = this.driver;
         if (driver?.promptId === void 0 || driver.promptId !== event.promptId || driver.settled) return;
         driver.turnId = event.turnId;
@@ -51,6 +63,12 @@ function patchKimiAcpTurns(source) {
       this.subscriptions.push`],
     ['driver.early.push({', `if (driver.promptId !== void 0) return;
         driver.early.push({`],
+    ['driverFor(turnId) {', `driverFor(turnId) {
+      if (this.camelliaBackgroundDriver?.turnId === turnId) return this.camelliaBackgroundDriver;`],
+    ['dispatchTurnEvent(turnId, dispatch) {', `dispatchTurnEvent(turnId, dispatch) {
+      if (this.camelliaBackgroundDriver?.turnId === turnId) { dispatch(); return; }`],
+    ['for (const pending of this.pendingPromptAborts) pending.aborted = true;', `for (const pending of this.pendingPromptAborts) pending.aborted = true;
+      if (this.camelliaBackgroundDriver) this.agent.cancel({ turnId: this.camelliaBackgroundDriver.turnId }).catch(() => {});`],
     ['/** The active driver, but only for events of ITS turn. */', `camelliaPromptEnded(event, aborted) {
       const driver = this.driver;
       if (!driver || driver.promptId !== event.promptId || driver.turnId !== void 0) return;

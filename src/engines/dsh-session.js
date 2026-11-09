@@ -74,7 +74,7 @@ function dshAcpSpec({ runtime, home, model, route, permissionMode, env, nativeCo
   }
   return { args, env: { ...env, DSH_HOME: home, DSH_API_ROUTER_KEY: 'proxy-managed' },
     modeEngine: 'dsh', nativeSubagentEvents: childEvents, nativeHistory: Boolean(nativeHistory),
-    noModes: true, modelValue: JSON.stringify(['api-pool', model]), thinkingId: 'reasoning_effort', applyThinking: thinkingBudget === undefined && canThink };
+    noModes: true, maxOutputTokens: DSH_MAX_OUTPUT_TOKENS, modelValue: JSON.stringify(['api-pool', model]), thinkingId: 'reasoning_effort', applyThinking: thinkingBudget === undefined && canThink };
 }
 function createDshChat({ dataDir, loadConfig, saveConfig, getRoute, getModels, getModelThinking = () => undefined, runtime, node, environment, onEvent, log, nativeConfig = () => ({}), nativeRevision = () => '' }) {
   const sessions = new SessionPool();
