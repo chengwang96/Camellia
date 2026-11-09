@@ -1,5 +1,5 @@
 'use strict';
-window.createWorkPanel = ({ context, setStatus, openFilePreview, shouldFollow }) => {
+window.createWorkPanel = ({ context, setStatus, openFilePreview, shouldFollow, gitPanel }) => {
   const panel = document.getElementById('workPanel'), body = document.getElementById('workPanelBody');
   const footer = document.getElementById('workPanelFooter'), count = document.getElementById('workPanelCount');
   const toggle = document.getElementById('workPanelToggle'), badge = document.getElementById('workPanelBadge');
@@ -38,7 +38,10 @@ window.createWorkPanel = ({ context, setStatus, openFilePreview, shouldFollow })
     busy = value;
     panel.querySelectorAll('[data-work-command]').forEach(node => { node.disabled = value; });
   }
-  function setOpen(open) { panel.hidden = !open; toggle.setAttribute('aria-expanded', String(open)); }
+  function setOpen(open) {
+    panel.hidden = !open; toggle.setAttribute('aria-expanded', String(open));
+    if (open) void gitPanel?.refresh();
+  }
   toggle.onclick = () => setOpen(panel.hidden);
   document.getElementById('workPanelClose').onclick = () => { setOpen(false); toggle.focus(); };
   panel.onkeydown = event => { if (event.key === 'Escape') { setOpen(false); toggle.focus(); } };
@@ -167,6 +170,11 @@ window.createWorkPanel = ({ context, setStatus, openFilePreview, shouldFollow })
         body.append(history);
       }
     } else {
+      let changes = null;
+      if (gitPanel) {
+        changes = disclosure('Changes', 'git'); changes.querySelector('summary').append(el('span', 'work-section-count', String(gitPanel.count())));
+        gitPanel.renderSummary(changes);
+      }
       const agents = disclosure('Subtasks', 'tasks'); agents.querySelector('summary').append(el('span', 'work-section-count', String(tasks.length)));
       const active = tasks.filter(task => ['starting', 'running'].includes(task.status)).length;
       if (active || attention) {
@@ -179,6 +187,7 @@ window.createWorkPanel = ({ context, setStatus, openFilePreview, shouldFollow })
       const artifacts = disclosure('Artifacts', 'artifacts'); artifacts.querySelector('summary').append(el('span', 'work-section-count', String(files.size)));
       if (!files.size) artifacts.append(el('p', 'work-empty', t('No artifacts yet')));
       for (const file of files.values()) { const row = button('', () => void openFilePreview(file.path), 'work-artifact'); row.title = file.path; row.dataset.workFocus = 'file:' + fileKey(file); row.append(el('strong', '', file.name), el('small', '', file.origin)); artifacts.append(row); }
+      if (changes) body.append(changes);
       body.append(agents, artifacts);
     }
     if (focused) body.querySelector(`[data-work-focus="${CSS.escape(focused)}"]`)?.focus({ preventScroll: true });
@@ -197,7 +206,7 @@ window.createWorkPanel = ({ context, setStatus, openFilePreview, shouldFollow })
     render();
   }
   window.addEventListener('camellia:language', () => { render(); renderCards(); });
-  return { reset() { epoch++; tasks = []; files.clear(); drafts.clear(); expanded.clear(); detailExpanded.clear(); scrollPositions.clear(); renderedView = null; selected = null; render(); },
+  return { reset() { epoch++; tasks = []; files.clear(); drafts.clear(); expanded.clear(); detailExpanded.clear(); scrollPositions.clear(); renderedView = null; selected = null; gitPanel?.reset(); render(); },
     update(value) { tasks = orderedTasks(value || []); render(); renderCards(); void childFiles(); },
-    artifacts(value) { for (const file of value || []) addFile(file, t('Main conversation')); render(); }, refreshCards: renderCards };
+    artifacts(value) { for (const file of value || []) addFile(file, t('Main conversation')); render(); }, refreshCards: renderCards, setOpen, render };
 };

@@ -110,7 +110,7 @@ public class InlineImageGalleryTest extends InstrumentationTestCase {
                     gallery.releaseDrag(-400);
                 } catch (Exception error) { throw new AssertionError(error); }
             });
-            android.os.SystemClock.sleep(260); getInstrumentation().waitForIdleSync();
+            await(() -> galleryRef.value.position == 1 && !galleryRef.value.settling);
             getInstrumentation().runOnMainSync(() -> {
                 InlineImageGallery.GalleryView gallery = galleryRef.value;
                 assertEquals(1, gallery.position); assertEquals("2 / 2", gallery.counter.getText().toString());
@@ -120,7 +120,7 @@ public class InlineImageGalleryTest extends InstrumentationTestCase {
                 assertEquals(80f - gallery.getWidth(), gallery.incoming.getTranslationX(), .01f);
                 gallery.releaseDrag(180);
             });
-            android.os.SystemClock.sleep(260); getInstrumentation().waitForIdleSync();
+            await(() -> galleryRef.value.position == 1 && !galleryRef.value.settling);
             getInstrumentation().runOnMainSync(() -> {
                 assertEquals(1, galleryRef.value.position); galleryRef.value.dialog.dismiss();
             });
@@ -159,7 +159,7 @@ public class InlineImageGalleryTest extends InstrumentationTestCase {
                     gallery.beginDrag(start, 400); gallery.dragTo(end, 400); gallery.releaseDrag(end);
                 } catch (Exception error) { throw new AssertionError(error); }
             });
-            android.os.SystemClock.sleep(260); getInstrumentation().waitForIdleSync();
+            await(() -> galleryRef.value.position == 1 && !galleryRef.value.settling);
             getInstrumentation().runOnMainSync(() -> {
                 assertEquals(1, galleryRef.value.position); galleryRef.value.dialog.dismiss();
             });
@@ -207,6 +207,17 @@ public class InlineImageGalleryTest extends InstrumentationTestCase {
             activity.getContentResolver().delete(uri, null, null);
             getInstrumentation().runOnMainSync(activity::finish);
         }
+    }
+
+    private void await(java.util.function.BooleanSupplier condition) throws Exception {
+        long end = android.os.SystemClock.uptimeMillis() + 5000;
+        while (android.os.SystemClock.uptimeMillis() < end) {
+            boolean[] ready = { false };
+            getInstrumentation().runOnMainSync(() -> ready[0] = condition.getAsBoolean());
+            if (ready[0]) return;
+            Thread.sleep(30);
+        }
+        fail("Timed out waiting for gallery animation");
     }
 
     private InlineImageView image(Activity activity, String alt, String path, Bitmap bitmap) {

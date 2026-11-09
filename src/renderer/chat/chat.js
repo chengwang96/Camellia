@@ -1013,20 +1013,23 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
 
   const fileViewer = $('fileViewer');
   const fileViewerResize = $('fileViewerResize');
-  let preferredPreviewWidth = readUi('preview-width');
+  let preferredPreviewWidth = readUi('preview-width'), preferredGitWidth = readUi('git-width');
   if (!Number.isFinite(preferredPreviewWidth) || preferredPreviewWidth <= 0) preferredPreviewWidth = null;
+  if (!Number.isFinite(preferredGitWidth) || preferredGitWidth <= 0) preferredGitWidth = null;
   let previewDrag = null;
   function previewWidthBounds() {
     const available = window.innerWidth - document.querySelector('.sidebar').getBoundingClientRect().width;
     const max = window.innerWidth <= 800 ? Math.max(1, window.innerWidth - 32) : Math.max(300, available - 320);
     return { min: Math.min(300, max), max };
   }
-  function updatePreviewWidth(width = preferredPreviewWidth) {
+  function updatePreviewWidth(width) {
+    const gitMode = fileViewer.dataset.mode === 'git';
+    if (width === undefined) width = gitMode ? preferredGitWidth : preferredPreviewWidth;
     const { min, max } = previewWidthBounds();
     if (width === null) {
-      width = window.innerWidth <= 800 ? Math.min(window.innerWidth * .88, 520)
-        : window.innerWidth <= 1050 ? Math.min(window.innerWidth * .46, 500)
-        : Math.max(340, Math.min(window.innerWidth * .34, 560));
+      width = window.innerWidth <= 800 ? Math.min(window.innerWidth * .88, gitMode ? 680 : 520)
+        : window.innerWidth <= 1050 ? Math.min(window.innerWidth * (gitMode ? .58 : .46), gitMode ? 620 : 500)
+        : Math.max(gitMode ? 460 : 340, Math.min(window.innerWidth * (gitMode ? .52 : .34), gitMode ? 780 : 560));
     }
     const clamped = Math.round(Math.max(min, Math.min(max, width)));
     fileViewer.style.setProperty('--file-viewer-width', clamped + 'px');
@@ -1036,7 +1039,10 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     return clamped;
   }
   function savePreviewWidth() {
-    try { localStorage.setItem(uiPrefix + 'preview-width', JSON.stringify(preferredPreviewWidth)); } catch {}
+    try {
+      localStorage.setItem(uiPrefix + 'preview-width', JSON.stringify(preferredPreviewWidth));
+      localStorage.setItem(uiPrefix + 'git-width', JSON.stringify(preferredGitWidth));
+    } catch {}
   }
   function finishPreviewResize() {
     if (!previewDrag) return;
@@ -1056,7 +1062,8 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
   });
   fileViewerResize.addEventListener('pointermove', event => {
     if (!previewDrag || event.pointerId !== previewDrag.pointerId) return;
-    preferredPreviewWidth = updatePreviewWidth(previewDrag.width + previewDrag.x - event.clientX);
+    const width = updatePreviewWidth(previewDrag.width + previewDrag.x - event.clientX);
+    if (fileViewer.dataset.mode === 'git') preferredGitWidth = width; else preferredPreviewWidth = width;
   });
   for (const name of ['pointerup', 'pointercancel', 'lostpointercapture']) {
     fileViewerResize.addEventListener(name, finishPreviewResize);
@@ -1068,7 +1075,8 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     const step = event.shiftKey ? 50 : 10;
     const width = event.key === 'Home' ? min : event.key === 'End' ? max
       : fileViewer.getBoundingClientRect().width + (event.key === 'ArrowLeft' ? step : -step);
-    preferredPreviewWidth = updatePreviewWidth(width);
+    const resized = updatePreviewWidth(width);
+    if (fileViewer.dataset.mode === 'git') preferredGitWidth = resized; else preferredPreviewWidth = resized;
     savePreviewWidth();
   });
   window.addEventListener('blur', finishPreviewResize);
@@ -1149,7 +1157,9 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
   void window.dshDesktop.workbenchSettings().then(settings => {
     if (settings?.ok) applyChatContentWidth(settings.chatContentWidth);
   }).catch(() => {});
-  const { openFilePreview, closeFilePreview, openPreviewExternally, revealFile, revealLabel, formatFileSize, attachmentDragType } = window.CamelliaFilePreview.create({ fileViewer, inputCard, mdRender, setStatus, finishPreviewResize });
+  let gitUI = null;
+  const { openFilePreview, closeFilePreview, openPreviewExternally, revealFile, revealLabel, formatFileSize, attachmentDragType } = window.CamelliaFilePreview.create({ fileViewer, inputCard, mdRender, setStatus, finishPreviewResize,
+    beforeOpen: () => { gitUI?.markClosed(); fileViewer.dataset.mode = 'preview'; updatePreviewWidth(); }, onClose: () => gitUI?.markClosed() });
 
   function addAttachments(paths) {
     let unsupportedImage = false;
@@ -2932,6 +2942,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       setRunning(false);
       currentRunId = null;
       void sidebar.load();
+      void gitUI.refresh(true);
       maybeScroll(was);
       drainMessageQueue();
       if (ok && !messageQueue.length && !goalUI.isActive()) {
@@ -3902,8 +3913,15 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       selfDeletedIds.add(id);
       setTimeout(() => selfDeletedIds.delete(id), 5000);
     } });
+  gitUI = window.CamelliaGitPanel.create({
+    context,
+    getCwd: () => sidebar.sessions.find(session => session.id === context.sessionId)?.cwd
+      || sidebar.workspaces.find(workspace => workspace.id === context.workspaceId)?.path || '',
+    setStatus, fileViewer, closeFilePreview, openPreviewExternally, revealFile, updatePreviewWidth, openActionMenu,
+    closeWorkPanel: () => workPanel.setOpen(false), onUpdate: () => workPanel.render(),
+  });
   const workPanel = window.createWorkPanel({ context, setStatus, openFilePreview,
-    shouldFollow: () => followRunOutput && !userScrollActive });
+    shouldFollow: () => followRunOutput && !userScrollActive, gitPanel: gitUI });
   $('conversationActions').onclick = () => sidebar.openCurrentActions($('conversationActions'));
   const goalUI = createClaudeGoalUI({ $, context, canChangeContext: () => !editingMessage && !handoffForCurrentSession() && canChangeContext() && !running, openHistorySession, setStatus,
     acceptEvents: () => { acceptSessionEvents = true; }, onChange: () => { sidebar.updateLabel(); updateConversationControls(); queueMicrotask(drainMessageQueue); }, openActionMenu, closePops });

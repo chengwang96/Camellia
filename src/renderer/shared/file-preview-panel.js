@@ -1,5 +1,5 @@
 'use strict';
-window.CamelliaFilePreview = { create({ fileViewer, inputCard, mdRender, setStatus, finishPreviewResize = () => {}, root = document }) {
+window.CamelliaFilePreview = { create({ fileViewer, inputCard, mdRender, setStatus, finishPreviewResize = () => {}, beforeOpen = () => {}, onClose = () => {}, root = document }) {
   const $ = id => root.getElementById(id);
   let previewedFile = null;
   let previewRequest = 0;
@@ -25,6 +25,9 @@ window.CamelliaFilePreview = { create({ fileViewer, inputCard, mdRender, setStat
   }
   function renderFilePreview(file) {
     previewedFile = file;
+    fileViewer.dataset.mode = 'preview';
+    $('fileViewerReveal').hidden = false;
+    $('fileViewerExternal').hidden = false;
     $('fileViewerTitle').textContent = file.name;
     $('fileViewerTitle').title = file.path;
     $('fileViewerType').textContent = previewLabel(file);
@@ -161,6 +164,10 @@ window.CamelliaFilePreview = { create({ fileViewer, inputCard, mdRender, setStat
   }
   async function openFilePreview(filePath, location = {}) {
     if (!filePath) return;
+    beforeOpen();
+    fileViewer.dataset.mode = 'preview';
+    $('fileViewerReveal').hidden = false;
+    $('fileViewerExternal').hidden = false;
     const request = ++previewRequest;
     let result;
     try { result = await window.dshDesktop.previewFile(filePath); }
@@ -211,6 +218,7 @@ window.CamelliaFilePreview = { create({ fileViewer, inputCard, mdRender, setStat
     fileViewer.hidden = true;
     $('fileViewerBody').replaceChildren();
     previewedFile = null;
+    onClose();
   }
   $('fileViewerClose').onclick = closeFilePreview;
   $('fileViewerExternal').onclick = () => void openPreviewExternally();

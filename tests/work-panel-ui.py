@@ -93,11 +93,12 @@ def exercise_design(browser, theme, language, width, height):
     main = page.locator('.main').bounding_box()
     footer = page.locator('#workPanelFooter').bounding_box()
     assert panel['y'] >= header['y'] + header['height'], (header, panel)
-    assert panel['height'] <= main['height'] / 2 + 1, (main, panel)
+    assert panel['height'] <= main['height'] * .62 + 1, (main, panel)
     assert main['x'] <= panel['x'] and panel['x'] + panel['width'] <= width
     assert panel['y'] + panel['height'] <= height
     assert footer['y'] + footer['height'] <= panel['y'] + panel['height']
     assert page.locator('#workPanelBody').evaluate('(node)=>node.scrollWidth<=node.clientWidth')
+    assert page.locator('#workPanelBody').evaluate('(node)=>getComputedStyle(node).fontSize') == '14px'
     page.locator('#workPanel').screenshot(path=str(output / f'detail-{stem}.png'), animations='disabled')
 
     # Live updates preserve an expanded history and the current reading position.

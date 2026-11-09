@@ -57,6 +57,7 @@ const { IdleSessionReaper } = require('../engines/idle-session-reaper');
 const { attachInputContextMenu } = require('./input-context-menu');
 const { attachImageContextMenu } = require('./image-context-menu');
 const { describePreview } = require('./file-preview');
+const gitService = require('./git-service').createGitService();
 const { ENGINES: SUBSCRIPTION_MODEL_ENGINES } = require('../shared/subscription-models');
 const { revealInFileManager } = require('./reveal-file');
 const { detectVSCodeInstallations, validateVSCodeExecutable, openWorkspaceInVSCode } = require('./vscode-launcher');
@@ -2728,6 +2729,26 @@ if (!gotSingleInstanceLock) {
       return { ok: true, file };
     }
     catch (error) { return { ok: false, error: error?.message || String(error) }; }
+  });
+
+  ipcMain.handle('dsh:git-status', async (_event, payload) => {
+    try { return { ok: true, status: await gitService.status(payload?.cwd) }; }
+    catch (error) { return { ok: false, error: error?.message || String(error), code: error?.code || 'GIT_ERROR' }; }
+  });
+
+  ipcMain.handle('dsh:git-diff', async (_event, payload) => {
+    try { return { ok: true, diff: await gitService.diff(payload?.cwd, payload) }; }
+    catch (error) { return { ok: false, error: error?.message || String(error), code: error?.code || 'GIT_ERROR' }; }
+  });
+
+  ipcMain.handle('dsh:git-untracked', async (_event, payload) => {
+    try { return { ok: true, result: await gitService.untracked(payload?.cwd, payload) }; }
+    catch (error) { return { ok: false, error: error?.message || String(error), code: error?.code || 'GIT_ERROR' }; }
+  });
+
+  ipcMain.handle('dsh:git-action', async (_event, payload) => {
+    try { return { ok: true, ...(await gitService.action(payload?.cwd, payload?.action, payload)) }; }
+    catch (error) { return { ok: false, error: error?.message || String(error), code: error?.code || 'GIT_ERROR' }; }
   });
 
   ipcMain.handle('dsh:resolve-artifacts', (_event, payload) => {

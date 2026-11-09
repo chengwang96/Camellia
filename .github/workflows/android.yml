@@ -57,7 +57,7 @@ jobs:
       - name: Remote protocol tests
         run: node --test tests/android-integration-cleanup.test.js tests/remote-access.test.js tests/remote-desktop.test.js tests/remote-approvals.test.js tests/remote-discussions.test.js tests/remote-settings.test.js
       - name: Android UI and gateway integration
-        timeout-minutes: 15
+        timeout-minutes: 30
         shell: bash
         env:
           ANDROID_SERIAL: emulator-5584
@@ -96,6 +96,7 @@ jobs:
             "$ADB" -s "$ANDROID_SERIAL" logcat -d -t 3000 > .ci-logs/android-logcat.txt
             exit 1
           fi
+          "$ADB" -s "$ANDROID_SERIAL" logcat -d -t 3000 > .ci-logs/android-logcat.txt
           grep -q '^OK (' .ci-logs/android-ui.log
       - name: Save Android package and test reports
         if: always()
