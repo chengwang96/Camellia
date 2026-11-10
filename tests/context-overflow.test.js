@@ -12,6 +12,16 @@ test('context recovery includes failed summaries without mistaking rate limits f
     'Request too large on tokens per min (TPM)']) assert.equal(contextRecoveryText(text), false, text);
 });
 
+test('Claude autocompact thrashing offers recovery without becoming an overflow signal', () => {
+  const text = 'Autocompact is thrashing: the context refilled to the limit within 3 turns of the previous compact, 3 times in a row. '
+    + 'A file being read or a tool output is likely too large for the context window. Try reading in smaller chunks, or use /clear to start fresh.';
+  assert.equal(contextRecoveryText(text), true);
+  // Automatic compaction already failed here; a provider-overflow positive
+  // would start another summary the engine just refused to perform.
+  assert.equal(contextOverflowText(text), false);
+  assert.equal(contextOverflow({ is_error: true, result: text }), false);
+});
+
 // Real provider wordings that mean "this request is over a context limit".
 const overflow = [
   'maximum context length is 8192 tokens',

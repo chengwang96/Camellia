@@ -72,6 +72,16 @@ test('Claude pins all CLI model tiers to the chosen model and clears direct API 
   assert.throws(()=>h.api.claudeSpawnSpec({},{}),/Select a configured model/);
   assert.equal(h.api.resolveClaudeRoute({baseUrl:'https://example.test',authToken:'custom'}).baseUrl,'http://127.0.0.1:19098');
 });
+test('Claude gets the declared route window instead of its 200K guess for unknown model IDs',t=>{
+  const h=createHarness(); t.after(()=>h.cleanup());
+  const home=h.folder('home/.dsh'); const config=pool(19098);
+  writeConfig(path.join(home,'ollama-proxy.json'),normalizeConfig(config));
+  assert.equal(h.api.claudeSpawnSpec({model:'kimi-k3'},{}).env.CLAUDE_CODE_MAX_CONTEXT_TOKENS,undefined);
+  config.providers[0].models[0].maxContext=1048576;
+  writeConfig(path.join(home,'ollama-proxy.json'),normalizeConfig(config));
+  const spec=h.api.claudeSpawnSpec({model:'kimi-k3'},{}), overlay=JSON.parse(fs.readFileSync(spec.args[spec.args.indexOf('--settings')+1],'utf8'));
+  assert.equal(spec.env.CLAUDE_CODE_MAX_CONTEXT_TOKENS,'1048576'); assert.equal(overlay.env.CLAUDE_CODE_MAX_CONTEXT_TOKENS,'1048576');
+});
 
 test('Claude cannot bypass an unconfigured pool with legacy credentials', t => {
   const h = createHarness(); t.after(() => h.cleanup());

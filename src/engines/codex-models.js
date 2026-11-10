@@ -1,6 +1,7 @@
 'use strict';
 const fs = require('node:fs');
 const path = require('node:path');
+const { explicitContextCap } = require('../api/context-capacity');
 
 const CODEX_API_TOOL_PROFILE = 'native-apply-patch-v3';
 const nativeCatalog = require('./codex-metadata/models.json');
@@ -21,11 +22,7 @@ function apiContextWindow(model, budget) {
   // Passing that provisional budget to Codex as model_context_window makes
   // Codex repeatedly compact a healthy thread at the largest input observed
   // so far. Only explicit route limits may narrow the native model window.
-  const explicit = (budget?.routes || []).filter(route =>
-    ['configured', 'catalog', 'confirmed-upper-bound'].includes(route.source)
-    && Number.isSafeInteger(route.cap) && route.cap > 0);
-  return explicit.length ? Math.min(...explicit.map(route => route.cap))
-    : nativeModel(model)?.context_window || 272000;
+  return explicitContextCap(budget) || nativeModel(model)?.context_window || 272000;
 }
 
 function writeModelCatalog(file, catalog) {

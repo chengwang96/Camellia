@@ -28,7 +28,7 @@ const { createCodex } = require('../engines/codex');
 const { apiContextWindow } = require('../engines/codex-models');
 const { createAntigravity } = require('../engines/antigravity');
 const { createProviderInsights } = require('../api/provider-insights.js');
-const { createContextCapacity } = require('../api/context-capacity.js');
+const { createContextCapacity, explicitContextCap } = require('../api/context-capacity.js');
 const { createRuntimeManager, ENGINES, run: runtimeRun } = require('./runtime-manager.js');
 const { createRuntimeUpdates } = require('./runtime-updates.js');
 const { createAppUpdates } = require('./app-updates.js');
@@ -843,6 +843,8 @@ function claudeSpawnSpec(settings, opts) {
   if (!settings.model) throw new Error("Select a configured model in the composer first");
   const overlayEnv = { ...managedClaudeModelEnv(settings.model),
     ANTHROPIC_BASE_URL: route.baseUrl, ANTHROPIC_AUTH_TOKEN: route.authToken, ANTHROPIC_API_KEY: '' };
+  const contextWindow = claudeContextWindow(settings.model);
+  if (contextWindow) overlayEnv.CLAUDE_CODE_MAX_CONTEXT_TOKENS = String(contextWindow);
   // ~/.claude/settings.json 的 env 块优先级高于进程环境变量（会覆盖上面
   // 的设置）——用 --settings overlay 反压回去（命令行设置 > 用户设置）。
   // 写到 userData 文件而不是内联 JSON，避免密钥出现在命令行里。
@@ -853,6 +855,10 @@ function claudeSpawnSpec(settings, opts) {
   // the direct attempt. Give the process the real detected proxy; the local
   // router stays exempt through NO_PROXY.
   const environment = subscriptionEnvironment(runtimeEnvironment(detectNode(), 'claude'));
+  // Camellia owns this harness window. An ambient value from the process that
+  // launched Camellia would otherwise override both an explicit route cap and
+  // the CLI's own model knowledge.
+  delete environment.CLAUDE_CODE_MAX_CONTEXT_TOKENS;
   return { args, env: { ...environment, ...overlayEnv }, cwd: settings.cwd || undefined };
 }
 
@@ -874,6 +880,12 @@ function modelContextWindow(model) {
 }
 function codexContextWindow(model) {
   return apiContextWindow(model, capacity().budget({ model, protocol: 'openai' }));
+}
+function claudeContextWindow(model) {
+  // Claude Code assumes 200K for model IDs it does not recognize, so without
+  // this an explicitly declared 1M route auto-compacts at a fifth of its real
+  // window. Provisional accepted input is a lower bound and is not passed.
+  return explicitContextCap(capacity().budget({ model, protocol: 'anthropic' }));
 }
 function resolveClaudeRoute() {
   const cfg = readOllamaProxyConfig();
@@ -1164,6 +1176,7 @@ const antigravity = createAntigravity({ dataDir: app.getPath('userData'), loadCo
 
 const dshChat = createDshChat({ dataDir: app.getPath('userData'), loadConfig, saveConfig, getRoute: resolveClaudeRoute,
   getModels: () => routerConfig.publicState(readOllamaProxyConfig()).models,
+  getContextWindow: model => capacity().budget({ model, protocol: 'anthropic' })?.cap || routerConfig.modelContextWindow(readOllamaProxyConfig(), model),
   getModelThinking: model => routerConfig.publicState(readOllamaProxyConfig()).modelThinking[model],
   runtime: () => ({ file: detectDshBin() }), node: detectNode, environment: () => runtimeEnvironment(detectNode(), 'dsh'),
   onEvent: event => publishChatEvent('dsh', event), log });

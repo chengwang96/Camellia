@@ -173,9 +173,9 @@ test('restoring a draft ignores legacy scroll positions without losing composer 
 });
 
 test('history is revealed before live replay and final scrolling follows the reader', () => {
-  const history = source.slice(source.indexOf('  async function openHistorySession(id)'), source.indexOf('  async function renderHistoryMessages(messages, pagination)'));
+  const history = source.slice(source.indexOf('  async function openHistorySession(id)'), source.search(/  async function renderHistoryMessages\(/));
   assert.match(history, /resetConversationView\(\);\s*followRunOutput = true;\s*userScrollActive = false;\s*userScrollIntentUntil = 0;/);
-  assert.match(history, /restoreDraft\(\);[\s\S]*await applyLiveRun\(res.live\)[\s\S]*void goalUI.refresh\(\);[\s\S]*if \(followRunOutput && !userScrollActive\) scrollToLatest\(\);\s*return true;/);
-  const live = source.slice(source.indexOf('  async function applyLiveRun(live)'), source.indexOf('  // ---------- settings panel'));
-  assert.match(live, /renderHistoryMessages\(live\.messages, live\.historyPage\)[\s\S]*scrollToLatest\(\);[\s\S]*classList\.remove\('history-opening'\)[\s\S]*for \(let index = 0; index < replayEvents\.length; index\+\+\)/);
+  assert.match(history, /restoreDraft\(\);[\s\S]*await applyLiveRun\(res\.live, historyOptions\)[\s\S]*void goalUI\.refresh\(\);[\s\S]*if \(followRunOutput && !userScrollActive\) scrollToLatest\(\);\s*return true;/);
+  const live = source.slice(source.search(/  async function applyLiveRun\(/), source.indexOf('  // ---------- settings panel'));
+  assert.match(live, /renderHistoryMessages\(live\.messages, live\.historyPage, \{ recoverFailure \}\)[\s\S]*scrollToLatest\(\);[\s\S]*classList\.remove\('history-opening'\)[\s\S]*for \(let index = 0; index < replayEvents\.length; index\+\+\)/);
 });

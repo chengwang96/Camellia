@@ -164,14 +164,36 @@ with sync_playwright() as playwright:
         page.wait_for_function('cancelCalls.length === 2 && !handoffSessions.has("shared-fixture")')
         expect(page.locator('#engineSwitch')).to_be_enabled()
 
-        # Failed compaction notices and terminal turn errors offer the same actions.
+        # Failed compaction notices and terminal turn errors share one set of
+        # actions: the persistent compaction notice owns them, and later error
+        # rows reuse it instead of repeating the same two buttons.
         page.evaluate("deliverStatus({sessionId:'shared-fixture',text:'',compaction:{state:'failed',error:'Summary request failed'}})")
         expect(page.locator('.context-compaction [data-recovery-action="compact"]')).to_be_visible()
         page.evaluate('''() => {
           const {chip} = runResultChip({is_error:true,subtype:'error',result:'maximum context length is 8192 tokens'},false);
           chat.appendChild(chip);
         }''')
-        expect(page.locator('.run-result [data-recovery-action="markdown"]')).to_be_visible()
+        expect(page.locator('.context-recovery')).to_have_count(1)
+        expect(page.locator('.run-result [data-recovery-action="markdown"]')).to_have_count(0)
+        expect(page.locator('.context-compaction [data-recovery-action="markdown"]')).to_be_visible()
+        # Replayed status must keep its existing card. A late status also
+        # replaces the editor's earlier full error with the short pointer.
+        page.evaluate('''() => {
+          conversationActivity = ''; running = false; restoringRun = false;
+          const user = [...document.querySelectorAll('.msg-user')].at(-1);
+          user.messageData.seq = 999;
+          beginMessageEdit(user);
+          showMessageEditStatus(editingMessage, 'Could not resend: Compaction failed. ' + CamelliaContextOverflow.RECOVERY_ADVICE, true);
+          deliverStatus({sessionId:'shared-fixture',text:'',compaction:{state:'failed',error:'Compaction failed. ' + CamelliaContextOverflow.RECOVERY_ADVICE}});
+          deliverStatus({sessionId:'shared-fixture',text:'',compaction:{state:'failed',error:'Compaction failed. ' + CamelliaContextOverflow.RECOVERY_ADVICE}});
+        }''')
+        expect(page.locator('.context-recovery')).to_have_count(1)
+        expect(page.locator('.context-compaction [data-recovery-action="markdown"]')).to_be_visible()
+        expect(page.locator('.message-editor .context-recovery')).to_have_count(0)
+        expect(page.locator('.message-edit-status')).to_have_text(
+            'Could not resend. Recover the context below, then send again.' if language == 'en'
+            else '无法重新发送。请在下方恢复上下文后再次发送。')
+        expect(page.locator('.context-compaction-error').last).to_have_text('Compaction failed.')
         assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
         for button in page.locator('.context-recovery button').all():
             assert button.evaluate('(el)=>el.scrollWidth<=el.clientWidth && el.getBoundingClientRect().right<=innerWidth'), button.inner_text()

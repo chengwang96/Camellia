@@ -85,10 +85,28 @@ function contextError(status, detail) {
     ...(limit?.scope === 'input' ? { inputLimit: limit.tokens } : {}) };
 }
 
+// Claude Code stops automatic compaction after the context refills within a few
+// turns of each of several consecutive compacts. The provider never rejected a
+// request, and automatic compaction is exactly what already failed, so this is
+// a recovery choice (manual compaction or a Markdown handoff), not an overflow
+// signal that should start another summary automatically.
+const AUTOCOMPACT_THRASHING = /autocompact is thrashing|context refilled to the (?:context )?limit within \d+ turns?/i;
+
 // Recovery choices also apply when summarization itself failed, even though
 // that failure must never be treated as a provider context-overflow signal.
-const contextRecoveryText = value => contextOverflowText(value)
+const contextRecoveryText = value => contextOverflowText(value) || AUTOCOMPACT_THRASHING.test(String(value ?? ''))
   || /\bcompaction\b|\bcontext recovery\b|\bconversation (?:is |was )?(?:still )?too large\b|\bcompacted context\b/i.test(String(value ?? ''));
 
-return { CONTEXT_OVERFLOW_SOURCES, RATE_LIMIT, contextOverflow, contextOverflowText, contextTokenLimit, contextError, contextRecoveryText };
+// Engines append this paragraph for clients that have no recovery controls.
+// The workbench shows the same choices beside the error, so it strips the
+// paragraph from visible text instead of repeating the instructions.
+const RECOVERY_ADVICE = 'The original history is retained. Try manual compaction, switch to a larger-context model, or continue in a new conversation. Split oversized messages or attachments. Files and external actions have not been rolled back.';
+const recoverySummary = value => {
+  const text = String(value ?? '');
+  const index = text.indexOf(RECOVERY_ADVICE);
+  return (index < 0 ? text : text.slice(0, index)).trim();
+};
+
+return { CONTEXT_OVERFLOW_SOURCES, RATE_LIMIT, contextOverflow, contextOverflowText, contextTokenLimit, contextError,
+  contextRecoveryText, RECOVERY_ADVICE, recoverySummary };
 });

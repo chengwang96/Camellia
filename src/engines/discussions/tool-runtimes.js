@@ -43,7 +43,7 @@ function nativeToolSpec({ runtime, home, cwd, env, node, profile, route, permiss
   }
   if (engine === 'kimi') return { ...kimiSpawnSpec({ runtime: runtime.file, home, model, contextWindow, route, connection, env,
     config: native.config || {}, mcp: native.mcp || '', thinkingBudget: profile.thinking || '' }), exe: node, cwd };
-  if (engine === 'dsh') return { ...dshAcpSpec({ runtime, home, model, route, permissionMode, env, nativeConfig: native.config, thinkingBudget: profile.thinking || '' }), exe: node, cwd };
+  if (engine === 'dsh') return { ...dshAcpSpec({ runtime, home, model, route, permissionMode, env, nativeConfig: native.config, thinkingBudget: profile.thinking || '', contextWindow }), exe: node, cwd };
   if (engine === 'grok') return { ...grokSpawnSpec({ runtime: runtime.file, home, model, connection, route, contextWindow, env,
     config: native.config || {}, instructions: native.instructions, reasoningEffort: profile.thinking || '' }), exe: runtime.file, cwd };
   if (engine === 'antigravity' && connection === 'api') return { ...antigravitySpawnSpec({ runtime, home, route, env, config: native.config, thinkingBudget: profile.thinking || '' }), exe: runtime.file, cwd };

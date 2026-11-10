@@ -29,6 +29,19 @@ test('DSH API models declare image input and ACP initializes against the selecte
   assert.deepEqual(h.read()['llm-pi-ai'].providers['api-pool'].models, [{ id: 'custom-vision-alias', input: ['text', 'image'] }]);
 });
 
+test('DSH API models use the configured context window for output budgeting', t => {
+  const h = setup(t);
+  for (const [contextWindow, expected] of [[1048576, 1048576], [undefined, 65536], [128, 65536]]) {
+    dshAcpSpec({ runtime: { file: path.join(h.home, 'lib/bin.js'), version: '0.2.2-rc.1' }, home: h.home,
+      model: 'deepseek-flash', route: { baseUrl: 'http://localhost:8788' }, contextWindow });
+    const patch = YAML.parse(fs.readFileSync(path.join(h.home, 'camellia-runtime.patch.yml'), 'utf8'));
+    const provider = patch.find(entry => entry.id === 'llm-pi-ai').config.providers['api-pool'];
+    assert.equal(provider.defaultContextWindow, expected);
+    assert.equal(provider.models[0].contextWindow, expected);
+    assert.equal(provider.defaultMaxTokens, 32768);
+  }
+});
+
 test('DSH legacy permission values map to supported native presets', t => {
   const h = setup(t);
   for (const [permissionMode, expected] of [

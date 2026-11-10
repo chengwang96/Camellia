@@ -7,7 +7,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { createHash } = require('node:crypto');
 const { removeTree } = require('./test-fs.cjs');
-const { createContextCapacity, contextError, UNKNOWN_CONTEXT_BUDGET } = require('../src/api/context-capacity');
+const { createContextCapacity, explicitContextCap, contextError, UNKNOWN_CONTEXT_BUDGET } = require('../src/api/context-capacity');
 
 function fixture(testCase) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'camellia-capacity-'));
@@ -177,6 +177,24 @@ test('legacy observed tokens and explicit limits affect budgets but legacy estim
   assert.equal(h.make().budget({ model: 'model', protocol: 'openai' }).cap, 24000);
   restored.observe({ ...route, ok: false, status: 400, detail: { error: { message: 'prompt is too long: 200000 tokens > 100000 maximum' } } });
   assert.equal(h.make().budget({ model: 'model', protocol: 'openai' }).cap, 24000, 'a newer input limit does not erase the existing total-context limit');
+});
+
+test('only explicit route limits may become a native harness model window', t => {
+  const h = fixture(t);
+  const options = { model: 'model', protocol: 'openai' };
+  assert.equal(explicitContextCap(h.service.budget(options)), 131072);
+  h.provider.models[0].contextWindow = 64000;
+  assert.equal(explicitContextCap(h.service.budget(options)), 64000);
+  delete h.provider.models[0].maxContext; delete h.provider.models[0].contextWindow;
+  // A large accepted prompt only proves a lower bound; handing it to a native
+  // harness would compact a healthy thread at the largest input seen so far.
+  h.service.observe({ provider: h.provider, key: h.provider.keys[0], model: h.provider.models[0], protocol: 'openai', ok: true, tokens: { input: 90000 } });
+  assert.equal(h.service.budget(options).source, 'accepted-lower-bound');
+  assert.equal(explicitContextCap(h.service.budget(options)), undefined);
+  h.service.observe({ provider: h.provider, key: h.provider.keys[0], model: h.provider.models[0], protocol: 'openai', ok: false,
+    status: 400, detail: { error: { message: 'maximum context length is 32000 tokens' } } });
+  assert.equal(explicitContextCap(h.service.budget(options)), 32000);
+  assert.equal(explicitContextCap(null), undefined);
 });
 
 test('desktop conversations read persisted evidence through the main-process capacity service', t => {

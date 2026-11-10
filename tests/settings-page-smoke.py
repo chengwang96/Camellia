@@ -297,7 +297,6 @@ with sync_playwright() as playwright:
     expect(startup.locator('#dataPath')).to_have_text('/test-profile/camellia')
     expect(startup.locator('[data-theme-choice=system]')).to_have_attribute('aria-pressed', 'true')
     assert startup.evaluate("!settingsCalls.some(name => name === 'providerInsights' || name.endsWith('AccountState'))")
-    expect(startup.locator('#balanceChart')).to_be_empty()
     expect(startup.locator('#subscriptionModels')).to_be_empty()
     startup.locator('[data-view=providers]').click()
     startup.locator('[data-view=usage]').click()

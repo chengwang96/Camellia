@@ -14,7 +14,7 @@ const { ClaudeGoal, goalPrompt, verifyPrompt, verifySignal } = require('./claude
 const { instructions: goalToolInstructions, validateTool, matchesUserRequest } = require('./goal-tools');
 const { collector, referencedArtifacts } = require('../shared/turn-artifacts');
 const { projectOutput } = require('../shared/mobile-output');
-const { contextOverflow, contextTokenLimit } = require('../shared/context-overflow');
+const { contextOverflow, contextTokenLimit, RECOVERY_ADVICE } = require('../shared/context-overflow');
 const { resolveArtifacts } = require('../main/turn-artifacts');
 const { ScheduledTasks, taskPrompt } = require('./scheduled-tasks');
 const { callConversationTool } = require('./conversation-control');
@@ -130,7 +130,7 @@ function nativeEditCheckpoint(segment, edit, engine) {
       || !edit.prior.some(row => row.role === 'user' && row.seq === replayFromSeq))) return null;
   return { lastTurnId: saved.lastTurnId, replayFromSeq };
 }
-const recoveryAdvice = 'The original history is retained. Try manual compaction, switch to a larger-context model, or continue in a new conversation. Split oversized messages or attachments. Files and external actions have not been rolled back.';
+const recoveryAdvice = RECOVERY_ADVICE;
 const storageFailure = error => Boolean(error?.persistence || ['ENOSPC', 'EIO', 'EACCES', 'EPERM', 'EROFS', 'EBUSY'].includes(error?.code)
   || error?.cause && storageFailure(error.cause));
 const retryNativeCompaction = (error, engine) => !storageFailure(error)
@@ -1050,8 +1050,11 @@ class SharedConversations {
     let fd;
     try {
       fd = fs.openSync(fullPath, 'wx');
+      let transcriptBytes = 0, transcriptTokens = 0, transcriptRows = 0;
       const write = value => {
         const bytes = Buffer.from(value);
+        transcriptBytes += bytes.length;
+        transcriptTokens += contextTokens(value);
         for (let offset = 0; offset < bytes.length;) {
           const written = fs.writeSync(fd, bytes, offset, bytes.length - offset);
           if (!written) throw new Error('Could not save the conversation attachment');
@@ -1063,7 +1066,7 @@ class SharedConversations {
         const line = JSON.stringify({ seq: row.seq, at: row.at, role: row.role, engine: row.engine, text: row.text,
           ...(row.attachments?.length ? { attachments: row.attachments } : {}),
           ...(row.runResult ? { runResult: row.runResult } : {}) }) + '\n';
-        chunk += line;
+        chunk += line; transcriptRows++;
         if (chunk.length > 262144) { write(chunk); chunk = ''; }
       }
       if (chunk) write(chunk);
@@ -1143,9 +1146,13 @@ class SharedConversations {
       }
       const latestSummary = this.historyStore.summary(c.id, beforeSeq);
       const summary = latestSummary ? fs.readFileSync(latestSummary.file, 'utf8').slice(0, 12000) : '';
+      const transcriptSize = transcriptBytes >= 1048576
+        ? (transcriptBytes / 1048576).toFixed(1) + ' MB' : Math.max(1, Math.round(transcriptBytes / 1024)) + ' KB';
+      const transcriptTokenLabel = transcriptTokens >= 1000 ? Math.round(transcriptTokens / 1000) + 'K' : String(Math.round(transcriptTokens));
       const body = 'The conversation below is in chronological order. Long messages are shortened only when needed to keep this overview bounded.\n'
-        + 'Full transcript (JSONL): ' + fullPath + '\n'
-        + 'Search the full transcript for specific terms or read short ranges as needed. Do not print or load the entire file in one tool call.\n\n'
+        + 'Full transcript (JSONL): ' + fullPath + ' (' + transcriptSize + ', ' + transcriptRows + ' messages, about ' + transcriptTokenLabel + ' tokens)\n'
+        + 'Search the full transcript for specific terms, or read short ranges of at most a few dozen lines at a time. Individual JSONL lines can be very long. '
+        + 'Never load the whole file, and do not read several large ranges in one turn: that can refill the context faster than the engine can compact it.\n\n'
         + (summary ? '## Latest saved context summary\n' + summary + '\n\n' : '')
         + '## Conversation' + (shortened ? ' (shortened)' : '') + '\n\n'
         + (dialogue || '(No user or assistant messages.)\n\n')
@@ -2367,6 +2374,10 @@ class SharedConversations {
         }
         if (previousSegment) (c.retiredSegments ||= []).push({ engine: target, ...previousSegment });
         handoff.status = 'complete';
+        // The target now owns a complete copy. A failed compaction notice from
+        // before this handoff must stop offering recovery on later reloads.
+        if (c.lastCompaction && ['failed', 'cancelled'].includes(c.lastCompaction.outcome))
+          c.lastCompaction = { ...c.lastCompaction, outcome: 'recovered', recoveredAt: this.stamp(), recoveredBy: 'markdown-handoff' };
         this.append(c, { role: 'notice', engine: target, text: 'Markdown handoff: ' + source + ' → ' + target, file, fullPath });
         c.segments[target].cursor = c.seq;
       }

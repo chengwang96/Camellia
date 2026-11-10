@@ -37,12 +37,13 @@ const DSH_PRESETS = {
     description: 'Full access without confirmation prompts.' },
 };
 
-function dshAcpSpec({ runtime, home, model, route, permissionMode, env, nativeConfig = {}, thinking, webTools = false, thinkingBudget }) {
+function dshAcpSpec({ runtime, home, model, route, permissionMode, env, nativeConfig = {}, thinking, webTools = false, thinkingBudget, contextWindow }) {
   if (thinkingBudget !== undefined) route = harnessThinkingRoute(route, thinkingBudget);
   const levels = levelsFor(model, { thinking });
   const supported = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
   const reasoningEfforts = Object.fromEntries(levels.map(level => [level === 'none' ? 'off' : level, level]).filter(([level]) => supported.includes(level)));
   const canThink = Object.keys(reasoningEfforts).some(level => level !== 'off');
+  const resolvedContextWindow = Number.isInteger(contextWindow) && contextWindow >= 4096 ? contextWindow : 65536;
   const args = dshLaunchArgs({ runtime, home, profile: 'acp', config: {
     ...nativeConfig,
     ...(webTools ? { 'tool-web': { ...nativeConfig['tool-web'], search: false, fetch: false } } : {}),
@@ -50,11 +51,11 @@ function dshAcpSpec({ runtime, home, model, route, permissionMode, env, nativeCo
     acp: { ...nativeConfig.acp, provider: 'api-pool', model },
     permission: { presets: DSH_PRESETS, defaultPreset: nativeMode('dsh', permissionMode, 'auto') },
     'llm-pi-ai': { providers: { 'api-pool': { displayName: 'Camellia API', apiKeyEnv: 'DSH_API_ROUTER_KEY',
-      api: 'anthropic-messages', baseURL: route.baseUrl, defaultContextWindow: 65536, defaultMaxTokens: DSH_MAX_OUTPUT_TOKENS,
+      api: 'anthropic-messages', baseURL: route.baseUrl, defaultContextWindow: resolvedContextWindow, defaultMaxTokens: DSH_MAX_OUTPUT_TOKENS,
       // The shared router carries images for custom models, just as the other
       // API harnesses do. DSH cannot infer that from its built-in catalog for
       // the synthetic api-pool provider. Upstream still validates model support.
-      models: [{ id: model, input: ['text', 'image'], reasoningEfforts: canThink ? reasoningEfforts : false }] } } },
+      models: [{ id: model, contextWindow: resolvedContextWindow, input: ['text', 'image'], reasoningEfforts: canThink ? reasoningEfforts : false }] } } },
   } });
   const childEvents = /^(?:0\.[2-9]|[1-9]\.)/.test(String(runtime.version || ''));
   if (childEvents) {
@@ -76,7 +77,7 @@ function dshAcpSpec({ runtime, home, model, route, permissionMode, env, nativeCo
     modeEngine: 'dsh', nativeSubagentEvents: childEvents, nativeHistory: Boolean(nativeHistory),
     noModes: true, maxOutputTokens: DSH_MAX_OUTPUT_TOKENS, modelValue: JSON.stringify(['api-pool', model]), thinkingId: 'reasoning_effort', applyThinking: thinkingBudget === undefined && canThink };
 }
-function createDshChat({ dataDir, loadConfig, saveConfig, getRoute, getModels, getModelThinking = () => undefined, runtime, node, environment, onEvent, log, nativeConfig = () => ({}), nativeRevision = () => '' }) {
+function createDshChat({ dataDir, loadConfig, saveConfig, getRoute, getModels, getContextWindow = () => undefined, getModelThinking = () => undefined, runtime, node, environment, onEvent, log, nativeConfig = () => ({}), nativeRevision = () => '' }) {
   const sessions = new SessionPool();
   let generation = 0;
   const history = new ClaudeHistory(path.join(dataDir, 'dsh-chat-history'));
@@ -92,12 +93,13 @@ function createDshChat({ dataDir, loadConfig, saveConfig, getRoute, getModels, g
     const current = sessions.get(opts);
     const selected = { ...settings(), ...opts.settings, cwd: opts.cwd, nativeRevision: nativeRevision() };
     selected.model = modelId(selected.model);
+    selected.contextWindow = getContextWindow(selected.model);
     selected.modelThinking = getModelThinking(selected.model);
     if (!selected.model || !getModels().includes(selected.model)) throw new Error('Select a configured model first');
     if (current && !current.dead && !opts.fork && current.opts.goalBridge === opts.goalBridge && current.sessionId === opts.sessionId && JSON.stringify(current.settings) === JSON.stringify(selected)) return current;
     const spec = dshAcpSpec({ runtime: runtime(), home: path.join(dataDir, 'dsh-chat', ...(opts.conversationId ? ['conversations', opts.conversationId] : [])), model: selected.model,
       route: getRoute(), permissionMode: selected.permissionMode, env: environment(), nativeConfig: nativeConfig(), thinking: selected.modelThinking,
-      thinkingBudget: selected.thinkingBudget || '', webTools: opts.goalBridge?.webTools });
+      thinkingBudget: selected.thinkingBudget || '', webTools: opts.goalBridge?.webTools, contextWindow: selected.contextWindow });
     const previous = current?.shutdown();
     const session = new DshSession({ name: 'DSH', gen: ++generation, opts, settings: selected, spec, exe: node(), spawn, log, history,
       onEvent: event => { if (sessions.get(opts) === session) onEvent({ ...event, conversationId: opts.conversationId }); }, onSessionId: () => {}, onResult: () => {} });

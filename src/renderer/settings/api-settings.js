@@ -552,6 +552,12 @@ function quotaRemaining(quota) {
     ? money({ value: quota.remainingValue, currency: quota.unit }) : window.CamelliaI18n.t('Unavailable');
 }
 function meter(window) { const value = remaining(window); return value === null ? '' : `<div class="meter ${value < 15 ? 'low' : ''}"><span style="width:${Math.min(100,value)}%"></span></div>`; }
+function balanceSummary(balances) {
+  // A provider may report one entry per wallet (DeepSeek does) and does not
+  // keep their order stable between refreshes. Show every wallet, largest
+  // first, so a zero USD wallet cannot hide a funded CNY wallet.
+  return [...balances].sort((a, b) => (b.value ?? 0) - (a.value ?? 0)).map(money).join(' · ');
+}
 function accountsList() {
   return [...(insight.subscriptions || []).map(s => ({ id: s.id, providerId: s.id, provider: s.name, name: s.label,
     subscriptionId: s.id, engine: s.engine, enabled: true, info: s.info, capability: s.capability })),
@@ -562,14 +568,14 @@ function accountsList() {
 function accountCard(account, selected = false) {
   const { id, provider, name, info, capability, subscriptionId, engine, type, enabled } = account;
   const t = window.CamelliaI18n.t;
-  const latest = info.latest, balance = latest?.balances?.[0], quota = latest?.windows?.[0];
-  const summary = balance ? money(balance) : quota ? quotaRemaining(quota) : capability.supported ? t('Not queried') : t('Not supported');
+  const latest = info.latest, balances = latest?.balances || [], quota = latest?.windows?.[0];
+  const summary = balances.length ? balanceSummary(balances) : quota ? quotaRemaining(quota) : capability.supported ? t('Not queried') : t('Not supported');
   const brand = subscriptionId ? `<img src="../../../assets/brands/${engine}.svg" alt="">` : brandMark({ type, name: provider });
   return `<${subscriptionId ? 'div' : 'button'} class="balance-card ${selected ? 'selected' : ''}" data-balance="${esc(id)}"><span class="provider-title"><span class="provider-mark${subscriptionId ? ' engine-mark' : ''}"${subscriptionId ? ` data-engine="${engine}"` : ''}>${brand}</span>${esc(provider)}</span>
     <p>${esc(subscriptionId ? t(name) : name)}${enabled ? '' : ' · ' + t('Disabled')}${subscriptionId ? ' · ' + t('Signed in') : ''}</p>
-    <strong>${esc(summary)}</strong>${quota && !balance ? meter(quota) : ''}
-    <p>${quota && !balance ? esc(t(quota.label)) + ' · ' : ''}${esc(info.refreshing ? t('Querying…') : latest ? t('Updated ' + when(latest.at)) : t(capability.label))}</p>
-    ${balance && quota ? `<div class="quota-breakdown">${latest.windows.map(w => `<div class="quota-row"><small>${esc(t(w.label))}</small><small>${esc(quotaRemaining(w))}</small>${meter(w)}</div>`).join('')}</div>`
+    <strong>${esc(summary)}</strong>${quota && !balances.length ? meter(quota) : ''}
+    <p>${quota && !balances.length ? esc(t(quota.label)) + ' · ' : ''}${esc(info.refreshing ? t('Querying…') : latest ? t('Updated ' + when(latest.at)) : t(capability.label))}</p>
+    ${balances.length && quota ? `<div class="quota-breakdown">${latest.windows.map(w => `<div class="quota-row"><small>${esc(t(w.label))}</small><small>${esc(quotaRemaining(w))}</small>${meter(w)}</div>`).join('')}</div>`
       : quota && latest.windows.length > 1 ? `<div class="quota-preview">${latest.windows.slice(1).map(w => `<small>${esc(t(w.label))} · ${esc(quotaRemaining(w))}</small>`).join('')}</div>` : ''}
     ${(latest?.windows || []).filter(w => w.resetsAt).map(w => `<small>${esc(t(w.label))} · ${esc(t('Resets'))} ${esc(when(w.resetsAt))}</small>`).join('')}
     ${info.error ? `<p class="error">${esc(t(info.error))}${latest ? ' ' + esc(t('The last successful result is shown below.')) : ''}</p>` : ''}</${subscriptionId ? 'div' : 'button'}>`;
@@ -582,25 +588,6 @@ function renderBalances() {
   const accounts = all.filter(a => (!$('balanceProvider').value || a.providerId === $('balanceProvider').value) && `${a.provider} ${a.name} ${a.maskedKey || ''}`.toLowerCase().includes(query));
   if (!accounts.some(a => a.id === balanceKey)) balanceKey = accounts[0]?.id || null;
   $('balanceCards').innerHTML = accounts.map(a => accountCard(a, a.id === balanceKey)).join('') || (all.length ? "<div class=\"empty\" data-i18n>No matching accounts.</div>" : "<div class=\"empty\"><h2 data-i18n>Connect an account to view its balance</h2><p class=\"hint\" data-i18n>Add a connection in Providers & Keys.</p></div>");
-  renderChartGrid($('balanceChart'), balanceChartSeries());
-}
-function balanceChartSeries(id = balanceKey) {
-  const t = window.CamelliaI18n.t;
-  const account = accountsList().find(account => account.id === id);
-  if (!account) return [];
-  const latest = account.info.latest;
-  const metrics = [...(latest?.balances || []).map(balance => ({ label: t(balance.label), type: 'balances', key: balance.id, unit: balance.currency })), ...(latest?.windows || []).map(window => ({ label: t(window.label) + ' · ' + t('Remaining'), type: 'windows', key: window.id, unit: window.unit || '%' }))];
-  return metrics.map(metric => ({
-    kind: 'quota', label: metric.label + ' · ' + metric.unit,
-    description: `${account.provider} · ${t(account.name)} · ${t('30-day observations')}`,
-    unit: metric.unit, percent: metric.type === 'windows' && metric.unit === '%',
-    points: (account.info.history || []).map(sample => {
-      const item = sample[metric.type]?.find(entry => entry.id === metric.key);
-      let value = null;
-      if (item) value = metric.type === 'balances' ? item.value : metric.unit === '%' ? remaining(item) : item.remainingValue ?? null;
-      return { at: sample.at, value };
-    }),
-  }));
 }
 async function refreshBalances(payload = {}) {
   try {

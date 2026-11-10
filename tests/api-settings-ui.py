@@ -370,7 +370,14 @@ try:
         page.locator('[data-balance="'+key+'"]').click()
         expect(page.locator('#balanceDetail')).to_have_count(0)
         expect(page.locator('.balance-card.selected')).to_contain_text('125.5 Credits')
-        expect(page.locator('#balanceChart [data-chart-kind=quota] .chart-dot')).to_have_count(2)
+        # A provider can report one balance per wallet in unstable order. A zero
+        # USD wallet must not replace the funded CNY wallet in the card.
+        multi=json.loads(json.dumps(snapshot))
+        multi['keys'][key]['latest']['balances']=[
+            {'id':'USD','label':'Available balance','value':0,'currency':'USD','parts':[]},
+            {'id':'CNY','label':'Available balance','value':1141.25,'currency':'CNY','parts':[]}]
+        page.evaluate('s=>window.testEmitInsights(s)',multi)
+        expect(page.locator('.balance-card.selected strong')).to_have_text('¥1,141.25 · $0')
         page.locator('[data-view=usage]').click()
         page.locator('#usageProvider').select_option(command['id'])
         page.locator('#usageKey').select_option(key)
@@ -380,7 +387,6 @@ try:
         expect(page.locator('#usageChart [data-chart-kind=usage]').first).to_contain_text('Successful requests')
         page.locator('#usageModel').select_option('model-test')
         expect(page.locator('#usageChart [data-chart-kind=usage]')).to_have_count(1)
-        expect(page.locator('#balanceChart [data-chart-kind=quota]')).to_have_count(1)
         page.locator('#usageModel').select_option('')
         page.set_viewport_size({'width':1280,'height':1200})
         page.mouse.move(0,0)
@@ -409,8 +415,6 @@ try:
         expect(card.locator('.quota-row').nth(2)).to_contain_text('34.96 Credits')
         assert '%' not in card.locator('.quota-row').nth(2).inner_text()
         expect(card.locator('.quota-row .meter')).to_have_count(2)
-        expect(page.locator('#balanceChart [data-chart-kind=quota]')).to_have_count(4)
-        expect(page.locator('#balanceChart [data-chart-kind=quota]').last).to_contain_text('credits')
         expect(card).to_be_visible()
         page.evaluate('() => document.querySelector(".balance-card.selected").scrollIntoView({block:"center"})')
         page.screenshot(path=str(repo/'dist/ui-preview/settings-commandcode-quotas.png'))
@@ -465,13 +469,10 @@ try:
         expect(page.locator('.balance-card.selected > small')).to_have_count(2)
         expect(page.locator('.balance-card.selected > small').first).to_contain_text('Resets')
         expect(page.locator('.balance-card.selected .error')).to_have_count(0)
-        expect(page.locator('#balanceChart [data-chart-kind=quota] svg')).to_have_count(2)
         assert page.locator('.balance-card.selected').evaluate('card => card.scrollWidth <= card.clientWidth')
         page.screenshot(path=str(repo/'dist/ui-preview/settings-ollama-balance.png'))
         page.evaluate('s=>window.testEmitInsights(s)',snapshot)
         expect(page.locator('.balance-card.selected')).to_contain_text('72% remaining')
-        expect(page.locator('#balanceChart [data-chart-kind=quota] svg')).to_have_count(3)
-        expect(page.locator('#balanceChart [data-chart-kind=quota] .chart-dot')).to_have_count(6)
         page.locator('[data-view=usage]').click()
         page.locator('#usageProvider').select_option(ollama['id'])
         page.locator('#usageKey').select_option(ollama_key)
@@ -483,43 +484,11 @@ try:
         expect(page.locator('#usageChart [data-chart-kind=usage]')).to_have_count(2)
         page.locator('#usageKey').select_option(key)
         expect(page.locator('.balance-card.selected')).to_have_attribute('data-balance', ollama_key)
-        expect(page.locator('#balanceChart [data-chart-kind=quota]')).to_have_count(3)
         page.locator('[data-view=providers]').click()
         page.locator('[data-balance="'+ollama_key+'"]').click()
         page.locator('[data-view=usage]').click()
         page.locator('#usageMetric').select_option('tokens')
         page.locator('[data-view=providers]').click()
-        for width in [760, 960, 1160, 1840, 1440]:
-            page.set_viewport_size({'width':width,'height':1200})
-            page.evaluate('() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))')
-            for selector in ['#balanceChart']:
-                expect(page.locator(selector+' [data-chart-kind=quota] svg')).to_have_count(3)
-                page.wait_for_function('''selector => {
-                    const grid = document.querySelector(selector);
-                    const columns = Math.max(1, Math.floor((grid.clientWidth + 12) / 332));
-                    return getComputedStyle(grid).gridTemplateColumns.split(' ').length === columns &&
-                        [...grid.querySelectorAll('svg')].every(chart =>
-                            Math.abs(Number(chart.getAttribute('width')) - chart.parentElement.clientWidth) <= 1);
-                }''', arg=selector)
-                assert page.locator(selector).evaluate('grid => grid.scrollWidth <= grid.clientWidth')
-                assert page.locator(selector).evaluate('''grid => [...grid.children].every(card =>
-                    Math.abs(card.getBoundingClientRect().width - document.querySelector('.balance-card').getBoundingClientRect().width) < 1)''')
-                for chart in page.locator(selector+' svg').all():
-                    dimensions=chart.evaluate('''chart => ({height: chart.getBoundingClientRect().height,
-                        labelSize: parseFloat(getComputedStyle(chart.querySelector('text')).fontSize) * chart.getScreenCTM().a})''')
-                    assert abs(dimensions['height'] - 248) < 1, dimensions
-                    assert 12 <= dimensions['labelSize'] <= 14, dimensions
-        page.locator('#balanceChart').scroll_into_view_if_needed()
-        quota_chart=page.locator('#balanceChart [data-chart-kind=quota]').first
-        quota_svg=quota_chart.locator('svg')
-        quota_svg.hover(position={'x':80,'y':100})
-        expect(quota_chart.locator('.chart-tooltip')).to_be_visible()
-        expect(quota_chart.locator('.chart-tooltip strong')).to_have_text('86%')
-        last_dot=quota_chart.locator('.chart-dot').last
-        last_dot.focus()
-        expect(quota_chart.locator('.chart-tooltip strong')).to_have_text('72%')
-        page.keyboard.press('Escape')
-        expect(quota_chart.locator('.chart-tooltip')).to_be_hidden()
         page.locator('[data-view=usage]').click()
         page.locator('#usageProvider').select_option(ollama['id'])
         page.locator('#usageKey').select_option(ollama_key)
@@ -547,9 +516,6 @@ try:
         page.emulate_media(color_scheme='dark');page.set_viewport_size({'width':760,'height':620})
         assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
         page.locator('[data-view=providers]').click()
-        page.locator('#balanceChart').scroll_into_view_if_needed()
-        page.locator('#balanceChart [data-chart-kind=quota] svg').first.hover(position={'x':80,'y':100})
-        expect(page.locator('.chart-tooltip:visible')).to_have_count(1)
         page.screenshot(path=str(repo/'dist/ui-preview/settings-balances-dark-compact.png'))
         page.locator('[data-view=general]').click();page.locator('[data-theme-choice=dark]').click()
         expect(page.locator('#openMobileAccess')).to_have_count(0)
@@ -671,7 +637,7 @@ try:
         page.screenshot(path=str(screenshot),full_page=True)
         assert not errors,errors
         browser.close()
-    print('PASS: unified settings, bulk import, catalog, model verification, usage filters/export, balance charts/failure recovery/escaping, dark/compact layout, routing and Claude catalog; no browser errors')
+    print('PASS: unified settings, bulk import, catalog, model verification, usage filters/export, balance cards/failure recovery/escaping, dark/compact layout, routing and Claude catalog; no browser errors')
 finally:
     try: rpc('cleanup')
     finally: driver.terminate();driver.wait(timeout=5)

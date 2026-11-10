@@ -1601,7 +1601,11 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     const div = existing || persisted || addUser(attempt.text || '[Attachments]', attempt.attachments, { at: attempt.at || Date.now() });
     if (div.querySelector('.failed-send')) return;
     const controls = document.createElement('div'); controls.className = 'failed-send';
-    const error = document.createElement('span'); error.textContent = window.CamelliaI18n.t('Failed to start') + ': ' + attempt.error;
+    const recovery = window.CamelliaContextOverflow.contextRecoveryText(attempt.error);
+    const canonical = recovery && chat.querySelector('.context-compaction .context-recovery');
+    const error = document.createElement('span');
+    error.textContent = canonical ? window.CamelliaI18n.t('Failed to start. Recover the context below, then send again.')
+      : window.CamelliaI18n.t('Failed to start') + ': ' + window.CamelliaContextOverflow.recoverySummary(attempt.error);
     const edit = document.createElement('button'); edit.type = 'button';
     edit.title = window.CamelliaI18n.t('Edit message'); edit.setAttribute('aria-label', edit.title);
     edit.dataset.i18nAttrs = 'title aria-label';
@@ -1674,12 +1678,24 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     controls.scrollIntoView({ block: 'nearest' });
   }
 
+  function messageEditErrorText(text) {
+    if (!window.CamelliaContextOverflow.contextRecoveryText(text)) return text;
+    // The failed compaction notice below already reports this failure and
+    // hosts the recovery choices; repeating the full engine message here would
+    // show the same error and the same two buttons twice.
+    if (chat.querySelector('.context-compaction .context-recovery'))
+      return window.CamelliaI18n.t('Could not resend. Recover the context below, then send again.');
+    return window.CamelliaContextOverflow.recoverySummary(text) || text;
+  }
   function showMessageEditStatus(state, text, error = false) {
-    state.status.textContent = text; state.status.hidden = false;
+    const display = error ? messageEditErrorText(text) : text;
+    state.status.dataset.recoveryError = error && window.CamelliaContextOverflow.contextRecoveryText(text) ? text : '';
+    state.status.textContent = display; state.status.hidden = false;
     state.status.classList.toggle('error', error); state.status.setAttribute('role', error ? 'alert' : 'status');
     renderContextRecovery(state.form, error ? text : '');
     state.status.scrollIntoView({ block: 'nearest' });
     state.submit.scrollIntoView({ block: 'nearest' });
+    return display;
   }
 
   async function resendEditedMessage(state) {
@@ -1733,7 +1749,8 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       state.cancel.textContent = 'Cancel'; state.cancel.onclick = cancelMessageEdit;
       state.submit.textContent = 'Send'; state.form.removeAttribute('aria-busy');
       const error = 'Could not resend: ' + (res?.error || 'No response from the app');
-      showMessageEditStatus(state, error, true); setStatus(error); updateConversationControls(); state.textarea.focus({ preventScroll: true }); return;
+      const display = showMessageEditStatus(state, error, true);
+      setStatus(display); updateConversationControls(); state.textarea.focus({ preventScroll: true }); return;
     }
     editingMessage = null;
     while (state.div.nextSibling) state.div.nextSibling.remove();
@@ -2397,11 +2414,16 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     chat.querySelectorAll('.context-compaction-duration').forEach(compactionDurationText);
     renderBackgroundWork();
   });
-  function renderCompactionStatus(compaction, historyBefore) {
+  function renderCompactionStatus(compaction, historyBefore, { recoverable = true, replay = false } = {}) {
     if (!compaction) return;
     const was = historyBefore === undefined && nearBottom();
     let row = historyBefore === undefined ? chat.querySelector('.context-compaction[data-state="running"]') : null;
     if (!row && compaction.seq) row = chat.querySelector('.context-compaction[data-seq="' + compaction.seq + '"]');
+    // On reload the backend reports the last failed compaction without a
+    // message sequence. If history already painted that notice, update it in
+    // place instead of appending a second copy at the end of the transcript.
+    if (!row && replay && historyBefore === undefined && ['failed', 'cancelled'].includes(compaction.state))
+      row = [...chat.querySelectorAll('.context-compaction')].filter(el => el.dataset.state === compaction.state).at(-1) || null;
     if (!row) {
       row = document.createElement('div');
       row.className = 'context-compaction';
@@ -2431,9 +2453,10 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     let errorEl = row.querySelector('.context-compaction-error');
     if (compaction.state === 'failed' && compaction.error) {
       if (!errorEl) { errorEl = document.createElement('div'); errorEl.className = 'context-compaction-error'; row.appendChild(errorEl); }
-      errorEl.textContent = compaction.error;
+      errorEl.textContent = window.CamelliaContextOverflow.recoverySummary(compaction.error);
     } else errorEl?.remove();
-    renderContextRecovery(row, compaction.error, compaction.state === 'failed');
+    if (recoverable) renderContextRecovery(row, compaction.error, compaction.state === 'failed');
+    else row.querySelector('.context-recovery')?.remove();
     // The label is translated in place, so the elapsed time lives beside it
     // instead of inside the translated text node.
     const running = compaction.state === 'running';
@@ -2517,7 +2540,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
   let statusText = '';
   let conversationPhase = '', conversationPhaseSessionId = null;
   function setStatus(text) { statusText = text; statusLine.textContent = text; }
-  function handleConversationStatus({ sessionId, text, compaction }) {
+  function handleConversationStatus({ sessionId, text, compaction, replay = false }) {
     // The transcript marker owns the compaction progress. Mirroring its text
     // into the in-turn run row would print the same sentence twice inside the
     // transcript, so the row keeps its own neutral placeholder meanwhile.
@@ -2528,7 +2551,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     if (sessionId !== context.sessionId) return;
     conversationPhase = text; conversationPhaseSessionId = sessionId;
     updateHandoffStop();
-    if (statusText === 'Stopping…') { renderCompactionStatus(compaction); return; }
+    if (statusText === 'Stopping…') { renderCompactionStatus(compaction, undefined, { replay }); return; }
     if (text) {
       setStatus(text);
       if (running || pending) setRunStatus(runText);
@@ -2536,7 +2559,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       setStatus('Running…');
       setRunStatus('Waiting for the engine to respond…');
     }
-    renderCompactionStatus(compaction);
+    renderCompactionStatus(compaction, undefined, { replay });
   }
   function startRunTicker() {
     runStartedAt = Date.now();
@@ -2629,7 +2652,8 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     const errLabel = ev.subtype && ev.subtype !== 'success' ? ev.subtype : 'Error';
     const label = document.createElement('span');
     label.className = 'run-result-text';
-    label.textContent = (stopped ? '■ Stopped' : ok ? '✓ Done' : '✗ ' + (ev.result || errLabel))
+    const detail = ok || stopped ? '' : window.CamelliaContextOverflow.recoverySummary(ev.result) || errLabel;
+    label.textContent = (stopped ? '■ Stopped' : ok ? '✓ Done' : '✗ ' + detail)
       + (stats.length ? ' · ' + stats.slice(0, 3).join(' · ') : '');
     chip.append(label);
     if (!ok && !stopped && Number.isSafeInteger(retrySeq)) {
@@ -3306,10 +3330,41 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       card.appendChild(open);
     } catch (error) { body.textContent = error.message; }
   }
+  function syncRecoveryHandoff(root = chat) {
+    const handoff = handoffForCurrentSession();
+    for (const card of root.querySelectorAll('.context-recovery')) {
+      const hint = card.querySelector('p'), actions = card.querySelector('.context-recovery-actions');
+      if (!hint || !actions) continue;
+      if (handoff) {
+        if (!card.dataset.recoveryHint) card.dataset.recoveryHint = hint.textContent;
+        hint.textContent = window.CamelliaI18n.t('Handoff in progress…');
+        actions.hidden = true;
+      } else if (card.dataset.recoveryHint !== undefined) {
+        hint.textContent = card.dataset.recoveryHint;
+        delete card.dataset.recoveryHint;
+        actions.hidden = false;
+      }
+    }
+  }
   function renderContextRecovery(host, error, failedCompaction = false) {
     const existing = host.querySelector('.context-recovery');
     if (!(failedCompaction || window.CamelliaContextOverflow.contextRecoveryText(error))) {
       existing?.remove(); return;
+    }
+    // One set of recovery choices per conversation. The failed compaction
+    // notice survives edits and reloads, so it owns the canonical card; other
+    // error rows point at it instead of repeating the same two buttons.
+    if (!failedCompaction) {
+      const cards = chat.querySelectorAll('.context-recovery');
+      if (existing && cards.length === 1) return;
+      if (cards.length) { existing?.remove(); return; }
+    } else {
+      chat.querySelectorAll('.context-recovery').forEach(card => { if (card !== existing) card.remove(); });
+      // Status can arrive after the editor's rejected send. Reconcile that
+      // earlier error too, regardless of which callback completed first.
+      const status = editingMessage?.status;
+      if (status?.dataset.recoveryError)
+        status.textContent = window.CamelliaI18n.t('Could not resend. Recover the context below, then send again.');
     }
     if (existing) return;
     const sessionId = context.sessionId;
@@ -3332,7 +3387,8 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
         row.removeAttribute('aria-busy');
         if (context.sessionId !== sessionId) return;
         if (!result?.ok) {
-          hint.textContent = result?.error || 'Context recovery failed. Try another recovery option.';
+          actions.hidden = false;
+          hint.textContent = window.CamelliaContextOverflow.recoverySummary(result?.error) || 'Context recovery failed. Try another recovery option.';
           return;
         }
         if (edit && editingMessage === edit) showMessageEditStatus(edit, 'Context ready. Send your message again.');
@@ -3345,6 +3401,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       actions.appendChild(button);
     }
     row.append(hint, actions); host.appendChild(row);
+    syncRecoveryHandoff(row);
   }
 
   async function compactConversation() {
@@ -3355,7 +3412,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     setStatus('Compacting context…');
     try {
       const res = await window.dshDesktop.conversationCommand({ engine: harnessId, action: 'compact', payload: { sessionId } });
-      if (!res?.ok) setStatus(res?.error || 'Compaction failed');
+      if (!res?.ok) setStatus(window.CamelliaContextOverflow.recoverySummary(res?.error) || 'Compaction failed');
       else {
         const duration = compactionDuration(res.durationMs);
         const label = res.fallback ? 'Context compacted: older context omitted'
@@ -3363,7 +3420,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
         setStatus(window.CamelliaI18n.t(label) + (duration ? ' · ' + duration : ''));
       }
       return res;
-    } catch (error) { setStatus(error.message); return { ok: false, error: error.message }; }
+    } catch (error) { setStatus(window.CamelliaContextOverflow.recoverySummary(error.message)); return { ok: false, error: error.message }; }
     finally { switchingEngine = false; input.disabled = loadingSession; updateConversationControls(); }
   }
   input.addEventListener('keydown', (e) => {
@@ -3755,7 +3812,6 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
   }
   $('permAllow').addEventListener('click', () => void answerPermission(true));
   $('permDeny').addEventListener('click', () => void answerPermission(false));
-  $('permLater').hidden = false;
   $('permLater').onclick = () => $('permMask').classList.remove('visible');
 
   // ---------- P3: prompt suggestion ----------
@@ -3842,6 +3898,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       input.disabled = loadingSession;
     }
     updateConversationControls();
+    syncRecoveryHandoff();
     return true;
   }
   function beginHandoffSession(sessionId) {
@@ -3856,6 +3913,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       });
     }, handoffTimeoutMs);
     handoffSessions.set(sessionId, handoff);
+    syncRecoveryHandoff();
     return handoff;
   }
   function updateConversationControls() {
@@ -4120,7 +4178,11 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       chat.innerHTML = '';
       $('headerTitle').textContent = s ? s.title : "Session " + id.slice(0, 8);
       $('headerTitle').dataset.titled = '1';
-      if (!res.live && !await renderHistoryMessages(res.messages, res.historyPage)) return false;
+      // A failed compaction notice only offers recovery while the backend still
+      // reports it as the current boundary (not after a successful handoff or
+      // once the conversation moved on).
+      const historyOptions = { recoverFailure: Boolean(res.compaction) };
+      if (!res.live && !await renderHistoryMessages(res.messages, res.historyPage, historyOptions)) return false;
       if (!res.live) {
         const last = res.messages.findLast(message => ['user', 'assistant'].includes(message.role));
         if (last?.role === 'assistant' && (!last.runResult || last.runResult.subtype === 'success'))
@@ -4133,7 +4195,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       restoreDraft();
       draftRestored = true;
       setStatus(res.interrupted ? 'The last turn was interrupted. Review its result before continuing.' : res.truncated ? "Showing the latest 200 messages. Continuation uses the full history." : "History loaded. Your next message continues this session.");
-      if (!await applyLiveRun(res.live)) return false;
+      if (!await applyLiveRun(res.live, historyOptions)) return false;
       workPanel.update(res.subagents);
       renderBackgroundWork();
       if (seq !== sessionOpenSeq) return false;
@@ -4142,7 +4204,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       restoringRun = false;
       for (const event of eventsDuringRestore.splice(0)) if (event.type === 'conversation:activity' || event.runId !== liveRun || event.eventSeq > lastSeq) handleEvent(event);
       const pending = pendingConversationSend();
-      if (pending?.phase || res.compaction) handleConversationStatus({ sessionId: id,
+      if (pending?.phase || res.compaction) handleConversationStatus({ sessionId: id, replay: true,
         text: pending?.phase || (res.compaction?.state === 'running' ? 'Compacting context…' : ''), compaction: res.compaction });
       if (handoffForCurrentSession()) {
         updateHandoffStop();
@@ -4175,7 +4237,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     }
   }
 
-  async function renderHistoryMessages(messages, pagination) {
+  async function renderHistoryMessages(messages, pagination, { recoverFailure = true } = {}) {
       const openSeq = sessionOpenSeq;
       const latest = messages.findLast(message => message.role === 'assistant'
         && (contextTokens(message.lastCallUsage) > 0 || contextTokens(message.usage) > 0));
@@ -4234,7 +4296,8 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
               continue;
             }
             if (m.compaction || ['Context compacted automatically', 'Context compacted: summary saved'].includes(m.text)) {
-              renderCompactionStatus({ ...m.compaction, engine: m.engine, state: m.compaction?.state || 'completed', error: m.compaction?.error || (m.compaction?.state === 'failed' ? m.text : ''), seq: m.seq }, before);
+              renderCompactionStatus({ ...m.compaction, engine: m.engine, state: m.compaction?.state || 'completed', error: m.compaction?.error || (m.compaction?.state === 'failed' ? m.text : ''), seq: m.seq }, before,
+                { recoverable: recoverFailure });
               continue;
             }
             if (!conversationPrefs.showOrigin) continue;
@@ -4351,7 +4414,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     replayingLiveSnapshot = true;
   }
 
-  async function applyLiveRun(live) {
+  async function applyLiveRun(live, { recoverFailure = true } = {}) {
     if (!live) { acceptSessionEvents = true; return true; }
     const openSeq = sessionOpenSeq;
     context.sessionId = live.sessionId; context.workspaceId = live.workspaceId;
@@ -4360,7 +4423,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     if (live.engine) turnEngine = live.engine;
     followRunOutput = true;
     chat.innerHTML = '';
-    if (!await renderHistoryMessages(live.messages, live.historyPage)) return false;
+    if (!await renderHistoryMessages(live.messages, live.historyPage, { recoverFailure })) return false;
     addUser(live.displayText ?? live.prompt, live.attachments || [], { seq: live.userSeq, at: live.startedAt });
     setRunning(true);
     runStartedAt = live.startedAt || Date.now();

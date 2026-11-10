@@ -33,6 +33,14 @@ Desktop and headless conversation budgets read this evidence on each decision:
 - Keep the existing compaction headroom. When native auto-compaction still uses a
   larger window, Camellia performs early compaction. Router summaries resolve
   their Chat Completions transport separately from the continuing engine.
+- Native harnesses receive the same explicit cap. Claude Code assumes a 200K
+  window for model IDs it does not recognize, so an API-routed third-party model
+  that declares a larger window would auto-compact at a fraction of its real
+  capacity; Camellia passes the smallest configured, catalog or confirmed cap as
+  `CLAUDE_CODE_MAX_CONTEXT_TOKENS`. Codex receives it as `model_context_window`.
+  Provisional accepted-input evidence is never passed: it is a lower bound, and
+  using it makes the harness compact a healthy thread at the largest prompt seen
+  so far. Subscription connections keep the harness's own model knowledge.
 
 API evidence does not constrain subscription connections. Replacing an endpoint,
 upstream model or effective protocol invalidates its evidence and the conversation's
@@ -91,7 +99,10 @@ summarization.
 Markdown handoffs do not query or compact the source native context. Camellia
 exports the saved public history locally, including a bounded overview and a
 linked full JSONL transcript. The target reads those files, so an oversized
-source transcript does not require a source summary or replay. Cross-engine
+source transcript does not require a source summary or replay. The handoff states
+the transcript's size and tells the target to read small ranges; reading several
+large ranges in one turn can refill the context faster than native compaction can
+summarize it, which Claude Code reports as autocompact thrashing. Cross-engine
 revisions use the same local handoff, bounded before the revised message; the
 superseded request, reply and tool records stay out of the exported snapshot.
 

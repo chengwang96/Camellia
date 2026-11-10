@@ -1,6 +1,6 @@
 # Camellia for Android
 
-Camellia's Android client is a native Java/View application for Android 8.0 (API 26) and newer. It has local provider chat and a separate remote-control view for paired desktop conversations. The current release is `1.0.1` (`versionCode` 107). The signed phone package is `dist/Camellia-Android-1.0.1.apk` (ARM64), also exported as `dist/Camellia-Android-1.0.1-arm64-v8a.apk`. An optional `dist/Camellia-Android-1.0.1-x86_64.apk` can be built for x86_64 emulators or devices; packages ending in `-debug.apk` are development builds.
+Camellia's Android client is a native Java/View application for Android 8.0 (API 26) and newer. It has local provider chat and a separate remote-control view for paired desktop conversations. The current release is `1.1.0` (`versionCode` 108). The signed phone package is `dist/Camellia-Android-1.1.0.apk` (ARM64), also exported as `dist/Camellia-Android-1.1.0-arm64-v8a.apk`. An optional `dist/Camellia-Android-1.1.0-x86_64.apk` can be built for x86_64 emulators or devices; packages ending in `-debug.apk` are development builds.
 
 Build 107 retains the remote foreground service and embedded network for up to 30 minutes while away, with matching settings and notification text.
 

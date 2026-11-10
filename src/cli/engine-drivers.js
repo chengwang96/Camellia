@@ -22,10 +22,11 @@ const { conversationModels } = require('../engines/conversation-models');
 const { nativeEditingSupported } = require('../engines/native-edit-boundary');
 const { snapshotTranscript } = require('../engines/native-fork');
 const { harnessThinkingRoute } = require('../api/harness-thinking');
+const { explicitContextCap } = require('../api/context-capacity');
 
-function claudeSpec({ settings, opts, home, route, environment, history, mcpFile }) {
+function claudeSpec({ settings, opts, home, route, environment, history, mcpFile, contextWindow }) {
   const env = { ...environment, CLAUDE_CONFIG_DIR: home };
-  for (const key of Object.keys(env)) if (/^(ANTHROPIC_|CLAUDE_CODE_OAUTH_TOKEN$|CLAUDE_CODE_USE_BEDROCK$|CLAUDE_CODE_USE_VERTEX$)/i.test(key)) delete env[key];
+  for (const key of Object.keys(env)) if (/^(?:ANTHROPIC_|CLAUDE_CODE_OAUTH_TOKEN$|CLAUDE_CODE_USE_BEDROCK$|CLAUDE_CODE_USE_VERTEX$|CLAUDE_CODE_MAX_CONTEXT_TOKENS$)/i.test(key)) delete env[key];
   const args = ['-p', '--output-format', 'stream-json', '--input-format', 'stream-json', '--replay-user-messages', '--include-partial-messages', '--verbose'];
   if (opts.goalBridge?.config) {
     let source = {};
@@ -53,6 +54,11 @@ function claudeSpec({ settings, opts, home, route, environment, history, mcpFile
     Object.assign(overlay, { ANTHROPIC_BASE_URL: route.baseUrl, ANTHROPIC_AUTH_TOKEN: route.authToken, ANTHROPIC_API_KEY: '', ANTHROPIC_MODEL: settings.model,
       ANTHROPIC_DEFAULT_OPUS_MODEL: settings.model, ANTHROPIC_DEFAULT_SONNET_MODEL: settings.model, ANTHROPIC_DEFAULT_HAIKU_MODEL: settings.model,
       ANTHROPIC_SMALL_FAST_MODEL: settings.model, CLAUDE_CODE_SUBAGENT_MODEL: settings.model });
+    // Claude Code does not recognize third-party model IDs and assumes a 200K
+    // window, so an explicit 1M route would auto-compact at a fifth of its real
+    // capacity. Only an explicit route limit may override the assumption;
+    // accepted-input evidence is a lower bound and would compact too early.
+    if (Number.isSafeInteger(contextWindow) && contextWindow >= 4096) overlay.CLAUDE_CODE_MAX_CONTEXT_TOKENS = String(contextWindow);
   }
   if (subscription && ['off', 'none'].includes(settings.thinkingBudget)) overlay.MAX_THINKING_TOKENS = '0';
   const file = path.join(home, 'overlays', `${opts.conversationId || 'legacy'}.json`);
@@ -68,6 +74,7 @@ function createEngineDrivers({ root, dataDir, loadConfig, saveConfig, onEvent, g
   const locate = (engine, mode) => { const found = runtimes.locate(engine, mode); if (!found) throw new Error(`Install ${engine} on this server with runtime-install first`); return found; };
   const models = () => require('../api/api-router-config').publicState(router()).models;
   const context = model => contextCapacity?.budget({ model, protocol: 'openai' })?.cap || require('../api/api-router-config').modelContextWindow(router(), model);
+  const dshContext = model => contextCapacity?.budget({ model, protocol: 'anthropic' })?.cap || require('../api/api-router-config').modelContextWindow(router(), model);
   const noLog = () => {};
   const links = {};
   const openExternal = engine => async value => {
@@ -77,7 +84,7 @@ function createEngineDrivers({ root, dataDir, loadConfig, saveConfig, onEvent, g
   };
   for (const engine of ['claude', 'codex', 'kimi']) if (!loadConfig()[engine]) saveConfig({ [engine]: { connection: 'api', permissionMode: 'ask' } });
   if (!loadConfig().dshChat) saveConfig({ dshChat: { permissionMode: 'ask', model: '' } });
-  const dsh = createDshChat({ dataDir, loadConfig, saveConfig, getRoute, getModels: models, runtime: () => locate('dsh'), node: () => process.execPath,
+  const dsh = createDshChat({ dataDir, loadConfig, saveConfig, getRoute, getModels: models, getContextWindow: dshContext, runtime: () => locate('dsh'), node: () => process.execPath,
     getModelThinking: model => require('../api/api-router-config').publicState(router()).modelThinking[model],
     environment, onEvent: event => onEvent('dsh', event), log: noLog, nativeConfig: () => native.config('dsh'), nativeRevision: () => native.fingerprint('dsh') });
   const codex = createCodex({ dataDir, loadConfig, saveConfig, getRoute, getModels: models, getContextWindow: context,
@@ -155,7 +162,10 @@ function createEngineDrivers({ root, dataDir, loadConfig, saveConfig, onEvent, g
       const settings = { ...claude.settings(), ...opts.settings, cwd: opts.cwd, nativeRevision: native.fingerprint('claude') };
       const current = cached(claudePool, opts, settings); if (current) return current;
       if (settings.connection !== 'subscription' && !models().includes(settings.model)) throw new Error('Choose a configured API model');
-      const spec = claudeSpec({ settings, opts, home: claudeHome, route: settings.connection === 'subscription' ? null : getRoute(), environment: environment(), history: claudeHistory, mcpFile: native.path('claude', 'mcp') });
+      const spec = claudeSpec({ settings, opts, home: claudeHome, route: settings.connection === 'subscription' ? null : getRoute(),
+        contextWindow: settings.connection === 'subscription' ? undefined
+          : explicitContextCap(contextCapacity?.budget({ model: settings.model, protocol: 'anthropic' })),
+        environment: environment(), history: claudeHistory, mcpFile: native.path('claude', 'mcp') });
       claudePool.get(opts)?.kill();
       const session = new ClaudeSession({ gen: ++generation, settings, opts: { ...opts, lockPermissionMode: true }, exe: locate('claude').file, spec, spawn, log: noLog, nativeHistory: claudeHistory,
         onEvent: event => { if (claudePool.get(opts) === session) onEvent('claude', { ...event, conversationId: opts.conversationId }); }, onSessionId: noLog, onResult: noLog });

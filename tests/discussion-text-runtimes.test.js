@@ -224,6 +224,13 @@ test('new API harness launches keep the exact route and disable native tool disc
       const patch = YAML.parse(fs.readFileSync(path.join(home, 'discussion.patch.yml'), 'utf8'));
       assert.ok(patch.some(row => row.id === 'tool-future-tool' && row.disabled));
       assert.ok(patch.some(row => row.insert?.some(plugin => plugin.id === 'camellia-discussion-policy')));
+      const launch = YAML.parse(fs.readFileSync(path.join(home, 'camellia-runtime.patch.yml'), 'utf8'));
+      assert.equal(launch.find(row => row.id === 'llm-pi-ai').config.providers['api-pool'].models[0].contextWindow, 64000);
+      const toolHome = path.join(input.home, 'dsh-tools'); fs.mkdirSync(toolHome);
+      require('../src/engines/discussions/tool-runtimes').nativeToolSpec({ ...input, home: toolHome, runtime, permissionMode: 'ask',
+        profile: { engine: 'dsh', connection: 'api', model: 'chosen-model', thinking: '', contextWindow: 64000 } });
+      const toolLaunch = YAML.parse(fs.readFileSync(path.join(toolHome, 'camellia-runtime.patch.yml'), 'utf8'));
+      assert.equal(toolLaunch.find(row => row.id === 'llm-pi-ai').config.providers['api-pool'].models[0].contextWindow, 64000);
     }
   }
 });

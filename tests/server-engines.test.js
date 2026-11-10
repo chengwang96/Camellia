@@ -91,6 +91,15 @@ test('Claude API and subscription spawn specs never inherit external API credent
   assert.equal(api.env.CLAUDE_CONFIG_DIR, root);
   assert.equal(api.env.ANTHROPIC_API_KEY, '');
   assert.equal(api.env.CLAUDE_CODE_OAUTH_TOKEN, undefined);
+  // Claude Code assumes 200K for model IDs it does not recognize. A declared
+  // route window replaces that assumption in both the process env and the
+  // settings overlay; without one the variable stays absent.
+  assert.equal(api.env.CLAUDE_CODE_MAX_CONTEXT_TOKENS, undefined);
+  const windowed = claudeSpec({ ...common, contextWindow: 1048576, settings: { connection: 'api', permissionMode: 'ask', model: 'model-a', cwd: root }, route: { baseUrl: 'http://127.0.0.1:8788', authToken: 'managed' } });
+  assert.equal(windowed.env.CLAUDE_CODE_MAX_CONTEXT_TOKENS, '1048576');
+  assert.equal(JSON.parse(fs.readFileSync(path.join(root, 'overlays/test.json'), 'utf8')).env.CLAUDE_CODE_MAX_CONTEXT_TOKENS, '1048576');
+  const ignored = claudeSpec({ ...common, contextWindow: 1048576, settings: { connection: 'subscription', permissionMode: 'ask', model: 'account-model', cwd: root } });
+  assert.equal(ignored.env.CLAUDE_CODE_MAX_CONTEXT_TOKENS, undefined);
   const disabled = claudeSpec({ ...common, settings: { connection: 'api', model: 'model-a', thinkingBudget: 'none' }, route: { baseUrl: 'http://127.0.0.1:8788', authToken: 'managed' } });
   assert.equal(disabled.args.includes('--effort'), false);
   assert.equal(disabled.env.MAX_THINKING_TOKENS, undefined);
@@ -101,6 +110,23 @@ test('Claude API and subscription spawn specs never inherit external API credent
   assert.equal(subscription.env.CLAUDE_CODE_OAUTH_TOKEN, undefined);
   assert.deepEqual(JSON.parse(fs.readFileSync(path.join(root, 'overlays/test.json'), 'utf8')), { env: {} });
   assert.ok(subscription.args.includes('account-model'));
+});
+
+test('Claude engine sessions pass the declared route window into the harness spec', async context => {
+  const root = directory(context);
+  const { normalizeConfig } = require('../src/api/api-router-config');
+  const { createContextCapacity } = require('../src/api/context-capacity');
+  const config = normalizeConfig({ enabled: true, providers: [{ id: 'provider', name: 'Relay', baseUrl: 'https://relay.example/v1', protocol: 'dual',
+    keys: [{ id: 'key', key: 'secret' }], models: [{ id: 'model-a', upstream: 'model-a', maxContext: 1048576 }] }] });
+  let saved = { claude: { connection: 'api', model: 'model-a' } };
+  const system = createEngineDrivers({ root, dataDir: root, loadConfig: () => saved, saveConfig: patch => { saved = { ...saved, ...patch }; },
+    onEvent: () => {}, getRoute: () => ({ baseUrl: 'http://127.0.0.1:8788', authToken: 'managed' }), router: () => config,
+    isBusy: () => false, runtimeManager: { locate: () => ({ file: process.execPath }), state: () => [], ensure: async () => ({ file: process.execPath }) },
+    contextCapacity: createContextCapacity({ file: path.join(root, 'capacity.json'), getConfig: () => config }) });
+  const session = system.drivers.claude.ensure({ conversationId: 'windowed', cwd: root });
+  assert.equal(session.spec.env.CLAUDE_CODE_MAX_CONTEXT_TOKENS, '1048576');
+  assert.equal(JSON.parse(fs.readFileSync(path.join(root, 'claude-native/overlays/windowed.json'), 'utf8')).env.CLAUDE_CODE_MAX_CONTEXT_TOKENS, '1048576');
+  await system.drivers.claude.shutdown();
 });
 
 test('Linux Antigravity distributions pin official URLs and cryptographic hashes', () => {

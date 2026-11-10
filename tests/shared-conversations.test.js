@@ -4686,6 +4686,11 @@ test('Markdown handoff preserves every visible turn and deduplicates tool snapsh
   const transcript = fs.readFileSync(attachment.fullPath, 'utf8');
   assert.match(transcript, /TOOL_0_0/);
   assert.match(transcript, /TOOL_5_5/);
+  // The handoff must say how large the full transcript is and how to read it
+  // safely: an unbounded read of this file can refill the model's context
+  // faster than the engine can compact it.
+  assert.match(markdown, /Full transcript \(JSONL\): .+ \(\d+(?:\.\d)? (?:KB|MB), \d+ messages, about \d+K? tokens\)/);
+  assert.match(markdown, /do not read several large ranges in one turn/);
 });
 
 test('Markdown handoff shortens long messages without dropping intermediate turns', async t => {

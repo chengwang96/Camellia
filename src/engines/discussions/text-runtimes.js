@@ -68,7 +68,7 @@ function extraTextSpec({ runtime, home, cwd, env, node, profile, route }) {
     return { ...spec, exe: node, cwd };
   }
   if (engine === 'dsh') {
-    const spec = dshAcpSpec({ runtime, home, model, route, permissionMode: 'ask', env, thinkingBudget: profile.thinking || '' });
+    const spec = dshAcpSpec({ runtime, home, model, route, permissionMode: 'ask', env, thinkingBudget: profile.thinking || '', contextWindow });
     // Use the installed profile's actual tool rows instead of maintaining a
     // stale name list. A global native guard also rejects unadvertised calls.
     const base = fs.readFileSync(path.join(runtime.dir, 'node_modules/@deepseek-ai/dsh-base/cordis.patch.yml'), 'utf8');

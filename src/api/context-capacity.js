@@ -8,6 +8,17 @@ const { contextError } = require('../shared/context-overflow');
 const UNKNOWN_CONTEXT_BUDGET = 32768;
 
 const tokenCount = value => Number.isSafeInteger(value) && value > 0 ? value : null;
+// A declared route limit, an explicit window setting, or a provider-reported
+// upper bound is strong enough to hand a native harness as its model window.
+// Successful input alone only proves a lower bound; using it would make the
+// harness compact a healthy thread at the largest prompt observed so far.
+function explicitContextCap(budget) {
+  const explicit = (budget?.routes || []).filter(route =>
+    ['configured', 'catalog', 'confirmed-upper-bound'].includes(route.source)
+    && Number.isSafeInteger(route.cap) && route.cap >= 4096);
+  return explicit.length ? Math.min(...explicit.map(route => route.cap)) : undefined;
+}
+
 function evidenceBounds(entry = {}) {
   const accepted = [entry.accepted?.tokens, entry.passive?.maxReportedInput, ...(entry.probe?.samples || [])
     .filter(sample => sample.kind === 'accepted').map(sample => sample.reportedInput)].filter(tokenCount);
@@ -160,4 +171,4 @@ function createContextCapacity({ file, getConfig, now = () => Date.now() }) {
   return { state, observe, budget };
 }
 
-module.exports = { createContextCapacity, contextError, UNKNOWN_CONTEXT_BUDGET };
+module.exports = { createContextCapacity, explicitContextCap, contextError, UNKNOWN_CONTEXT_BUDGET };
