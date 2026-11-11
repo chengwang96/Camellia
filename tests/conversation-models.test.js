@@ -36,7 +36,8 @@ test('conversation API catalog follows enabled routes and UI efforts without dis
     { enabled: true, keys: [{ enabled: false }], models: [{ id: 'no-key' }] },
   ] };
   const sources = { router: () => config };
-  assert.deepEqual(conversationModels('claude', {}, sources), [{ id: 'configured', name: 'configured', thinking: levelsFor('configured'), contextWindow: 64000 }]);
+  assert.deepEqual(conversationModels('claude', {}, sources), [{ id: 'configured', name: 'configured', thinking: ['low', 'medium', 'high'], contextWindow: 64000 }]);
+  assert.deepEqual(levelsFor('configured', config), ['low', 'medium', 'high']);
   assert.ok(!JSON.stringify(conversationModels('codex', {}, sources)).includes('secret'));
   config.enabled = false;
   assert.deepEqual(conversationModels('codex', {}, sources), []);

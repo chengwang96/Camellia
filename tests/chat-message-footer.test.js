@@ -50,6 +50,20 @@ test('an agent footer carries a timestamp and copies the reply text', async () =
   assert.deepEqual(context.statuses, ['Message copied']);
 });
 
+test('only a same-day message omits the date from its footer clock', () => {
+  const context = fixture();
+  const now = new Date();
+  const clock = { hour: '2-digit', minute: '2-digit', hour12: false };
+  assert.equal(context.messageClock(now), now.toLocaleTimeString(undefined, clock));
+  const otherDay = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1, 8, 5);
+  assert.equal(context.messageClock(otherDay),
+    otherDay.toLocaleString(undefined, { month: 'short', day: 'numeric', ...clock }));
+  // A message from a different year must show the year as well.
+  const lastYear = new Date(now.getFullYear() - 1, 5, 15, 14, 30);
+  assert.equal(context.messageClock(lastYear),
+    lastYear.toLocaleString(undefined, { year: 'numeric', month: 'short', day: 'numeric', ...clock }));
+});
+
 test('the copy button reads the current stream and ignores an empty reply', async () => {
   const context = fixture();
   let text = '';

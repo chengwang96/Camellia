@@ -1534,7 +1534,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     if (at) {
       const date = new Date(at);
       time.dateTime = date.toISOString(); time.title = date.toLocaleString();
-      time.textContent = date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
+      time.textContent = messageClock(date);
     }
     actions.appendChild(time);
     const copy = document.createElement('button');
@@ -1549,6 +1549,18 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     };
     actions.appendChild(copy);
     return actions;
+  }
+
+  // A same-day message needs only the clock; an older one also carries its
+  // date, and a different year carries the year, so history stays unambiguous.
+  function messageClock(date) {
+    const now = new Date();
+    const locale = window.CamelliaI18n?.locale;
+    const sameDay = date.getFullYear() === now.getFullYear() && date.getMonth() === now.getMonth() && date.getDate() === now.getDate();
+    if (sameDay) return date.toLocaleTimeString(locale, { hour: '2-digit', minute: '2-digit', hour12: false });
+    const options = { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false };
+    if (date.getFullYear() !== now.getFullYear()) options.year = 'numeric';
+    return date.toLocaleString(locale, options);
   }
 
   function addUser(text, atts, meta = {}) {

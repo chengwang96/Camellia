@@ -6,6 +6,11 @@ Custom providers and subscription-account catalogs are outside this audit.
 The composer and quick-switch menus consume the router's `modelThinking`.
 Missing metadata means the provider default, not that the model cannot reason.
 A model that reasons does not necessarily expose a switch or effort levels.
+For an enabled custom route whose catalog cannot report capabilities, the
+controls fall back to Default/Low/Medium/High so the user can still request an
+OpenAI-compatible effort. Default omits the field. An explicitly reported empty
+list still removes the controls because it is authoritative. QClaw remains
+runtime-managed and does not receive this fallback.
 
 | Built-in preset | Capability source and behavior |
 | --- | --- |

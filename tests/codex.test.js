@@ -8,8 +8,8 @@ const path = require('node:path');
 const { PassThrough } = require('node:stream');
 const { EventEmitter, once } = require('node:events');
 const TOML = require('smol-toml');
-const { CodexSession } = require('../src/engines/codex-session');
-const { CodexClient, codexSpawnSpec, QUESTION_INSTRUCTIONS } = require('../src/engines/codex-client');
+const { CodexSession, CONTINUATION_INSTRUCTIONS } = require('../src/engines/codex-session');
+const { CodexClient, codexSpawnSpec, QUESTION_INSTRUCTIONS, COMPLETION_INSTRUCTIONS } = require('../src/engines/codex-client');
 const { apiContextWindow } = require('../src/engines/codex-models');
 const { ClaudeHistory } = require('../src/engines/claude-history');
 const { createCodex } = require('../src/engines/codex');
@@ -90,7 +90,7 @@ async function outputFixture(context) {
     if (streamed) notify('item/agentMessage/delta', { itemId: id, delta: text });
     notify('item/completed', { item: { type: 'agentMessage', id, text, ...(phase ? { phase } : {}) } });
   };
-  return { session, events, notify, message };
+  return { session, events, notify, message, wire };
 }
 
 test('large Codex file changes retain one diff on disk and bounded events in live replay', async t => {
@@ -366,6 +366,58 @@ test('Codex promotes the terminal agent message when a successful turn omits fin
   assert.ok(events.some(event => event.type === 'gui:message-phase' && event.phase === 'final_answer'));
 });
 
+test('Codex resumes a turn that stopped after announcing the next step', async context => {
+  const { events, notify, message, wire } = await outputFixture(context);
+  message('progress', '我先扫描 C 盘的大文件，再判断哪些可以迁移。', 'commentary');
+  notify('turn/completed', { turn: { status: 'completed' } });
+  await new Promise(resolve => setImmediate(resolve));
+  const starts = wire.messages.filter(row => row.method === 'turn/start');
+  assert.equal(starts.length, 2);
+  assert.match(starts[1].params.input[0].text, /Continue the same task/);
+  assert.equal(events.some(event => event.type === 'result'), false);
+  notify('turn/started', { turn: { id: 'continued-turn' } });
+  message('answer', '扫描完成：C 盘共有 12 个大文件。', 'final_answer', false);
+  notify('turn/completed', { turn: { id: 'continued-turn', status: 'completed' } });
+  const result = events.at(-1);
+  assert.equal(result.subtype, 'success');
+  assert.equal(result.result, '扫描完成：C 盘共有 12 个大文件。');
+  assert.deepEqual(result.outputBlocks.map(block => block.phase), ['commentary', 'final_answer']);
+});
+
+test('Codex resumes an announcement when the provider omits message phases', async context => {
+  const { events, notify, message, wire } = await outputFixture(context);
+  message('progress', 'I will check the disk usage before moving anything.');
+  notify('turn/completed', { turn: { status: 'completed' } });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(wire.messages.filter(row => row.method === 'turn/start').length, 2);
+  notify('turn/started', { turn: { id: 'continued-turn' } });
+  message('answer', 'The C drive has 12 large files using 8 GB.', 'final_answer', false);
+  notify('turn/completed', { turn: { id: 'continued-turn', status: 'completed' } });
+  assert.equal(events.at(-1).subtype, 'success');
+  assert.equal(events.at(-1).result, 'The C drive has 12 large files using 8 GB.');
+});
+
+test('Codex bounds announcement continuations and reports an incomplete turn', async context => {
+  const { events, notify, message, wire } = await outputFixture(context);
+  message('first', '我先检查日志。', 'commentary');
+  notify('turn/completed', { turn: { status: 'completed' } });
+  await new Promise(resolve => setImmediate(resolve));
+  notify('turn/started', { turn: { id: 'continued-1' } });
+  message('second', '我先看看配置。', 'commentary');
+  notify('turn/completed', { turn: { id: 'continued-1', status: 'completed' } });
+  await new Promise(resolve => setImmediate(resolve));
+  notify('turn/started', { turn: { id: 'continued-2' } });
+  message('third', '我先确认一下。', 'commentary');
+  notify('turn/completed', { turn: { id: 'continued-2', status: 'completed' } });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(wire.messages.filter(row => row.method === 'turn/start').length, 3);
+  const result = events.at(-1);
+  assert.equal(result.subtype, 'incomplete');
+  assert.equal(result.is_error, true);
+  assert.match(result.result, /stopped after announcing/);
+  assert.equal(result.outputBlocks.at(-1).phase, 'final_answer');
+});
+
 for (const ending of ['interrupted', 'failed', 'tool', 'plan']) test('Codex does not promote process-only output on ' + ending, async context => {
   const { session, events, notify, message } = await outputFixture(context);
   message('progress', 'I will check.');
@@ -480,6 +532,12 @@ test('Codex discovers legacy edit boundaries only for a matching single-message 
   assert.equal(await session.editBoundary('Original task'), null);
   turns.at(-1).items = [user('Conversation context from earlier turns follows as JSON data.\n\nOriginal task')];
   assert.equal(await session.editBoundary('Original task'), null);
+  turns.at(-1).items = [user('Original task')];
+  // Automatic announcement continuations must not hide the editable turn.
+  turns.push({ id: 'continued-turn', items: [user(CONTINUATION_INSTRUCTIONS)] });
+  assert.equal(await session.editBoundary('Original task'), 'prior-turn');
+  turns.push({ id: 'continued-again', items: [user(CONTINUATION_INSTRUCTIONS)] });
+  assert.equal(await session.editBoundary('Original task'), 'prior-turn');
 });
 
 test('Codex transport initializes before turns, relays approval and question answers, and reports process failure once', async t => {
@@ -811,7 +869,7 @@ test('Codex API metadata adds native patch support without overriding known mode
   const questions = codexSpawnSpec({ ...options, allowUserQuestions: true });
   assert.deepEqual(questions.args,
     ['app-server', '-c', 'features.default_mode_request_user_input=true']);
-  assert.equal(questions.developerInstructions, QUESTION_INSTRUCTIONS);
+  assert.equal(questions.developerInstructions, QUESTION_INSTRUCTIONS + '\n\n' + COMPLETION_INSTRUCTIONS);
   assert.deepEqual(codexSpawnSpec({ ...options, allowUserQuestions: true, contextWindow: 65536 }).args,
     ['app-server', '-c', 'model_context_window=65536', '-c', 'features.default_mode_request_user_input=true']);
   assert.deepEqual(codexSpawnSpec({ ...options, connection: 'subscription', contextWindow: 128000 }).args, ['app-server']);
@@ -823,7 +881,7 @@ test('Codex API metadata adds native patch support without overriding known mode
   assert.equal(codexSpawnSpec({ ...options, model: 'gpt-6-sol' }).model, 'gpt-6-sol', 'user catalog keeps its model profile');
   fs.writeFileSync(path.join(home, 'config.toml'), TOML.stringify({ developer_instructions: 'Use short replies.' }));
   assert.equal(codexSpawnSpec({ ...options, allowUserQuestions: true }).developerInstructions,
-    'Use short replies.\n\n' + QUESTION_INSTRUCTIONS);
+    'Use short replies.\n\n' + QUESTION_INSTRUCTIONS + '\n\n' + COMPLETION_INSTRUCTIONS);
   assert.equal(require('../runtimes/codex/package.json').dependencies['@openai/codex'], '0.160.1', 'Review native metadata when upgrading Codex');
 });
 

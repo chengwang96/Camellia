@@ -5,6 +5,7 @@ const { CodexClient } = require('./codex-client');
 const { StreamingSession } = require('./streaming-session');
 const { validSessionId } = require('./claude-history');
 const { CodexTitles } = require('./codex-title');
+const { announcesPendingWork } = require('../shared/pending-work');
 
 const PERMISSIONS = {
   default: { approvalPolicy: 'untrusted', sandbox: 'workspace-write' },
@@ -15,6 +16,10 @@ const PERMISSIONS = {
 // Universal levels reuse the closest native combination.
 const LEVEL_MODES = { ask: 'default', auto: 'acceptEdits', full: 'bypassPermissions' };
 const permissionModeOf = settings => LEVEL_MODES[settings.permissionMode] || settings.permissionMode || 'default';
+const MAX_ANNOUNCEMENT_CONTINUATIONS = 2;
+const CONTINUATION_INSTRUCTIONS = 'Continue the same task from the current native conversation and tool state. '
+  + 'Perform the next step instead of describing or announcing it, then finish with a final answer. '
+  + 'If something genuinely blocks you, state the blocker plainly.';
 
 class CodexSession extends StreamingSession {
   constructor(options) {
@@ -81,12 +86,17 @@ class CodexSession extends StreamingSession {
     // persisted thread instead of matching against that stale initial snapshot.
     const result = await this.client.request('thread/read', { threadId: this.sessionId, includeTurns: true });
     const turns = result.thread?.turns || [];
-    const latest = turns.at(-1);
-    const users = latest?.items?.filter(item => item.type === 'userMessage') || [];
-    const text = users[0]?.content?.filter(item => item.type === 'text').map(item => item.text).join('\n');
-    if (users.length !== 1 || !text || text.includes('Conversation context from earlier turns follows as JSON data.')
-        || !(text === prompt || text.endsWith('\n\n' + prompt))) return null;
-    return turns.at(-2)?.id || null;
+    for (let index = turns.length - 1; index >= 0; index--) {
+      const users = turns[index]?.items?.filter(item => item.type === 'userMessage') || [];
+      const text = users[0]?.content?.filter(item => item.type === 'text').map(item => item.text).join('\n');
+      // Automatic announcement continuations are not editable user turns.
+      // Look through them to the turn that carried the original prompt.
+      if (users.length === 1 && text === CONTINUATION_INSTRUCTIONS) continue;
+      if (users.length !== 1 || !text || text.includes('Conversation context from earlier turns follows as JSON data.')
+          || !(text === prompt || text.endsWith('\n\n' + prompt))) return null;
+      return turns[index - 1]?.id || null;
+    }
+    return null;
   }
   sendUserMessage(prompt, attachments = []) {
     if (this.running || this.dead) return false;
@@ -94,6 +104,12 @@ class CodexSession extends StreamingSession {
     this.replayEvents = []; this.blockIndex = 0; this.activeBlock = null;
     this.outputBlocks = []; this.outputItems = new Map(); this.lastOutputItem = null;
     this.turnId = null; this.items = new Map(); this.startedAt = Date.now(); this.usage = null;
+    // A native turn can stop after an interim announcement. Track what the
+    // protocol told us so a new turn can resume the work without inventing a
+    // final answer from commentary.
+    this.continuations = 0; this.awaitingContinuation = false;
+    this.turnHadActivity = false; this.interruptRequestedFor = null;
+    this.attemptBlockStart = 0; this.continuationParams = null; this.promoteTerminalOnFailure = false;
     void this.run(prompt, attachments); return true;
   }
   compact({ onProgress = () => {}, timeoutMs = 120000 } = {}) {
@@ -139,6 +155,9 @@ class CodexSession extends StreamingSession {
       if (this.settings.thinkingBudget) params.effort = this.settings.thinkingBudget;
       if (this.settings.permissionMode === 'plan') params.collaborationMode = { mode: 'plan', settings: {
         model: this.spec.model || this.settings.model, reasoning_effort: this.settings.thinkingBudget || null, developer_instructions: null } };
+      // A continuation is another turn in the same native thread, so it keeps
+      // the model, tier, effort and collaboration mode captured for this run.
+      this.continuationParams = { ...params }; delete this.continuationParams.input;
       const result = await this.client.request('turn/start', params);
       if (this.running) { this.turnId = result.turn.id; this.lastTurnId = result.turn.id; if (this.cancelled) this.interrupt(); }
     } catch (error) {
@@ -200,10 +219,27 @@ class CodexSession extends StreamingSession {
     if (this.outputBlocks) {
       const success = result.subtype === 'success' && !result.is_error && !this.cancelled;
       const hasFinalAnswer = this.outputBlocks.some(block => block.text && block.phase === 'final_answer');
+      // A turn that only announced its next step is not a finished task. Resume
+      // it in the same native thread, bounded so a model that will not act
+      // cannot loop forever. The previous turn ID is already complete, so this
+      // is a new turn rather than a steer.
+      if (success && (this.continuations || 0) < MAX_ANNOUNCEMENT_CONTINUATIONS && this.shouldContinueAnnouncement(hasFinalAnswer)) {
+        this.continueAnnouncement(); return;
+      }
+      // After a continuation, only a final answer or tool activity shows the
+      // task moved on. Otherwise report the stop instead of claiming Done.
+      if (result.subtype === 'success' && !hasFinalAnswer && this.continuations > 0 && !this.turnHadActivity) {
+        result = { ...result, subtype: 'incomplete', is_error: true,
+          result: 'Codex stopped after announcing the next step without finishing the task.' };
+        this.promoteTerminalOnFailure = true;
+      }
+      const finalSuccess = result.subtype === 'success' && !result.is_error && !this.cancelled;
       const outputBlocks = this.outputBlocks.filter(block => block.text).map(block => {
-        const terminalAgentMessage = success && !hasFinalAnswer && block === this.lastOutputItem && block.kind === 'agentMessage';
+        const latestAttempt = this.outputBlocks.indexOf(block) >= (this.attemptBlockStart || 0);
+        const terminalAgentMessage = ((finalSuccess && !hasFinalAnswer) || this.promoteTerminalOnFailure)
+          && latestAttempt && block === this.lastOutputItem && block.kind === 'agentMessage';
         const phase = terminalAgentMessage ? 'final_answer'
-          : block.phase || (success && block === this.lastOutputItem ? 'final_answer' : 'commentary');
+          : block.phase || (finalSuccess && block === this.lastOutputItem ? 'final_answer' : 'commentary');
         for (const index of block.indices) this.emit({ type: 'gui:message-phase', index, phase });
         return { type: 'text', text: block.text, phase };
       });
@@ -218,6 +254,42 @@ class CodexSession extends StreamingSession {
       this.outputBlocks = [];
       this.lastOutputItem = null;
     }
+  }
+  shouldContinueAnnouncement(hasFinalAnswer) {
+    if (this.cancelled || this.turnHadActivity || hasFinalAnswer) return false;
+    return this.lastOutputItem?.kind === 'agentMessage' && announcesPendingWork(this.lastOutputItem.text);
+  }
+  continueAnnouncement() {
+    const params = this.continuationParams;
+    if (!params || !this.client) {
+      this.finish({ subtype: 'incomplete', is_error: true,
+        result: 'Codex stopped after announcing the next step, and the session cannot continue it automatically.' });
+      return;
+    }
+    this.continuations = (this.continuations || 0) + 1;
+    this.awaitingContinuation = true;
+    this.turnHadActivity = false;
+    this.attemptBlockStart = this.outputBlocks.length;
+    this.lastOutputItem = null;
+    this.endBlock();
+    this.log(`Codex: continuing after an announced step (${this.continuations}/${MAX_ANNOUNCEMENT_CONTINUATIONS})`);
+    void this.client.request('turn/start', { ...params, input: [{ type: 'text', text: CONTINUATION_INSTRUCTIONS }] })
+      .then(result => {
+        const startedHere = this.awaitingContinuation;
+        this.awaitingContinuation = false;
+        if (!this.running) return;
+        if (result?.turn?.id) { this.turnId = result.turn.id; this.lastTurnId = result.turn.id; }
+        // turn/started may already have observed the cancellation and sent
+        // the interrupt; do not send a second one for the same turn.
+        if (this.cancelled && startedHere) this.interrupt();
+      })
+      .catch(error => {
+        this.awaitingContinuation = false;
+        if (!this.running) return;
+        this.finish({ subtype: this.cancelled ? 'stopped' : 'error',
+          ...(this.cancelled ? {} : { is_error: true, result: 'Codex could not continue after an announced step: ' + error.message }) });
+        if (!this.cancelled) this.kill();
+      });
   }
   notify(method, params) {
     if (this.dead) return;
@@ -257,7 +329,7 @@ class CodexSession extends StreamingSession {
       }
       return;
     }
-    if (method === 'turn/started') { this.turnId = params.turn.id; this.lastTurnId = params.turn.id; if (this.cancelled) this.interrupt(); }
+    if (method === 'turn/started') { this.awaitingContinuation = false; this.turnId = params.turn.id; this.lastTurnId = params.turn.id; if (this.cancelled) this.interrupt(); }
     else if (method === 'item/agentMessage/delta' || method === 'item/plan/delta') {
       const kind = method === 'item/plan/delta' ? 'plan' : 'agentMessage';
       const output = this.outputItem(params.itemId, kind === 'plan' ? 'commentary' : null, kind);
@@ -267,6 +339,7 @@ class CodexSession extends StreamingSession {
       this.textDelta(params.itemId, 'thinking', params.delta);
     } else if (method === 'item/started' || method === 'item/completed') {
       const item = params.item, complete = method === 'item/completed';
+      if (!['userMessage', 'reasoning', 'contextCompaction', 'agentMessage', 'plan'].includes(item.type)) this.turnHadActivity = true;
       if (item.type === 'collabAgentToolCall') {
         for (const id of new Set([...(item.receiverThreadIds || []), ...Object.keys(item.agentsStates || {})])) {
           const state = item.agentsStates?.[id], statuses = { pendingInit: 'starting', running: 'running', completed: 'completed', errored: 'failed', interrupted: 'stopped', shutdown: 'stopped', notFound: 'unavailable' };
@@ -313,6 +386,9 @@ class CodexSession extends StreamingSession {
       this.emit({ type: 'gui:usage', usage: this.usage });
     }
     else if (method === 'turn/completed') {
+      // The turn that just finished is being resumed; a duplicate completion
+      // must not start a second continuation or settle the run early.
+      if (this.awaitingContinuation) return;
       const turn = params.turn, failed = turn.status === 'failed';
       this.finish({ subtype: this.cancelled || turn.status === 'interrupted' ? 'stopped' : failed ? 'error' : 'success',
         ...(!failed && turn.id === this.turnId ? { nativeContextRetained: true } : {}),
@@ -371,8 +447,17 @@ class CodexSession extends StreamingSession {
     if (!this.running || this.dead) return;
     this.cancelled = true;
     for (const [id, request] of this.permissions) if (request.params.threadId === this.sessionId) this.answerPermission(id, false);
-    if (this.turnId) void this.client.request('turn/interrupt', { threadId: this.sessionId, turnId: this.turnId })
-      .catch(error => { this.log('Codex: ' + error.message); this.kill(); });
+    // No native turn is active while the resumed turn is being created. Let
+    // that request settle and interrupt the turn it starts, with a bounded wait.
+    if (this.awaitingContinuation) {
+      clearTimeout(this.cancelTimer); this.cancelTimer = setTimeout(() => this.kill(), 8000);
+      return;
+    }
+    if (this.turnId && this.interruptRequestedFor !== this.turnId) {
+      this.interruptRequestedFor = this.turnId;
+      void this.client.request('turn/interrupt', { threadId: this.sessionId, turnId: this.turnId })
+        .catch(error => { this.log('Codex: ' + error.message); this.kill(); });
+    }
     clearTimeout(this.cancelTimer); this.cancelTimer = setTimeout(() => this.kill(), 8000);
   }
   kill() {
@@ -449,4 +534,4 @@ class CodexSession extends StreamingSession {
   }
 }
 
-module.exports = { CodexSession, PERMISSIONS };
+module.exports = { CodexSession, PERMISSIONS, CONTINUATION_INSTRUCTIONS };

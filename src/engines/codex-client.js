@@ -10,6 +10,7 @@ const { configureApiModel, needsApiToolProfile } = require('./codex-models');
 const { toolModelId } = require('../shared/codex-tool-model');
 
 const QUESTION_INSTRUCTIONS = 'Camellia can show a choice dialog when you call request_user_input. For a choice dialog, use request_user_input rather than request_user_input_async, which does not open this dialog. If you need the user to choose among concrete options before continuing, use that tool instead of ending with a plain-text list of choices, and wait for the answer before making changes that depend on it. Do not ask when the existing request already authorizes a reasonable action; continue the work. If the tool is unavailable, ask in normal text.';
+const COMPLETION_INSTRUCTIONS = 'Do not end a turn with only a statement that you will do something next. If you intend to take an action, call the necessary tools in the same turn instead of ending after describing it. Send a final answer only after the work is done or when you actually need input from the user.';
 
 // The app-server spawns helpers (MCP tool servers, plugin-sync git) that inherit
 // its stdio. Killing only the app-server leaves them running and holding the
@@ -201,8 +202,8 @@ function codexSpawnSpec({ runtime, home, configHome = home, connection = 'subscr
   // chat sessions. Discussions keep it off through their own feature policy.
   if (allowUserQuestions) args.push('-c', 'features.default_mode_request_user_input=true');
   return { exe: runtime.file, args, cwd, env: environment, model: runtimeModel,
-    ...(allowUserQuestions ? { developerInstructions: [config.developer_instructions, QUESTION_INSTRUCTIONS].filter(Boolean).join('\n\n') } : {}),
+    ...(allowUserQuestions ? { developerInstructions: [config.developer_instructions, QUESTION_INSTRUCTIONS, COMPLETION_INSTRUCTIONS].filter(Boolean).join('\n\n') } : {}),
     permissions: { approvalPolicy: config.approval_policy || 'untrusted', sandbox: config.sandbox_mode || 'workspace-write' } };
 }
 
-module.exports = { CodexClient, codexEnvironment, codexSpawnSpec, QUESTION_INSTRUCTIONS };
+module.exports = { CodexClient, codexEnvironment, codexSpawnSpec, QUESTION_INSTRUCTIONS, COMPLETION_INSTRUCTIONS };

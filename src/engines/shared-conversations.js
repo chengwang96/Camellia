@@ -235,7 +235,9 @@ class SharedConversations {
         if (item.pending) { item.interrupted = true; item.pending = null; changed = true; }
         if (changed) writeJson(this.file(item.id), item);
         const history = this.historyInfo(item);
-        item.seq = Math.max(history.maxSeq, item.seq || 0);
+        // A repaired or restored history can end on a fractional boundary.
+        // Keep later appends on integer sequence numbers.
+        item.seq = Math.max(Math.ceil(history.maxSeq), item.seq || 0);
       } catch (error) { onLoadError(error); continue; }
       this.clock = Math.max(this.clock, item.updatedAt || 0);
       this.items.set(item.id, item);
@@ -1684,7 +1686,10 @@ class SharedConversations {
     }
   }
   capture(engine, event) {
-    if (event.type === 'gui:background-turn' && engine === 'kimi') {
+    // A native engine can resume the conversation on its own after background
+    // work ends. Adopt that turn as a normal run so its report is persisted and
+    // displayed instead of being dropped with no active run to attach it to.
+    if (event.type === 'gui:background-turn' && (engine === 'kimi' || engine === 'claude')) {
       const c = this.items.get(event.conversationId);
       const session = this.drivers[engine]?.sessions?.get?.({ conversationId: c?.id });
       if (!c || !session || session.dead || session.gen !== event.runId || session.sessionId !== event.session_id

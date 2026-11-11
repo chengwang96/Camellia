@@ -6,10 +6,33 @@ const path = require('node:path');
 const vm = require('node:vm');
 const { levelsFor, thinkingFor, normalizeThinking, labelFor } = require('../src/shared/model-levels');
 
-test('models without reasoning metadata leave controls to the model default', () => {
+test('unknown models outside an API route keep controls to the model default', () => {
   for (const model of ['openai/gpt-6-astra', 'GPT-5.5-Codex', 'gpt-5.6-luna', 'glm-5.3', 'deepseek-v4.1-flash', 'kimi-k3', '']) {
     assert.deepEqual(levelsFor(model), []);
   }
+});
+
+test('enabled API routes without reasoning metadata expose generic effort levels', () => {
+  const catalog = { enabled: true, models: ['gpt-6.1-sol'], providers: [
+    { enabled: true, keys: [{ enabled: true }], models: [
+      { id: 'gpt-6.1-sol', upstream: 'gpt-6.1-sol' },
+      { id: 'fixed-model', upstream: 'fixed-model', thinking: { values: [] } },
+      { id: 'reported-model', upstream: 'reported-model', thinking: { values: ['low', 'max'], default: 'max' } },
+    ] },
+    { enabled: false, keys: [{ enabled: true }], models: [{ id: 'disabled-model' }] },
+    { enabled: true, keys: [{ enabled: false }], models: [{ id: 'keyless-model' }] },
+    { type: 'qclaw', enabled: true, keys: [{ enabled: true }], models: [{ id: 'openclaw/main' }] },
+  ] };
+  assert.deepEqual(levelsFor('gpt-6.1-sol', catalog), ['low', 'medium', 'high']);
+  assert.deepEqual(levelsFor('openai/openai/gpt-6.1-sol', catalog), ['low', 'medium', 'high']);
+  assert.deepEqual(levelsFor('fixed-model', catalog), []);
+  assert.deepEqual(levelsFor('reported-model', catalog), ['low', 'max']);
+  assert.deepEqual(levelsFor('disabled-model', catalog), []);
+  assert.deepEqual(levelsFor('keyless-model', catalog), []);
+  assert.deepEqual(levelsFor('openclaw/main', catalog), []);
+  assert.equal(thinkingFor('gpt-6.1-sol', catalog), undefined);
+  catalog.enabled = false;
+  assert.deepEqual(levelsFor('gpt-6.1-sol', catalog), []);
 });
 
 test('native config notifications preserve the selected API effort and still update subscription efforts', () => {

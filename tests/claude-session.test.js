@@ -53,6 +53,33 @@ test('Claude recovers missed task starts from the native background snapshot and
   assert.equal(f.session.children.get('child').result, 'Audit passed');
 });
 
+test('Claude adopts a native task-notification turn after a reply so its follow-up is not lost', t => {
+  const f = fixture(t);
+  assert.equal(f.session.sendUserMessage('Run the long verification'), true);
+  f.session.emitLine(JSON.stringify({ type: 'result', subtype: 'success', result: 'The verification is running.' }));
+  assert.equal(f.session.running, false);
+  const before = f.events.length;
+  f.session.emitLine(JSON.stringify({ type: 'user', session_id: 'native-1', origin: { kind: 'task-notification' },
+    message: { role: 'user', content: '<task-notification>\n<task-id>job</task-id>\n<status>completed</status>\n</task-notification>' } }));
+  assert.equal(f.session.running, true);
+  assert.deepEqual(f.events.slice(before).map(event => event.type), ['gui:background-turn', 'user']);
+  f.session.emitLine(JSON.stringify({ type: 'assistant', session_id: 'native-1',
+    message: { role: 'assistant', content: [{ type: 'text', text: 'The verification finished: the cloth did not unfold.' }] } }));
+  f.session.emitLine(JSON.stringify({ type: 'result', subtype: 'success', result: 'The verification finished: the cloth did not unfold.' }));
+  assert.equal(f.results.at(-1).result, 'The verification finished: the cloth did not unfold.');
+  assert.equal(f.session.running, false);
+});
+
+test('Claude keeps a task notification inside an active turn instead of adopting it', t => {
+  const f = fixture(t);
+  f.session.sendUserMessage('Run the verification');
+  const before = f.events.length;
+  f.session.emitLine(JSON.stringify({ type: 'user', origin: { kind: 'task-notification' },
+    message: { role: 'user', content: '<task-notification>\n<status>completed</status>\n</task-notification>' } }));
+  assert.equal(f.session.running, true);
+  assert.equal(f.events.slice(before).some(event => event.type === 'gui:background-turn'), false);
+});
+
 test('Claude keeps background lifecycle events flowing during context compaction', async t => {
   const f = fixture(t), send = row => f.session.emitLine(JSON.stringify({ type: 'system', ...row }));
   send({ subtype: 'task_started', task_id: 'child', task_type: 'local_agent' });

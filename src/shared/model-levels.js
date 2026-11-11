@@ -5,6 +5,7 @@
   else root.CamelliaModelLevels = factory(root.CamelliaModelNames);
 })(typeof window === 'object' ? window : globalThis, function ({ canonicalModelId: canonical }) {
   const LABELS = { off: 'Off', none: 'Off', minimal: 'Minimal', low: 'Low', medium: 'Medium', high: 'High', xhigh: 'Extra high', max: 'Max', ultra: 'Ultra' };
+  const FALLBACK_LEVELS = ['low', 'medium', 'high'];
   function normalizeThinking(thinking) {
     if (!thinking || !Array.isArray(thinking.values) || thinking.values.length > 32) return undefined;
     if (!thinking.values.every(value => typeof value === 'boolean' || typeof value === 'string' && /^[a-z][a-z0-9_-]{0,63}$/i.test(value))) return undefined;
@@ -26,9 +27,19 @@
     const defaultValue = metadata[0].default;
     return { values, ...(values.includes(defaultValue) && metadata.every(thinking => thinking.default === defaultValue) ? { default: defaultValue } : {}) };
   }
+  function hasEnabledRoute(model, catalog) {
+    if (!catalog || catalog.enabled === false) return false;
+    const id = canonical(model);
+    if (!id) return false;
+    const providers = catalog.providers || [];
+    if (providers.length) return providers.some(provider => provider.type !== 'qclaw'
+      && provider.enabled !== false && provider.keys?.some(key => key.enabled !== false)
+      && (provider.models || []).some(entry => canonical(entry.id) === id));
+    return (catalog.models || []).some(entry => canonical(entry) === id);
+  }
   function levelsFor(model, catalog) {
     const thinking = thinkingFor(model, catalog);
-    if (!thinking) return [];
+    if (!thinking) return hasEnabledRoute(model, catalog) ? [...FALLBACK_LEVELS] : [];
     return [...new Set(thinking.values.map(value => value === false ? 'none' : value === true ? 'high' : value))];
   }
   function labelFor(level, model, catalog) {

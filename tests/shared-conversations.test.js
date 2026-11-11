@@ -69,6 +69,36 @@ test('Kimi native task follow-up creates a persisted reply and a normal completi
   assert.equal(emit({ type: 'gui:background-turn', runId: session.gen + 1 }), false);
 });
 
+test('Claude native background turn creates a persisted follow-up reply', async t => {
+  const h = fixture(t), run = await h.manager.send('claude', { prompt: 'Run the 5 s verification' });
+  const session = h.sent.at(-1).session;
+  h.drivers.claude.sessions = { get: () => session, touch() {} };
+  h.finish('claude', 'success', 'The verification is running.');
+  const before = h.manager.rows(h.manager.get(run.sessionId));
+  const emit = event => h.manager.capture('claude', { conversationId: run.sessionId, session_id: session.sessionId, runId: session.gen, ...event });
+  assert.equal(emit({ type: 'gui:background-turn' }), true);
+  assert.equal(h.manager.busy(run.sessionId), true);
+  assert.equal(h.events.at(-1).background, true);
+  emit({ type: 'result', subtype: 'success', result: 'The verification finished: the cloth did not unfold.' });
+  const after = h.manager.rows(h.manager.get(run.sessionId));
+  assert.equal(after.filter(row => row.role === 'user').length, 1);
+  assert.equal(after.length, before.length + 1);
+  assert.equal(after.at(-1).text, 'The verification finished: the cloth did not unfold.');
+  assert.equal(h.manager.busy(run.sessionId), false);
+  assert.ok(h.manager.get(run.sessionId).lastReplyAt);
+  assert.equal(h.events.filter(event => event.type === 'result').length, 2);
+});
+
+test('a restored history ending on a fractional sequence resumes on an integer', async t => {
+  const h = fixture(t), run = await h.manager.send('kimi', { prompt: 'Build APK' });
+  h.finish('kimi', 'success', 'Built');
+  fs.appendFileSync(path.join(h.root, run.sessionId + '.jsonl'), JSON.stringify({
+    role: 'assistant', engine: 'kimi', text: 'Restored reply', seq: 99.5, at: Date.now(),
+  }) + '\n');
+  const restarted = h.restart();
+  assert.equal(restarted.get(run.sessionId).seq, 100);
+});
+
 test('background work remains visible after a reply without making the conversation busy', async t => {
   const h = fixture(t), run = await h.manager.send('kimi', { prompt: 'Evaluate in the background' });
   const active = h.manager.active.get(run.sessionId), nativeId = active.session.sessionId;

@@ -148,6 +148,22 @@ class ClaudeSession {
     this.sendChannel(result);
   }
 
+  // A native task-notification user event with no turn in progress means the
+  // CLI is resuming the conversation by itself after background work ended.
+  // Adopt that turn so its events reach a live run instead of being discarded.
+  adoptBackgroundTurn(obj) {
+    if (this.running || this.cancelled || this.dead) return false;
+    const origin = obj.origin?.kind || obj.turnOrigin || '';
+    if (!/^task[-_]notification$/.test(origin)
+        && !/^\s*<task-notification>/.test(contentText(obj.message?.content))) return false;
+    this.running = true;
+    this.turnHasActivity = false;
+    this.subagents.begin(); this.agentCalls.clear();
+    this.log('claude: adopting native background turn');
+    this.sendChannel({ type: 'gui:background-turn', session_id: this.sessionId });
+    return true;
+  }
+
   fail(subtype, message) {
     if (this.closed) return;
     this.dead = true;
@@ -254,6 +270,9 @@ class ClaudeSession {
     // Context compaction hides its own transcript, but must not hide lifecycle
     // events from work that continues independently of that operation.
     if (this.compaction) return;
+    // The notification itself is forwarded below so the run records the
+    // native trigger; the events after it belong to the adopted turn.
+    if (obj.type === 'user') this.adoptBackgroundTurn(obj);
     if (obj.parent_tool_use_id || obj.agent_id) {
       const id = this.subagents.resolve(obj.agent_id || this.childTools.get(obj.parent_tool_use_id));
       if (id && this.children.has(id)) {

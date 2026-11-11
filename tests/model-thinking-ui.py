@@ -28,6 +28,7 @@ const {PRESETS,normalizeConfig,publicState} = require('./src/api/api-router-conf
     providers.push(provider);
   }
   const state=publicState(normalizeConfig({providers}));
+  state.providers[0].models.push({id:'unknown-model',upstream:'unknown-model',protocol:'auto'});
   state.models.push('unknown-model');
   process.stdout.write(JSON.stringify(state));
 })().catch(error=>{console.error(error);process.exit(1)});
@@ -131,13 +132,14 @@ with sync_playwright() as playwright:
         page.wait_for_function("settings.thinkingBudget==='none'")
 
         page.evaluate("persistModel('unknown-model')")
-        page.wait_for_function("settings.model==='unknown-model' && LEVELS.length===1")
-        page.locator('#modelPill').click()
-        expect(page.locator('.pop-row').filter(has_text='Reasoning level')).to_have_count(0)
-        page.locator('#modelPill').click()
-        # Background discovery updates the open composer without a reload.
+        page.wait_for_function("settings.model==='unknown-model' && LEVELS.map(level=>level.id).join(',')===',low,medium,high'")
+        reasoning_menu(['Default', 'Low', 'Medium', 'High']).get_by_text('Medium', exact=True).click()
+        page.wait_for_function("settings.thinkingBudget==='medium'")
+        # Background discovery replaces the generic fallback without a reload.
         page.evaluate("router.modelThinking['unknown-model']={values:[false,'low','high','max'],default:'high'}; refreshRouter(router)")
         reasoning_menu(['Default', 'Off', 'Low', 'High', 'Max']).get_by_text('Max', exact=True).click()
+        page.wait_for_function("settings.thinkingBudget==='max'")
+        # An explicit empty list means the provider reported no selectable effort.
         page.evaluate("router.modelThinking['unknown-model']={values:[]}; refreshRouter(router)")
         page.locator('#modelPill').click()
         expect(page.locator('.pop-row').filter(has_text='Reasoning level')).to_have_count(0)
