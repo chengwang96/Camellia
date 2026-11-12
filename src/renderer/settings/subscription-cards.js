@@ -140,10 +140,10 @@ window.renderSubscriptionCards = ({ container, state, busy, engine, manage = tru
     const credits = ['codex', 'grok'].includes(engine) && account.signedIn
       ? `<div class="subscription-credits"><span>${esc(t(engine === 'grok' ? 'Prepaid balance' : 'Credit balance'))}</span><strong>${engine === 'grok' && Number.isFinite(account.credits?.balance) ? '$' : ''}${esc(balance)}</strong></div>` : '';
     return `<article class="subscription-card${account.active ? ' active' : ''}" data-card-id="${esc(account.id)}">
-      <header><strong title="${esc(heading)}">${esc(heading)}</strong><span class="subscription-badges">${badges}</span></header>
+      <header><strong>${esc(heading)}</strong><span class="subscription-badges">${badges}</span></header>
       <div class="subscription-identity-meta">
         <p class="subscription-state ${accountStatus}"><i aria-hidden="true"></i>${esc(account.error || t(account.loginPending ? 'Waiting for sign-in' : account.signedIn ? account.exhausted ? 'Quota exhausted' : 'Signed in' : account.stale ? 'Previous verification expired. Verify again.' : 'Not signed in'))}</p>
-        ${note ? `<span class="subscription-note-text${account.label ? '' : ' is-empty'}" title="${esc(note)}">${esc(note)}</span>` : ''}
+        ${note ? `<span class="subscription-note-text${account.label ? '' : ' is-empty'}">${esc(note)}</span>` : ''}
         ${reset}
         ${engine === 'antigravity' && typeof onLabel === 'function' && account.models ? `<span class="subscription-note-text">${esc(t('Available account models'))} · ${esc(account.models)}</span>` : ''}
       </div>

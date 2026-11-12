@@ -16,6 +16,10 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
   let conversationActivity = null;
   let backgroundWork = null;
   const backgroundStops = new Map();
+  // The initiating reply of a user request owns its aggregate usage. Later
+  // background follow-ups keep their own rows, so only this element updates
+  // when child work reports more tokens.
+  const requestTurns = new Map();
   let currentRunId = null;
   let acceptSessionEvents = false;
   let restoringRun = true;
@@ -28,6 +32,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
   let conversationPrefs = { mode: 'direct', warnOnSwitch: false, showOrigin: false };
   let loadedEngine = harnessId;
   let contextPanel = null;
+  let reviewPanel = null;
   const eventsDuringRestore = [];
   let turnEl = null;          // current assistant turn container
   let turnEngine = null;      // harness that owns the in-flight turn, which may differ from this page's
@@ -708,6 +713,20 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     $('modelPill').classList.remove('open');
     $('attachBtn').setAttribute('aria-expanded', 'false');
   }
+  document.addEventListener('pointermove', (event) => {
+    if (document.documentElement.dataset.advancedAnimations === 'off') return;
+    const pop = event.target.closest?.('.dsh-pop');
+    if (!pop) return;
+    const bounds = pop.getBoundingClientRect();
+    pop.style.setProperty('--glass-pointer-x', (event.clientX - bounds.left) + 'px');
+    pop.style.setProperty('--glass-pointer-y', (event.clientY - bounds.top) + 'px');
+  }, { passive: true });
+  document.addEventListener('pointerout', (event) => {
+    const pop = event.target.closest?.('.dsh-pop');
+    if (!pop || pop.contains(event.relatedTarget)) return;
+    pop.style.removeProperty('--glass-pointer-x');
+    pop.style.removeProperty('--glass-pointer-y');
+  }, { passive: true });
   document.addEventListener('mousedown', (e) => {
     if (!openPops.length) return;
     if (openPops.some((p) => p.contains(e.target)) || $('modelPill').contains(e.target) || $('attachBtn').contains(e.target)) return;
@@ -924,7 +943,6 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
         el.className = 'pop-opt' + (selected ? ' current' : '');
         el.innerHTML = '<span class="pop-label"></span><span class="pop-marks">' + checkMark() + '</span>';
         el.querySelector('.pop-label').textContent = o.label;
-        el.querySelector('.pop-label').title = o.label;
         if (section.options === LEVELS || !o.id) el.querySelector('.pop-label').dataset.i18n = '';
         el.addEventListener('click', () => { void onPick(o.id, section.connection); closePops(); });
         if (o.id) el.dataset.modelId = o.id;
@@ -1893,7 +1911,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
         document: 'Document', spreadsheet: 'Spreadsheet', presentation: 'Presentation', package: 'Package' };
       for (const [index, file] of sortedFiles.entries()) {
         const row = document.createElement('div'); row.className = 'artifact-row';
-        const open = document.createElement('button'); open.type = 'button'; open.className = 'artifact-file'; open.title = file.path;
+        const open = document.createElement('button'); open.type = 'button'; open.className = 'artifact-file'; open.dataset.path = file.path;
         const icon = document.createElement('span'); icon.className = 'artifact-icon artifact-' + file.kind;
         icon.textContent = file.extension || 'TXT'; icon.setAttribute('aria-hidden', 'true');
         const info = document.createElement('span'); info.className = 'artifact-info';
@@ -2173,7 +2191,11 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     const card = window.CamelliaChatControls.makeToolCard(name, inputData, openFilePreview);
     appendTurnBlock(card.el);
     if (!turnBody().rebuilding) layoutTurnProcess();
-    if (id) pendingTools[id] = card;
+    if (id) {
+      card.el.dataset.toolId = String(id);
+      card.el.toolCard = card;
+      pendingTools[id] = card;
+    }
     return card;
   }
 
@@ -2350,7 +2372,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     maybeScroll(was);
   }
 
-  function rebuildTurn(content) {
+  function rebuildTurn(content, messageId) {
     // Reconcile the canonical message with completed streaming blocks. Identical
     // text keeps its DOM and user controls, including repeated terminal events.
     finalizeStreamBlocks();
@@ -2358,22 +2380,40 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     const body = turnBody();
     const processOpen = body.querySelector('.execution-process')?.open;
     const oldEntries = body.processBlocks || [];
-    const oldTexts = oldEntries.filter(el => el.classList.contains('md'));
+    // A native turn contains one assistant message per model call. Only the
+    // current message is authoritative here; earlier calls are completed
+    // process history and must survive later canonical snapshots.
+    const boundary = Math.max(0, Math.min(Number.isInteger(body.processBoundary) ? body.processBoundary : 0, oldEntries.length));
+    const stableEntries = oldEntries.slice(0, boundary);
+    const currentEntries = oldEntries.slice(boundary);
+    const messageKey = messageId == null ? '' : String(messageId);
+    // Claude emits one assistant snapshot per content block, and all blocks in
+    // one model message share the same message ID. Stable blocks from the same
+    // message may be reused for idempotence, but blocks from earlier messages
+    // stay distinct even when their text happens to match.
+    const sameMessageStable = messageKey ? stableEntries.filter(el => el.assistantMessageId === messageKey) : [];
+    const oldTexts = currentEntries.filter(el => el.classList.contains('md'));
     const folded = new Set(oldTexts.map(el => el.foldedThinkEl).filter(Boolean));
-    const oldThinking = oldEntries.filter(el => el.classList.contains('think') && !folded.has(el));
-    const reused = new Set();
-    body.processBlocks = [];
+    const oldThinking = currentEntries.filter(el => el.classList.contains('think') && !folded.has(el));
+    const reused = new Set(stableEntries);
+    body.processBlocks = [...stableEntries];
     body.processLayout = null;
     body.processRevision = (body.processRevision || 0) + 1;
     body.rebuilding = true;
     pendingTools = {};
+    for (const el of stableEntries) {
+      if (el.dataset.toolId && el.toolCard) pendingTools[el.dataset.toolId] = el.toolCard;
+    }
     for (const blk of content || []) {
       if (blk.type === 'text' && blk.text) {
         const exact = oldTexts.find(el => !reused.has(el) && el.artifactText === blk.text);
         const { body: text, thinking } = exact ? { body: blk.text, thinking: '' } : splitThinking(blk.text);
-        const el = exact || oldTexts.find(el => !reused.has(el)) || makeTextBlock();
+        const el = exact || oldTexts.find(el => !reused.has(el))
+          || sameMessageStable.find(el => el.classList.contains('md') && el.artifactText === blk.text)
+          || makeTextBlock();
         reused.add(el);
         if (!body.processBlocks.includes(el)) body.processBlocks.push(el);
+        if (messageKey) el.assistantMessageId = messageKey;
         if (blk.phase) el.dataset.phase = blk.phase; else delete el.dataset.phase;
         foldThinkingBlock({ el, thinkEl: el.foldedThinkEl }, thinking);
         if (thinking && el.foldedThinkEl) reused.add(el.foldedThinkEl);
@@ -2385,19 +2425,38 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
           el.markdownHasContent = !!(el.textContent.trim() || el.querySelector('.chat-inline-image, .chat-inline-video'));
         }
       } else if (blk.type === 'thinking' && blk.thinking) {
-        const el = oldThinking.find(el => !reused.has(el) && el.querySelector('.think-body').textContent === blk.thinking) || makeThinkBlock();
+        const el = oldThinking.find(el => !reused.has(el) && el.querySelector('.think-body').textContent === blk.thinking)
+          || oldThinking.find(el => !reused.has(el))
+          || sameMessageStable.find(el => el.classList.contains('think') && el.querySelector('.think-body').textContent === blk.thinking)
+          || makeThinkBlock();
         reused.add(el);
         if (!body.processBlocks.includes(el)) body.processBlocks.push(el);
+        if (messageKey) el.assistantMessageId = messageKey;
         el.classList.remove('open', 'live');
         el.querySelector('.think-status').textContent = "Completed";
         el.querySelector('.think-body').textContent = blk.thinking;
       } else if (blk.type === 'tool_use') {
         captureTodos(blk.name, blk.input);
-        makeToolCard(blk.name, blk.input, blk.id);
+        const id = blk.id == null ? '' : String(blk.id);
+        const existing = id && (currentEntries.find(el => el.classList.contains('tool-card') && el.dataset.toolId === id)
+          || stableEntries.find(el => el.classList.contains('tool-card') && el.dataset.toolId === id));
+        if (existing) {
+          if (!reused.has(existing)) {
+            reused.add(existing);
+            if (!body.processBlocks.includes(existing)) body.processBlocks.push(existing);
+          }
+          if (blk.input !== undefined) existing.toolCard?.setInput(blk.input);
+          if (messageKey) existing.assistantMessageId = messageKey;
+          if (existing.toolCard) pendingTools[id] = existing.toolCard;
+        } else {
+          const card = makeToolCard(blk.name, blk.input, blk.id);
+          if (messageKey) card.el.assistantMessageId = messageKey;
+        }
       }
     }
     body.rebuilding = false;
-    for (const el of oldEntries) if (!reused.has(el)) el.remove();
+    for (const el of currentEntries) if (!reused.has(el)) el.remove();
+    body.processBoundary = body.processBlocks.length;
     layoutTurnProcess();
     if (processOpen && body.querySelector('.execution-process')) body.querySelector('.execution-process').open = true;
     maybeScroll(was);
@@ -2735,10 +2794,40 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     if (!ev) return;
     if (ev.type === 'gui:subagent') {
       if (ev.session_id === context.sessionId) workPanel.update(ev.tasks);
+      if (ev.session_id === context.sessionId && ev.requestUsage && Number.isSafeInteger(ev.userSeq)) {
+        const lead = requestTurns.get(ev.userSeq);
+        if (lead?.isConnected) window.CamelliaTurnDetails.update(lead, ev.requestUsage);
+      }
       return;
     }
     if (ev.type === 'conversation:archived') {
       void sidebar.archivedChanged(ev.session_id, ev.archived !== false);
+      return;
+    }
+    if (ev.type === 'conversation:review-consent') {
+      if (ev.session_id === context.sessionId) reviewPanel?.receiveConsent(ev.consent);
+      return;
+    }
+    if (ev.type === 'conversation:turn-review') {
+      if (ev.session_id === context.sessionId) {
+        const state = ev.review?.status;
+        const label = state === 'running' ? 'Completion review running…'
+          : state === 'completed' && ev.review?.report?.verdict === 'pass' ? 'Completion review passed.'
+            : state === 'completed' ? 'Completion review found issues. Your next message can address them.'
+              : 'Completion review did not pass: ' + (state || 'unknown');
+        setStatus(window.CamelliaI18n.t(label));
+      }
+      return;
+    }
+    if (ev.type === 'conversation:review') {
+      if (ev.session_id === context.sessionId) {
+        reviewPanel?.receive(ev.review);
+        workPanel?.refreshReviews?.();
+      }
+      return;
+    }
+    if (ev.type === 'conversation:turn-end' && ev.session_id === context.sessionId) {
+      void reviewPanel?.refreshContext();
       return;
     }
     if (['conversation:workspaces', 'conversation:read'].includes(ev.type)) { void sidebar.load(); return; }
@@ -2882,6 +2971,10 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       const e = ev.event;
       if (e.type === 'message_start') {
         if (!running) setRunning(true);
+        const body = turnEl?.querySelector('.turn-body');
+        if (body?.processBlocks) {
+          body.processBoundary = body.processBlocks.length;
+        }
         runAnchorMs = Date.now();
         startStatusClock();
         setRunStatus("Working…");
@@ -2911,7 +3004,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       // Per-call usage reflects the real context footprint of the latest API
       // request; the result event sums it across every call in the turn.
       if (ev.message.usage) { lastCallUsage = ev.message.usage; updateCtxRing(); }
-      rebuildTurn(ev.message.content || []);
+      rebuildTurn(ev.message.content || [], ev.message.id);
       return;
     }
 
@@ -2991,7 +3084,13 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       for (const card of Object.values(pendingTools)) if (!card.finished) card.setOutput(stopped ? 'Stopped before a tool result was received.' : 'No tool result was received before the response ended.', true);
       (turnEl || chat).appendChild(chip);
       moveTurnFooter(turnEl);
-      window.CamelliaTurnDetails.render(turnEl, { ...ev, ...ev.turnMetrics });
+      const requestUsage = ev.requestUsageLead && ev.requestUsage?.breakdown ? ev.requestUsage : null;
+      if (ev.requestUsageLead && Number.isSafeInteger(ev.userSeq)) requestTurns.set(ev.userSeq, turnEl);
+      else if (Number.isSafeInteger(ev.userSeq) && ev.requestUsage) {
+        const lead = requestTurns.get(ev.userSeq);
+        if (lead?.isConnected && lead !== turnEl) window.CamelliaTurnDetails.update(lead, ev.requestUsage);
+      }
+      window.CamelliaTurnDetails.render(turnEl, { ...ev, ...ev.turnMetrics, requestUsage });
       if (ev.session_id) {
         context.sessionId = ev.session_id;
         context.workspaceId = ev.workspaceId || null;
@@ -3493,6 +3592,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     // The previous reset ran before the id was cleared; render the new
     // session's empty state now that there is no conversation to inspect.
     contextPanel?.reset();
+    reviewPanel?.reset();
     void tasksUI.refresh();
     loadedEngine = harnessId;
     $('conversationOrigin').hidden = true;
@@ -3885,16 +3985,6 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     const pop = document.createElement('div');
     pop.className = 'dsh-pop action-menu';
     pop.setAttribute('role', 'menu');
-    pop.addEventListener('pointermove', (event) => {
-      if (document.documentElement.dataset.advancedAnimations === 'off') return;
-      const bounds = pop.getBoundingClientRect();
-      pop.style.setProperty('--glass-pointer-x', (event.clientX - bounds.left) + 'px');
-      pop.style.setProperty('--glass-pointer-y', (event.clientY - bounds.top) + 'px');
-    });
-    pop.addEventListener('pointerleave', () => {
-      pop.style.removeProperty('--glass-pointer-x');
-      pop.style.removeProperty('--glass-pointer-y');
-    });
     actions.forEach((action) => {
       const row = document.createElement('button');
       row.type = 'button';
@@ -3904,8 +3994,10 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       row.innerHTML = '<span></span>';
       row.querySelector('span').textContent = action.label;
       if (action.localize !== false) row.querySelector('span').dataset.i18n = '';
-      if (!action.title && action.localize !== false) row.dataset.i18nAttrs = 'title';
-      row.title = action.title || action.label;
+      if (action.title && action.title !== action.label) {
+        row.title = action.title;
+        if (action.localize !== false) row.dataset.i18nAttrs = 'title';
+      }
       row.addEventListener('click', () => { closePops(); action.run(); });
       pop.appendChild(row);
     });
@@ -3994,6 +4086,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     chatScroll.classList.remove('history-opening');
     workPanel.reset();
     contextPanel?.reset();
+    reviewPanel?.reset();
     historyOpening = false;
     replayingLiveSnapshot = false;
     deferredTurnLayouts.clear();
@@ -4010,6 +4103,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     $('questionDialog').replaceChildren();
     pendingQuestion = null; permissionSubmission = null;
     acceptSessionEvents = false; currentRunId = null; conversationActivity = null; backgroundWork = null;
+    requestTurns.clear();
     restoringRun = false; eventsDuringRestore.length = 0;
     permRequestId = null; permissionQueue.length = 0; $('permMask').classList.remove('visible');
     seenPermissionBlocks.clear();
@@ -4044,6 +4138,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     onOpen: () => workPanel.setOpen(false),
     openConversation: id => void openHistorySession(id),
   });
+  reviewPanel = window.createReviewPanel({ context, getEngine: () => loadedEngine || harnessId, setStatus });
   $('ctxRing').addEventListener('click', () => contextPanel?.setOpen(!contextPanel.isOpen()));
   // A side panel reserves room beside the chat only while the remaining
   // column still fits inline media at its fixed size. When the window narrows
@@ -4215,6 +4310,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     // still current; clear it again for the incoming id so it shows the new
     // conversation's loading state instead of the previous one's request.
     contextPanel?.reset();
+    reviewPanel?.reset();
     context.workspaceId = sidebar.sessions.find(entry => entry.id === id)?.workspaceId || null;
     conversationActivity = sidebar.sessions.find(entry => entry.id === id)?.activity || null;
     input.value = ''; attachments = []; renderAttachments();
@@ -4228,6 +4324,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       if (!res.ok) {
         context.sessionId = null;
         contextPanel?.reset();
+        reviewPanel?.reset();
         conversationActivity = null;
         chat.replaceChildren(emptyStateTemplate.cloneNode(true));
         throw new Error(res.error);
@@ -4283,7 +4380,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       // A failed compaction notice only offers recovery while the backend still
       // reports it as the current boundary (not after a successful handoff or
       // once the conversation moved on).
-      const historyOptions = { recoverFailure: Boolean(res.compaction) };
+      const historyOptions = { recoverFailure: Boolean(res.compaction), requestUsage: res.requestUsage || null };
       if (!res.live && !await renderHistoryMessages(res.messages, res.historyPage, historyOptions)) return false;
       if (!res.live) {
         const last = res.messages.findLast(message => ['user', 'assistant'].includes(message.role));
@@ -4299,6 +4396,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       setStatus(res.interrupted ? 'The last turn was interrupted. Review its result before continuing.' : res.truncated ? "Showing the latest 200 messages. Continuation uses the full history." : "History loaded. Your next message continues this session.");
       if (!await applyLiveRun(res.live, historyOptions)) return false;
       workPanel.update(res.subagents);
+      void reviewPanel?.refreshContext();
       renderBackgroundWork();
       if (seq !== sessionOpenSeq) return false;
       const lastSeq = res.live?.eventSeq || 0;
@@ -4347,7 +4445,16 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     }
   }
 
-  async function renderHistoryMessages(messages, pagination, { recoverFailure = true } = {}) {
+  function attachRequestUsage(rows, usage) {
+    if (!usage) return rows;
+    return rows.map(row => {
+      const view = row.role === 'assistant' && Number.isSafeInteger(row.userSeq) ? usage[row.userSeq] : null;
+      return view && view.leadSeq === row.seq ? { ...row, requestUsage: view } : row;
+    });
+  }
+
+  async function renderHistoryMessages(messages, pagination, { recoverFailure = true, requestUsage = null } = {}) {
+      messages = attachRequestUsage(messages, requestUsage);
       const openSeq = sessionOpenSeq;
       const latest = messages.findLast(message => message.role === 'assistant'
         && (contextTokens(message.lastCallUsage) > 0 || contextTokens(message.usage) > 0));
@@ -4376,7 +4483,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
               const response = await chatApi.loadSession(context.sessionId, { before: pagination.nextBefore, version: pagination.version });
               if (openSeq !== sessionOpenSeq) return;
               if (!response.ok) throw new Error(response.error);
-              rows = response.messages; pagination = response.historyPage;
+              rows = attachRequestUsage(response.messages, response.requestUsage || requestUsage); pagination = response.historyPage;
             }
             if (!await paint(rows, anchor) || openSeq !== sessionOpenSeq) return;
             if (!start && pagination?.nextBefore == null) earlier.remove();
@@ -4493,7 +4600,9 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
             if (runResult) div.appendChild(runResultChip(runResult, false,
               m === latestAssistant && latestUser?.seq < m.seq ? m.userSeq || latestUser.seq : null).chip);
             turnFooter(div, m.at, () => turnCopyText(div));
-            window.CamelliaTurnDetails.render(div, { ...runResult, ...m.turnMetrics, usage: m.usage || runResult?.usage });
+            window.CamelliaTurnDetails.render(div, { ...runResult, ...m.turnMetrics, usage: m.usage || runResult?.usage,
+              ...(m.requestUsage ? { requestUsage: m.requestUsage } : {}) });
+            if (m.requestUsage && Number.isSafeInteger(m.userSeq)) requestTurns.set(m.userSeq, div);
             chat.insertBefore(div, before);
             void showTurnArtifacts(div, resultOnly ? '' : m.text, m.artifacts, [], [], m.process || []);
           }
@@ -4524,7 +4633,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     replayingLiveSnapshot = true;
   }
 
-  async function applyLiveRun(live, { recoverFailure = true } = {}) {
+  async function applyLiveRun(live, { recoverFailure = true, requestUsage = null } = {}) {
     if (!live) { acceptSessionEvents = true; return true; }
     const openSeq = sessionOpenSeq;
     context.sessionId = live.sessionId; context.workspaceId = live.workspaceId;
@@ -4533,7 +4642,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     if (live.engine) turnEngine = live.engine;
     followRunOutput = true;
     chat.innerHTML = '';
-    if (!await renderHistoryMessages(live.messages, live.historyPage, { recoverFailure })) return false;
+    if (!await renderHistoryMessages(live.messages, live.historyPage, { recoverFailure, requestUsage })) return false;
     addUser(live.displayText ?? live.prompt, live.attachments || [], { seq: live.userSeq, at: live.startedAt });
     setRunning(true);
     runStartedAt = live.startedAt || Date.now();
@@ -4543,11 +4652,13 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     setStatus('Restoring live progress…');
     replayingLiveSnapshot = true;
     try {
-      // Tool approvals are independent of transcript layout. Restore them before
-      // the event backlog so a long run cannot hide an action that needs input.
+      // Tool approvals and task questions are independent of transcript layout.
+      // Restore them before the event backlog so a long run cannot hide an
+      // action that needs input. This includes `AskUserQuestion`: its dialog
+      // must open immediately, not after every earlier event has replayed.
       const replayEvents = [];
       for (const event of live.events) {
-        if (event.type === 'gui:permission' && !event.questions?.length) queuePermission(event);
+        if (event.type === 'gui:permission') queuePermission(event);
         else replayEvents.push(event);
       }
       // Other snapshot events retain their order. New arrivals remain buffered
@@ -4816,6 +4927,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
         loadingSession = false; input.disabled = false;
         context.sessionId = null; context.workspaceId = null;
         contextPanel?.reset();
+        reviewPanel?.reset();
         discussionVisible = true; document.querySelector('.app > .main').hidden = true;
         $('discussionSurface').hidden = false;
       }

@@ -17,6 +17,7 @@ const { ClaudeSession } = require('../engines/claude-session.js');
 const { ClaudeHistory } = require('../engines/claude-history.js');
 const { readJson, writeJson } = require('../shared/json-store.js');
 const { normalizeLanguage, translate } = require('../shared/i18n.js');
+const keyboardShortcuts = require('../shared/shortcuts.js');
 const { BackendProcess } = require('./backend-process.js');
 const dshConfig = require('../engines/dsh-config.js');
 const { ClaudeGoal } = require('../engines/claude-goal.js');
@@ -239,10 +240,13 @@ function defaultConfig() {
     chatContentWidth: 'standard', // Conversation column width: standard | wide | full
     advancedAnimations: true, // Frosted-glass menus and richer menu motion.
     showConversationNavigator: true, // Short turn markers beside the conversation.
+    showHoverHints: true,   // Supplementary details when hovering over controls and conversations.
+    portableSkills: true,   // Shared skill bridge for every harness.
     vscodePath: '',         // Empty selects the first installed VS Code; otherwise an absolute executable path.
     computerName: '',       // Display name of this computer, shared with paired phones.
     downloadProxy: { mode: 'direct', url: '' },
     subscriptionAutoRefresh: {}, // Per-engine opt-out from the background quota cadence.
+    shortcuts: {},          // Action id -> accelerator; '' deliberately unbinds the action.
   };
 }
 
@@ -263,6 +267,9 @@ function saveConfig(patch) {
   const next = { ...loadConfig(true), ...patch };
   writeJson(configPath(), next);
   return next;
+}
+function resolvedShortcuts(config = loadConfig()) {
+  return keyboardShortcuts.resolve(config.shortcuts);
 }
 // The name shown to paired phones. An empty or unusable value falls back to the
 // operating system host name so a fresh install still has something to display.
@@ -290,6 +297,9 @@ function desktopZoom() {
       legacyLevel: readLegacyZoom(path.join(app.getPath('userData'), 'Preferences'), urls) });
   }
   return zoomController;
+}
+function refreshZoomShortcuts() {
+  if (zoomController) zoomController.refreshShortcuts();
 }
 
 let runtimeManager;
@@ -372,6 +382,7 @@ async function chooseDownloadConnection(engine) {
 
 let runtimeUpdatesService;
 let appUpdatesService;
+let appUpdateMenuBusy = false;
 const runtimeReinstallPreviews = new Map();
 const runtimeUninstallPreviews = new Map();
 function assertRuntimeReinstallAllowed(engine) {
@@ -797,7 +808,69 @@ function detectClaudeExe() {
   return firstExisting(candidates) || 'claude';
 }
 
-const CLAUDE_SETTING_FIELDS = ['cwd', 'model', 'thinkingBudget', 'permissionMode'];
+function installedSkillPluginDirs(host) {
+  try {
+    return sharedConversations?.skills?.targetsForHost(host)
+      .filter(record => record.mode === 'native-plugin')
+      .map(record => record.path) || [];
+  } catch { return []; }
+}
+
+function activateSkillInstallation({ host, name, action = 'install', target }) {
+  try {
+    if (host === 'claude') {
+      const path = installedSkillPluginDirs('claude').find(item => path.basename(item) === name);
+      return { ok: Boolean(path), ...(path ? { pluginDir: path } : { error: 'Claude plugin bundle is missing' }) };
+    }
+    if (host === 'antigravity') {
+      const file = path.join(antigravity.home, 'settings.json');
+      let settings = {};
+      if (fs.existsSync(file)) {
+        try { settings = JSON.parse(fs.readFileSync(file, 'utf8')); }
+        catch (error) { return { ok: false, error: 'Antigravity settings are not valid JSON: ' + error.message }; }
+      }
+      const paths = new Set(Array.isArray(settings.skillsPaths) ? settings.skillsPaths : []);
+      if (action === 'uninstall') paths.delete(target?.path);
+      else if (target?.path) paths.add(target.path);
+      settings.skillsPaths = [...paths];
+      if (fs.existsSync(file)) fs.copyFileSync(file, file + '.workbench.bak');
+      writeJson(file, settings);
+      return { ok: true, skillsPaths: settings.skillsPaths };
+    }
+    if (host !== 'codex') return { ok: true, bridgeOnly: true };
+    const marketplace = sharedConversations?.skills?.marketplaceManifest('codex');
+    const runtime = runtimes().locate('codex');
+    if (!marketplace || !runtime?.file) return { ok: false, error: 'Codex runtime or skill marketplace is unavailable' };
+    const env = { ...runtimeEnvironment(detectNode(), 'codex'), CODEX_HOME: codex.home };
+    const run = args => {
+      if (process.platform !== 'win32') return spawnSync(runtime.file, args, {
+        cwd: codex.home, env, encoding: 'utf8', windowsHide: true, timeout: 30000,
+      });
+      const quote = value => '"' + String(value).replace(/"/g, '""') + '"';
+      const command = [runtime.file, ...args].map(quote).join(' ');
+      return spawnSync(env.ComSpec || process.env.ComSpec || 'cmd.exe', ['/d', '/s', '/c', command], {
+        cwd: codex.home, env, encoding: 'utf8', windowsHide: true, timeout: 30000,
+      });
+    };
+    if (action === 'uninstall') {
+      const removed = run(['plugin', 'remove', name + '@camellia-skills', '--json']);
+      return removed.status === 0
+        ? { ok: true, marketplace: 'camellia-skills' }
+        : { ok: false, error: String(removed.stderr || removed.stdout || 'Codex plugin removal failed').trim() };
+    }
+    const addedMarketplace = run(['plugin', 'marketplace', 'add', marketplace.root, '--json']);
+    const marketplaceMessage = String(addedMarketplace.stderr || addedMarketplace.stdout || '');
+    if (addedMarketplace.status !== 0 && !/already|exists/i.test(marketplaceMessage))
+      return { ok: false, error: String(addedMarketplace.stderr || addedMarketplace.stdout || 'Codex marketplace registration failed').trim() };
+    const installed = run(['plugin', 'add', name + '@camellia-skills', '--json']);
+    const installedMessage = String(installed.stderr || installed.stdout || '');
+    return installed.status === 0 || /already|installed/i.test(installedMessage)
+      ? { ok: true, marketplace: 'camellia-skills' }
+      : { ok: false, error: String(installed.stderr || installed.stdout || 'Codex plugin installation failed').trim() };
+  } catch (error) { return { ok: false, error: error.message }; }
+}
+
+const CLAUDE_SETTING_FIELDS = ['cwd', 'model', 'thinkingBudget', 'permissionMode', 'pluginDirs'];
 function claudeSessionSettings(settings = {}) {
   return Object.fromEntries(CLAUDE_SETTING_FIELDS.filter(key => settings[key] !== undefined).map(key => [key, settings[key]]));
 }
@@ -839,6 +912,9 @@ function claudeSpawnSpec(settings, opts) {
   }
   if (settings.permissionMode) { const mode = nativeMode('claude', settings.permissionMode); if (mode !== 'default') args.push('--permission-mode', mode); }
   if (settings.model) args.push('--model', settings.model);
+  for (const pluginDir of settings.pluginDirs || []) {
+    if (fs.existsSync(pluginDir)) args.push('--plugin-dir', pluginDir);
+  }
   // Unified routing: the proxy owns upstream credentials for every harness.
   // The route also carries the selected effort: the CLI's native fallback
   // (including High with MAX_THINKING_TOKENS=0) must not override it.
@@ -936,7 +1012,7 @@ function ensureClaudeSession(settings, opts) {
   const current = claudeSessions.get(opts);
   opts = { ...opts };
   const context = opts.cwd ? { cwd: opts.cwd, workspaceId: null } : resolveClaudeSessionContext(settings, opts);
-  settings = { ...settings, cwd: context.cwd };
+  settings = { ...settings, cwd: context.cwd, pluginDirs: installedSkillPluginDirs('claude') };
   opts.workspaceId = context.workspaceId;
   if (settings.cwd === claudeStandaloneCwd({})) fs.mkdirSync(settings.cwd, { recursive: true });
   if (!fs.existsSync(settings.cwd) || !fs.statSync(settings.cwd).isDirectory()) throw new Error("Working directory does not exist. Check the folder or move the session out of its workspace: " + settings.cwd);
@@ -1237,7 +1313,8 @@ discussionBoundary = require('../engines/discussions/native-boundary').createDis
     codex, antigravity, dsh: dshChat, grok: grokChat,
   },
 });
-sharedConversations = new SharedConversations({ dir: path.join(app.getPath('userData'), 'conversations'), loadConfig, saveConfig, log, modelContextWindow, generateTitle: generateConversationTitle,
+sharedConversations = new SharedConversations({ dir: path.join(app.getPath('userData'), 'conversations'),
+  skillsDir: path.join(app.getPath('userData'), 'skills'), portableSkills: loadConfig().portableSkills !== false, loadConfig, saveConfig, log, modelContextWindow, generateTitle: generateConversationTitle,
   assertAvailable: assertRuntimeAvailable,
   contextCapacity: { budget: options => capacity().budget(options) },
   summarize: compactionSummarizer,
@@ -1255,6 +1332,8 @@ sharedConversations = new SharedConversations({ dir: path.join(app.getPath('user
     antigravity: () => antigravity.handlers['account-state'](),
   }),
   createGoalBridge: options => require('../engines/goal-tool-bridge').createGoalToolBridge({ ...options, node: detectNode() }),
+  activateSkillInstallation: options => activateSkillInstallation(options),
+  deactivateSkillInstallation: options => activateSkillInstallation({ ...options, action: 'uninstall' }),
   webTools: require('../api/web-tools').createWebTools({ getConfig: readOllamaProxyConfig,
     getConnectionMode: () => networkSettingsService?.state().configured }),
   drivers: {
@@ -1503,7 +1582,9 @@ function flushSettingsWindow() {
 
 async function setSettingsBackdrop(owner, visible) {
   // Prepare the native caption and wait for the matching renderer frame before
-  // revealing Settings.
+  // revealing Settings. Closing Settings also releases a recorder that ignored
+  // menu accelerators while it was waiting for keystrokes.
+  if (!visible && owner && typeof owner.setIgnoreMenuShortcuts === 'function') owner.setIgnoreMenuShortcuts(false);
   windowChrome.setDimmed(owner, visible);
   const contents = liveWebContents(owner);
   if (!contents) return;
@@ -2000,6 +2081,17 @@ if (!gotSingleInstanceLock) {
   })) ipcMain.handle('dsh:' + channel, async (_event, payload) => {
     try { return await handler(payload); } catch (e) { return { ok: false, error: e.message }; }
   });
+  ipcMain.handle('dsh:shortcuts-get', () => ({ ok: true, shortcuts: resolvedShortcuts() }));
+  // While the Settings recorder is armed, the window must receive the keys
+  // instead of letting a menu accelerator navigate away from the page.
+  ipcMain.handle('dsh:shortcuts-recording', (event, active) => {
+    // Settings can live in its own window or in the embedded native view; both
+    // must receive keys instead of letting a menu accelerator act on them.
+    const window = BrowserWindow.fromWebContents?.(event.sender)
+      || (settingsWindow && !settingsWindow.isDestroyed() ? settingsWindow : null);
+    if (window && typeof window.setIgnoreMenuShortcuts === 'function') window.setIgnoreMenuShortcuts(active === true);
+    return { ok: true };
+  });
   ipcMain.handle('dsh:workbench-settings', () => {
     // Session metadata grows with conversation history. Read and parse it once
     // per request, rather than once for every field in the settings response.
@@ -2009,6 +2101,7 @@ if (!gotSingleInstanceLock) {
       subscriptionAutoRefresh: { antigravity: subscriptionAutoRefreshEnabled('antigravity', config), codex: subscriptionAutoRefreshEnabled('codex', config), kimi: subscriptionAutoRefreshEnabled('kimi', config) },
       closeToTray: config.closeToTray === true,
       memoryDirectory: config.memoryDirectory || '', contextMemory: { enabled: config.contextMemory?.enabled === true },
+      shortcuts: keyboardShortcuts.resolve(config.shortcuts),
       vscodePath: config.vscodePath || '',
       quickSwitchModels: config.quickSwitchModels || {},
       quickSwitchConnections: config.quickSwitchConnections || {},
@@ -2017,6 +2110,9 @@ if (!gotSingleInstanceLock) {
       chatContentWidth: normalizeChatContentWidth(config.chatContentWidth),
       advancedAnimations: config.advancedAnimations !== false,
       showConversationNavigator: config.showConversationNavigator !== false,
+      showHoverHints: config.showHoverHints !== false,
+      portableSkills: config.portableSkills !== false,
+      reviewDefaults: config.reviewDefaults || {},
       computerName: computerName(config), dataPath: app.getPath('userData'), version: app.getVersion(),
       pluginCacheMaintenance: pluginCacheMaintenanceStatus(app.getPath('userData')),
       dataDirectory: { ...dataDirectoryStatus({ appData: appDataDirectory, dataDir: app.getPath('userData') }),
@@ -2033,6 +2129,7 @@ if (!gotSingleInstanceLock) {
       const previousContentWidth = normalizeChatContentWidth(loadConfig().chatContentWidth);
       const previousAdvancedAnimations = loadConfig().advancedAnimations !== false;
       const previousConversationNavigator = loadConfig().showConversationNavigator !== false;
+      const previousHoverHints = loadConfig().showHoverHints !== false;
       const patch = { theme, language, autoRefreshBalances: payload?.autoRefreshBalances === undefined ? accountRefreshEnabled() : payload.autoRefreshBalances !== false };
       if (payload && Object.prototype.hasOwnProperty.call(payload, 'accountRefreshMinutes')) {
         const minutes = Number(payload.accountRefreshMinutes);
@@ -2049,9 +2146,63 @@ if (!gotSingleInstanceLock) {
         if (typeof payload.showConversationNavigator !== 'boolean') throw new Error('Invalid conversation navigator preference');
         patch.showConversationNavigator = payload.showConversationNavigator;
       }
+      if (payload && Object.prototype.hasOwnProperty.call(payload, 'showHoverHints')) {
+        if (typeof payload.showHoverHints !== 'boolean') throw new Error('Invalid hover hints preference');
+        patch.showHoverHints = payload.showHoverHints;
+      }
+      if (payload && Object.prototype.hasOwnProperty.call(payload, 'portableSkills')) {
+        if (typeof payload.portableSkills !== 'boolean') throw new Error('Invalid shared skills preference');
+        patch.portableSkills = payload.portableSkills;
+      }
+      if (payload && Object.prototype.hasOwnProperty.call(payload, 'reviewDefaults')) {
+        const value = payload.reviewDefaults;
+        if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Invalid review defaults');
+        const next = { ...(loadConfig().reviewDefaults || {}) };
+        if (Object.prototype.hasOwnProperty.call(value, 'reviewerEngine')) {
+          if (value.reviewerEngine !== '' && !['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'grok'].includes(value.reviewerEngine))
+            throw new Error('Invalid default review engine');
+          next.reviewerEngine = value.reviewerEngine;
+        }
+        if (Object.prototype.hasOwnProperty.call(value, 'mode')) {
+          if (!['standard', 'adversarial'].includes(value.mode)) throw new Error('Invalid default review mode');
+          next.mode = value.mode;
+        }
+        if (Object.prototype.hasOwnProperty.call(value, 'maxTokens')) {
+          const maxTokens = Number(value.maxTokens);
+          if (!Number.isInteger(maxTokens) || maxTokens < 1000 || maxTokens > 1000000) throw new Error('Invalid review token budget');
+          next.maxTokens = maxTokens;
+        }
+        for (const key of ['allowAgentReviews', 'gate', 'allowSameEngine', 'turnGate']) {
+          if (!Object.prototype.hasOwnProperty.call(value, key)) continue;
+          if (typeof value[key] !== 'boolean') throw new Error('Invalid review default');
+          next[key] = value[key];
+        }
+        patch.reviewDefaults = next;
+      }
       if (payload && Object.prototype.hasOwnProperty.call(payload, 'memoryDirectory')) patch.memoryDirectory = validateMemoryDirectory(payload.memoryDirectory);
       if (payload && Object.prototype.hasOwnProperty.call(payload, 'contextMemory')) {
         patch.contextMemory = { ...(loadConfig().contextMemory || {}), enabled: payload.contextMemory?.enabled === true };
+      }
+      if (payload && Object.prototype.hasOwnProperty.call(payload, 'shortcuts')) {
+        const values = payload.shortcuts;
+        if (!values || typeof values !== 'object' || Array.isArray(values)) throw new Error('Invalid keyboard shortcuts');
+        patch.shortcuts = { ...(loadConfig().shortcuts || {}) };
+        for (const [id, value] of Object.entries(values)) {
+          if (!keyboardShortcuts.ACTIONS.some(action => action.id === id)) throw new Error('Unknown shortcut action');
+          const accelerator = keyboardShortcuts.normalize(value);
+          if (accelerator === null) throw new Error('Invalid keyboard shortcut');
+          if (accelerator && keyboardShortcuts.reserved(accelerator)) throw new Error('Reserved keyboard shortcut');
+          // '' stays stored so a cleared shortcut never falls back to its default.
+          patch.shortcuts[id] = accelerator;
+        }
+        const using = new Map();
+        const resolved = keyboardShortcuts.resolve(patch.shortcuts);
+        for (const action of keyboardShortcuts.ACTIONS) {
+          const accelerator = resolved[action.id];
+          if (!accelerator) continue;
+          if (using.has(accelerator)) throw new Error(`Shortcut already used by ${using.get(accelerator)}`);
+          using.set(accelerator, action.label);
+        }
       }
       if (payload && Object.prototype.hasOwnProperty.call(payload, 'vscodePath')) patch.vscodePath = validateVSCodeExecutable(payload.vscodePath);
       if (payload?.quickSwitchModels !== undefined) {
@@ -2114,13 +2265,23 @@ if (!gotSingleInstanceLock) {
         }
       }
       saveConfig(patch);
+      if (patch.portableSkills !== undefined) sharedConversations?.setPortableSkills(patch.portableSkills);
       if (payload?.conversations) saveConfig({ conversations: conversationPreferences({ conversations: payload.conversations }) });
       const contentWidth = normalizeChatContentWidth(patch.chatContentWidth ?? previousContentWidth);
       const advancedAnimations = patch.advancedAnimations ?? previousAdvancedAnimations;
       const showConversationNavigator = patch.showConversationNavigator ?? previousConversationNavigator;
+      const showHoverHints = patch.showHoverHints ?? previousHoverHints;
       nativeTheme.themeSource = theme;
       setMenu();
       refreshTrayMenu();
+      if (patch.shortcuts) {
+        refreshZoomShortcuts();
+        const resolved = keyboardShortcuts.resolve(patch.shortcuts);
+        for (const window of [mainWindow, settingsWindow]) {
+          if (window && !window.isDestroyed()) window.webContents.send('dsh:shortcuts-changed', resolved);
+        }
+        if (nativeSettingsView) nativeSettingsView.webContents.send('dsh:shortcuts-changed', resolved);
+      }
       for (const window of [mainWindow, settingsWindow]) {
         if (window && !window.isDestroyed()) window.webContents.send('dsh:language-changed', language);
       }
@@ -2136,6 +2297,11 @@ if (!gotSingleInstanceLock) {
       if (showConversationNavigator !== previousConversationNavigator && mainWindow && !mainWindow.isDestroyed()) {
         mainWindow.webContents.send('dsh:conversation-navigator-changed', showConversationNavigator);
       }
+      if (showHoverHints !== previousHoverHints) {
+        for (const window of [mainWindow, settingsWindow]) {
+          if (window && !window.isDestroyed()) window.webContents.send('dsh:hover-hints-changed', showHoverHints);
+        }
+      }
       if (patch.hiddenSubscriptionModels && mainWindow && !mainWindow.isDestroyed()) {
         for (const engine of Object.keys(payload.hiddenSubscriptionModels)) {
           mainWindow.webContents.send('dsh:engine-settings-changed', { engine });
@@ -2143,7 +2309,7 @@ if (!gotSingleInstanceLock) {
       }
       if (accountRefreshEnabled() !== previousQuotaCheck.enabled || accountRefreshMinutes() !== previousQuotaCheck.minutes) syncQuotaCheck();
       void refreshAccountBalances();
-      return { ok: true };
+      return { ok: true, ...(patch.shortcuts ? { shortcuts: keyboardShortcuts.resolve(patch.shortcuts) } : {}) };
     } catch (e) { return { ok: false, error: e.message }; }
   });
   ipcMain.handle('dsh:api-router-save-config', async (_event, payload) => {
@@ -3156,14 +3322,77 @@ if (!gotSingleInstanceLock) {
     }
   }
 
+  async function checkForUpdatesFromMenu() {
+    if (appUpdateMenuBusy) return;
+    appUpdateMenuBusy = true;
+    const owner = settingsWindow && !settingsWindow.isDestroyed() ? settingsWindow : mainWindow;
+    try {
+      const available = await appUpdates().check();
+      if (!available.updateAvailable) {
+        await dialog.showMessageBox(owner, {
+          type: 'info', title: uiText('Check for updates'), noLink: true,
+          message: uiText('Camellia is up to date.'),
+          detail: `${APP_NAME} v${available.current}`,
+          buttons: [uiText('OK')],
+        });
+        return;
+      }
+      if (!available.supported || !available.name || !available.url) {
+        await dialog.showMessageBox(owner, {
+          type: 'info', title: uiText('Check for updates'), noLink: true,
+          message: uiText('v{0} is available, but this platform has no in-place package.').replace('{0}', available.latest),
+          buttons: [uiText('OK')],
+        });
+        return;
+      }
+      const busy = Object.keys(ENGINES).filter(engineBusy);
+      const { response } = await dialog.showMessageBox(owner, {
+        type: 'question', title: uiText('Check for updates'), noLink: true,
+        message: uiText('v{0} is available.').replace('{0}', available.latest),
+        detail: uiText(busy.length
+          ? 'Camellia will close and replace the current installation. Running responses will stop; your conversations and settings are kept.'
+          : 'Camellia will close and replace the current installation. Your conversations, settings and downloaded engines are kept.'),
+        buttons: [uiText('Later'), uiText('Download and install')],
+        defaultId: 1, cancelId: 0,
+      });
+      if (response !== 1) return;
+      const progress = state => {
+        if (!mainWindow || mainWindow.isDestroyed()) return;
+        if (state.status === 'downloading' && Number.isFinite(state.percent)) mainWindow.setProgressBar(state.percent / 100);
+        else if (state.status === 'applying' || state.status === 'restarting') mainWindow.setProgressBar(2);
+      };
+      const result = await appUpdates().install(progress, available);
+      if (result?.kind === 'disk-image') {
+        await dialog.showMessageBox(owner, {
+          type: 'info', title: uiText('Check for updates'), noLink: true,
+          message: uiText('The installer was downloaded. Open it to finish updating.'),
+          detail: result.file || '',
+          buttons: [uiText('OK')],
+        });
+      }
+    } catch (error) {
+      await dialog.showMessageBox(owner, {
+        type: 'error', title: uiText('Update check failed'), noLink: true,
+        message: error?.message || String(error),
+        buttons: [uiText('OK')],
+      });
+    } finally {
+      appUpdateMenuBusy = false;
+      if (mainWindow && !mainWindow.isDestroyed()) mainWindow.setProgressBar(-1);
+    }
+  }
+
   function setMenu() {
+    const bindings = resolvedShortcuts();
+    const accelerated = (id, item) => bindings[id] ? { ...item, accelerator: bindings[id] } : item;
     const template = [
       {
         label: process.platform === 'darwin' ? APP_NAME : 'Application',
         submenu: [
           { label: "About", click: () => dialog.showMessageBox({ type: 'info', title: `About ${APP_NAME}`, message: APP_NAME, detail: `Version ${app.getVersion()}\nEngine: ${engineStatusText()}` }) },
+          { label: "Check for updates", click: () => { void checkForUpdatesFromMenu(); } },
           { type: 'separator' },
-          { label: "Settings…", accelerator: 'CmdOrCtrl+,', click: () => openSettingsWindow() },
+          accelerated('settings', { label: "Settings…", click: () => openSettingsWindow() }),
           { label: normalizeLanguage(loadConfig().language) === 'en' ? 'Mobile access…' : '手机访问…', click: () => remoteDesktop.open() },
           { type: 'separator' },
           { label: "Open logs folder", click: () => shell.openPath(logDir()) },
@@ -3174,7 +3403,7 @@ if (!gotSingleInstanceLock) {
       {
         label: "Engine",
         submenu: [
-          { label: "Home", accelerator: 'CmdOrCtrl+Shift+H', click: () => switchMode('home') },
+          accelerated('home', { label: "Home", click: () => switchMode('home') }),
           { type: 'separator' },
           { label: "Switch to Claude Code", click: () => navigateMode('claude') },
           { label: "Switch to Codex CLI", click: () => navigateMode('codex') },
@@ -3201,9 +3430,9 @@ if (!gotSingleInstanceLock) {
         submenu: [
           { role: 'reload', label: "Reload" },
           { type: 'separator' },
-          { label: "Zoom in", accelerator: 'CmdOrCtrl+=', click: () => desktopZoom().adjust(1) },
-          { label: "Zoom out", accelerator: 'CmdOrCtrl+-', click: () => desktopZoom().adjust(-1) },
-          { label: "Actual size", accelerator: 'CmdOrCtrl+0', click: () => desktopZoom().set(0) },
+          accelerated('zoomIn', { label: "Zoom in", click: () => desktopZoom().adjust(1) }),
+          accelerated('zoomOut', { label: "Zoom out", click: () => desktopZoom().adjust(-1) }),
+          accelerated('zoomReset', { label: "Actual size", click: () => desktopZoom().set(0) }),
           { type: 'separator' },
           { role: 'togglefullscreen', label: "Toggle full screen" },
         ],

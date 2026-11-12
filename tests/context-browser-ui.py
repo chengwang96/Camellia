@@ -109,6 +109,7 @@ bridge = r"""(() => {
   const fixture = FIXTURE, second = SECOND, snapshot = SNAPSHOT, secondSnapshot = SECOND_SNAPSHOT,
         previous = PREVIOUS, graph = GRAPH, secondGraph = SECOND_GRAPH, blocks = BLOCKS;
   const loadById = id => id === second.id ? second : fixture;
+  let reviewConsent = {id:'consent-1', reviewerEngine:'claude', mode:'adversarial', focus:'data loss'};
   window.dshDesktop = {
     sharedConversations: true,
     conversationCommand: async ({action, payload}) => {
@@ -126,6 +127,26 @@ bridge = r"""(() => {
       if (action === 'context-memory-status') return {ok:true,enabled:true,scope:{user:1,workspace:1},snapshot:'Prefer concise answers.'};
       if (action === 'context-node') return {ok:true,node:{content:'Exact user content',truncated:false,redacted:false}};
       if (action === 'context-expand') return {ok:true,text:'Recovered original rows',truncated:false};
+      if (action === 'review-options') return {ok:true,authorEngine:'codex',defaultEngine:'claude',
+        settings:{allowAgentReviews:false,gate:false,allowSameEngine:false,reviewerEngine:'claude',model:'',mode:'standard',maxTokens:50000},
+        engines:[{engine:'claude',available:true,models:[{id:'reviewer-model',name:'Reviewer Model'}]}]};
+      if (action === 'review-context') return {ok:true,reviewable:true,changedFiles:3,files:[]};
+      if (action === 'review-consent-pending') return {ok:true,consent:reviewConsent};
+      if (action === 'review-consent-approve') {
+        const consent = reviewConsent; reviewConsent = null;
+        return {ok:true,consent,review:{id:'consent-review',status:'completed',reviewerEngine:'claude',mode:'adversarial',report:null}};
+      }
+      if (action === 'review-consent-dismiss') { reviewConsent = null; return {ok:true,dismissed:true}; }
+      if (action === 'review-save-settings') return {ok:true,settings:{allowAgentReviews:false,gate:false,
+        allowSameEngine:false,reviewerEngine:'claude',model:'',mode:'standard',maxTokens:50000,...payload}};
+      if (action === 'review-start') return {ok:true,review:{id:'review-1',status:'running',
+        reviewerEngine:'claude',mode:payload?.mode || 'standard',childConversationId:'review-child',
+        target:{files:[{path:'src/app.js',status:' M'}]}}};
+      if (action === 'review-status') return {ok:true,review:{id:'review-1',status:'completed',
+        reviewerEngine:'claude',mode:'standard',report:{verdict:'changes_requested',summary:'A retry can duplicate work.',
+          findings:[{id:'f1',severity:'high',file:'src/app.js',line:12,
+            evidence:'The side effect happens before the retry boundary.',recommendation:'Persist the boundary first.'}]}}};
+      if (action === 'review-cancel') return {ok:true,review:{id:'review-1',status:'cancelled'}};
       if (action === 'goal-get') return {ok:true,goal:null};
       return {ok:true};
     },
@@ -242,6 +263,42 @@ with sync_playwright() as p:
     }""")
     assert close_state == {'hidden': False, 'closing': True, 'open': False}, close_state
     expect(page.locator('#contextPanel')).to_be_hidden()
+    assert page.locator('#reviewChip').count() == 0
+    expect(page.locator('.review-consent-card')).to_be_visible()
+    expect(page.locator('.review-consent-card')).to_contain_text('cross-engine review')
+    page.locator('.review-consent-card button.btn-primary').click()
+    expect(page.locator('.review-consent-card')).to_have_count(0)
+    page.locator('#reviewToggle').click()
+    expect(page.locator('#reviewDialog')).to_be_visible()
+    assert page.evaluate(
+        "getComputedStyle(document.querySelector('#reviewDialog'), '::backdrop').backdropFilter") == 'none'
+    page.wait_for_timeout(200)
+    app_opacity = float(page.evaluate("getComputedStyle(document.querySelector('.app')).opacity"))
+    assert 0.4 <= app_opacity <= 0.6, app_opacity
+    box = page.locator('#reviewDialog').bounding_box()
+    viewport = page.viewport_size
+    assert box is not None and viewport is not None
+    assert abs((box['x'] + box['width'] / 2) - viewport['width'] / 2) <= 1, box
+    assert abs((box['y'] + box['height'] / 2) - viewport['height'] / 2) <= 1, box
+    expect(page.locator('#reviewEngine option')).to_have_count(1)
+    expect(page.locator('#reviewAdvanced')).not_to_have_attribute('open', '')
+    page.locator('#reviewAdvanced > summary').click()
+    expect(page.locator('#reviewAdvanced')).to_have_attribute('open', '')
+    expect(page.locator('#reviewAgentConsent')).not_to_be_checked()
+    page.locator('#reviewAgentConsent').check()
+    expect(page.locator('#reviewAgentConsent')).to_be_checked()
+    page.locator('#reviewGate').check()
+    expect(page.locator('#reviewGate')).to_be_checked()
+    page.locator('#reviewAdvanced').evaluate("node => { node.open = false; }")
+    page.locator('#reviewStart').click()
+    expect(page.locator('#reviewStatus')).to_contain_text('Review completed')
+    expect(page.locator('.review-report')).to_contain_text('A retry can duplicate work.')
+    expect(page.locator('.review-finding')).to_contain_text('src/app.js:12')
+    page.screenshot(path=str(preview / 'review-dialog.png'), animations='disabled')
+    page.locator('#reviewClose').click()
+    page.keyboard.press('Control+Shift+R')
+    expect(page.locator('#reviewDialog')).to_be_visible()
+    page.locator('#reviewClose').click()
     assert errors == [], errors
     browser.close()
     print('PASS context browser: composition, node, block, agents, memory, switching')

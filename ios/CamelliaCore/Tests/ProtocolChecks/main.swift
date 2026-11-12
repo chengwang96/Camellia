@@ -6710,6 +6710,12 @@ do {
     checkEqual(TurnDetails(JSONObject(dictionary: detail.json)), detail, "stored accounting survives a round trip")
     let message = RemoteMessage(JSONObject(dictionary: ["seq": 5, "role": "assistant", "text": "Reply", "turnDetails": detail.json]))
     checkEqual(message.turnDetails, detail, "remote messages preserve their own accounting")
+    let request = TurnDetails(JSONObject(dictionary: ["state": "complete", "usage": ["input_tokens": 100, "output_tokens": 20],
+        "requestUsage": ["total": 1040, "main": 920, "background": 60, "backgroundTurns": 1, "children": 60, "childTasks": 1,
+            "input": 150, "output": 30, "cacheRead": 800, "cacheWrite": 0]]))
+    checkEqual(request.displayTotal, 1040, "request total includes background replies and native children")
+    checkEqual(request.cacheHit, 800.0 / 950.0 * 100.0, "request cache rate uses the combined model buckets")
+    checkEqual(TurnDetails(JSONObject(dictionary: request.json)), request, "request accounting survives a round trip")
     let unknown = TurnDetails(JSONObject(dictionary: ["usage": ["input_tokens": 20, "output_tokens": 5]]))
     checkEqual(unknown.total, 25, "unknown cache does not affect the token total")
     checkEqual(unknown.cacheHit, nil, "unknown cache does not become a zero hit rate")

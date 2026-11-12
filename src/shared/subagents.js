@@ -15,6 +15,9 @@ function mergeTask(previous, update, { engine, userSeq, at = Date.now() } = {}) 
   if (Array.isArray(update.approvals)) task.approvals = update.approvals.slice(0, 12);
   if (typeof update.canReply === 'boolean') task.canReply = update.canReply;
   if (typeof update.canStop === 'boolean') task.canStop = update.canStop;
+  // Native child totals are reported as one aggregate number; keep them
+  // separate from the parent's input/output/cache buckets.
+  if (Number.isFinite(update.usage) && update.usage >= 0) task.usage = Math.round(update.usage);
   return task;
 }
 function forkTasks(tasks, boundary) {

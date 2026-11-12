@@ -100,6 +100,66 @@ with sync_playwright() as playwright:
         expect(canonical.locator('.turn-body > .md')).to_have_text('Canonical final')
         expect(canonical.locator('.tool-output')).to_have_text('Canonical output')
         page.evaluate("""() => {
+          emit({type:'conversation:started',prompt:'Sequential canonical replies',userSeq:60});
+          emit({type:'stream_event',event:{type:'message_start',message:{id:'sequential-message-one'}}});
+          text(0, 'First canonical progress');
+          emit({type:'gui:tool',id:'sequential-one',name:'inspect',input:{path:'one.txt'},status:'in_progress'});
+          emit({type:'assistant',message:{id:'sequential-message-one',content:[
+            {type:'text',text:'First canonical progress'},
+            {type:'tool_use',id:'sequential-one',name:'inspect',input:{path:'one.txt'}}
+          ]}});
+          emit({type:'assistant',message:{id:'sequential-message-one',content:[
+            {type:'text',text:'First canonical progress'},
+            {type:'tool_use',id:'sequential-one',name:'inspect',input:{path:'one.txt'}}
+          ]}});
+          emit({type:'user',message:{content:[{type:'tool_result',tool_use_id:'sequential-one',content:'First output'}]}});
+          emit({type:'stream_event',event:{type:'message_start',message:{id:'sequential-message-two'}}});
+          emit({type:'assistant',message:{id:'sequential-message-two',content:[
+            {type:'text',text:'Second canonical progress'},
+            {type:'tool_use',id:'sequential-two',name:'verify',input:{path:'two.txt'}},
+            {type:'text',text:'Sequential final'}
+          ]}});
+          emit({type:'user',message:{content:[{type:'tool_result',tool_use_id:'sequential-two',content:'Second output'}]}});
+          emit({type:'result',subtype:'success'});
+        }""")
+        sequential = page.locator('.turn').last
+        expect(sequential.locator('.execution-process-count')).to_contain_text('2')
+        expect(sequential.locator('.execution-process .tool-card')).to_have_count(2)
+        expect(sequential.locator('.execution-process .md')).to_have_text(['First canonical progress', 'Second canonical progress'])
+        expect(sequential.locator('.turn-body > .md')).to_have_text('Sequential final')
+        expect(sequential.locator('.tool-output')).to_have_text(['First output', 'Second output'])
+        page.evaluate("""() => {
+          emit({type:'conversation:started',prompt:'Claude block snapshots',userSeq:61});
+          emit({type:'stream_event',event:{type:'message_start',message:{id:'claude-blocks-one'}}});
+          emit({type:'assistant',message:{id:'claude-blocks-one',content:[{type:'thinking',thinking:'Plan block snapshots'}]}});
+          emit({type:'assistant',message:{id:'claude-blocks-one',content:[
+            {type:'tool_use',id:'block-one',name:'Read',input:{path:'one.txt'}}
+          ]}});
+          emit({type:'assistant',message:{id:'claude-blocks-one',content:[
+            {type:'tool_use',id:'block-two',name:'Grep',input:{pattern:'two'}}
+          ]}});
+          emit({type:'user',message:{content:[
+            {type:'tool_result',tool_use_id:'block-one',content:'Block one output'},
+            {type:'tool_result',tool_use_id:'block-two',content:'Block two output'}
+          ]}});
+          emit({type:'stream_event',event:{type:'message_start',message:{id:'claude-blocks-two'}}});
+          text(0, 'Block progress');
+          emit({type:'assistant',message:{id:'claude-blocks-two',content:[{type:'text',text:'Block progress'}]}});
+          emit({type:'assistant',message:{id:'claude-blocks-two',content:[
+            {type:'tool_use',id:'block-three',name:'Edit',input:{file_path:'three.txt'}}
+          ]}});
+          emit({type:'user',message:{content:[{type:'tool_result',tool_use_id:'block-three',content:'Block three output'}]}});
+          emit({type:'assistant',message:{id:'claude-blocks-two',content:[{type:'text',text:'Block final'}]}});
+          emit({type:'result',subtype:'success'});
+        }""")
+        blocks = page.locator('.turn').last
+        expect(blocks.locator('.execution-process-count')).to_contain_text('3')
+        expect(blocks.locator('.execution-process .tool-card')).to_have_count(3)
+        expect(blocks.locator('.execution-process .md')).to_have_text('Block progress')
+        expect(blocks.locator('.think-body')).to_have_text('Plan block snapshots')
+        expect(blocks.locator('.turn-body > .md')).to_have_text('Block final')
+        expect(blocks.locator('.tool-output')).to_have_text(['Block one output', 'Block two output', 'Block three output'])
+        page.evaluate("""() => {
           emit({type:'conversation:started',prompt:'Many progress updates',userSeq:7});
           for (let index = 0; index < 27; index++) {
             text(index, 'Progress ' + index);
@@ -267,6 +327,72 @@ with sync_playwright() as playwright:
         expect(partial.locator('.turn-body > .md')).to_have_text('Streamed answer')
         assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
         page.close()
+
+    # Every harness shares this renderer, but their event adapters differ:
+    # Codex and all ACP harnesses stream content blocks directly, while Claude
+    # also sends one assistant snapshot per content block.
+    for harness in ['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'grok']:
+        page = browser.new_page(viewport={'width': 960, 'height': 800}, color_scheme='light')
+        page.on('pageerror', lambda error: errors.append(str(error)))
+        page.add_init_script(bridge)
+        page.goto((repo / 'src/renderer/chat/workbench.html').as_uri() + f'?harness={harness}&conversation=shared-fixture', wait_until='networkidle')
+        page.wait_for_function('uiReady')
+        page.evaluate("""() => {
+          const engine = new URLSearchParams(location.search).get('harness');
+          window.testRun = 1300;
+          window.emit = event => deliverEvent({session_id:'shared-fixture',engine,runId:window.testRun,...event});
+          window.text = (index, value) => {
+            emit({type:'stream_event',event:{type:'content_block_start',index,content_block:{type:'text'}}});
+            emit({type:'stream_event',event:{type:'content_block_delta',index,delta:{type:'text_delta',text:value}}});
+            emit({type:'stream_event',event:{type:'content_block_stop',index}});
+          };
+        }""")
+        page.evaluate("""() => {
+          emit({type:'conversation:started',prompt:'Harness stream process',userSeq:130});
+          emit({type:'stream_event',event:{type:'message_start'}});
+          text(0, 'First harness progress');
+          emit({type:'gui:tool',id:'harness-stream-one',name:'Read',status:'completed',output:'First harness output'});
+          emit({type:'stream_event',event:{type:'message_start'}});
+          text(1, 'Second harness progress');
+          emit({type:'gui:tool',id:'harness-stream-two',name:'Grep',status:'completed',output:'Second harness output'});
+          text(2, 'Harness stream final');
+          emit({type:'result',subtype:'success'});
+        }""")
+        stream_turn = page.locator('.turn').last
+        expect(stream_turn.locator('.execution-process-count')).to_contain_text('2')
+        expect(stream_turn.locator('.execution-process .tool-card')).to_have_count(2)
+        expect(stream_turn.locator('.tool-output')).to_have_text(['First harness output', 'Second harness output'])
+        expect(stream_turn.locator('.turn-body > .md')).to_have_text('Harness stream final')
+        page.evaluate("""() => {
+          window.testRun = 1301;
+          emit({type:'conversation:started',prompt:'Harness block snapshots',userSeq:131});
+          emit({type:'stream_event',event:{type:'message_start',message:{id:'harness-message-one'}}});
+          emit({type:'assistant',message:{id:'harness-message-one',content:[{type:'thinking',thinking:'Harness reasoning'}]}});
+          emit({type:'assistant',message:{id:'harness-message-one',content:[
+            {type:'tool_use',id:'harness-block-one',name:'Read',input:{path:'one.txt'}}
+          ]}});
+          emit({type:'assistant',message:{id:'harness-message-one',content:[
+            {type:'tool_use',id:'harness-block-two',name:'Grep',input:{pattern:'two'}}
+          ]}});
+          emit({type:'user',message:{content:[
+            {type:'tool_result',tool_use_id:'harness-block-one',content:'First block output'},
+            {type:'tool_result',tool_use_id:'harness-block-two',content:'Second block output'}
+          ]}});
+          emit({type:'stream_event',event:{type:'message_start',message:{id:'harness-message-two'}}});
+          emit({type:'assistant',message:{id:'harness-message-two',content:[{type:'text',text:'Harness block progress'}]}});
+          emit({type:'assistant',message:{id:'harness-message-two',content:[
+            {type:'tool_use',id:'harness-block-three',name:'Edit',input:{file_path:'three.txt'}}
+          ]}});
+          emit({type:'user',message:{content:[{type:'tool_result',tool_use_id:'harness-block-three',content:'Third block output'}]}});
+          emit({type:'assistant',message:{id:'harness-message-two',content:[{type:'text',text:'Harness block final'}]}});
+          emit({type:'result',subtype:'success'});
+        }""")
+        block_turn = page.locator('.turn').last
+        expect(block_turn.locator('.execution-process-count')).to_contain_text('3')
+        expect(block_turn.locator('.execution-process .tool-card')).to_have_count(3)
+        expect(block_turn.locator('.tool-output')).to_have_text(['First block output', 'Second block output', 'Third block output'])
+        expect(block_turn.locator('.turn-body > .md')).to_have_text('Harness block final')
+        page.close()
     browser.close()
     assert not errors, errors
-    print('PASS: latest-only native/tagged reasoning, live updates, canonical rebuild, history, restoration, tools, completion, stop, plain replies and localization in light/dark themes')
+    print('PASS: latest-only native/tagged reasoning, live updates, canonical rebuild, cross-harness stream and block snapshots, history, restoration, tools, completion, stop, plain replies and localization in light/dark themes')

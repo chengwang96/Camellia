@@ -21,18 +21,40 @@ test('keyboard and wheel persist one zoom level across pages, windows and contro
   writeJson(file, { mode: 'claude', theme: 'dark' });
   const options = { loadConfig: () => readJson(file, {}), saveConfig: patch => writeJson(file, { ...readJson(file, {}), ...patch }), legacyLevel: 1.5 };
   const zoom = createZoomController(options), main = content(), settings = content();
+  // CommandOrControl follows the host platform; simulate the same primary key.
+  const primary = process.platform === 'darwin' ? { meta: true } : { control: true };
   zoom.attach(main); zoom.attach(settings);
   let prevented = 0;
-  main.emit('before-input-event', { preventDefault: () => prevented++ }, { type: 'keyDown', control: true, shift: true, key: '+' });
+  main.emit('before-input-event', { preventDefault: () => prevented++ }, { type: 'keyDown', ...primary, shift: true, key: '+' });
   assert.equal(prevented, 1); assert.equal(main.getZoomLevel(), 2); assert.equal(settings.getZoomLevel(), 2);
   main.setZoomLevel(0); main.emit('did-navigate'); assert.equal(main.getZoomLevel(), 2);
   zoom.adjust(-1); assert.equal(readJson(file).zoomLevel, 1.5);
   assert.equal(readJson(file).theme, 'dark');
   const restarted = createZoomController({ ...options, legacyLevel: 3 });
   const reopened = content(); restarted.attach(reopened); assert.equal(reopened.getZoomLevel(), 1.5);
-  reopened.emit('before-input-event', { preventDefault() {} }, { type: 'keyDown', meta: true, key: '0' });
+  reopened.emit('before-input-event', { preventDefault() {} }, { type: 'keyDown', ...primary, key: '0' });
   assert.equal(readJson(file).zoomLevel, 0);
 });
+test('zoom keyboard handling follows custom and cleared shortcut bindings', () => {
+  const config = { shortcuts: { zoomIn: '' } };
+  const zoom = createZoomController({ loadConfig: () => config, saveConfig: () => {} });
+  const primary = process.platform === 'darwin' ? { meta: true } : { control: true };
+  const main = content();
+  zoom.attach(main);
+  let prevented = 0;
+  const emit = input => main.emit('before-input-event', { preventDefault: () => prevented++ }, { type: 'keyDown', ...input });
+  emit({ ...primary, key: '=' });
+  assert.equal(prevented, 0, 'A cleared shortcut no longer zooms');
+  assert.equal(main.getZoomLevel(), 0);
+  config.shortcuts = { zoomIn: 'CommandOrControl+Alt+K' };
+  zoom.refreshShortcuts();
+  emit({ ...primary, alt: true, key: 'k' });
+  assert.equal(prevented, 1, 'The custom combination zooms');
+  assert.equal(main.getZoomLevel(), 0.5);
+  emit({ ...primary, key: '=' });
+  assert.equal(prevented, 1, 'The old default stops working after rebinding');
+});
+
 test('an attached surface can keep a fixed zoom offset across zoom changes and navigation', () => {
   const zoom = createZoomController({ loadConfig: () => ({}), saveConfig: () => {} });
   const host = content(), embedded = content();
@@ -50,6 +72,7 @@ test('an attached surface can keep a fixed zoom offset across zoom changes and n
 
 test('zoom changes publish each surface scale for the floating indicator', () => {
   const zoom = createZoomController({ loadConfig: () => ({}), saveConfig: () => {} });
+  const primary = process.platform === 'darwin' ? { meta: true } : { control: true };
   const host = content(), embedded = content();
   zoom.attach(host); zoom.attach(embedded, -1);
   assert.equal(host.messages.length, 0, 'Initial attachment does not display the indicator');
@@ -57,7 +80,7 @@ test('zoom changes publish each surface scale for the floating indicator', () =>
   assert.equal(host.messages.at(-1).channel, 'dsh:zoom-changed');
   assert.ok(Math.abs(host.messages.at(-1).payload.zoomFactor - 1.2 ** 0.5) < 0.000001);
   assert.ok(Math.abs(embedded.messages.at(-1).payload.zoomFactor - 1.2 ** -0.5) < 0.000001);
-  host.emit('before-input-event', { preventDefault() {} }, { type: 'keyDown', control: true, key: '0' });
+  host.emit('before-input-event', { preventDefault() {} }, { type: 'keyDown', ...primary, key: '0' });
   assert.equal(host.messages.at(-1).payload.zoomFactor, 1);
   assert.ok(Math.abs(embedded.messages.at(-1).payload.zoomFactor - 1.2 ** -1) < 0.000001);
 });

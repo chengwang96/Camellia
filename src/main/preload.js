@@ -73,6 +73,7 @@ contextBridge.exposeInMainWorld('dshDesktop', {
   onChatContentWidthChanged: (callback) => subscribe('dsh:chat-content-width-changed', callback),
   onConversationNavigatorChanged: (callback) => subscribe('dsh:conversation-navigator-changed', callback),
   onAdvancedAnimationsChanged: (callback) => subscribe('dsh:advanced-animations-changed', callback),
+  onHoverHintsChanged: (callback) => subscribe('dsh:hover-hints-changed', callback),
   // Settings
   getSettings: () => ipcRenderer.invoke('dsh:get-settings'),
   saveSettings: (payload) => ipcRenderer.invoke('dsh:save-settings', payload),
@@ -94,6 +95,9 @@ contextBridge.exposeInMainWorld('dshDesktop', {
   providerVerify: (payload) => ipcRenderer.invoke('dsh:provider-verify', payload),
   onProviderInsights: (callback) => subscribe('dsh:provider-insights', callback),
   workbenchSettings: () => ipcRenderer.invoke('dsh:workbench-settings'),
+  shortcutsGet: () => ipcRenderer.invoke('dsh:shortcuts-get'),
+  onShortcutsChanged: callback => subscribe('dsh:shortcuts-changed', callback),
+  setShortcutRecording: active => ipcRenderer.invoke('dsh:shortcuts-recording', active),
   vscodeInstallations: () => ipcRenderer.invoke('dsh:vscode-installations'),
   onLanguageChanged: (callback) => subscribe('dsh:language-changed', callback),
   workbenchSaveSettings: (payload) => ipcRenderer.invoke('dsh:workbench-save-settings', payload),

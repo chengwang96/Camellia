@@ -40,6 +40,10 @@ class ClaudeSession {
     this.backgroundTasks = new Map();
     this.endedBackgroundTasks = new Map();
     this.backgroundRuns = new Map();
+    // A background task can outlive the reply that started it. Remember the
+    // user request that launched each native task so its automatic follow-up
+    // turn is attributed to that request, not to the latest message.
+    this.taskUserSeq = new Map();
     this.foregroundTasks = new Set();
     this.backgroundMonitor = new BackgroundTaskMonitor({ tasks: this.backgroundTasks,
       closed: () => this.dead || this.closed, log: message => this.log('claude: ' + message),
@@ -159,8 +163,13 @@ class ClaudeSession {
     this.running = true;
     this.turnHasActivity = false;
     this.subagents.begin(); this.agentCalls.clear();
+    const taskId = obj.origin?.task_id || obj.task_id
+      || /<task-id>\s*([^<]+?)\s*<\/task-id>/i.exec(contentText(obj.message?.content))?.[1];
+    const originUserSeq = Number.isSafeInteger(this.taskUserSeq.get(taskId)) ? this.taskUserSeq.get(taskId) : this.subagentUserSeq;
     this.log('claude: adopting native background turn');
-    this.sendChannel({ type: 'gui:background-turn', session_id: this.sessionId });
+    this.sendChannel({ type: 'gui:background-turn', session_id: this.sessionId,
+      ...(taskId ? { taskId: this.subagents.resolve(taskId) } : {}),
+      ...(Number.isSafeInteger(originUserSeq) ? { originUserSeq } : {}) });
     return true;
   }
 
@@ -253,10 +262,13 @@ class ClaudeSession {
       if (obj.task_type && !/agent|workflow|teammate/.test(obj.task_type)) return;
       const known = this.subagents.resolve(obj.task_id);
       if (obj.subtype !== 'task_started' && !this.children.has(known) && !obj.subagent_type && !this.agentCalls.has(obj.tool_use_id)) return;
+      const reported = Number.isFinite(obj.usage?.total_tokens) ? obj.usage.total_tokens
+        : Number.isFinite(obj.patch?.usage?.total_tokens) ? obj.patch.usage.total_tokens : undefined;
       const task = this.subagents.native(obj.task_id, { toolCallId: obj.tool_use_id,
         ...(obj.parent_task_id ? { parentId: obj.parent_task_id } : {}),
         ...(obj.run_id ? { turnId: obj.run_id } : obj.subtype === 'task_started' ? { turnId: 'child-start-' + ++this.controlSeq } : {}),
         ...(newRun ? { result: '', approvals: [] } : {}),
+        ...(reported !== undefined ? { usage: reported } : newRun ? { usage: 0 } : {}),
         title: obj.description || undefined, goal: obj.subtype === 'task_started' ? obj.prompt || obj.description : undefined,
         progress: obj.summary || obj.description || undefined,
         status, ...(status === 'completed' ? { result: obj.summary || undefined } : {}),
@@ -432,6 +444,10 @@ class ClaudeSession {
 
   observeBackgroundTask(id, task) {
     if (typeof id !== 'string' || !id) return;
+    if (!this.taskUserSeq.has(id) && Number.isSafeInteger(this.subagentUserSeq)) {
+      this.taskUserSeq.set(id, this.subagentUserSeq);
+      if (this.taskUserSeq.size > 2048) this.taskUserSeq.delete(this.taskUserSeq.keys().next().value);
+    }
     const child = this.children.get(this.subagents.resolve(id));
     if (task.newRun || task.is_backgrounded === true) this.foregroundTasks.delete(id);
     else if (task.is_backgrounded === false) this.foregroundTasks.add(id);

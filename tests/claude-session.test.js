@@ -53,6 +53,30 @@ test('Claude recovers missed task starts from the native background snapshot and
   assert.equal(f.session.children.get('child').result, 'Audit passed');
 });
 
+test('Claude keeps a native child total on its task instead of the parent buckets', t => {
+  const f = fixture(t);
+  f.session.emitLine(JSON.stringify({ type: 'system', subtype: 'task_started', task_id: 'task-usage', description: 'Inspect' }));
+  f.session.emitLine(JSON.stringify({ type: 'system', subtype: 'task_notification', task_id: 'task-usage',
+    status: 'completed', summary: 'Done', usage: { total_tokens: 60, tool_uses: 2, duration_ms: 10 } }));
+  const task = f.events.filter(event => event.type === 'gui:subagent').map(event => event.task).at(-1);
+  assert.equal(task.status, 'completed');
+  assert.equal(task.usage, 60);
+});
+
+test('Claude attributes an adopted background turn to the request that started its task', t => {
+  const f = fixture(t);
+  f.session.subagentUserSeq = 7;
+  f.session.sendUserMessage('Run the long verification');
+  f.session.emitLine(JSON.stringify({ type: 'system', subtype: 'task_started', task_id: 'task-origin', description: 'Check CI' }));
+  f.session.emitLine(JSON.stringify({ type: 'result', subtype: 'success', result: 'The verification is running.' }));
+  const before = f.events.length;
+  f.session.emitLine(JSON.stringify({ type: 'user', origin: { kind: 'task-notification' },
+    message: { role: 'user', content: '<task-notification>\n<task-id>task-origin</task-id>\n<status>completed</status>\n</task-notification>' } }));
+  const adopted = f.events.slice(before).find(event => event.type === 'gui:background-turn');
+  assert.equal(adopted.originUserSeq, 7);
+  assert.equal(adopted.taskId, 'task-origin');
+});
+
 test('Claude adopts a native task-notification turn after a reply so its follow-up is not lost', t => {
   const f = fixture(t);
   assert.equal(f.session.sendUserMessage('Run the long verification'), true);

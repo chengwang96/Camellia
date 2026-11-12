@@ -26,6 +26,8 @@ function fixture(session) {
   const menus = [], opened = [];
   const context = {
     document: { createElement: element },
+    window: {},
+    workspaces: [],
     context: { sessionId: 'active' },
     discussionOpening: () => false,
     $: () => ({ textContent: 'New session' }),

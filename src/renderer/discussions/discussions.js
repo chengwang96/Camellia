@@ -1,5 +1,20 @@
 'use strict';
 
+document.addEventListener('pointermove', event => {
+  if (document.documentElement.dataset.advancedAnimations === 'off') return;
+  const pop = event.target.closest?.('.dsh-pop');
+  if (!pop) return;
+  const bounds = pop.getBoundingClientRect();
+  pop.style.setProperty('--glass-pointer-x', (event.clientX - bounds.left) + 'px');
+  pop.style.setProperty('--glass-pointer-y', (event.clientY - bounds.top) + 'px');
+}, { passive: true });
+document.addEventListener('pointerout', event => {
+  const pop = event.target.closest?.('.dsh-pop');
+  if (!pop || pop.contains(event.relatedTarget)) return;
+  pop.style.removeProperty('--glass-pointer-x');
+  pop.style.removeProperty('--glass-pointer-y');
+}, { passive: true });
+
 const discussionReferenceSources = new Set();
 window.CamelliaDiscussions = {
 references() {
@@ -12,6 +27,7 @@ const body = embedded ? root.querySelector('.discussion-workbench') : document.b
 const isVisible = () => !embedded || !root.host.hidden;
 const desktop = window.dshDesktop;
 const t = text => window.CamelliaI18n.t(text);
+const shortcutBindings = window.CamelliaShortcuts?.watchBindings(desktop);
 const navigation = window.CamelliaWorkbenchNavigation;
 $('discussionNavigation').replaceChildren(navigation.section({ key: 'discussions', title: 'Agent discussions (beta)', content: $('groupList'), add: newGroup, addId: 'newGroup' }));
 let conversationNavigation, navigationRequest = 0, pendingNavigationIntent, navigating = false;
@@ -187,16 +203,6 @@ function closeGroupMenu(restore = false) {
 function openGroupMenu(anchor, row, position) {
   closeGroupMenu(); row = groups.find(value => value.id === row.id) || row;
   const menu = node('div', 'dsh-pop'); menu.setAttribute('role', 'menu');
-  menu.addEventListener('pointermove', event => {
-    if (document.documentElement.dataset.advancedAnimations === 'off') return;
-    const bounds = menu.getBoundingClientRect();
-    menu.style.setProperty('--glass-pointer-x', (event.clientX - bounds.left) + 'px');
-    menu.style.setProperty('--glass-pointer-y', (event.clientY - bounds.top) + 'px');
-  });
-  menu.addEventListener('pointerleave', () => {
-    menu.style.removeProperty('--glass-pointer-x');
-    menu.style.removeProperty('--glass-pointer-y');
-  });
   const actions = [
     { label: 'Rename', action: 'rename', run: () => renameGroup(row) },
     { label: row.pinned ? 'Unpin' : 'Pin discussion', action: 'pin', run: async () => {
@@ -628,7 +634,7 @@ $('sidebarBackdrop').onclick = () => { setSidebarOpen(false); $('sidebarToggle')
 root.addEventListener('keydown', event => {
   if (!isVisible()) return;
   if (event.key === 'Escape' && body.classList.contains('sidebar-open') && !root.querySelector('dialog[open]')) { setSidebarOpen(false); $('sidebarToggle').focus(); }
-  if ((event.ctrlKey || event.metaKey) && event.shiftKey && event.key.toLowerCase() === 'h') { event.preventDefault(); void desktop.switchMode('home'); }
+  if (shortcutBindings?.matches(event, 'home')) { event.preventDefault(); void desktop.switchMode('home'); }
 });
 let preferredSidebarWidth = null, sidebarDrag = null;
 try { const width = JSON.parse(localStorage.getItem('camellia-chat-sidebar-width')); if (Number.isFinite(width) && width > 0) preferredSidebarWidth = width; } catch { /* optional preference */ }

@@ -331,9 +331,11 @@ with sync_playwright() as p:
           emit({type:'result',subtype:'success',artifacts:[{path:'C:/main-alias/checks.md'}]});
         }""")
         expect(page.locator('.turn').last.locator('.artifact-row')).to_have_count(1)
+        assert page.locator('.turn').last.locator('.artifact-file').get_attribute('title') is None
         expect(page.locator('.work-artifact')).to_have_count(3)
-        main_file = page.locator('.work-artifact[title="C:/main-alias/checks.md"]')
+        main_file = page.locator('.work-artifact[data-path="C:/main-alias/checks.md"]')
         expect(main_file).to_contain_text('Main conversation')
+        assert main_file.get_attribute('title') is None
         # A later main-conversation update keeps the count and refreshes the
         # path used by the preview, even when a child reported the file first.
         page.evaluate("""() => {
@@ -347,7 +349,7 @@ with sync_playwright() as p:
           };
         }""")
         expect(page.locator('.work-artifact')).to_have_count(3)
-        page.locator('.work-artifact[title="C:/updated/checks.md"]').click()
+        page.locator('.work-artifact[data-path="C:/updated/checks.md"]').click()
         expect(page.locator('#fileViewer')).to_be_visible()
         assert page.evaluate('previewedArtifact') == 'C:/updated/checks.md'
         expect(page.locator('.file-preview-markdown')).to_contain_text('Updated report')

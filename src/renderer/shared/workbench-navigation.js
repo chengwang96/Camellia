@@ -37,7 +37,8 @@ window.CamelliaWorkbenchNavigation = (() => {
   }
   function discussionRow(row, { open, actions, activeId }) {
     const item = node('div', 'session-item group-item'); item.tabIndex = 0; item.setAttribute('role', 'button');
-    item.dataset.groupId = row.id; item.title = row.preview || row.title;
+    item.dataset.groupId = row.id;
+    if (row.preview && row.preview !== row.title) item.title = row.preview;
     item.append(icon('chat'), node('span', 'session-item-text', row.title));
     if (row.id === activeId) { item.classList.add('active'); item.setAttribute('aria-current', 'page'); }
     if (row.pinned) { const pin = node('span', 'group-item-pin'); pin.title = t('Pinned'); pin.append(icon('pin')); item.append(pin); }
@@ -95,7 +96,7 @@ window.CamelliaWorkbenchNavigation = (() => {
         for (const ws of result.workspaces || []) {
           const section = node('section'); section.dataset.workspaceId = ws.id;
           const heading = node('div', 'session-item ws-row' + (ws.collapsed ? ' collapsed' : '')); heading.tabIndex = 0; heading.setAttribute('role', 'button');
-          heading.setAttribute('aria-expanded', String(!ws.collapsed)); heading.title = ws.path;
+          heading.setAttribute('aria-expanded', String(!ws.collapsed));
           const chevron = node('span', 'ws-chev'); chevron.append(icon('chevron'));
           heading.append(chevron, icon('folder'), node('span', 'session-item-text ws-name', ws.name), node('span', 'ws-count', ws.sessionCount || ''));
           const toggle = () => command('meta-op', { op: 'toggle-collapse', workspaceId: ws.id }).then(load).catch(error);

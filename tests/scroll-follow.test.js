@@ -177,5 +177,5 @@ test('history is revealed before live replay and final scrolling follows the rea
   assert.match(history, /resetConversationView\(\);\s*followRunOutput = true;\s*userScrollActive = false;\s*userScrollIntentUntil = 0;/);
   assert.match(history, /restoreDraft\(\);[\s\S]*await applyLiveRun\(res\.live, historyOptions\)[\s\S]*void goalUI\.refresh\(\);[\s\S]*if \(followRunOutput && !userScrollActive\) scrollToLatest\(\);\s*return true;/);
   const live = source.slice(source.search(/  async function applyLiveRun\(/), source.indexOf('  // ---------- settings panel'));
-  assert.match(live, /renderHistoryMessages\(live\.messages, live\.historyPage, \{ recoverFailure \}\)[\s\S]*scrollToLatest\(\);[\s\S]*classList\.remove\('history-opening'\)[\s\S]*for \(let index = 0; index < replayEvents\.length; index\+\+\)/);
+  assert.match(live, /renderHistoryMessages\(live\.messages, live\.historyPage, \{ recoverFailure(?:, requestUsage)? \}\)[\s\S]*scrollToLatest\(\);[\s\S]*classList\.remove\('history-opening'\)[\s\S]*for \(let index = 0; index < replayEvents\.length; index\+\+\)/);
 });

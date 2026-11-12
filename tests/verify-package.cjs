@@ -74,7 +74,7 @@ for (const file of ['runtime.json', 'requirements.lock']) {
 }
 assert.ok(fs.existsSync(path.join(resources, 'app.asar.unpacked/src/engines/antigravity/bridge.py')), 'Python bridge must be outside the ASAR archive');
 assert.ok(fs.existsSync(path.join(resources, 'app.asar.unpacked/src/engines/antigravity/session_storage.py')), 'Python session storage must be importable outside the ASAR archive');
-for (const file of ['goal-mcp-stdio.js', 'goal-tools.js', 'task-tools.js', 'conversation-tools.js', 'find-tools.js', 'context-tools.js', 'memory-tools.js']) {
+for (const file of ['goal-mcp-stdio.js', 'goal-tools.js', 'task-tools.js', 'conversation-tools.js', 'find-tools.js', 'context-tools.js', 'skill-tools.js', 'review-tools.js', 'memory-tools.js']) {
   assert.ok(fs.existsSync(path.join(resources, 'app.asar.unpacked/src/engines', file)), 'Goal MCP helper must run under bundled Node outside ASAR: ' + file);
 }
 assert.ok(fs.existsSync(path.join(resources, 'app.asar.unpacked/src/engines/antigravity/cli-bridge.cjs')), 'The Google CLI bridge must run under bundled Node outside ASAR');

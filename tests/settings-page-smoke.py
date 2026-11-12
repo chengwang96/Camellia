@@ -22,7 +22,8 @@ with sync_playwright() as playwright:
             modelThinking: {'model-b': {values:['low','high'],default:'high'}}};
           return window.deferRouter ? new Promise(resolve => window.pendingRouters.push(() => resolve(state))) : state;
         };
-        if (name === 'workbenchSettings') return async () => ({ ...empty, version: '0.3.0', dataPath: '/test-profile/camellia', language: 'en', theme: 'system', hiddenSubscriptionModels: window.hiddenModels });
+        if (name === 'workbenchSettings') return async () => ({ ...empty, version: '0.3.0', dataPath: '/test-profile/camellia', language: 'en', theme: 'system',
+          portableSkills: window.savedPreferences.portableSkills !== false, hiddenSubscriptionModels: window.hiddenModels });
         if (name === 'codexAccountState') return async payload => payload?.id === 'other'
           ? {ok:true, models:[{id:'gpt-other',name:'GPT Other'}]}
           : {ok:true, activeId:'default', accounts:[{id:'default',signedIn:true},{id:'other',signedIn:true}], models:[{id:'gpt-a',name:'GPT A'},{id:'gpt-b',name:'GPT B'}]};
@@ -140,7 +141,7 @@ with sync_playwright() as playwright:
     # dropped page fails with a useful diff instead of an off-by-one.
     views = page.locator(".settings-nav nav [data-view]").evaluate_all(
         "els => els.map(el => el.dataset.view)")
-    assert views == ["subscriptions", "providers", "usage", "general", "data", "network", "engines",
+    assert views == ["subscriptions", "providers", "usage", "general", "shortcuts", "data", "network", "engines",
                      "models", "archived", "mobile", "devices"], views
     nav = page.locator(".settings-nav nav")
     page.set_viewport_size({"width": 1180, "height": 520})
@@ -163,6 +164,32 @@ with sync_playwright() as playwright:
         expect(page.locator('html')).to_have_attribute('data-theme', theme)
     page.evaluate('refresh(true)')
     expect(page.locator('[data-theme-choice=system]')).to_have_attribute('aria-pressed', 'true')
+    # Shortcuts are recorded as Electron accelerators and can be cleared back to
+    # an empty binding instead of silently restoring the default.
+    page.locator('[data-view=shortcuts]').click()
+    expect(page.locator('#pageTitle')).to_have_text('Keyboard shortcuts')
+    expect(page.locator('#shortcutsPage')).to_be_visible()
+    goal = page.locator('[data-shortcut-record=goal]')
+    expect(goal).to_contain_text('Ctrl+G')
+    expect(page.locator('[data-shortcut-clear=goal]')).to_be_visible()
+    goal.click()
+    modifier = 'Meta' if page.evaluate("navigator.platform.startsWith('Mac')") else 'Control'
+    page.keyboard.press(modifier + '+Alt+G')
+    page.wait_for_function("savedPreferences.shortcuts?.goal === 'CommandOrControl+Alt+G'")
+    expect(goal).to_contain_text('Ctrl+Alt+G')
+    goal.click()
+    page.keyboard.press('Backspace')
+    page.wait_for_function("savedPreferences.shortcuts?.goal === ''")
+    expect(goal).to_contain_text('Not set')
+    expect(page.locator('[data-shortcut-clear=goal]')).to_be_hidden()
+    page.evaluate("CamelliaI18n.setLanguage('zh-CN')")
+    expect(page.locator('#pageTitle')).to_have_text('键盘快捷键')
+    expect(goal).to_contain_text('未设置')
+    for width in [1180, 700, 390]:
+        page.set_viewport_size({"width": width, "height": 820})
+        assert page.evaluate("document.documentElement.scrollWidth <= innerWidth"), width
+    page.set_viewport_size({"width": 1180, "height": 820})
+    page.evaluate("CamelliaI18n.setLanguage('en')")
     page.locator('[data-view=models]').click()
     for language in ["en", "zh-CN"]:
         page.evaluate("language => CamelliaI18n.setLanguage(language)", language)
@@ -215,35 +242,37 @@ with sync_playwright() as playwright:
     page.evaluate("CamelliaI18n.setLanguage('en')")
     page.locator('.settings-nav nav [data-view="general"]').click()
     expect(page.locator("#pageTitle")).to_have_text("General")
+    version_group = page.locator("#generalPage > .settings-group").last
+    assert version_group.locator("#version").count() == 1
+    assert page.evaluate("""() => {
+        const version = document.getElementById('version').getBoundingClientRect();
+        const skills = document.getElementById('portableSkills').getBoundingClientRect();
+        const group = [...document.querySelectorAll('#generalPage > .settings-group')].at(-1);
+        return version.top > skills.top && getComputedStyle(group).borderTopWidth === '1px';
+    }""")
+    assert page.locator("#checkAppUpdate").count() == 0
+    expect(page.locator('#portableSkills')).to_be_checked()
+    page.locator('#portableSkills').uncheck()
+    page.wait_for_function('savedPreferences.portableSkills === false')
+    expect(page.locator('#status')).to_contain_text('Preferences saved')
+    page.locator('#portableSkills').check()
+    page.wait_for_function('savedPreferences.portableSkills === true')
+    expect(page.locator('#status')).to_contain_text('Preferences saved')
     for language in ["en", "zh-CN"]:
         page.evaluate("language => CamelliaI18n.setLanguage(language)", language)
         for width in [1180, 850, 700, 390, 320]:
             page.set_viewport_size({"width": width, "height": 820})
-            # An available update reveals a second action; both states must keep
-            # the action group at the right edge without horizontal overflow.
-            for install_visible in [False, True]:
-                page.locator("#installAppUpdate").evaluate("(el, visible) => el.hidden = !visible", install_visible)
-                page.locator("#checkAppUpdate").scroll_into_view_if_needed()
-                update_row = page.locator(".app-update").filter(has=page.locator("#checkAppUpdate"))
-                row = update_row.bounding_box()
-                actions = update_row.locator(".app-update-actions").bounding_box()
-                assert abs(actions["x"] + actions["width"] - row["x"] - row["width"]) < 2, (language, width)
-                for button in update_row.locator(".app-update-actions button:visible").all():
-                    box = button.bounding_box()
-                    assert box["x"] >= row["x"] and box["x"] + box["width"] <= row["x"] + row["width"] + 1
-                assert page.evaluate("document.documentElement.scrollWidth <= innerWidth"), (language, width)
+            assert page.evaluate("document.documentElement.scrollWidth <= innerWidth"), (language, width)
     page.set_viewport_size({"width": 1180, "height": 820})
-    page.locator("#installAppUpdate").evaluate("el => el.hidden = true")
     output = root / "dist/engine-settings-qa"
     output.mkdir(parents=True, exist_ok=True)
-    page.locator("#checkAppUpdate").scroll_into_view_if_needed()
+    page.locator("#portableSkills").scroll_into_view_if_needed()
     page.screenshot(path=str(output / "general-actions.png"))
     page.evaluate("CamelliaI18n.setLanguage('en')")
     page.locator('.settings-nav nav [data-view="devices"]').click()
     expect(page.locator("#devicesPage")).to_be_visible()
 
     # Embedded device controls use the same metrics as the other settings controls.
-    assert page.evaluate("getComputedStyle(document.getElementById('checkAppUpdate')).borderRadius") == "10px"
     assert page.evaluate("getComputedStyle(document.getElementById('cli-refresh')).borderRadius") == "10px"
     page.locator('[data-view=general]').click()
     for language in ['en', 'zh-CN']:
@@ -259,8 +288,8 @@ with sync_playwright() as playwright:
                 page.locator('.scroll-content').hover()
                 page.mouse.wheel(0, 600)
                 page.wait_for_function('() => document.querySelector(".scroll-content").scrollTop > 0')
-                page.locator('#checkAppUpdate').scroll_into_view_if_needed()
-                expect(page.locator('#checkAppUpdate')).to_be_in_viewport()
+                page.locator('#portableSkills').scroll_into_view_if_needed()
+                expect(page.locator('#portableSkills')).to_be_in_viewport()
                 page.locator('.scroll-content').evaluate('el => el.scrollTop = 0')
                 assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
                 for card in page.locator('[data-theme-choice]').all():

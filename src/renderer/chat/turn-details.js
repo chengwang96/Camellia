@@ -25,6 +25,27 @@
       cacheHit: input !== null && cacheRead !== null ? (inputTotal ? cacheRead / inputTotal * 100 : 0) : null };
   }
 
+  // A request total spans the initiating reply, later background follow-up
+  // replies and native child agents. Child totals have no input/output split,
+  // so they stay a single reported number rather than invented buckets.
+  function requestUsageDetails(request) {
+    if (!request) return null;
+    const bucket = value => usageDetails(value) || { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 };
+    const main = bucket(request.main), background = bucket(request.background);
+    const backgroundTurns = Number.isFinite(request.background?.turns) && request.background.turns > 0 ? request.background.turns : 0;
+    const childTasks = Number.isFinite(request.children?.tasks) && request.children.tasks > 0 ? request.children.tasks : 0;
+    const childTokens = Number.isFinite(request.children?.tokens) && request.children.tokens > 0 ? request.children.tokens : 0;
+    const add = (first, second) => first === null && second === null ? null : (first || 0) + (second || 0);
+    const model = { input: add(main.input, background.input), output: add(main.output, background.output),
+      cacheRead: add(main.cacheRead, background.cacheRead), cacheWrite: add(main.cacheWrite, background.cacheWrite) };
+    const inputTotal = (model.input || 0) + (model.cacheRead || 0) + (model.cacheWrite || 0);
+    model.total = inputTotal + (model.output || 0);
+    model.cacheHit = model.input !== null && model.cacheRead !== null ? (inputTotal ? model.cacheRead / inputTotal * 100 : 0) : null;
+    return { main, background, backgroundTurns, childTasks, childTokens, model,
+      total: main.total + background.total + childTokens,
+      breakdown: Boolean(backgroundTurns || childTasks) };
+  }
+
   function text(tag, className, value, translate = false) {
     const el = document.createElement(tag); el.className = className; el.textContent = value;
     if (translate) el.dataset.i18n = '';
@@ -75,12 +96,17 @@
   }
 
   function usagePanel(footer, info) {
-    const usage = usageDetails(info.usage);
-    if (!usage) return;
+    const own = usageDetails(info.usage);
+    const request = requestUsageDetails(info.requestUsage);
+    const aggregate = request?.breakdown ? request : null;
+    const usage = aggregate ? request.model : own;
+    const total = aggregate ? request.total : own?.total;
+    if (!usage || !Number.isFinite(total)) return;
+    footer.querySelector('.turn-usage')?.remove();
     const root = document.createElement('span'); root.className = 'turn-usage';
     const trigger = document.createElement('button'); trigger.type = 'button'; trigger.className = 'turn-usage-trigger';
     trigger.innerHTML = databaseIcon;
-    trigger.appendChild(text('span', '', 'Usage ' + compactTokens(usage.total) + ' tok', true));
+    trigger.appendChild(text('span', '', 'Usage ' + compactTokens(total) + ' tok', true));
     trigger.setAttribute('aria-haspopup', 'dialog'); trigger.setAttribute('aria-expanded', 'false');
     const panel = document.createElement('div'); panel.className = 'turn-usage-panel'; panel.popover = 'auto';
     panel.id = 'turn-usage-' + ++nextId; panel.setAttribute('role', 'dialog');
@@ -90,12 +116,17 @@
     const heading = document.createElement('div'); heading.className = 'turn-usage-heading';
     const title = document.createElement('span'); title.innerHTML = databaseIcon;
     title.appendChild(text('span', '', 'Turn usage', true));
-    heading.append(title, text('strong', '', exactTokens(usage.total))); panel.appendChild(heading);
+    heading.append(title, text('strong', '', exactTokens(total))); panel.appendChild(heading);
     const details = document.createElement('dl'); details.className = 'turn-usage-details';
     const row = (name, value, className = '') => details.append(text('dt', '', name, true), text('dd', className, value));
     // Historical turns never borrow the currently selected model.
     if (info.model) row('Model', info.model, 'turn-usage-model');
     if (usage.cacheHit !== null) row('Cache hit rate', new Intl.NumberFormat('en', { maximumFractionDigits: 1 }).format(usage.cacheHit) + '%');
+    if (aggregate) {
+      row('Main reply', exactTokens(request.main.total));
+      if (request.backgroundTurns) row('Background replies · ' + request.backgroundTurns, exactTokens(request.background.total));
+      if (request.childTasks) row('Subagents · ' + request.childTasks, exactTokens(request.childTokens));
+    }
     if (usage.input !== null) row('Uncached input', exactTokens(usage.input));
     if (usage.cacheRead !== null) row('Cache read', exactTokens(usage.cacheRead));
     if (usage.cacheWrite !== null) row('Cache write', exactTokens(usage.cacheWrite));
@@ -116,9 +147,18 @@
 
   function render(turn, info) {
     if (!turn) return;
-    completionHeader(turn, info);
+    turn.turnUsageInfo = { ...(turn.turnUsageInfo || {}), ...info };
+    completionHeader(turn, turn.turnUsageInfo);
     const footer = turn.querySelector('.turn-actions');
-    if (footer) usagePanel(footer, info);
+    if (footer) usagePanel(footer, turn.turnUsageInfo);
+  }
+  // Background work can finish long after its initiating reply was rendered.
+  // Keep the stored presentation facts and replace only the usage view.
+  function update(turn, requestUsage) {
+    if (!turn) return;
+    turn.turnUsageInfo = { ...(turn.turnUsageInfo || {}), requestUsage };
+    const footer = turn.querySelector('.turn-actions');
+    if (footer) usagePanel(footer, turn.turnUsageInfo);
   }
   if (typeof document === 'object') {
     const dismiss = event => {
@@ -127,5 +167,5 @@
     document.addEventListener('scroll', dismiss, true);
     window.addEventListener('resize', dismiss);
   }
-  return { usageDetails, render };
+  return { usageDetails, requestUsageDetails, render, update };
 });

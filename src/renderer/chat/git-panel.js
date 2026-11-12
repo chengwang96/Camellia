@@ -393,7 +393,7 @@ window.CamelliaGitPanel = { create({ context, getCwd, setStatus, fileViewer, clo
     fileViewer.hidden = false; fileViewer.dataset.mode = 'git';
     $('fileViewerReveal').hidden = true; $('fileViewerExternal').hidden = true;
     $('fileViewerType').textContent = t('Changes'); $('fileViewerTitle').textContent = status?.name || t('Git');
-    $('fileViewerTitle').title = status?.root || getCwd(); $('fileViewerMeta').textContent = status ? branchLabel() : (getCwd() || '');
+    $('fileViewerMeta').textContent = status ? branchLabel() : (getCwd() || '');
     const body = $('fileViewerBody'), layout = el('div', 'git-layout');
     if (loading && !status && !repositoryError) layout.append(el('p', 'git-diff-empty', t('Loading Git status…')));
     else if (repositoryError) {

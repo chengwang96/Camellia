@@ -85,7 +85,16 @@ async function main() {
     await contents.executeJavaScript('document.querySelector("#pageTitle").click()');
     settings.emit('blur');
     assert.equal(settings.isDestroyed(), false);
-    if (attempt === 0) await contents.executeJavaScript('document.getElementById("closeSettings").click()');
+    if (attempt === 0) {
+      const point = await contents.executeJavaScript(`(() => {
+        document.querySelector('#addDialog').showModal();
+        const rect = document.querySelector('#closeSettings').getBoundingClientRect();
+        return { x: Math.round(rect.left + rect.width / 2), y: Math.round(rect.top + rect.height / 2) };
+      })()`);
+      for (const type of ['mouseDown', 'mouseUp']) {
+        contents.sendInputEvent({ type, x: point.x, y: point.y, button: 'left', clickCount: 1 });
+      }
+    }
     else if (attempt === 1) await clickBackdrop();
     else home.emit('focus'); // Activation through the native owner caption.
     await waitFor(() => settings.isDestroyed());

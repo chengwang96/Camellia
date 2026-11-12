@@ -42,7 +42,6 @@ function setChatHarness(engine) {
   document.querySelector('.perm-dialog .perm-title').textContent = chatProfile.shortName + ' requests the following action';
   const permission = document.getElementById('selPermission');
   permission.querySelector('[value="ask"]').textContent = 'Ask before acting';
-  permission.title = '';
 }
 setChatHarness(harnessId);
 document.getElementById('wsHint').textContent = 'Shared conversations keep the same folder across engines. Start a new session to use a different folder.';

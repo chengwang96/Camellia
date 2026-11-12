@@ -31,6 +31,7 @@ const titles = {
   providers: "API Keys",
   usage: "Usage",
   general: "General",
+  shortcuts: "Keyboard shortcuts",
   data: "Data & backups",
   network: "Network",
   archived: "Archived",
@@ -963,61 +964,6 @@ api.onDataMigrationProgress(state => {
       : window.CamelliaI18n.t('Exporting data…')) + ' ' + bar.value + '%';
 });
 
-// Application updates: checking is read-only; installing replaces this
-// installation in place and restarts, so both steps stay explicit.
-let appUpdate = null, appUpdateBusy = false;
-function appUpdateControls() {
-  $('checkAppUpdate').disabled = appUpdateBusy;
-  const installable = Boolean(appUpdate?.updateAvailable && appUpdate.supported && appUpdate.name);
-  $('installAppUpdate').hidden = !installable;
-  $('installAppUpdate').disabled = appUpdateBusy;
-}
-function renderAppUpdate() {
-  const meta = $('appUpdateMeta'), details = $('appUpdateDetails');
-  if (!appUpdate) { details.hidden = true; return; }
-  const parts = [appUpdate.updateAvailable ? `v${appUpdate.latest} · ${appUpdate.name || ''}` : `v${appUpdate.current}`,
-    appUpdate.size ? `${(appUpdate.size / 1024 ** 2).toFixed(1)} MiB` : '', appUpdate.publishedAt ? new Date(appUpdate.publishedAt).toLocaleDateString(window.CamelliaI18n.locale) : ''].filter(Boolean);
-  meta.textContent = parts.join(' · ');
-  $('appUpdateNotes').textContent = appUpdate.notes || '';
-  details.hidden = !appUpdate.updateAvailable || !(appUpdate.notes || appUpdate.name);
-}
-$('checkAppUpdate').onclick = async () => {
-  if (appUpdateBusy) return;
-  appUpdateBusy = true; appUpdateControls();
-  $('appUpdateStatus').textContent = window.CamelliaI18n.t('Checking for updates…');
-  $('appUpdateProgress').hidden = true;
-  try {
-    const result = await api.appUpdateCheck();
-    if (!result.ok) throw new Error(result.error);
-    appUpdate = result;
-    $('appUpdateStatus').classList.remove('error');
-    $('appUpdateStatus').textContent = !result.updateAvailable ? window.CamelliaI18n.t('Camellia is up to date.')
-      : result.supported ? window.CamelliaI18n.t('v{0} is available.').replace('{0}', () => result.latest)
-      : window.CamelliaI18n.t('v{0} is available, but this platform has no in-place package.').replace('{0}', () => result.latest);
-  } catch (error) { appUpdate = null; $('appUpdateStatus').textContent = error.message; $('appUpdateStatus').classList.add('error'); }
-  finally { appUpdateBusy = false; appUpdateControls(); renderAppUpdate(); }
-};
-$('installAppUpdate').onclick = async () => {
-  if (appUpdateBusy) return;
-  appUpdateBusy = true; appUpdateControls();
-  $('appUpdateProgress').hidden = false; $('appUpdateProgress').value = 0;
-  $('appUpdateStatus').textContent = window.CamelliaI18n.t('Downloading the update…');
-  try {
-    const result = await api.appUpdateInstall();
-    if (!result.ok) throw new Error(result.error);
-    if (result.kind === 'disk-image') $('appUpdateStatus').textContent = window.CamelliaI18n.t('The installer was downloaded. Open it to finish updating.');
-  } catch (error) { $('appUpdateStatus').textContent = error.message; }
-  finally { appUpdateBusy = false; appUpdateControls(); }
-};
-api.onAppUpdateState(state => {
-  $('appUpdateProgress').hidden = state.status === 'error';
-  if (typeof state.percent === 'number') $('appUpdateProgress').value = state.percent;
-  $('appUpdateStatus').textContent = state.status === 'downloading'
-    ? window.CamelliaI18n.t('Downloading the update…') + (typeof state.percent === 'number' ? ` ${state.percent}%` : '')
-    : state.status === 'applying' ? window.CamelliaI18n.t('Installing the update…')
-    : state.status === 'restarting' ? window.CamelliaI18n.t('Restarting Camellia…')
-    : state.status === 'error' ? state.error : $('appUpdateStatus').textContent;
-});
 // Quick-switch targets are app preferences, independent of CLI defaults. Each
 // engine gets a model and a reasoning level; both are applied together when the
 // composer's model menu is double-clicked.
@@ -1061,7 +1007,7 @@ function renderSubscriptionModels() {
       for (const model of models) {
         const row = document.createElement('label'); row.className = 'subscription-model-row';
         const name = document.createElement('span'); name.textContent = model.name || model.displayName || model.id;
-        name.title = model.id;
+        if (name.textContent !== model.id) name.title = model.id;
         const checkbox = document.createElement('input'); checkbox.type = 'checkbox';
         checkbox.checked = window.CamelliaSubscriptionModels.isVisible(modelPreferences?.hiddenSubscriptionModels, engine, model.id);
         checkbox.disabled = visibilitySaving;
@@ -1277,7 +1223,7 @@ async function renderQuickSwitchModels(preferences, accountStates = {}) {
   container.replaceChildren(table);
 }
 
-// General and model-session preferences apply on change.
+// General, review and model-session preferences apply on change.
 let memorySaveQueue = Promise.resolve();
 function saveMemoryDirectory() {
   const memoryDirectory = $('memoryDirectory').value;
@@ -1298,6 +1244,25 @@ $('contextMemoryEnabled').addEventListener('change', async () => {
     status('Working-memory snapshot saved. Applies from the next message.');
   } catch (error) { status(error.message, true); }
 });
+async function saveReviewDefaults(patch) {
+  try {
+    const result = await api.workbenchSaveSettings({ reviewDefaults: patch });
+    if (!result.ok) throw new Error(result.error);
+    status(window.CamelliaI18n.t('Review defaults saved. New conversations use them.'));
+  } catch (error) { status(error.message, true); }
+}
+$('reviewDefaultEngine').addEventListener('change', () =>
+  void saveReviewDefaults({ reviewerEngine: $('reviewDefaultEngine').value }));
+$('reviewDefaultMode').addEventListener('change', () =>
+  void saveReviewDefaults({ mode: $('reviewDefaultMode').value }));
+$('reviewDefaultMaxTokens').addEventListener('change', () =>
+  void saveReviewDefaults({ maxTokens: Number($('reviewDefaultMaxTokens').value) || 50000 }));
+$('reviewDefaultAgentConsent').addEventListener('change', () =>
+  void saveReviewDefaults({ allowAgentReviews: $('reviewDefaultAgentConsent').checked }));
+$('reviewDefaultGate').addEventListener('change', () =>
+  void saveReviewDefaults({ gate: $('reviewDefaultGate').checked }));
+$('reviewDefaultTurnGate').addEventListener('change', () =>
+  void saveReviewDefaults({ turnGate: $('reviewDefaultTurnGate').checked }));
 $('chooseMemoryDirectory').onclick = async () => {
   try {
     const result = await api.pickFile({ kind: 'directory', title: 'Choose a memory folder' });
@@ -1380,6 +1345,9 @@ function syncThemeChoices() {
   }
   document.documentElement.dataset.theme = value;
 }
+function applyAdvancedAnimations(enabled) {
+  document.documentElement.dataset.advancedAnimations = enabled ? 'on' : 'off';
+}
 for (const button of document.querySelectorAll('[data-theme-choice]')) {
   button.addEventListener('click', () => {
     $('theme').value = button.dataset.themeChoice;
@@ -1392,17 +1360,143 @@ async function saveGeneral() {
     const result = await api.workbenchSaveSettings({ language: $('language').value, theme: $('theme').value, autoRefreshBalances: $('autoRefreshBalances').checked, closeToTray: $('closeToTray').checked,
       chatContentWidth: $('chatContentWidth').value, advancedAnimations: $('advancedAnimations').checked,
       showConversationNavigator: $('showConversationNavigator').checked,
+      showHoverHints: $('showHoverHints').checked,
+      portableSkills: $('portableSkills').checked,
       subscriptionAutoRefresh: { antigravity: $('antigravityAutoRefresh').checked },
       accountRefreshMinutes: Number($('accountRefreshMinutes').value),
       conversations: { mode: $('conversationMode').value, warnOnSwitch: $('conversationWarn').checked, showOrigin: $('conversationOriginSetting').checked,
         sessionTtlMinutes: Number($('conversationSessionTtl').value), sessionLimit: Number($('conversationSessionLimit').value) } });
     if (!result.ok) throw new Error(result.error);
+    applyAdvancedAnimations($('advancedAnimations').checked);
     window.CamelliaI18n.setLanguage($('language').value); status("Preferences saved");
   } catch (e) { status(e.message, true); }
 }
-for (const id of ['language', 'theme', 'chatContentWidth', 'advancedAnimations', 'showConversationNavigator', 'autoRefreshBalances', 'antigravityAutoRefresh', 'accountRefreshMinutes', 'closeToTray', 'conversationMode', 'conversationWarn', 'conversationOriginSetting', 'conversationSessionTtl', 'conversationSessionLimit']) {
+for (const id of ['language', 'theme', 'chatContentWidth', 'advancedAnimations', 'showConversationNavigator', 'showHoverHints', 'portableSkills', 'autoRefreshBalances', 'antigravityAutoRefresh', 'accountRefreshMinutes', 'closeToTray', 'conversationMode', 'conversationWarn', 'conversationOriginSetting', 'conversationSessionTtl', 'conversationSessionLimit']) {
   $(id).addEventListener('change', saveGeneral);
 }
+// ---- Keyboard shortcuts -------------------------------------------------
+// The recorder stores an Electron accelerator. Clearing the control stores an
+// empty string, which disables the action instead of restoring its default.
+const shortcutModel = window.CamelliaShortcuts;
+let shortcutBindings = shortcutModel.resolve({});
+let shortcutRecording = null;
+function shortcutPlatform() { return shortcutModel.platformOf(api); }
+function shortcutActionLabel(id) {
+  return document.querySelector(`[data-shortcut-record="${id}"]`)?.closest('.shortcut-row')?.querySelector('h2')?.textContent || id;
+}
+function setShortcutCapture(active) {
+  try { void Promise.resolve(api.setShortcutRecording?.(active)).catch(() => {}); } catch { /* optional surface */ }
+}
+function renderShortcutButton(button) {
+  const id = button.dataset.shortcutRecord, value = shortcutBindings[id] || '';
+  if (shortcutRecording === id) {
+    button.classList.add('is-recording');
+    button.classList.remove('is-unset');
+    button.textContent = window.CamelliaI18n.t('Press keys…');
+    button.setAttribute('aria-label', `${shortcutActionLabel(id)}: ${window.CamelliaI18n.t('Press keys…')}`);
+    return;
+  }
+  button.classList.remove('is-recording');
+  button.classList.toggle('is-unset', !value);
+  button.replaceChildren();
+  const parts = shortcutModel.displayParts(value, shortcutPlatform());
+  if (!parts.length) {
+    const empty = document.createElement('span');
+    empty.className = 'shortcut-unset';
+    empty.textContent = window.CamelliaI18n.t('Not set');
+    button.append(empty);
+  } else {
+    for (const [index, part] of parts.entries()) {
+      if (index) {
+        const plus = document.createElement('span');
+        plus.className = 'shortcut-plus';
+        plus.textContent = '+';
+        button.append(plus);
+      }
+      const key = document.createElement('kbd');
+      key.textContent = part;
+      button.append(key);
+    }
+  }
+  button.setAttribute('aria-label', `${shortcutActionLabel(id)}: ${parts.length ? parts.join(' + ') : window.CamelliaI18n.t('Not set')}`);
+  const clear = document.querySelector(`[data-shortcut-clear="${id}"]`);
+  if (clear) {
+    clear.hidden = !value;
+    clear.setAttribute('aria-label', `${shortcutActionLabel(id)}: ${window.CamelliaI18n.t('Clear shortcut')}`);
+  }
+}
+function renderShortcuts() {
+  for (const button of document.querySelectorAll('[data-shortcut-record]')) renderShortcutButton(button);
+}
+function stopShortcutRecording({ focus = false } = {}) {
+  if (!shortcutRecording) return;
+  const button = document.querySelector(`[data-shortcut-record="${shortcutRecording}"]`);
+  shortcutRecording = null;
+  setShortcutCapture(false);
+  renderShortcuts();
+  if (focus) button?.focus();
+}
+async function saveShortcut(id, value) {
+  const previous = shortcutBindings[id] || '';
+  if (shortcutRecording === id) { shortcutRecording = null; setShortcutCapture(false); }
+  shortcutBindings = { ...shortcutBindings, [id]: value };
+  renderShortcuts();
+  try {
+    const result = await api.workbenchSaveSettings({ shortcuts: { [id]: value } });
+    if (!result.ok) throw new Error(result.error);
+    if (result.shortcuts) shortcutBindings = shortcutModel.resolve(result.shortcuts);
+    renderShortcuts();
+    status(value ? window.CamelliaI18n.t('Shortcut saved') : window.CamelliaI18n.t('Shortcut cleared'));
+  } catch (error) {
+    shortcutBindings = { ...shortcutBindings, [id]: previous };
+    renderShortcuts();
+    status(window.CamelliaI18n.t(error.message), true);
+  }
+}
+function beginShortcutRecording(button) {
+  const id = button.dataset.shortcutRecord;
+  if (shortcutRecording === id) return;
+  stopShortcutRecording();
+  shortcutRecording = id;
+  setShortcutCapture(true);
+  renderShortcuts();
+  button.focus();
+}
+for (const button of document.querySelectorAll('[data-shortcut-record]')) {
+  const id = button.dataset.shortcutRecord;
+  button.addEventListener('click', () => beginShortcutRecording(button));
+  button.addEventListener('blur', () => { if (shortcutRecording === id) stopShortcutRecording(); });
+  button.addEventListener('keydown', event => {
+    if (shortcutRecording !== id || event.isComposing) return;
+    event.preventDefault();
+    event.stopPropagation();
+    if (event.key === 'Escape') { stopShortcutRecording({ focus: true }); return; }
+    const bare = !event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey;
+    if (bare && (event.key === 'Backspace' || event.key === 'Delete')) { void saveShortcut(id, ''); return; }
+    const candidate = shortcutModel.fromEvent(event, shortcutPlatform());
+    if (!candidate) { status(window.CamelliaI18n.t('Press a modifier and a key.'), true); return; }
+    if (shortcutModel.reserved(candidate)) { status(window.CamelliaI18n.t('This shortcut is reserved by the app.'), true); return; }
+    const conflict = Object.entries(shortcutBindings).find(([other, value]) => other !== id && value && shortcutModel.equals(value, candidate));
+    if (conflict) {
+      status(window.CamelliaI18n.t('This shortcut is already used by {0}.').replace('{0}', shortcutActionLabel(conflict[0])), true);
+      return;
+    }
+    void saveShortcut(id, candidate);
+  });
+}
+for (const button of document.querySelectorAll('[data-shortcut-clear]')) {
+  button.addEventListener('click', () => {
+    const id = button.dataset.shortcutClear;
+    if (shortcutRecording === id) stopShortcutRecording();
+    void saveShortcut(id, '');
+  });
+}
+api.onShortcutsChanged?.(next => { shortcutBindings = shortcutModel.resolve(next); renderShortcuts(); });
+api.onAdvancedAnimationsChanged?.(enabled => {
+  $('advancedAnimations').checked = enabled;
+  applyAdvancedAnimations(enabled);
+});
+api.onHoverHintsChanged?.(enabled => { $('showHoverHints').checked = enabled; });
 // General connection preference: serialized saves preserve the latest choice.
 let networkSaveQueue = Promise.resolve(), networkSaving = false;
 function renderNetworkModeHint(value = lastNetworkValue) {
@@ -1545,9 +1639,21 @@ async function refreshPreferences() {
     $('antigravityAutoRefresh').checked = preferences.subscriptionAutoRefresh?.antigravity !== false;
     $('chatContentWidth').value = preferences.chatContentWidth || 'standard';
     $('showConversationNavigator').checked = preferences.showConversationNavigator !== false;
+    $('showHoverHints').checked = preferences.showHoverHints !== false;
     $('advancedAnimations').checked = preferences.advancedAnimations !== false;
+    $('portableSkills').checked = preferences.portableSkills !== false;
+    applyAdvancedAnimations(preferences.advancedAnimations !== false);
     $('memoryDirectory').value = preferences.memoryDirectory || '';
     $('contextMemoryEnabled').checked = preferences.contextMemory?.enabled === true;
+    shortcutBindings = shortcutModel.resolve(preferences.shortcuts);
+    renderShortcuts();
+    const reviewDefaults = preferences.reviewDefaults || {};
+    $('reviewDefaultEngine').value = reviewDefaults.reviewerEngine || '';
+    $('reviewDefaultMode').value = reviewDefaults.mode === 'adversarial' ? 'adversarial' : 'standard';
+    $('reviewDefaultMaxTokens').value = String(reviewDefaults.maxTokens || 50000);
+    $('reviewDefaultAgentConsent').checked = reviewDefaults.allowAgentReviews === true;
+    $('reviewDefaultGate').checked = reviewDefaults.gate === true;
+    $('reviewDefaultTurnGate').checked = reviewDefaults.turnGate === true;
     void refreshVSCodeSettings(preferences.vscodePath);
     $('accountRefreshMinutes').value = String(preferences.accountRefreshMinutes || 15);
     $('conversationMode').value = preferences.conversations?.mode || 'direct'; $('conversationWarn').checked = !!preferences.conversations?.warnOnSwitch;
@@ -1827,11 +1933,16 @@ window.flushApiSettings = async () => {
   }
   return { ok: !isDirty() && !lastSaveError };
 };
-// Closing the window must not drop a debounced edit.
-window.addEventListener('beforeunload', () => { if (isDirty()) void flushSave(); });
+// Closing the window must not drop a debounced edit or leave the host ignoring
+// menu accelerators after an unfinished recording.
+window.addEventListener('beforeunload', () => {
+  if (shortcutRecording) { shortcutRecording = null; setShortcutCapture(false); }
+  if (isDirty()) void flushSave();
+});
 window.addEventListener('camellia:language', () => {
   // This status is rendered by script, not by data-i18n, so it needs an
   // explicit re-render to leave the previous language.
+  renderShortcuts();
   if (lastNetworkValue) renderNetworkSettings(lastNetworkValue);
   if (dataDirectory && !dataMigrationBusy) renderDataDirectory(dataDirectory);
   if (!dataMigrationBusy) renderPluginCacheMaintenance(pluginCacheState);

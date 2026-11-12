@@ -10,6 +10,18 @@ const {loadConfig, writeConfig, normalizeConfig} = require('../src/api/api-route
 const {BAD_PORTS} = require('./bad-ports.cjs');
 async function freePort() { for (;;) { const s=http.createServer(); await new Promise(r=>s.listen(0,'127.0.0.1',r)); const p=s.address().port; await new Promise(r=>s.close(r)); if (!BAD_PORTS.has(p)) return p; } }
 function pool(port) { return {port,providers:[{id:'p',name:'Local',baseUrl:'http://127.0.0.1:19099/v1',type:'ollama',protocol:'openai',models:[{id:'kimi-k3',upstream:'kimi-k3:cloud'}],keys:[{id:'k',key:'isolated-test-secret'}]}]}; }
+test('Claude sessions load installed Camellia skill bundles through plugin-dir', () => {
+  const h = createHarness();
+  try {
+    const home = h.folder('home/.dsh');
+    writeConfig(path.join(home, 'ollama-proxy.json'), normalizeConfig(pool(19098)));
+    const plugin = h.folder('installed review plugin');
+    const spec = h.api.claudeSpawnSpec({ model: 'kimi-k3', pluginDirs: [plugin] }, {});
+    const index = spec.args.indexOf('--plugin-dir');
+    assert.ok(index >= 0);
+    assert.equal(spec.args[index + 1], plugin);
+  } finally { h.cleanup(); }
+});
 test('desktop IPC masks keys, hot reloads and changes ports without losing saved keys',async t=>{
   const h=createHarness(); t.after(async()=>{await h.api.stopRouter(); h.cleanup();});
   const port=await freePort(); const saved=await h.call('api-router-save-config',pool(port));

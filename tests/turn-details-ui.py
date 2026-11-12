@@ -117,6 +117,58 @@ with sync_playwright() as p:
         expect(panel.locator('dd')).to_have_text(['100 tok', '20 tok'])
         page.keyboard.press('Escape')
         assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
+
+        # A request total follows the reply that started the work. Native child
+        # totals and later background replies update that same chip without
+        # inventing a second lead or hiding the follow-up's own usage.
+        page.evaluate("""() => {
+          window.emit = event => deliverEvent({session_id:'shared-fixture', engine:'codex', runId:92, ...event});
+          emit({type:'conversation:started',prompt:'Launch the job',userSeq:9});
+          emit({type:'stream_event',event:{type:'message_start'}});
+          onBlockStart({type:'text',phase:'final_answer',text:'The job is running.'}, 0); onBlockStop(0);
+          emit({type:'result',subtype:'success',result:'The job is running.',userSeq:9,requestUsageLead:true,
+            turnMetrics:{duration_ms:1000,model:'recorded-model'},
+            usage:{input_tokens:1000,output_tokens:200,cache_read_input_tokens:9000,cache_creation_input_tokens:0},
+            requestUsage:{main:{input_tokens:1000,output_tokens:200,cache_read_input_tokens:9000,cache_creation_input_tokens:0},
+              background:{input_tokens:0,output_tokens:0,cache_read_input_tokens:0,cache_creation_input_tokens:0,turns:0},
+              children:{tokens:0,tasks:0},total:10200}});
+        }""")
+        turn = page.locator('#chat .turn').last
+        trigger = turn.locator('.turn-usage-trigger')
+        expect(trigger).to_contain_text('10.2K tok')
+        page.evaluate("""() => emit({type:'gui:subagent', userSeq:9, tasks:[],
+          task:{id:'child-1',title:'Inspect',status:'completed',usage:60},
+          requestUsage:{main:{input_tokens:1000,output_tokens:200,cache_read_input_tokens:9000,cache_creation_input_tokens:0},
+            background:{input_tokens:500,output_tokens:100,cache_read_input_tokens:0,cache_creation_input_tokens:0,turns:1},
+            children:{tokens:60,tasks:1},total:10860}})""")
+        expect(trigger).to_contain_text('10.9K tok')
+        trigger.click()
+        panel = page.locator('.turn-usage-panel:popover-open')
+        expect(panel.locator('strong')).to_have_text('10,860 tok')
+        zh = language == 'zh-CN'
+        expect(panel.locator('dd')).to_have_text([
+            'recorded-model', '85.7%', '10,200 tok', '600 tok', '60 tok',
+            '1,500 tok', '9,000 tok', '0 tok', '300 tok'])
+        expect(panel.locator('dt').nth(2)).to_have_text('主回复' if zh else 'Main reply')
+        expect(panel.locator('dt').nth(3)).to_have_text('后台续聊 · 1' if zh else 'Background replies · 1')
+        expect(panel.locator('dt').nth(4)).to_have_text('子代理 · 1' if zh else 'Subagents · 1')
+        page.keyboard.press('Escape')
+        page.evaluate("""() => {
+          emit({type:'conversation:started', background:true, userSeq:9});
+          emit({type:'stream_event',event:{type:'message_start'}});
+          onBlockStart({type:'text',phase:'final_answer',text:'CI finished.'}, 0); onBlockStop(0);
+          emit({type:'result',subtype:'success',result:'CI finished.',userSeq:9,requestUsageLead:false,
+            usage:{input_tokens:500,output_tokens:100,cache_read_input_tokens:0,cache_creation_input_tokens:0},
+            requestUsage:{main:{input_tokens:1000,output_tokens:200,cache_read_input_tokens:9000,cache_creation_input_tokens:0},
+              background:{input_tokens:500,output_tokens:100,cache_read_input_tokens:0,cache_creation_input_tokens:0,turns:1},
+              children:{tokens:60,tasks:1},total:10860}});
+        }""")
+        count = page.locator('#chat .turn').count()
+        lead = page.locator('#chat .turn').nth(count - 2)
+        followUp = page.locator('#chat .turn').nth(count - 1)
+        expect(lead.locator('.turn-usage-trigger')).to_contain_text('10.9K tok')
+        expect(followUp.locator('.turn-usage-trigger')).to_contain_text('600 tok')
+        assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
         page.close()
     browser.close()
     assert not errors, errors

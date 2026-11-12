@@ -187,11 +187,11 @@
           node = document.createElement('video');
           node.className = 'chat-inline-video'; node.src = target.href;
           node.controls = true; node.preload = 'metadata'; node.playsInline = true;
-          node.title = target.href; node.setAttribute('aria-label', image[1] || 'Video');
+          node.setAttribute('aria-label', image[1] || 'Video');
         } else if (target) {
           node = document.createElement('img');
           node.className = 'chat-inline-image'; node.src = target.href;
-          node.alt = image[1] || 'Image'; node.title = target.href;
+          node.alt = image[1] || 'Image';
           node.loading = 'lazy'; node.decoding = 'async'; node.referrerPolicy = 'no-referrer';
         } else node = document.createTextNode(text);
       }

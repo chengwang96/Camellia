@@ -1,0 +1,79 @@
+/* Camellia's compact hover/focus hint. It lives in the top layer so it is not
+   clipped by the toolbar, side panels or modal dialogs. */
+.camellia-tooltip {
+  position: fixed;
+  inset: auto;
+  z-index: 10000;
+  width: max-content;
+  max-width: min(320px, calc(100vw - 16px));
+  margin: 0;
+  padding: 7px 10px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 9px;
+  background: var(--dsw-alias-bg-layer-3);
+  box-shadow: var(--dsw-shadow-lv3);
+  color: var(--dsw-alias-label-primary);
+  font: var(--f-xxs-strong-12);
+  letter-spacing: .01em;
+  line-height: 1.35;
+  text-align: center;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  pointer-events: none;
+  opacity: 0;
+  transform: translateY(3px) scale(.985);
+  transition: opacity .12s var(--ds-ease-in-out), transform .15s var(--ds-ease-in-out);
+}
+.camellia-tooltip.is-visible {
+  opacity: 1;
+  transform: none;
+}
+.camellia-tooltip[data-placement="top"] {
+  transform: translateY(-3px) scale(.985);
+}
+.camellia-tooltip[data-placement="right"] {
+  transform: translateX(-3px) scale(.985);
+}
+.camellia-tooltip[data-placement="left"] {
+  transform: translateX(3px) scale(.985);
+}
+.camellia-tooltip[data-placement="top"].is-visible {
+  transform: none;
+}
+.camellia-tooltip[data-placement="right"].is-visible,
+.camellia-tooltip[data-placement="left"].is-visible {
+  transform: none;
+}
+.camellia-tooltip.is-rich {
+  width: min(292px, calc(100vw - 16px));
+  padding: 11px 12px 12px;
+  border-radius: 12px;
+  line-height: 1.4;
+  text-align: left;
+}
+@supports ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  :root:not([data-advanced-animations="off"]) .camellia-tooltip {
+    border-color: light-dark(rgba(255, 255, 255, .86), rgba(255, 255, 255, .11));
+    background:
+      radial-gradient(140% 120% at 10% -20%,
+        light-dark(rgba(255, 255, 255, .72), rgba(255, 255, 255, .16)) 0%,
+        transparent 62%),
+      linear-gradient(180deg,
+        light-dark(rgba(250, 251, 253, .76), rgba(48, 51, 58, .72)),
+        light-dark(rgba(235, 239, 244, .78), rgba(31, 33, 38, .8)));
+    box-shadow:
+      0 10px 28px -14px light-dark(rgba(31, 38, 52, .32), rgba(0, 0, 0, .72)),
+      0 3px 10px -6px light-dark(rgba(31, 38, 52, .2), rgba(0, 0, 0, .4)),
+      inset 0 1px 0 light-dark(rgba(255, 255, 255, .92), rgba(255, 255, 255, .13));
+    -webkit-backdrop-filter: blur(24px) saturate(185%) brightness(1.04);
+    backdrop-filter: blur(24px) saturate(185%) brightness(1.04);
+  }
+}
+@media (forced-colors: active) {
+  .camellia-tooltip {
+    border-color: CanvasText;
+    background: Canvas;
+    color: CanvasText;
+    box-shadow: none;
+  }
+}

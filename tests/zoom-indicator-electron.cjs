@@ -102,8 +102,9 @@ async function main() {
   assert.equal(style.centered, true);
   assert.ok(Math.abs(style.fontSize * contents.getZoomFactor() - 13) < 0.1);
 
-  contents.sendInputEvent({ type: 'keyDown', keyCode: '0', modifiers: ['control'] });
-  contents.sendInputEvent({ type: 'keyUp', keyCode: '0', modifiers: ['control'] });
+  const primaryModifier = process.platform === 'darwin' ? 'meta' : 'control';
+  contents.sendInputEvent({ type: 'keyDown', keyCode: '0', modifiers: [primaryModifier] });
+  contents.sendInputEvent({ type: 'keyUp', keyCode: '0', modifiers: [primaryModifier] });
   await wait(indicatorAt('100%'));
   assert.equal(contents.getZoomLevel(), 0);
   zoom.adjust(-1);

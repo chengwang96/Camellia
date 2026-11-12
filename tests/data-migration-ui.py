@@ -242,7 +242,9 @@ with sync_playwright() as playwright:
     for language in ["en", "zh-CN"]:
         page.evaluate("language => CamelliaI18n.setLanguage(language)", language)
         expect(page.locator("#pageTitle")).to_have_text("Data & backups" if language == "en" else "数据与备份")
-        expect(page.locator('[data-view="data"]')).to_have_attribute("title", "Data & backups" if language == "en" else "数据与备份")
+        data_nav = page.locator('[data-view="data"]')
+        expect(data_nav).to_have_text("Data & backups" if language == "en" else "数据与备份")
+        assert data_nav.get_attribute("title") is None
         expect(page.locator("#dataDirectoryStatus")).to_have_text(
             "Restart to move your data. The old folder is deleted after verification." if language == "en" else "重启后迁移数据，校验成功后删除旧目录。"
         )

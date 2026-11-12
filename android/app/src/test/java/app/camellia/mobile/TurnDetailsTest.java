@@ -34,6 +34,19 @@ public class TurnDetailsTest {
         assertFalse(new TurnDetails(null).hasUsage());
     }
 
+    @Test public void requestUsageAddsBackgroundAndNativeChildTotals() throws Exception {
+        JSONObject request = new JSONObject("{\"total\":1040,\"main\":920,\"background\":60,\"backgroundTurns\":1,"
+            + "\"children\":60,\"childTasks\":1,\"input\":150,\"output\":30,\"cacheRead\":800,\"cacheWrite\":0}");
+        TurnDetails details = new TurnDetails(new JSONObject("{\"state\":\"complete\",\"usage\":{\"input_tokens\":100,\"output_tokens\":20},"
+            + "\"requestUsage\":" + request + "}"));
+        assertTrue(details.hasRequestUsage());
+        assertEquals(1040L, details.displayTotal());
+        assertEquals(920L, details.requestMain.longValue());
+        assertEquals(60L, details.requestChildren.longValue());
+        assertEquals(1, details.requestChildTasks);
+        assertEquals(800d / 950d * 100d, details.cacheHit(), .001);
+    }
+
     @Test public void stoppedAndFailedAreTerminalWithoutClaimingSuccess() throws Exception {
         for (String state : new String[] {"stopped", "error", "complete"}) {
             TurnDetails details = new TurnDetails(new JSONObject().put("state", state));

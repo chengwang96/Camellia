@@ -29,6 +29,27 @@ test('settings reads one config snapshot per request and observes later disk cha
   } finally { fs.readFileSync = read; harness.cleanup(); }
 });
 
+test('shared skills preference persists and updates the portable bridge at runtime', () => {
+  const first = createHarness();
+  try {
+    assert.equal(first.call('workbench-settings').portableSkills, true);
+    assert.equal(first.api.sharedConversations.portableSkills, true);
+    assert.equal(first.call('workbench-save-settings', { portableSkills: false }).ok, true);
+    assert.equal(first.call('workbench-settings').portableSkills, false);
+    assert.equal(first.api.sharedConversations.portableSkills, false);
+    assert.equal(first.call('workbench-save-settings', { theme: 'dark' }).ok, true);
+    const reopened = createHarness(first.root);
+    assert.equal(reopened.call('workbench-settings').portableSkills, false);
+    assert.equal(reopened.api.sharedConversations.portableSkills, false);
+    for (const portableSkills of [null, 'yes', 1]) {
+      assert.equal(reopened.call('workbench-save-settings', { portableSkills }).ok, false);
+      assert.equal(reopened.call('workbench-settings').portableSkills, false);
+    }
+    assert.equal(reopened.call('workbench-save-settings', { portableSkills: true }).ok, true);
+    assert.equal(reopened.api.sharedConversations.portableSkills, true);
+  } finally { first.cleanup(); }
+});
+
 test('global memory validates a user folder, persists across restart and partial saves, and clears', () => {
   const first = createHarness();
   try {
@@ -51,13 +72,66 @@ test('global memory validates a user folder, persists across restart and partial
   } finally { first.cleanup(); }
 });
 
+test('review defaults persist independently and reject invalid policy values', () => {
+  const first = createHarness();
+  try {
+    assert.equal(first.call('workbench-save-settings', {
+      reviewDefaults: { reviewerEngine: 'codex', mode: 'adversarial', maxTokens: 64000,
+        allowAgentReviews: true, gate: true, turnGate: true, allowSameEngine: true },
+    }).ok, true);
+    const saved = first.call('workbench-settings').reviewDefaults;
+    assert.deepEqual(saved, { reviewerEngine: 'codex', mode: 'adversarial', maxTokens: 64000,
+      allowAgentReviews: true, gate: true, turnGate: true, allowSameEngine: true });
+    assert.equal(first.call('workbench-save-settings', { theme: 'dark' }).ok, true);
+    const reopened = createHarness(first.root);
+    assert.deepEqual(reopened.call('workbench-settings').reviewDefaults, saved);
+    for (const reviewDefaults of [
+      null, [], { reviewerEngine: 'unknown' }, { mode: 'fast' }, { maxTokens: 999 },
+      { maxTokens: 1000001 }, { gate: 'yes' }, { turnGate: 1 },
+    ]) {
+      assert.equal(reopened.call('workbench-save-settings', { reviewDefaults }).ok, false);
+      assert.deepEqual(reopened.call('workbench-settings').reviewDefaults, saved);
+    }
+  } finally { first.cleanup(); }
+});
+
+test('keyboard shortcuts persist, clear and reject conflicts', () => {
+  const first = createHarness();
+  const accelerator = (menu, label) => menu.flatMap(item => item.submenu || []).find(item => item.label === label)?.accelerator;
+  try {
+    const defaults = first.call('workbench-settings').shortcuts;
+    assert.equal(defaults.home, 'CommandOrControl+Shift+H');
+    assert.deepEqual(first.call('shortcuts-get').shortcuts, defaults);
+    assert.equal(first.call('workbench-save-settings', { shortcuts: { home: 'CmdOrCtrl+Alt+H' } }).ok, true);
+    assert.equal(first.call('workbench-settings').shortcuts.home, 'CommandOrControl+Alt+H');
+    assert.equal(accelerator(first.menu(), 'Home'), 'CommandOrControl+Alt+H');
+    // Clearing stores an empty binding instead of restoring the default, and
+    // the menu item stays available without an accelerator.
+    assert.equal(first.call('workbench-save-settings', { shortcuts: { home: '  ' } }).ok, true);
+    assert.equal(first.call('workbench-settings').shortcuts.home, '');
+    assert.equal(accelerator(first.menu(), 'Home'), undefined);
+    assert.equal(first.call('workbench-save-settings', { theme: 'dark' }).ok, true);
+    const reopened = createHarness(first.root);
+    assert.equal(reopened.call('workbench-settings').shortcuts.home, '');
+    assert.equal(reopened.call('workbench-settings').shortcuts.goal, 'CommandOrControl+G');
+    for (const shortcuts of [
+      null, [], { unknown: 'CommandOrControl+L' }, { goal: 'G' }, { goal: 'CommandOrControl+Shift' },
+      { goal: 'CommandOrControl+R' }, { goal: 'CommandOrControl+Shift+R' }, { goal: 42 },
+    ]) {
+      assert.equal(reopened.call('workbench-save-settings', { shortcuts }).ok, false, JSON.stringify(shortcuts));
+      assert.equal(reopened.call('workbench-settings').shortcuts.home, '');
+    }
+  } finally { first.cleanup(); }
+});
+
 test('settings separates general, data, engine and model preferences and starts on General', () => {
   const html = fs.readFileSync(path.join(__dirname, '../src/renderer/settings/api-settings.html'), 'utf8');
   const categories = [...html.matchAll(/<button data-view="([^"]+)"/g)].map(match => match[1]);
-  assert.deepEqual(categories, ['subscriptions', 'providers', 'usage', 'general', 'data', 'network',
+  assert.deepEqual(categories, ['subscriptions', 'providers', 'usage', 'general', 'shortcuts', 'data', 'network',
     'engines', 'models', 'archived', 'mobile', 'devices']);
   assert.match(html, /<button data-view="general" class="active" aria-current="page"/);
   assert.match(html, /<section id="generalPage" class="page">/);
+  assert.match(html, /<section id="shortcutsPage" class="page" hidden>/);
   assert.match(html, /<section id="providersPage" class="page" hidden>/);
   assert.match(html, /<section id="dataPage" class="page" hidden>/);
 });
@@ -73,9 +147,23 @@ test('data directory, transfer and cleanup controls live only on the data page',
     assert.ok(!archived.includes(`id="${id}"`), id + ' does not belong to Archived');
     assert.equal(html.split(`id="${id}"`).length - 1, 1, id + ' has one control');
   }
-  for (const id of ['memoryDirectory', 'language', 'theme', 'checkAppUpdate', 'version']) assert.ok(general.includes(`id="${id}"`));
+  for (const id of ['memoryDirectory', 'language', 'theme', 'version']) assert.ok(general.includes(`id="${id}"`));
+  assert.doesNotMatch(general, /checkAppUpdate|Application updates/);
   assert.match(archived, /id="archivedList"/);
   assert.match(archived, /id="deleteAllArchived"/);
+});
+
+test('review defaults live at the end of Model Settings', () => {
+  const html = fs.readFileSync(path.join(__dirname, '../src/renderer/settings/api-settings.html'), 'utf8');
+  const general = html.slice(html.indexOf('<section id="generalPage"'), html.indexOf('<section id="dataPage"'));
+  const models = html.slice(html.indexOf('<section id="modelsPage"'), html.indexOf('<section id="networkPage"'));
+  for (const id of ['reviewDefaultEngine', 'reviewDefaultMode', 'reviewDefaultMaxTokens',
+    'reviewDefaultAgentConsent', 'reviewDefaultGate', 'reviewDefaultTurnGate']) {
+    assert.ok(models.includes(`id="${id}"`), id + ' belongs to Model Settings');
+    assert.ok(!general.includes(`id="${id}"`), id + ' does not belong to General');
+  }
+  assert.ok(models.indexOf('Review defaults') > models.indexOf('id="modelSessionsTitle"'),
+    'review defaults follow the existing Model Settings content');
 });
 
 test('data navigation preserves older storage links and General targets', () => {
@@ -304,6 +392,31 @@ test('conversation navigator defaults on, validates, persists, and broadcasts on
   } finally { first.cleanup(); }
 });
 
+const HOVER_HINTS_EVENT = 'dsh:hover-hints-changed';
+
+test('hover hints default on, validate, persist, and broadcast only real changes', () => {
+  const first = createHarness();
+  try {
+    assert.equal(first.call('workbench-settings').showHoverHints, true);
+    first.events.length = 0;
+    assert.equal(first.call('workbench-save-settings', { showHoverHints: false }).ok, true);
+    assert.equal(first.call('workbench-settings').showHoverHints, false);
+    assert.deepEqual(first.events.filter(event => event.channel === HOVER_HINTS_EVENT).map(event => event.data), [false]);
+    first.call('workbench-save-settings', { showHoverHints: false });
+    assert.equal(first.events.filter(event => event.channel === HOVER_HINTS_EVENT).length, 1,
+      'an unchanged preference stays silent');
+    assert.equal(first.call('workbench-save-settings', { showHoverHints: 'off' }).ok, false);
+    assert.equal(first.call('workbench-settings').showHoverHints, false);
+    assert.equal(first.call('workbench-save-settings', { theme: 'dark' }).ok, true);
+    assert.equal(first.call('workbench-settings').showHoverHints, false);
+    const reopened = createHarness(first.root);
+    assert.equal(reopened.call('workbench-settings').showHoverHints, false);
+    reopened.call('workbench-save-settings', { showHoverHints: true });
+    assert.deepEqual(reopened.events.filter(event => event.channel === HOVER_HINTS_EVENT).map(event => event.data), [true]);
+    reopened.cleanup();
+  } finally { first.cleanup(); }
+});
+
 test('General exposes the conversation width selector and the chat column reads the variable', () => {
   const html = fs.readFileSync(path.join(__dirname, '../src/renderer/settings/api-settings.html'), 'utf8');
   const general = html.slice(html.indexOf('<section id="generalPage"'), html.indexOf('<section id="networkPage"'));
@@ -323,6 +436,9 @@ test('General exposes the conversation width selector and the chat column reads 
   assert.match(general, /<input id="showConversationNavigator" type="checkbox"[^>]*>/);
   assert.ok(source.includes("showConversationNavigator: $('showConversationNavigator').checked"));
   assert.ok(source.includes("$('showConversationNavigator').checked = preferences.showConversationNavigator !== false"));
+  assert.match(general, /<input id="showHoverHints" type="checkbox"[^>]*>/);
+  assert.ok(source.includes("showHoverHints: $('showHoverHints').checked"));
+  assert.ok(source.includes("$('showHoverHints').checked = preferences.showHoverHints !== false"));
   const navigatorCss = fs.readFileSync(path.join(__dirname, '../src/renderer/chat/conversation-navigator.css'), 'utf8');
   assert.match(navigatorCss, /\.conversation-marker\.is-current \.conversation-marker-line/);
 });

@@ -45,7 +45,7 @@ bridge = r"""
     if (method === 'platform') return window.testPlatform || 'win32';
     if (method === 'discussion') return async () => ({ok:true,groups:[]});
     if (['onDiscussionEvent', 'onNetworkHealth', 'onChatContentWidthChanged', 'onDiscussionNavigate', 'onSettingsOverlay',
-         'onAdvancedAnimationsChanged', 'onConversationNavigatorChanged'].includes(method)) return () => () => {};
+         'onAdvancedAnimationsChanged', 'onConversationNavigatorChanged', 'onHoverHintsChanged', 'onShortcutsChanged'].includes(method)) return () => () => {};
     if (method === 'onEngineSettingsChanged') return () => () => {};
     if (method === 'onLanguageChanged') return () => () => {};
     if (method === 'onArchivedChanged') return () => () => {};
@@ -205,6 +205,7 @@ try:
         page.locator('#wsCreate').click()
         expect(page.locator('.ws-name').filter(has_text='Beta 研究')).to_be_visible()
         alpha_row = page.locator(f'section[data-workspace-id="{alpha}"] .ws-row')
+        assert alpha_row.get_attribute('title') is None
         alpha_row.click()
         expect(alpha_row).to_have_attribute('aria-expanded', 'false')
         rpc('restart')

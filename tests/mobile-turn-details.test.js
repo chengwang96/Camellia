@@ -26,6 +26,18 @@ test('missing, zero and invalid accounting remain distinct on phones', () => {
   assert.equal(usageDetails(details.usage).cacheHit, null);
 });
 
+test('mobile request accounting carries background replies and native child totals', () => {
+  const details = mobileTurnDetails({ role: 'assistant',
+    usage: { input_tokens: 100, output_tokens: 20, cache_read_input_tokens: 800, cache_creation_input_tokens: 0 },
+    requestUsage: {
+      main: { input_tokens: 100, output_tokens: 20, cache_read_input_tokens: 800, cache_creation_input_tokens: 0 },
+      background: { input_tokens: 50, output_tokens: 10, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, turns: 1 },
+      children: { tokens: 60, tasks: 1 }, total: 1040,
+    } });
+  assert.deepEqual(details.requestUsage, { total: 1040, main: 920, background: 60, backgroundTurns: 1,
+    children: 60, childTasks: 1, input: 150, output: 30, cacheRead: 800, cacheWrite: 0 });
+});
+
 test('stopped and failed turns retain accounting without a success claim', () => {
   for (const [result, state] of [[{ subtype: 'stopped' }, 'stopped'], [{ is_error: true }, 'error'], [{ subtype: 'error_max_turns' }, 'error']]) {
     const details = mobileTurnDetails({ role: 'assistant', runResult: { ...result, duration_ms: 5000, usage: { output_tokens: 42 } } });

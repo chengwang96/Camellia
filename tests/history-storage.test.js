@@ -245,6 +245,26 @@ test('compaction estimates retain the original rules and detect changed or remov
   assert.ok(Math.abs(h.history.estimate('sample') - wanted) < 1e-8);
 });
 
+test('native compaction notices are skipped without probing an undefined summary file', t => {
+  const h = fixture(t), summary = path.join(h.root, 'summary.md');
+  fs.writeFileSync(summary, 'Portable summary');
+  h.seed([{ seq: 1, role: 'user', text: 'Before' },
+    { seq: 2, role: 'notice', text: 'Context compacted', file: summary, compaction: { state: 'completed' } },
+    { seq: 3, role: 'notice', text: 'Context compacted automatically', compaction: { native: true } },
+    { seq: 4, role: 'user', text: 'After' }]);
+  const original = fs.existsSync, invalid = [];
+  fs.existsSync = value => {
+    if (typeof value !== 'string' && !Buffer.isBuffer(value) && !(value instanceof URL)) invalid.push(value);
+    return original(value);
+  };
+  try {
+    assert.equal(h.history.summary('sample').seq, 2);
+  } finally {
+    fs.existsSync = original;
+  }
+  assert.deepEqual(invalid, []);
+});
+
 test('replay range estimates use only the index and respect effective sequences and internal rows', t => {
   const h = fixture(t);
   const source = [{ seq: 1, role: 'user', text: 'Old task' }, { seq: 2, role: 'assistant', text: 'Discarded' },

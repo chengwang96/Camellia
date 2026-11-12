@@ -187,6 +187,8 @@
       "src/engines/conversation-tools.js",
       "src/engines/find-tools.js",
       "src/engines/context-tools.js",
+      "src/engines/skill-tools.js",
+      "src/engines/review-tools.js",
       "src/engines/memory-tools.js",
       "src/engines/web-tools.js",
       "src/engines/antigravity/**",

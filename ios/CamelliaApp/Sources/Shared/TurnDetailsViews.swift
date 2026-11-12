@@ -24,7 +24,7 @@ struct TurnUsageButton: View {
         Button { showing = true } label: {
             HStack(spacing: 4) {
                 Text("用量")
-                Text(verbatim: compact(details.total) + " tok")
+                Text(verbatim: compact(details.displayTotal) + " tok")
             }
             .font(.system(size: Palette.textSmall))
             .foregroundColor(Palette.faint)
@@ -56,7 +56,7 @@ private struct TurnUsageSheet: View {
             HStack(alignment: .firstTextBaseline) {
                 Text("本轮用量").font(.system(size: Palette.textTitle, weight: .medium))
                 Spacer()
-                Text(verbatim: TurnDetails.tokens(details.total))
+                Text(verbatim: TurnDetails.tokens(details.displayTotal))
                     .font(.system(size: Palette.textRow)).monospacedDigit()
             }
             .accessibilityAddTraits(.isHeader)
@@ -65,10 +65,23 @@ private struct TurnUsageSheet: View {
                 VStack(spacing: 14) {
                     if !details.model.isEmpty { row("模型", details.model) }
                     if let hit = details.cacheHit { row("缓存命中率", String(format: "%.1f%%", locale: Locale(identifier: "en_US"), hit)) }
-                    if let input = details.input { row("未缓存输入", TurnDetails.tokens(input)) }
-                    if let read = details.cacheRead { row("缓存读取", TurnDetails.tokens(read)) }
-                    if let write = details.cacheWrite { row("缓存写入", TurnDetails.tokens(write)) }
-                    if let output = details.output { row("输出", TurnDetails.tokens(output)) }
+                    if details.hasRequestUsage {
+                        row("主回复", TurnDetails.tokens(details.requestMain ?? 0))
+                        if details.requestBackgroundTurns > 0 {
+                            row("后台续聊 · \(details.requestBackgroundTurns)", TurnDetails.tokens(details.requestBackground ?? 0))
+                        }
+                        if details.requestChildTasks > 0 {
+                            row("子代理 · \(details.requestChildTasks)", TurnDetails.tokens(details.requestChildren ?? 0))
+                        }
+                    }
+                    let input = details.hasRequestUsage ? details.requestInput : details.input
+                    let read = details.hasRequestUsage ? details.requestCacheRead : details.cacheRead
+                    let write = details.hasRequestUsage ? details.requestCacheWrite : details.cacheWrite
+                    let output = details.hasRequestUsage ? details.requestOutput : details.output
+                    if let input { row("未缓存输入", TurnDetails.tokens(input)) }
+                    if let read { row("缓存读取", TurnDetails.tokens(read)) }
+                    if let write { row("缓存写入", TurnDetails.tokens(write)) }
+                    if let output { row("输出", TurnDetails.tokens(output)) }
                     if let cost = details.cost { row("费用", String(format: "$%.4f", locale: Locale(identifier: "en_US"), cost)) }
                 }
             }

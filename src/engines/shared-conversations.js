@@ -32,11 +32,25 @@ const { graphForConversation } = require('./agent-context');
 const { statusFor, searchFor, expandFor, retireBlock, restoreBlock, rewriteBlock } = require('./context-retrieval');
 const { viewFor: memoryViewFor, compactView: compactMemoryView, resolveView: resolveMemoryView,
   statusFor: memoryStatusFor, searchFor: memorySearchFor, remember: memoryRemember } = require('./context-memory');
+const { createSkillRegistry } = require('./portable-skills');
+const { createReviewController } = require('./review-control');
 const { retainEvent, isStreamingToolEvent } = require('./tool-history');
 const { appendText } = require('../shared/file-open');
 const { fullAccess } = require('./permission-levels');
 
 const ENGINES = ['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'grok'];
+// Token accounting follows the user request, not a single assistant row.
+// A request can own one visible reply, later background follow-up replies and
+// native child agents. Each source stays identifiable so a display can break
+// the total down instead of presenting an unexplained aggregate.
+const USAGE_KEYS = ['input_tokens', 'output_tokens', 'cache_read_input_tokens', 'cache_creation_input_tokens'];
+const emptyUsage = () => Object.fromEntries(USAGE_KEYS.map(key => [key, 0]));
+const usageTokens = usage => {
+  const pick = (...keys) => keys.map(key => usage?.[key]).find(value => Number.isFinite(value) && value >= 0) ?? 0;
+  return { input_tokens: pick('input_tokens', 'prompt_tokens'), output_tokens: pick('output_tokens', 'completion_tokens'),
+    cache_read_input_tokens: pick('cache_read_input_tokens'), cache_creation_input_tokens: pick('cache_creation_input_tokens') };
+};
+const usageTotal = usage => USAGE_KEYS.reduce((total, key) => total + (usage?.[key] || 0), 0);
 // Pi was replaced by Grok. Keep its conversation records intact for export or
 // manual recovery instead of treating a valid legacy record as corrupt.
 const LEGACY_ENGINES = new Set(['pi']);
@@ -190,8 +204,8 @@ const reportedContextLimit = text => {
 // The logical ID belongs to Camellia. Native IDs and synchronization cursors
 // are private to each engine. Original native histories are never rewritten.
 class SharedConversations {
-  constructor({ dir, loadConfig, saveConfig, drivers, onEvent = () => {}, onGoal = () => {}, onStatus = () => {}, prepare = async () => {}, assertAvailable = () => {}, generateTitle = async () => '', summarize, log = () => {}, modelContextWindow = () => undefined, contextRoute = () => '', contextCapacity, conversationModels = () => [], createGoalBridge, webTools, stopTimeoutMs = 12000 }) {
-    Object.assign(this, { dir, loadConfig, saveConfig, drivers, onEvent, onStatus, prepare, assertAvailable, generateTitle, summarize, log, modelContextWindow, contextRoute, contextCapacity, conversationModels });
+  constructor({ dir, skillsDir, portableSkills = false, loadConfig, saveConfig, drivers, onEvent = () => {}, onGoal = () => {}, onStatus = () => {}, prepare = async () => {}, assertAvailable = () => {}, generateTitle = async () => '', summarize, log = () => {}, modelContextWindow = () => undefined, contextRoute = () => '', contextCapacity, conversationModels = () => [], createGoalBridge, webTools, activateSkillInstallation, deactivateSkillInstallation, stopTimeoutMs = 12000 }) {
+    Object.assign(this, { dir, loadConfig, saveConfig, drivers, onEvent, onStatus, prepare, assertAvailable, generateTitle, summarize, log, modelContextWindow, contextRoute, contextCapacity, conversationModels, activateSkillInstallation, deactivateSkillInstallation });
     this.runtimeId = randomUUID();
     this.subagentSessions = new Map();
     fs.mkdirSync(dir, { recursive: true });
@@ -206,6 +220,9 @@ class SharedConversations {
     this.backgroundWork = new Map();
     this.backgroundStops = new Map();
     this.recoveryWarnings = [];
+    this.portableSkills = portableSkills;
+    this.skills = createSkillRegistry({ root: skillsDir || path.join(dir, 'skills') });
+    this.reviews = createReviewController({ manager: this, dir: path.join(dir, 'reviews'), skills: this.skills, log });
     const onLoadError = error => this.recordLoadError(error);
     this.tasks = new ScheduledTasks({ file: path.join(dir, 'tasks', 'state.json'), log,
       onLoadError,
@@ -435,20 +452,55 @@ class SharedConversations {
     finally { active.webCalls.delete(abort); }
   }
 
-  toolInstructions() {
-    return presentationInstructions + goalToolInstructions + (this.webTools?.enabled() ? '\n' + require('./web-tools').instructions : '');
+  setPortableSkills(enabled) {
+    this.portableSkills = enabled === true;
+  }
+
+  dynamicGoalTools(c = null) {
+    if (c?.controlReviewId) return require('./review-tools').tools;
+    const reviewTools = this.portableSkills && c && !c.controlParentId
+      ? require('./review-agent-tools') : null;
+    const agentReviews = Boolean(reviewTools && this.reviews.settings(c.id).allowAgentReviews);
+    return [
+      ...(this.portableSkills ? require('./skill-tools').tools : []),
+      ...(agentReviews ? reviewTools.tools : reviewTools ? [reviewTools.startTool] : []),
+    ];
+  }
+
+  dynamicGoalInstructions(c = null) {
+    if (c?.controlReviewId) return require('./review-tools').instructions;
+    const reviewTools = this.portableSkills && c && !c.controlParentId
+      ? require('./review-agent-tools') : null;
+    const agentReviews = Boolean(reviewTools && this.reviews.settings(c.id).allowAgentReviews);
+    const gated = Boolean(c && !c.controlParentId && this.reviews.settings(c.id).gate);
+    return [
+      ...(this.portableSkills ? [require('./skill-tools').instructions] : []),
+      ...(agentReviews ? [reviewTools.instructions] : reviewTools ? [reviewTools.consentInstructions] : []),
+      ...(gated ? ['A cross-engine review gate is enabled for this conversation. Do not report Goal completion unless a fresh review returns a pass; a stale, failed, cancelled or missing review is not a pass.'] : []),
+    ].join('\n');
+  }
+
+  toolInstructions(c = null) {
+    return presentationInstructions + goalToolInstructions + this.dynamicGoalInstructions(c)
+      + (this.webTools?.enabled() ? '\n' + require('./web-tools').instructions : '');
   }
 
   callGoalTool(id, name, args, options) {
     try {
-      validateTool(name, args);
       const active = this.active.get(id);
+      validateTool(name, args, this.dynamicGoalTools(active?.c));
       if (this.goalToolsClosed || !active || active.internal || active.goalToolsDisabled || active.cancelled || active.finished || active.steering || active.compactRequested || active.goalRunToken !== args.run_token)
         throw new Error('This goal tool request does not belong to the current user turn');
+      if (active.c.controlReviewId && name !== 'camellia_review_report')
+        throw new Error('Reviewers may use host read-only tools and camellia_review_report only');
       if (name.startsWith('camellia_web_')) return this.callWebTool(name, args, active, options);
       if (name.startsWith('camellia_conversation_')) return callConversationTool(this, id, name, args, active);
       if (name.startsWith('camellia_context_')) return this.callContextTool(id, name, args);
       if (name.startsWith('camellia_memory_')) return this.callMemoryTool(id, name, args, active);
+      if (name.startsWith('camellia_skill_')) return this.callSkillTool(name, args);
+      if (name.startsWith('camellia_review_') && name !== 'camellia_review_report')
+        return this.callReviewTool(id, name, args, active);
+      if (name === 'camellia_review_report') return this.reviews.report(id, args);
       // File search is read-only and bounded, so children and scheduled checks
       // may use it to locate their own inputs.
       if (name === 'camellia_find_files') return this.callFindTool(id, args, active);
@@ -512,11 +564,21 @@ class SharedConversations {
         return result;
       }
       if (!driver.armed || driver.ownedSession() !== active.facade) throw new Error('No active goal owned by this turn');
-      if (active.goalReport && (active.goalReport.status !== args.status || active.goalReport.reason !== args.reason
-        || active.goalReport.wait_seconds !== args.wait_seconds)) throw new Error('This turn already reported a goal outcome');
-      active.goalReport = { status: args.status, reason: args.reason, ...(args.wait_seconds !== undefined ? { wait_seconds: args.wait_seconds } : {}) };
-      return { ok: true, pending: true, status: { complete: 'verification_pending', blocked: 'blocker_reported', waiting: 'waiting_reported' }[args.status] };
+      if (args.status === 'complete' && this.reviews.settings(id).gate) {
+        return this.reviews.gate(id, { goalId: driver.goal?.id }).then(gate => {
+          if (!gate.passed) throw new Error(gate.error || 'The cross-engine review gate did not pass');
+          return this.recordGoalReport(active, args);
+        }).catch(error => ({ ok: false, error: error.message }));
+      }
+      return this.recordGoalReport(active, args);
     } catch (error) { return { ok: false, error: error.message }; }
+  }
+
+  recordGoalReport(active, args) {
+    if (active.goalReport && (active.goalReport.status !== args.status || active.goalReport.reason !== args.reason
+      || active.goalReport.wait_seconds !== args.wait_seconds)) throw new Error('This turn already reported a goal outcome');
+    active.goalReport = { status: args.status, reason: args.reason, ...(args.wait_seconds !== undefined ? { wait_seconds: args.wait_seconds } : {}) };
+    return { ok: true, pending: true, status: { complete: 'verification_pending', blocked: 'blocker_reported', waiting: 'waiting_reported' }[args.status] };
   }
 
   assertTaskEngine(engine, id) {
@@ -559,6 +621,63 @@ class SharedConversations {
     if (name === 'camellia_context_expand')
       return { ok: true, ...expandFor(this.historyStore, c, this.dir, args) };
     throw new Error('Unknown Camellia context tool');
+  }
+
+  callSkillTool(name, args = {}) {
+    if (name === 'camellia_skill_catalog') return { ok: true, skills: this.skills.catalog() };
+    if (name === 'camellia_skill_load') {
+      const skill = this.skills.load(args.name);
+      return { ok: true, name: skill.name, description: skill.description, version: skill.version,
+        readOnly: skill.readOnly, text: skill.body, path: skill.file };
+    }
+    if (name === 'camellia_skill_resource')
+      return { ok: true, ...this.skills.resource(args.name, args.path, args.max_chars) };
+    throw new Error('Unknown Camellia skill tool');
+  }
+
+  callReviewTool(id, name, args = {}, active = {}) {
+    if (!this.portableSkills) throw new Error('Portable review tools are disabled');
+    if (active.scheduledTaskId) throw new Error('Scheduled checks cannot start or manage reviews');
+    if (active.c?.controlParentId) throw new Error('Tool-created children cannot start reviews');
+    const policy = this.reviews.settings(id);
+    if (name === 'camellia_review_start') {
+      const available = this.reviews.options(id).engines.filter(engine => engine.available);
+      const reviewerEngine = String(args.reviewer_engine || (policy.reviewerEngine
+        && (policy.reviewerEngine !== active.c?.currentEngine || policy.allowSameEngine) ? policy.reviewerEngine : '')
+        || available.find(engine => engine.engine !== active.c?.currentEngine)?.engine || '');
+      if (!reviewerEngine) throw new Error('No reviewer engine is available');
+      if (!policy.allowAgentReviews) {
+        const consent = this.reviews.requestConsent(id, {
+          reviewerEngine,
+          mode: args.mode || policy.mode,
+          focus: args.focus,
+          base: args.base,
+          requestId: args.request_id,
+          maxTokens: args.max_tokens || policy.maxTokens,
+        });
+        return { ok: false, consent_required: true, consent_id: consent.id,
+          message: 'The user must approve this review in the conversation card before reviewer quota is used' };
+      }
+      return this.reviews.start(id, {
+        reviewerEngine,
+        model: policy.model,
+        mode: args.mode || policy.mode,
+        focus: args.focus,
+        base: args.base,
+        requestId: args.request_id,
+        wait: args.wait === true,
+        maxTokens: args.max_tokens,
+        viaAgent: true,
+      }).catch(error => ({ ok: false, error: error.message }));
+    }
+    if (!policy.allowAgentReviews) throw new Error('The user has not allowed agent-requested reviews in this conversation');
+    const review = this.reviews.owned(id, args.review_id);
+    if (name === 'camellia_review_status') return { ok: true, review: this.reviews.publicReview(review) };
+    if (name === 'camellia_review_result') return { ok: true, status: review.status,
+      report: review.report || null, error: review.error || null };
+    if (name === 'camellia_review_cancel') return this.reviews.cancel(review.id)
+      .catch(error => ({ ok: false, error: error.message }));
+    throw new Error('Unknown Camellia review tool');
   }
 
   callMemoryTool(id, name, args = {}, active = {}) {
@@ -654,6 +773,56 @@ class SharedConversations {
       this.onEvent({ type: 'conversation:read', session_id: id, replyReadAt });
     }
     return { ok: true, replyReadAt };
+  }
+  // Usage is persisted per user request. Runs are keyed so a replayed result
+  // overwrites its own record, and child samples are keyed by native task and
+  // run so status updates cannot count the same child twice.
+  requestEntry(c, userSeq) {
+    c.requestUsage ||= {};
+    const key = String(userSeq);
+    return c.requestUsage[key] ||= { runs: {}, children: {}, updatedAt: 0 };
+  }
+  recordRunUsage(c, run, usage, rowSeq) {
+    if (!usage || !Number.isSafeInteger(run.userSeq) || run.internal || run.ephemeral) return null;
+    const entry = this.requestEntry(c, run.userSeq);
+    if (!run.nativeBackground && Number.isSafeInteger(rowSeq) && !Number.isSafeInteger(entry.leadSeq)) entry.leadSeq = rowSeq;
+    const key = run.usageKey || (String(run.engine || '') + ':' + String(run.facade?.gen ?? '') + ':' + String(run.startedAt || 0));
+    entry.runs[key] = { ...usageTokens(usage), background: Boolean(run.nativeBackground) };
+    entry.updatedAt = Date.now();
+    return this.requestUsageView(c, run.userSeq);
+  }
+  recordChildUsage(c, engine, task) {
+    if (!Number.isSafeInteger(task.userSeq) || !Number.isFinite(task.usage) || task.usage <= 0) return null;
+    const entry = this.requestEntry(c, task.userSeq);
+    const key = engine + ':' + task.id + ':' + (task.turnId || '');
+    if (entry.children[key]?.tokens === task.usage) return null;
+    entry.children[key] = { tokens: task.usage, at: Date.now() };
+    entry.updatedAt = Date.now();
+    return this.requestUsageView(c, task.userSeq);
+  }
+  requestUsageView(c, userSeq) {
+    const entry = c.requestUsage?.[userSeq];
+    if (!entry) return null;
+    const main = emptyUsage(), background = emptyUsage();
+    let backgroundTurns = 0;
+    for (const run of Object.values(entry.runs || {})) {
+      const target = run.background ? background : main;
+      for (const key of USAGE_KEYS) target[key] += run[key] || 0;
+      if (run.background) backgroundTurns++;
+    }
+    const samples = Object.values(entry.children || {});
+    const childTokens = samples.reduce((sum, sample) => sum + (sample.tokens || 0), 0);
+    return { userSeq, leadSeq: entry.leadSeq, main, background: { ...background, turns: backgroundTurns },
+      children: { tokens: childTokens, tasks: samples.length }, total: usageTotal(main) + usageTotal(background) + childTokens,
+      updatedAt: entry.updatedAt || 0 };
+  }
+  // Only the reply that opened a request carries the request total. Later
+  // background replies keep their own usage so adding visible rows together
+  // never counts a continuation twice.
+  withRequestUsage(c, row) {
+    if (row?.role !== 'assistant' || !Number.isSafeInteger(row.userSeq)) return row;
+    const view = this.requestUsageView(c, row.userSeq);
+    return view && view.leadSeq === row.seq ? { ...row, requestUsage: view } : row;
   }
   firstTitleMessage(c) {
     for (const row of this.historyRows(c, { mask: HISTORY_FLAGS.user })) {
@@ -946,16 +1115,28 @@ class SharedConversations {
     return conversation;
   }
   forkSnapshotFile(c) { return path.join(this.dir, 'forks', c.id + '.jsonl'); }
+  goalToolKey(c) {
+    return JSON.stringify([this.dynamicGoalTools(c).map(tool => tool.name), this.dynamicGoalInstructions(c)]);
+  }
   async ensureGoalBridge(c) {
     if (!this.createGoalBridge) return undefined;
     if (this.goalToolsClosed) throw new Error('Goal tools are shutting down');
     const webTools = this.webTools?.enabled() === true;
+    const reviewerOnly = Boolean(c.controlReviewId);
+    const nativeWebDisabled = webTools || reviewerOnly;
+    const extraKey = this.goalToolKey(c);
     let bridge = this.goalBridges.get(c.id);
-    if (bridge && (bridge.webTools === true) !== webTools) {
+    if (bridge && ((bridge.webTools === true) !== nativeWebDisabled || bridge.extraKey !== extraKey)) {
       await bridge.close(); this.goalBridges.delete(c.id); bridge = undefined;
     }
     if (!bridge) {
-      bridge = await this.createGoalBridge({ webTools, call: (name, args, options) => this.callGoalTool(c.id, name, args, options) });
+      bridge = await this.createGoalBridge({ webTools: nativeWebDisabled, portableWebTools: webTools,
+        baseTools: !reviewerOnly, extraTools: this.dynamicGoalTools(c),
+        extraInstructions: this.dynamicGoalInstructions(c),
+        extraKey,
+        call: (name, args, options) => this.callGoalTool(c.id, name, args, options) });
+      bridge.extraKey = extraKey;
+      bridge.webTools = nativeWebDisabled;
       if (this.goalToolsClosed) { await bridge.close(); throw new Error('Goal tools are shutting down'); }
       this.goalBridges.set(c.id, bridge);
     }
@@ -1033,12 +1214,23 @@ class SharedConversations {
     const messages = page ? page.rows.map(r => legacyRecoveryError(r) ? { ...r, runResult: { subtype: 'error', is_error: true, result: r.text } } : r) : this.messages(c);
     const live = this.live(c.currentEngine, id, messages).live;
     if (live && page) live.historyPage = { nextBefore: page.nextBefore, version: page.version };
+    // Only the requests present in this page need their aggregate; resending
+    // every historical request with each pagination step would grow the response
+    // without helping a rendered row.
+    const requestUsage = {};
+    const rememberUsage = row => {
+      if (row?.role !== 'assistant' || !Number.isSafeInteger(row.userSeq) || requestUsage[row.userSeq]) return;
+      const view = this.requestUsageView(c, row.userSeq);
+      if (view) requestUsage[row.userSeq] = view;
+    };
+    for (const row of messages) rememberUsage(row);
+    rememberUsage({ role: 'assistant', userSeq: live?.userSeq });
     const last = c.lastCompaction;
     const compaction = this.switching.get(id)?.compaction || this.active.get(id)?.compaction
       || (['failed', 'cancelled'].includes(last?.outcome) && Number.isSafeInteger(last.boundary)
         && this.historyInfo(c).userSeq <= last.boundary ? { state: last.outcome, engine: last.engine || c.currentEngine,
         native: last.route === 'native', error: last.error || '' } : null);
-    return { ok: true, ...c, subagents: this.subagentView(id), activity: this.activity(id), backgroundWork: this.backgroundStatus(id), compaction, live, preferences: prefs, messages, settings: this.settings(engine, id), truncated: false,
+    return { ok: true, ...c, requestUsage, subagents: this.subagentView(id), activity: this.activity(id), backgroundWork: this.backgroundStatus(id), compaction, live, preferences: prefs, messages, settings: this.settings(engine, id), truncated: false,
       ...(page ? { historyPage: { nextBefore: page.nextBefore, version: page.version } } : {}),
       remoteQueue: this.remoteQueue?.snapshot(id) };
   }
@@ -1357,6 +1549,64 @@ class SharedConversations {
     const entry = { id: event.id || 'event:' + randomUUID(), at: event.at || Date.now(), ...event };
     c.contextEvents = [...(c.contextEvents || []), entry].slice(-128);
   }
+  scheduleTurnReview(c, run) {
+    if (!c || run?.internal || run?.goalContinuation || run?.createdGoal || run?.goalReport) return;
+    const policy = this.reviews.settings(c.id);
+    if (!policy.turnGate || c.controlParentId || c.controlReviewId) return;
+    if (this.goals.get(c.id)?.armed) return;
+    if (!this.reviews.hasChanges(c.id)) return;
+    if (c.pendingTurnReview?.userSeq === run.userSeq) return;
+    c.pendingTurnReview = { state: 'starting', userSeq: run.userSeq, at: Date.now() };
+    this.save(c);
+    setImmediate(() => {
+      void this.startTurnReview(c, run.userSeq).catch(error => {
+        if (this.items.get(c.id) === c && c.pendingTurnReview?.userSeq === run.userSeq) {
+          delete c.pendingTurnReview;
+          this.save(c);
+        }
+        this.log('Turn review failed to start: ' + error.message);
+        this.onStatus({ sessionId: c.id, text: 'Completion review could not start: ' + error.message });
+      });
+    });
+  }
+  async startTurnReview(c, userSeq) {
+    if (this.items.get(c.id) !== c || this.deleting.has(c.id)) return;
+    const policy = this.reviews.settings(c.id);
+    if (!policy.turnGate) {
+      delete c.pendingTurnReview;
+      this.save(c);
+      return;
+    }
+    const available = this.reviews.options(c.id).engines.filter(engine => engine.available);
+    const reviewerEngine = policy.reviewerEngine && (policy.reviewerEngine !== c.currentEngine || policy.allowSameEngine)
+      ? policy.reviewerEngine
+      : available.find(engine => engine.engine !== c.currentEngine)?.engine || '';
+    if (!reviewerEngine) throw new Error('no alternate reviewer engine is available');
+    const started = await this.reviews.start(c.id, {
+      reviewerEngine,
+      model: policy.model,
+      mode: policy.mode,
+      focus: 'Review the completed turn before the user continues.',
+      maxTokens: policy.maxTokens,
+      requestId: 'turn:' + c.id + ':' + userSeq,
+      allowWhileBusy: true,
+      viaAgent: true,
+    });
+    if (this.items.get(c.id) !== c) return;
+    c.pendingTurnReview = { state: 'running', userSeq, reviewId: started.review.id, at: Date.now() };
+    this.save(c);
+    this.onEvent({ type: 'conversation:turn-review', session_id: c.id, review: started.review });
+  }
+  completeTurnReview(review) {
+    const c = this.items.get(review?.parentConversationId);
+    if (!c) return;
+    c.lastTurnReview = { reviewId: review.id, status: review.status,
+      verdict: review.report?.verdict || '', at: Date.now() };
+    if (c.pendingTurnReview?.reviewId === review.id) delete c.pendingTurnReview;
+    this.save(c);
+    this.onEvent({ type: 'conversation:turn-review', session_id: c.id, review: this.reviews.publicReview(review) });
+    this.publishActivity(c.id);
+  }
   saveSettings(engine, payload) {
     this.validateEngine(engine);
     const c = payload.sessionId ? this.get(payload.sessionId) : null;
@@ -1522,6 +1772,7 @@ class SharedConversations {
       if (this.stopping.has(c.id) || this.deleting.has(c.id)) throw new Error('This conversation is stopping or being deleted');
       if (controlStart && (controlStart.cancelled || this.goalToolsClosed || this.items.get(c.id) !== c || this.controlStarts.get(c.id) !== controlStart)) throw new Error('Child start was cancelled');
       if (!internal && !continuation && this.controlStarts.has(c.id) && this.controlStarts.get(c.id) !== controlStart) throw new Error('Child response is starting');
+      if (!internal && !continuation && c.pendingTurnReview) throw new Error('Wait for the completed turn review before sending another message');
       if (this.active.has(c.id) || this.switching.has(c.id) && !internal || this.recovering.has(c.id) && !internal && !continuation || this.goals.get(c.id)?.armed && !facade && !internal)
         throw new Error('Wait for this conversation to finish or stop it first.');
     };
@@ -1559,7 +1810,7 @@ class SharedConversations {
     }
     const goalPrefix = !internal && !goalToolsDisabled && this.createGoalBridge
       && !(engine === 'antigravity' && settings.connection === 'subscription')
-      ? this.toolInstructions() + '\nCamellia goal run token for this turn: ' + '0'.repeat(36) + '\n\n' : '';
+      ? this.toolInstructions(c) + '\nCamellia goal run token for this turn: ' + '0'.repeat(36) + '\n\n' : '';
     const attachmentTokens = imageInputTokens(payload.attachments);
     const pendingTokens = contextTokens(memory + String(promptSuffix ?? payload.prompt ?? '')) + attachmentTokens;
     const promptFits = (value, cap) => contextTokens(goalPrefix + value) + attachmentTokens <= cap * 0.85
@@ -1786,6 +2037,7 @@ class SharedConversations {
         : this.context(c, engine, a.userSeq)) + String(a.promptSuffix ?? payload.prompt ?? ''),
       facade: facade || { gen: ++this.sequence, sessionId: c.id, opts: { workspaceId: c.workspaceId } }, priorCursor: nativeFork?.cursor ?? c.segments[engine]?.cursor ?? 0 };
     a.settings = { ...settings };
+    a.usageKey ||= engine + ':' + a.facade.gen + ':' + a.startedAt;
     a.memoryView = memoryView;
     a.memorySnapshot = memorySnapshot;
     a.activeKey = activeKey || c.id;
@@ -1839,7 +2091,7 @@ class SharedConversations {
       if (!a.goalToolsDisabled && this.createGoalBridge) {
         goalBridge = await this.ensureGoalBridge(c);
         a.goalRunToken = randomUUID();
-        prompt = this.toolInstructions() + '\nCamellia goal run token for this turn: ' + a.goalRunToken + '\n\n' + prompt;
+        prompt = this.toolInstructions(c) + '\nCamellia goal run token for this turn: ' + a.goalRunToken + '\n\n' + prompt;
       }
       const closing = this.drivers[engine].sessions?.pendingRelease({ conversationId: a.activeKey });
       if (closing) {
@@ -1859,6 +2111,9 @@ class SharedConversations {
         ...(nativeFork ? { sessionId: nativeFork.sessionId, fork: true, resumeFile: this.forkSnapshotFile(c),
           ...(nativeFork.resumeSessionAt ? { resumeSessionAt: nativeFork.resumeSessionAt } : {}) } : nativeEdit),
         workspaceId: null, cwd: c.cwd, settings, goalBridge });
+      // A native background task started in this request must still resolve to
+      // this user turn if it finishes after another message or with no run open.
+      if (Number.isSafeInteger(a.userSeq)) a.session.subagentUserSeq = a.userSeq;
       if (!a.session.sendUserMessage(prompt, payload.attachments || [])) throw new Error('Engine did not accept the message');
       if (a.titleDeferred && this.drivers[engine]?.titleDuringTurn)
         void this.titleFromFirstMessage(c, { engine, settings: a.contextSettings, duringTurn: true });
@@ -1883,13 +2138,23 @@ class SharedConversations {
       const session = this.drivers[engine]?.sessions?.get?.({ conversationId: c?.id });
       if (!c || !session || session.dead || session.gen !== event.runId || session.sessionId !== event.session_id
           || this.busy(c.id) || c.currentEngine !== engine || this.stopping.has(c.id) || this.deleting.has(c.id)) return false;
-      const user = this.rows(c).findLast(row => row.role === 'user' && !row.internal);
+      const rows = this.rows(c);
+      const userRow = seq => Number.isSafeInteger(seq) && rows.find(row => row.seq === seq && row.role === 'user' && !row.internal) || null;
+      // Prefer the request that actually launched the background task. The
+      // latest user row is only a fallback for older adapters that cannot
+      // identify their native task.
+      let user = userRow(event.originUserSeq);
+      if (!user && event.taskId) user = userRow((c.subagents || []).find(task => task.engine === engine
+        && (task.id === event.taskId || task.turnId === event.taskId))?.userSeq);
+      user ||= rows.findLast(row => row.role === 'user' && !row.internal);
       if (!user) return false;
       const settings = { ...this.settings(engine, c.id), ...c.segments[engine]?.contextSettings };
       const facade = { gen: ++this.sequence, sessionId: c.id, opts: { workspaceId: c.workspaceId }, running: true };
       const run = { c, engine, session, facade, settings, contextSettings: settings, nativeBackground: true,
         userSeq: user.seq, prompt: user.text, attachments: [], events: [], permissions: new Map(), tools: new Set(),
         eventSeq: 0, text: '', assistant: [], startedAt: Date.now(), priorCursor: c.segments[engine]?.cursor || 0 };
+      run.usageKey = engine + ':' + facade.gen + ':' + run.startedAt;
+      session.subagentUserSeq = user.seq;
       run.done = new Promise(resolve => { run.resolve = resolve; });
       this.active.set(c.id, run); this.facades.set(c.id, facade);
       c.pending = { engine, at: run.startedAt, internal: false }; c.updatedAt = this.stamp();
@@ -1936,7 +2201,15 @@ class SharedConversations {
       c.subagents = [...(previous || []).filter(row => row.engine !== engine || row.id !== task.id && !replaced.has(row.id)), task].slice(-128);
       try { this.save(c); }
       catch (error) { c.subagents = previous; this.log('Could not save subtask status: ' + error.message); return false; }
-      this.onEvent({ type: 'gui:subagent', session_id: c.id, engine, tasks: this.subagentView(c.id) });
+      // A child's reported total belongs to the request that launched it. The
+      // task list is pruned independently, so the aggregate must outlive it.
+      const requestUsage = this.recordChildUsage(c, engine, task);
+      if (requestUsage) {
+        try { this.save(c); }
+        catch (error) { this.log('Could not save child usage: ' + error.message); }
+      }
+      this.onEvent({ type: 'gui:subagent', session_id: c.id, engine, tasks: this.subagentView(c.id),
+        ...(requestUsage ? { userSeq: task.userSeq, requestUsage } : {}) });
       return true;
     }
     if (!a || a.engine !== engine || (a.session ? event.runId !== a.session.gen : event.runId != null)) return false;
@@ -2162,6 +2435,7 @@ class SharedConversations {
     if (!a.internal && (event.type === 'gui:usage' || event.type === 'assistant' && event.message?.usage)) {
       const usage = a.lastCallUsage;
       const used = (usage?.input_tokens || usage?.prompt_tokens || 0) + (usage?.cache_read_input_tokens || 0) + (usage?.cache_creation_input_tokens || 0);
+      if (c.controlReviewId) this.reviews.enforceBudget(c.id, usage);
       if (!a.ephemeral && Number.isFinite(used) && c.segments[engine]?.nativeId) {
         const settings = a.contextSettings;
         const segment = c.segments[engine];
@@ -2231,10 +2505,13 @@ class SharedConversations {
       const visibleText = mobileOutput.text || (text !== runResult?.result ? text : '');
       const mobileText = terminal ? [visibleText, ...(runResult.result && runResult.result !== visibleText ? [runResult.result] : [])].filter(Boolean).join('\n\n')
         : mobileOutput.text || (!process.some(block => block.type === 'text') ? text : '');
-      if (text || output.outputBlocks?.length || process.length || event.usage || a.lastCallUsage || event.artifacts?.length || terminal) this.append(c, { role: 'assistant', engine, text, ...output,
+      const assistant = (text || output.outputBlocks?.length || process.length || event.usage || a.lastCallUsage || event.artifacts?.length || terminal) ? this.append(c, { role: 'assistant', engine, text, ...output,
         ...(process.length ? { process } : {}), ...(terminal || process.length ? { mobileText } : {}),
-        ...(runResult ? { runResult, userSeq: a.userSeq } : {}), turnMetrics, internal: a.internal, artifacts: event.artifacts,
-        ...(event.usage ? { usage: event.usage } : {}), ...(a.lastCallUsage ? { lastCallUsage: a.lastCallUsage } : {}) });
+        ...(runResult ? { runResult } : {}), ...(!a.internal && Number.isSafeInteger(a.userSeq) ? { userSeq: a.userSeq } : {}),
+        turnMetrics, internal: a.internal, artifacts: event.artifacts,
+        ...(event.usage ? { usage: event.usage } : {}), ...(a.lastCallUsage ? { lastCallUsage: a.lastCallUsage } : {}) }) : null;
+      const requestUsage = this.recordRunUsage(c, a, event.usage, assistant?.seq);
+      if (requestUsage) { out.requestUsage = requestUsage; out.requestUsageLead = requestUsage.leadSeq === assistant?.seq; }
       c.pending = null; c.updatedAt = this.stamp();
       if (!a.ephemeral) c.interrupted = Boolean(event.is_error || event.subtype === 'stopped');
       if (!a.internal && !c.interrupted) c.lastReplyAt = c.updatedAt;
@@ -2270,6 +2547,8 @@ class SharedConversations {
       // The turn is over, so any engine waiting to be retired for a network
       // change can be replaced before the next message.
       this.onEvent({ type: 'conversation:turn-end', session_id: c.id, engine });
+      if (!a.internal && !a.cancelled && !event.is_error && event.subtype !== 'stopped')
+        this.scheduleTurnReview(c, a);
     } else if (toolBoundary && !a.internal && !a.cancelled && !a.compactRequested && !a.tools.size && !a.permissions.size
         && !this.usesNativeCompaction(c, engine, this.runSettings(a, engine, c))) {
       const context = this.contextPressure(c, engine, this.runSettings(a, engine, c), a);
@@ -2304,7 +2583,7 @@ class SharedConversations {
       const pressure = this.contextPressure(c, engine, a.settings || this.settings(engine, c.id));
       const memory = memoryInstructions(this.loadConfig().memoryDirectory, c.hasGlobalMemory === true);
       const goalPrefix = !a.goalToolsDisabled && this.createGoalBridge
-        ? this.toolInstructions() + '\nCamellia goal run token for this turn: ' + '0'.repeat(36) + '\n\n' : '';
+        ? this.toolInstructions(c) + '\nCamellia goal run token for this turn: ' + '0'.repeat(36) + '\n\n' : '';
       const actualInput = goalPrefix + memory + prompt;
       const imageTokens = imageInputTokens(a.attachments);
       if (contextTokens(actualInput) + imageTokens > pressure.cap * 0.85 || overInputChars(engine, actualInput))
@@ -3057,7 +3336,7 @@ class SharedConversations {
         ? contextTokens(recovery.promptSuffix || recovery.prompt) + contextTokens(memoryInstructions(this.loadConfig().memoryDirectory, c.hasGlobalMemory === true))
           + imageInputTokens(recovery.attachments) + 256
         : 0);
-      const goalTokens = this.createGoalBridge ? contextTokens(this.toolInstructions()) + 64 : 0;
+      const goalTokens = this.createGoalBridge ? contextTokens(this.toolInstructions(c)) + 64 : 0;
       const available = destination || recovery
         ? Math.floor(targetCap * 0.65) - pendingTokens - goalTokens - 512 : Infinity;
       const fallback = this.manualFallbackContext(c, targetEngine, sourceRows, targetSettings, available, pinnedFirstUser);
@@ -3184,7 +3463,7 @@ class SharedConversations {
       if (inputCharLimit(engine)) budget = Math.min(budget, inputCharLimit(engine));
       const targetCap = this.contextPressure(c, targetEngine, targetSettings).cap;
       const targetTokens = Math.floor(targetCap * 0.65) - (destination?.pendingTokens || 0)
-        - (this.createGoalBridge ? contextTokens(this.toolInstructions()) : 0) - 512;
+        - (this.createGoalBridge ? contextTokens(this.toolInstructions(c)) : 0) - 512;
       const maxSummaryChars = destination ? Math.min(12000, targetTokens,
         inputCharLimit(targetEngine) ? Math.floor(inputCharLimit(targetEngine) * 0.8) : Infinity) : Infinity;
       if (maxSummaryChars < 512) throw new Error('The target context has no room for a summary and the new message. ' + recoveryAdvice);
@@ -3544,6 +3823,51 @@ class SharedConversations {
       case 'context-retire': return this.contextRetire(engine, payload);
       case 'context-restore': return this.contextRestore(engine, payload);
       case 'context-rewrite': return this.contextRewrite(engine, payload);
+      case 'skill-list': return { ok: true, skills: this.skills.catalog() };
+      case 'skill-hosts': return { ok: true, hosts: this.skills.hosts() };
+      case 'skill-preview': return { ok: true, ...this.skills.preview(payload?.name, payload?.host) };
+      case 'skill-install': {
+        const installed = this.skills.install(payload?.name, payload?.host, payload || {});
+        const activation = installed.target.scope === 'app' ? await this.activateSkillInstallation?.({
+          host: payload?.host, name: payload?.name, action: 'install', target: installed.target,
+        }) : null;
+        return { ...installed, ...(activation ? { activation } : {}) };
+      }
+      case 'skill-uninstall': {
+        const before = this.skills.catalog().find(skill => skill.name === payload?.name)?.targets || [];
+        const selected = before.filter(target =>
+          (!payload?.host || target.host === payload.host)
+          && (!payload?.destination || path.resolve(target.path) === path.resolve(payload.destination)));
+        const deactivations = [];
+        for (const target of selected) {
+          const activation = target.scope === 'app' ? await this.deactivateSkillInstallation?.({
+            host: target.host, name: payload?.name, action: 'uninstall', target,
+          }) : null;
+          if (activation) deactivations.push(activation);
+        }
+        const removed = this.skills.uninstall(payload?.name, payload || {});
+        return { ...removed, ...(deactivations.length ? { deactivations } : {}) };
+      }
+      case 'skill-doctor': return { ok: true, ...this.skills.doctor() };
+      case 'skill-load': {
+        const skill = this.skills.load(payload?.name);
+        return { ok: true, name: skill.name, description: skill.description,
+          version: skill.version, readOnly: skill.readOnly, text: skill.body, path: skill.file };
+      }
+      case 'skill-export': return { ok: true, ...this.skills.exportBundle(payload?.name,
+        payload?.host, payload?.destination) };
+      case 'review-options': return this.reviews.options(payload?.sessionId, payload);
+      case 'review-context': return this.reviews.context(payload?.sessionId);
+      case 'review-consent-pending': return { ok: true, consent: this.reviews.pendingConsent(payload?.sessionId) };
+      case 'review-consent-approve': return this.reviews.approveConsent(payload?.sessionId, payload?.consentId);
+      case 'review-consent-dismiss': return this.reviews.dismissConsent(payload?.sessionId, payload?.consentId);
+      case 'review-settings': return { ok: true, settings: this.reviews.settings(payload?.sessionId) };
+      case 'review-save-settings': return this.reviews.saveSettings(payload?.sessionId, payload || {});
+      case 'review-start': return this.reviews.start(payload?.sessionId, payload);
+      case 'review-status': return this.reviews.status(payload?.reviewId);
+      case 'review-result': return this.reviews.result(payload?.reviewId);
+      case 'review-cancel': return this.reviews.cancel(payload?.reviewId);
+      case 'review-list': return { ok: true, reviews: this.reviews.list(payload?.sessionId) };
       case 'list-attachable-conversations': return this.listAttachableConversations(payload?.query, payload?.excludeId);
       case 'attach-conversation': return this.attachConversation(payload?.sessionId);
       case 'discard-conversation-attachment': return this.discardConversationAttachment(payload?.path);
@@ -3683,10 +4007,18 @@ class SharedConversations {
         return driver.resume();
       }
       case 'goal-complete': {
-        const result = this.goalFor(payload.sessionId).setPhase('complete');
+        const driver = this.goalFor(payload.sessionId);
+        let gate;
+        if (driver.goal && driver.goal.phase !== 'complete' && this.reviews.settings(payload.sessionId).gate) {
+          gate = await this.reviews.gate(payload.sessionId, { goalId: driver.goal.id });
+          if (!gate.passed) return { ok: false, error: gate.error, review: gate.review || null };
+        }
+        const result = driver.setPhase('complete');
         if (this.stopping.has(payload.sessionId)) await this.stopping.get(payload.sessionId);
-        return result;
+        return { ...result, ...(gate ? { review: gate.review || null, overridden: gate.overridden === true } : {}) };
       }
+      case 'review-gate-override':
+        return this.reviews.overrideGate(payload.sessionId, { goalId: payload.goalId, reason: payload.reason });
       case 'goal-clear': {
         const result = this.goalFor(payload.sessionId).clear({ interrupt: false });
         if (this.stopping.has(payload.sessionId)) await this.stopping.get(payload.sessionId);

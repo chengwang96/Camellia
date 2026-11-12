@@ -75,6 +75,7 @@ async function main() {
   await wait(() => wc.executeJavaScript('!!document.querySelector(".desktop-titlebar")'), 'caption');
   assert.equal(home.isMenuBarVisible(), false);
   assert.deepEqual(await wc.executeJavaScript('[...document.querySelectorAll(".desktop-titlebar button")].map(button => button.textContent)'), ['Application', 'Engine', 'Edit', 'View']);
+  assert.ok(Menu.getApplicationMenu().items[0].submenu.items.some(item => item.label === 'Check for updates'));
   assert.equal(await wc.executeJavaScript('document.querySelector(".desktop-titlebar").textContent.includes("Camellia")'), false);
   // The native overlay publishes the available caption rect to Chromium.
   const overlay = await wc.executeJavaScript('navigator.windowControlsOverlay.getTitlebarAreaRect().toJSON()');
@@ -181,6 +182,11 @@ async function main() {
     checkNativeCaption(await capture(wc, 'settings-backdrop-' + theme), 'settings ' + theme);
     const bitmap = (await settings.webContents.capturePage(undefined, {stayHidden:true})).toBitmap();
     assert.equal(bitmap[3], 0, 'the rounded panel corner must be transparent');
+    await settings.webContents.executeJavaScript("document.querySelector('#addDialog').showModal()");
+    await settings.webContents.executeJavaScript('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
+    const dialogBitmap = (await settings.webContents.capturePage(undefined, {stayHidden:true})).toBitmap();
+    assert.equal(dialogBitmap[3], 0, 'a modal backdrop must not paint outside the rounded panel corner');
+    await settings.webContents.executeJavaScript("document.querySelector('#addDialog').close()");
   }
   await settings.webContents.executeJavaScript('document.querySelector("#closeSettings").click()');
   await wait(() => settings.isDestroyed(), 'settings custom close');

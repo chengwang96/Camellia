@@ -13,6 +13,9 @@ html[data-settings-window] .settings-shell {
   overflow: hidden; border: 1px solid var(--dsw-alias-border-l2); border-radius: 24px;
   background: var(--dsw-alias-bg-base);
 }
+/* The top-layer backdrop otherwise paints into the transparent window corners
+   and leaves dark wedges around the rounded settings panel. */
+html[data-settings-window] dialog::backdrop { border-radius: 24px; }
 html[data-settings-window] .page-head { display: flex; align-items: center; gap: 20px; }
 html[data-settings-window] :is(.page-head, .settings-brand) { -webkit-app-region: drag; app-region: drag; }
 .settings-close-window {
@@ -40,7 +43,7 @@ html[data-settings-window] :is(.page-head, .settings-brand) { -webkit-app-region
 .scroll-content { padding: 0 36px 40px; scrollbar-width: none; }
 .scroll-content::-webkit-scrollbar { display: none; }
 .page { width: 100%; }
-#generalPage, #dataPage { max-width: 1080px; }
+#generalPage, #shortcutsPage, #dataPage { max-width: 1080px; }
 .settings-main h2 { font-weight: 500; }
 .settings-main .hint { color: var(--dsw-alias-label-tertiary); }
 button, .device-settings button { border-radius: 10px; }
@@ -65,6 +68,30 @@ input:not([type=checkbox]), textarea { border-radius: 10px; }
 .vscode-controls:has(.vscode-custom-path:not([hidden])) { flex-basis: var(--settings-select-max); }
 .vscode-custom-path { display: flex; gap: 8px; width: 100%; }
 .vscode-custom-path input { flex: 1; min-width: 0; }
+/* Shortcut rows follow the control material: a quiet key field, with Clear
+   appearing only while a combination is bound. */
+.shortcuts-intro { max-width: 76ch; }
+/* One continuous list: shortcut rows carry a hint, so they need less vertical
+   padding than the general preference rows to stay scannable. */
+#shortcutsPage.settings-groups > .settings-group { padding-block: 16px; }
+#shortcutsPage .setting-row { padding-block: 10px; }
+.shortcut-field { flex: 0 0 auto; display: flex; align-items: center; gap: 8px; }
+.shortcut-record {
+  display: inline-flex; align-items: center; justify-content: center; gap: 4px;
+  min-width: 148px; min-height: 36px; padding: 6px 12px;
+  border: 1px solid transparent; border-radius: 10px;
+  background: var(--settings-control-fill); font: var(--f-code); color: var(--dsw-alias-label-primary);
+}
+.shortcut-record:hover { background: var(--dsw-alias-interactive-bg-hover); }
+.shortcut-record.is-recording { border-color: var(--settings-selected-stroke); color: var(--dsw-alias-label-secondary); }
+.shortcut-record kbd { font: inherit; }
+.shortcut-plus { color: var(--dsw-alias-label-tertiary); }
+.shortcut-unset { color: var(--dsw-alias-label-tertiary); }
+.shortcut-clear { min-height: 32px; padding: 4px 12px; }
+@media (max-width: 700px) {
+  .shortcut-row { flex-wrap: wrap; }
+  .shortcut-field { width: 100%; justify-content: flex-start; }
+}
 /* Selection controls keep native form semantics without platform-specific paint. */
 input[type=checkbox] {
   appearance: none; display: inline-grid; place-items: center; vertical-align: middle;

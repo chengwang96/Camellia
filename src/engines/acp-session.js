@@ -334,7 +334,8 @@ class AcpSession extends StreamingSession {
         this.replayEvents = []; this.blockIndex = 0; this.activeBlock = null;
         this.startedAt = Date.now();
         operation.meterReady = this.usageMeter?.begin(this.sessionId, () => this.running && !this.dead);
-        this.emit({ type: 'gui:background-turn', session_id: this.sessionId });
+        this.emit({ type: 'gui:background-turn', session_id: this.sessionId,
+          ...(Number.isSafeInteger(this.subagentUserSeq) ? { originUserSeq: this.subagentUserSeq } : {}) });
         this.emitStream({ type: 'message_start' });
       } else if (update.state === 'ended' && this.backgroundTurn?.id === update.turnId) {
         const operation = this.backgroundTurn;

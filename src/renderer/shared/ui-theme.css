@@ -88,18 +88,41 @@ select:open::picker-icon { transform: translateY(3px) rotate(225deg); }
      settings dropdown, instead of stretching to a fixed 220px floor. */
   width: max-content; min-width: 0; max-width: calc(100vw - 24px);
   max-height: min(420px, calc(100vh - 24px)); overflow-x: hidden; overflow-y: auto;
-  margin: 4px 0; padding: 6px;
-  border: 1px solid var(--dsw-alias-border-l2); border-radius: 14px;
+  margin: 4px 0; padding: 7px;
+  border: 1px solid var(--dsw-alias-border-l2); border-radius: 18px;
   background: var(--dsw-alias-bg-layer-3); color: var(--dsw-alias-label-primary);
   box-shadow: var(--dsw-shadow-lv3); font: var(--f-s-14);
 }
+@supports ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  :root:not([data-advanced-animations="off"]) ::picker(select) {
+    background:
+      radial-gradient(140% 110% at 8% -6%,
+        light-dark(rgba(255, 255, 255, .58), rgba(255, 255, 255, .18)) 0%,
+        light-dark(rgba(255, 255, 255, .12), rgba(255, 255, 255, .05)) 34%,
+        transparent 66%),
+      radial-gradient(110% 100% at 100% 100%,
+        light-dark(rgba(255, 255, 255, .22), rgba(102, 134, 190, .06)) 0%,
+        transparent 58%),
+      linear-gradient(180deg,
+        light-dark(rgba(244, 244, 245, .64), rgba(40, 44, 55, .36)),
+        light-dark(rgba(226, 226, 228, .72), rgba(14, 16, 22, .48)));
+    border-color: light-dark(rgba(255, 255, 255, .86), rgba(255, 255, 255, .11));
+    box-shadow:
+      0 20px 54px -20px light-dark(rgba(31, 38, 52, .3), rgba(0, 0, 0, .68)),
+      0 7px 18px -8px light-dark(rgba(31, 38, 52, .15), rgba(0, 0, 0, .28)),
+      inset 0 1px 0 light-dark(rgba(255, 255, 255, .94), rgba(255, 255, 255, .2)),
+      inset 0 -1px 0 light-dark(rgba(255, 255, 255, .16), rgba(255, 255, 255, .05));
+    -webkit-backdrop-filter: blur(40px) saturate(135%) brightness(1.02) contrast(1.03);
+    backdrop-filter: blur(40px) saturate(135%) brightness(1.02) contrast(1.03);
+  }
+}
 option {
   position: relative; display: block; min-width: 0; min-height: 40px;
-  padding: 9px 36px 9px 12px; border-radius: 8px; cursor: pointer;
+  padding: 9px 36px 9px 12px; border-radius: 11px; cursor: pointer;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; overflow-wrap: normal;
 }
 option:checked { background: var(--dsw-specific-sidebar-nav-item-hover); }
-option:hover, option:focus { background: var(--dsw-alias-interactive-bg-hover); outline: none; }
+option:hover, option:focus { background: color-mix(in srgb, var(--dsw-alias-label-primary) 7%, transparent); outline: none; }
 option::checkmark { position: absolute; top: 50%; right: 12px; margin: 0; content: "✓"; transform: translateY(-50%); }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }

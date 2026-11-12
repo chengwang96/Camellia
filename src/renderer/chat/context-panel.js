@@ -18,10 +18,13 @@ window.createContextPanel = ({ context, getEngine, onOpen, setStatus, openConver
     compact: t('Context compacted'), handoff: t('Handoff'), 'child-settle': t('Child agent settled'),
     inject: t('Context injected'), switch: t('Binding changed'), 'child-create': t('Child created'),
     fork: t('Conversation forked'), retire: t('Summary retired'), restore: t('Summary restored'), rewrite: t('Summary rewritten'),
+    'review-start': t('Cross-engine review started'), 'review-settle': t('Cross-engine review settled'),
+    'review-stale': t('Cross-engine review stale'), 'review-gate': t('Review gate changed'),
   })[kind] || kind;
   const sourceLabel = source => ({
     compaction: t('Compaction'), handoff: t('Handoff'), child: t('Child agent'), block: t('Context block'),
     agent: t('Agent'), binding: t('Binding'), 'working-memory': t('Working memory'), 'global-memory': t('Global memory'),
+    review: t('Cross-engine review'),
   })[source] || source;
   const statusLabel = status => ({
     completed: t('Completed'), failed: t('Failed'), stopped: t('Stopped'), running: t('Running'),

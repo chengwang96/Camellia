@@ -29,7 +29,6 @@ window.CamelliaFilePreview = { create({ fileViewer, inputCard, mdRender, setStat
     $('fileViewerReveal').hidden = false;
     $('fileViewerExternal').hidden = false;
     $('fileViewerTitle').textContent = file.name;
-    $('fileViewerTitle').title = file.path;
     $('fileViewerType').textContent = previewLabel(file);
     $('fileViewerMeta').textContent = [formatFileSize(file.size), file.path].filter(Boolean).join('  ·  ');
     const body = $('fileViewerBody');

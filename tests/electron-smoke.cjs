@@ -590,10 +590,13 @@ async function main() {
     diag('PASS shared state: native Engine menu, home return, model per conversation, draft/attachments, workspace and reload');
     const zoomMenu = Menu.getApplicationMenu().items.find(item => item.label === 'View').submenu;
     const initialZoom = home.webContents.getZoomLevel();
-    home.webContents.sendInputEvent({ type: 'keyDown', keyCode: '+', modifiers: ['control', 'shift'] });
-    home.webContents.sendInputEvent({ type: 'keyUp', keyCode: '+', modifiers: ['control', 'shift'] });
+    // CommandOrControl binds to Command on macOS; the fixture must use the
+    // platform's primary modifier instead of always sending Control.
+    const primaryModifier = process.platform === 'darwin' ? 'meta' : 'control';
+    home.webContents.sendInputEvent({ type: 'keyDown', keyCode: '+', modifiers: [primaryModifier, 'shift'] });
+    home.webContents.sendInputEvent({ type: 'keyUp', keyCode: '+', modifiers: [primaryModifier, 'shift'] });
     await new Promise(resolve => setTimeout(resolve, 100));
-    assert.ok(Math.abs(home.webContents.getZoomLevel() - initialZoom - 0.5) < 0.00001, 'Ctrl + changes zoom once');
+    assert.ok(Math.abs(home.webContents.getZoomLevel() - initialZoom - 0.5) < 0.00001, 'Primary + changes zoom once');
     assert.equal(JSON.parse(fs.readFileSync(path.join(userData, 'desktop-config.json'))).zoomLevel, initialZoom + 0.5);
     assert.ok(Math.abs(engineSettings.webContents.getZoomLevel() - home.webContents.getZoomLevel()) < 0.00001);
     await home.webContents.executeJavaScript("window.dshDesktop.switchMode('home')"); await waitWindow("document.querySelector('#enterDsh')");

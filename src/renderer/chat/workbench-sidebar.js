@@ -73,6 +73,11 @@ function createClaudeSidebar({ $, context, contextBusy, canChangeContext, canRea
     plus: '<path d="M12 5v14M5 12h14"/>',
     more: '<circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/>',
     chevron: '<path d="m6 9 6 6 6-6"/>',
+    clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
+  };
+  const SESSION_ENGINE_NAMES = {
+    claude: 'Claude Code', codex: 'Codex CLI', dsh: 'DeepSeek Harness',
+    kimi: 'Kimi Code', antigravity: 'Antigravity', grok: 'Grok Build',
   };
   function sidebarIcon(name) {
     return '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + SIDEBAR_ICONS[name] + '</svg>';
@@ -83,6 +88,75 @@ function createClaudeSidebar({ $, context, contextBusy, canChangeContext, canRea
     if (min < 60) return min + ' min ago';
     if (min < 1440) return Math.floor(min / 60) + ' hr ago';
     return Math.floor(min / 1440) + ' days ago';
+  }
+  function sessionHint(s) {
+    const t = value => window.CamelliaI18n.t(value);
+    const session = s ? sessionHistory.find(entry => entry.id === s.id) || s : null;
+    const active = session ? session.id === context.sessionId : !context.sessionId;
+    const engine = session?.currentEngine || harnessId;
+    const workspaceId = session?.workspaceId || (active ? context.workspaceId : null);
+    const folder = session?.cwd || session?.workspacePath
+      || workspaces.find(workspace => workspace.id === workspaceId)?.path || '';
+    const activity = session?.activity;
+    const background = !activity && Boolean(session?.backgroundWork?.tasks?.length);
+    const uncertain = background && session.backgroundWork.tasks.some(task => task.status === 'unknown');
+    let status = '';
+    let tone = '';
+    if (activity === 'permission') { status = t('Needs approval'); tone = 'attention'; }
+    else if (activity === 'question') { status = t('Needs input'); tone = 'attention'; }
+    else if (activity) { status = t('Working'); tone = 'busy'; }
+    else if (uncertain) { status = t('Background status unknown'); tone = 'muted'; }
+    else if (background) { status = t('Background tasks'); tone = 'busy'; }
+    else if (session?.unread) { status = t('Unread reply'); tone = 'unread'; }
+    else if (active) { status = t('Current'); tone = 'current'; }
+    else if (session?.pinned) { status = t('Pinned'); tone = 'muted'; }
+
+    const card = document.createElement('div');
+    card.className = 'session-hint';
+    const head = document.createElement('div'), identity = document.createElement('div');
+    head.className = 'session-hint-head'; identity.className = 'session-hint-identity';
+    const mark = document.createElement('span'); mark.className = 'session-hint-engine-mark';
+    if (SESSION_ENGINE_NAMES[engine]) {
+      const image = document.createElement('img');
+      image.src = '../../../assets/brands/' + (engine === 'dsh' ? 'deepseek' : engine) + (engine === 'codex' ? '.png' : '.svg');
+      image.alt = '';
+      mark.append(image);
+    } else {
+      mark.textContent = (engine || '?').slice(0, 1).toUpperCase();
+    }
+    const engineName = document.createElement('span');
+    engineName.className = 'session-hint-engine';
+    engineName.textContent = SESSION_ENGINE_NAMES[engine] || engine || '';
+    identity.append(mark, engineName);
+    head.append(identity);
+    if (status) {
+      const state = document.createElement('span');
+      state.className = 'session-hint-state is-' + tone;
+      state.textContent = status;
+      head.append(state);
+    }
+    card.append(head);
+
+    const pathRow = document.createElement('div');
+    pathRow.className = 'session-hint-row is-path';
+    pathRow.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + SIDEBAR_ICONS.folder + '</svg>';
+    const path = document.createElement('span');
+    path.textContent = folder || t('No workspace');
+    pathRow.append(path);
+    card.append(pathRow);
+
+    const updated = Number(session?.mtimeMs) || (active ? Date.now() : 0);
+    if (updated) {
+      const timeRow = document.createElement('div');
+      timeRow.className = 'session-hint-row';
+      timeRow.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + SIDEBAR_ICONS.clock + '</svg>';
+      const when = document.createElement('span');
+      when.textContent = t('Updated {0}').replace('{0}',
+        new Date(updated).toLocaleString(window.CamelliaI18n.locale, { dateStyle: 'medium', timeStyle: 'short' }));
+      timeRow.append(when);
+      card.append(timeRow);
+    }
+    return card;
   }
   function updateWorkspaceLabel() {
     $('newSessionBtn').disabled = contextBusy();
@@ -174,7 +248,6 @@ function createClaudeSidebar({ $, context, contextBusy, canChangeContext, canRea
       row.tabIndex = 0;
       row.setAttribute('role', 'button');
       row.setAttribute('aria-expanded', String(!ws.collapsed));
-      row.title = ws.path;
       row.innerHTML = '<span class="ws-chev">' + sidebarIcon('chevron') + '</span>' + sidebarIcon('folder') + '<span class="session-item-text ws-name"></span><span class="ws-count"></span>';
       row.querySelector('.ws-name').textContent = ws.name;
       if (ws.missing) {
@@ -284,7 +357,10 @@ function createClaudeSidebar({ $, context, contextBusy, canChangeContext, canRea
     if (s) { item.dataset.history = '1'; item.dataset.sid = s.id; item.dataset.dropGroup = s.pinned ? 'pinned' : s.workspaceId || 'recent'; }
     else item.id = 'sessionCurrent';
     const title = s ? s.title : $('headerTitle').textContent;
-    item.title = title + (s && s.cwd ? '\n' + s.cwd : '');
+    const hintPath = s ? (s.cwd || s.workspacePath || '') : (workspaces.find(workspace => workspace.id === context.workspaceId)?.path || '');
+    if (hintPath) item.title = hintPath;
+    item.dataset.tooltipPlacement = 'right';
+    window.CamelliaTooltip?.bind?.(item, () => sessionHint(s));
     item.innerHTML = sidebarIcon('chat') + '<span class="session-item-text"><span></span></span><span class="session-unread" title="Unread agent reply" aria-label="Unread agent reply" data-i18n-attrs="title aria-label"></span><span class="session-item-time" data-i18n></span>';
     item.classList.toggle('unread', Boolean(s?.unread));
     item.querySelector('.session-item-text > span').textContent = title || "(Empty session)";

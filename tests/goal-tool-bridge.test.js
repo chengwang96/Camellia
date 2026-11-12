@@ -49,9 +49,24 @@ test('a long Unicode temporary path still supports authenticated Unix IPC and cl
 
 test('packaged stdio helper includes every local tool schema dependency', () => {
   const unpacked = require('../package.json').build.asarUnpack;
-  for (const file of ['goal-mcp-stdio.js', 'goal-tools.js', 'task-tools.js', 'conversation-tools.js', 'find-tools.js', 'context-tools.js', 'memory-tools.js'])
+  for (const file of ['goal-mcp-stdio.js', 'goal-tools.js', 'task-tools.js', 'conversation-tools.js', 'find-tools.js', 'context-tools.js', 'skill-tools.js', 'review-tools.js', 'memory-tools.js'])
     assert.ok(unpacked.includes('src/engines/' + file), file);
   assert.ok(unpacked.includes('src/shared/json-lines.js'));
+});
+
+test('reviewer bridges expose only the report tool while still disabling native web', async () => {
+  const bridge = await createGoalToolBridge({
+    node: process.execPath, call: async () => ({ ok: true }), webTools: true,
+    portableWebTools: false, baseTools: false,
+    extraTools: require('../src/engines/review-tools').tools,
+    extraInstructions: 'Reviewer only',
+  });
+  try {
+    assert.deepEqual(bridge.tools.map(tool => tool.name), ['camellia_review_report']);
+    assert.equal(bridge.webTools, true);
+    assert.doesNotMatch(bridge.instructions, /camellia_create_goal/);
+    assert.match(bridge.instructions, /Reviewer only/);
+  } finally { await bridge.close(); }
 });
 
 test('request provenance accepts natural language anywhere in the current message without classifying intent', () => {
@@ -135,7 +150,10 @@ test('broker rejects unauthenticated, malformed and unknown requests and closes 
 
 test('stdio MCP lists tools and forwards authenticated calls to the application', { timeout: 30000 }, async t => {
   const calls = [];
-  const bridge = await createGoalToolBridge({ node: process.execPath, call: (name, args) => { calls.push({ name, args }); return { ok: true, goal: { objective: 'Finish' } }; } });
+  const extraTools = require('../src/engines/review-tools').tools;
+  const bridge = await createGoalToolBridge({ node: process.execPath, extraTools,
+    extraInstructions: 'Review tools are available only to the active reviewer.',
+    call: (name, args) => { calls.push({ name, args }); return { ok: true, goal: { objective: 'Finish' } }; } });
   const proc = spawn(bridge.config.command, bridge.config.args, { env: { ...process.env, ...bridge.config.env }, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
   const pending = new Map(); let sequence = 0;
   const lines = readline.createInterface({ input: proc.stdout });
@@ -145,6 +163,7 @@ test('stdio MCP lists tools and forwards authenticated calls to the application'
   const initialized = await request('initialize', { protocolVersion: '2025-06-18' });
   assert.equal(initialized.result.serverInfo.name, 'camellia-goals');
   const listed = (await request('tools/list')).result.tools;
+  assert.equal(listed.some(tool => tool.name === 'camellia_review_report'), true);
   assert.deepEqual(listed.filter(tool => /^camellia_(create|get|update)_goal$/.test(tool.name)).map(tool => tool.name).sort(),
     ['camellia_create_goal', 'camellia_get_goal', 'camellia_update_goal']);
   const reply = await request('tools/call', { name: 'camellia_get_goal', arguments: { run_token: 'current' } });

@@ -7,7 +7,11 @@ const os = require('node:os');
 const { randomUUID, randomBytes } = require('node:crypto');
 const { tools, instructions, validateTool } = require('./goal-tools');
 
-async function createGoalToolBridge({ node, call, webTools = false }) {
+const LONG_TOOL_TIMEOUT_MS = 15 * 60 * 1000;
+const LONG_TOOLS = new Set(['camellia_update_goal', 'camellia_review_start', 'camellia_review_cancel']);
+
+async function createGoalToolBridge({ node, call, webTools = false, portableWebTools = webTools,
+  baseTools = true, extraTools = [], extraInstructions = '', extraKey = '' }) {
   const token = randomBytes(32).toString('hex');
   const name = 'camellia-goal-' + randomUUID();
   let directory;
@@ -39,7 +43,8 @@ async function createGoalToolBridge({ node, call, webTools = false }) {
         try {
           const request = JSON.parse(buffer.slice(0, buffer.indexOf('\n')));
           if (request.token !== token) throw new Error('Unauthorized goal tool request');
-          validateTool(request.name, request.arguments);
+          validateTool(request.name, request.arguments, extraTools);
+          if (LONG_TOOLS.has(request.name)) socket.setTimeout(LONG_TOOL_TIMEOUT_MS);
           if (request.name.startsWith('camellia_web_')) {
             if (!webTools) throw new Error('DeepSeek web tools are disabled in Model Settings');
             socket.setTimeout(65000);
@@ -64,9 +69,14 @@ async function createGoalToolBridge({ node, call, webTools = false }) {
   server.unref();
   const script = path.join(__dirname, 'goal-mcp-stdio.js').replace(/app\.asar([\\/])/, 'app.asar.unpacked$1');
   const config = { command: node, args: [script], env: { CAMELLIA_GOAL_ENDPOINT: endpoint, CAMELLIA_GOAL_TOKEN: token,
-    CAMELLIA_WEB_TOOLS: webTools ? 'deepseek' : '' } };
-  return { config, tools: [...tools, ...(webTools ? require('./web-tools').tools : [])],
-    instructions: instructions + (webTools ? '\n' + require('./web-tools').instructions : ''), webTools, close };
+    CAMELLIA_WEB_TOOLS: portableWebTools ? 'deepseek' : '', CAMELLIA_BASE_TOOLS: baseTools ? '1' : '0',
+    CAMELLIA_EXTRA_TOOLS: JSON.stringify(extraTools),
+    CAMELLIA_EXTRA_INSTRUCTIONS: extraInstructions } };
+  return { config, tools: [...(baseTools ? tools : []), ...extraTools,
+    ...(portableWebTools ? require('./web-tools').tools : [])],
+    instructions: [baseTools ? instructions : '', extraInstructions,
+      portableWebTools ? require('./web-tools').instructions : ''].filter(Boolean).join('\n'),
+    webTools, extraKey, close };
 }
 
 module.exports = { createGoalToolBridge };

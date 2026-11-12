@@ -281,13 +281,20 @@ test('the main process and preload expose the application update channels', () =
   assert.match(preload, /onAppUpdateState:/);
 });
 
-test('the General page renders update controls that stay inactive until a check succeeds', () => {
+test('the General page no longer renders application update controls', () => {
   const html = fs.readFileSync(path.join(__dirname, '../src/renderer/settings/api-settings.html'), 'utf8');
   const source = fs.readFileSync(path.join(__dirname, '../src/renderer/settings/api-settings.js'), 'utf8');
   for (const id of ['checkAppUpdate', 'installAppUpdate', 'appUpdateStatus', 'appUpdateProgress', 'appUpdateDetails', 'appUpdateNotes']) {
-    assert.match(html, new RegExp(`id="${id}"`), `missing control: ${id}`);
+    assert.doesNotMatch(html, new RegExp(`id="${id}"`), `removed control: ${id}`);
   }
-  assert.match(html, /id="installAppUpdate" class="primary" hidden/, 'installing must start hidden until an update is found');
-  assert.match(source, /api\.onAppUpdateState/, 'progress must follow main-process broadcasts');
-  assert.match(source, /appUpdate\.supported/, 'unsupported platforms must not offer to install');
+  assert.doesNotMatch(html, /Application updates/);
+  assert.doesNotMatch(source, /appUpdateCheck|appUpdateInstall|onAppUpdateState/);
+});
+
+test('the application menu checks and installs updates without the settings controls', () => {
+  const main = fs.readFileSync(path.join(__dirname, '../src/main/main.js'), 'utf8');
+  assert.match(main, /label: "Check for updates"/);
+  assert.match(main, /appUpdates\(\)\.check\(\)/);
+  assert.match(main, /dialog\.showMessageBox\(owner/);
+  assert.match(main, /appUpdates\(\)\.install\(progress, available\)/);
 });

@@ -142,7 +142,10 @@
       token.attrSet('target', '_blank');
       token.attrSet('rel', 'noopener noreferrer');
     }
-    if (!token.attrGet('title') || controls.test(token.attrGet('title'))) token.attrSet('title', target.path ? target.path + (target.line ? ':' + target.line : '') : target.href);
+    if (!mediaKind(target.path || target.href)
+      && (!token.attrGet('title') || controls.test(token.attrGet('title')))) {
+      token.attrSet('title', target.path ? target.path + (target.line ? ':' + target.line : '') : target.href);
+    }
     return renderer.renderToken(tokens, index, options);
   };
   parser.renderer.rules.link_close = (tokens, index, options, environment) => {
@@ -162,19 +165,19 @@
     if (target.path) {
       if (kind === 'video') {
         return '<video class="chat-inline-video" src="' + escape(target.href) + '" controls preload="metadata" playsinline'
-          + ' aria-label="' + escape(label) + '" title="' + escape(target.path) + '" data-chat-file="' + escape(target.path) + '"></video>';
+          + ' aria-label="' + escape(label) + '" data-chat-file="' + escape(target.path) + '"></video>';
       }
       return '<img class="chat-inline-image" src="' + escape(target.href) + '" alt="' + escape(label)
-        + '" title="' + escape(target.path) + '" data-chat-file="' + escape(target.path)
+        + '" data-chat-file="' + escape(target.path)
         + '" loading="lazy" decoding="async" referrerpolicy="no-referrer" tabindex="0" role="button">';
     }
     if (!/^https?:/i.test(target.href)) return escape('![' + token.content + '](' + token.attrGet('src') + ')');
     if (kind === 'video') {
       return '<video class="chat-inline-video" src="' + escape(target.href) + '" controls preload="metadata" playsinline'
-        + ' aria-label="' + escape(label) + '" title="' + escape(target.href) + '" referrerpolicy="no-referrer"></video>';
+        + ' aria-label="' + escape(label) + '" referrerpolicy="no-referrer"></video>';
     }
     return '<img class="chat-inline-image" src="' + escape(target.href) + '" alt="' + escape(label)
-      + '" title="' + escape(target.href) + '" loading="lazy" decoding="async" referrerpolicy="no-referrer">';
+      + '" loading="lazy" decoding="async" referrerpolicy="no-referrer">';
   };
 
   return { destination, renderInline: (source, cwd = '') => parser.renderInline(source, { cwd }), protectMath: math.protect, renderMath: math.html };

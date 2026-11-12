@@ -149,6 +149,7 @@ function createHarness(existingRoot, { respondToInterrupts = false, clearGoogleC
     removeTree(resolved);
     return routerStopped;
   }
-  return { root, userData, home, call, folder, configureApi, seedSession, finishTurn, processes, events, api, cleanup, dialogBehavior, app: electron.app };
+  return { root, userData, home, call, folder, configureApi, seedSession, finishTurn, processes, events, api, cleanup, dialogBehavior,
+    app: electron.app, menu: () => electron.Menu.current };
 }
 module.exports = { createHarness };

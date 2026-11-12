@@ -5,12 +5,14 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title data-i18n>Claude Code — Camellia</title>
 <link rel="stylesheet" href="../shared/ui-theme.css">
+<link rel="stylesheet" href="../shared/tooltip.css">
 <link rel="stylesheet" href="../shared/window-chrome.css">
 <link rel="stylesheet" href="../shared/network-notice.css">
 <link rel="stylesheet" href="../shared/engine-brand.css">
 <link rel="stylesheet" href="./workbench.css">
 <link rel="stylesheet" href="./git-panel.css">
 <link rel="stylesheet" href="./context-panel.css">
+<link rel="stylesheet" href="./review-panel.css">
 <link rel="stylesheet" href="./conversation-navigator.css">
 <link rel="stylesheet" href="./turn-details.css">
 <link rel="stylesheet" href="../shared/workbench-navigation.css">
@@ -64,6 +66,7 @@
       <span style="flex:1"></span>
       <div class="header-actions">
         <button class="header-pill header-icon" id="conversationActions" type="button" aria-label="Conversation actions" title="Conversation actions" aria-haspopup="menu" data-i18n-attrs="aria-label title"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="1.4"/><circle cx="12" cy="12" r="1.4"/><circle cx="19" cy="12" r="1.4"/></svg></button>
+        <button class="header-pill header-icon" id="reviewToggle" type="button" aria-label="Cross-engine review" title="Review this change with another engine" aria-haspopup="dialog" aria-controls="reviewDialog" data-i18n-attrs="aria-label title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3 19 6v5c0 4.4-2.8 7.5-7 9-4.2-1.5-7-4.6-7-9V6l7-3Z"/><path d="m9 12 2 2 4-4"/></svg></button>
         <button class="header-pill header-icon" id="contextToggle" type="button" aria-label="Context inspector" title="Context inspector" aria-controls="contextPanel" aria-expanded="false" data-i18n-attrs="aria-label title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 2 9 5-9 5-9-5 9-5Z"/><path d="m3 12 9 5 9-5"/><path d="m3 17 9 5 9-5"/></svg></button>
         <button class="header-pill header-icon" id="workPanelToggle" type="button" aria-label="Work panel" title="Work panel" aria-controls="workPanel" aria-expanded="false" data-i18n-attrs="aria-label title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.93a2 2 0 0 1-1.66-.9l-.82-1.2A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/><path d="M8 10v4M12 10v2M16 10v6"/></svg><span id="workPanelBadge" class="work-panel-badge" hidden></span></button>
       </div>
@@ -103,7 +106,7 @@
             <button class="btn-attach" id="attachBtn" type="button" title="Add attachments" aria-label="Add attachments" aria-haspopup="dialog" aria-expanded="false" data-i18n-attrs="title aria-label">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
             </button>
-            <span class="pill-select" title="Tool permissions. Task questions still need your answer." data-i18n-attrs="title">
+            <span class="pill-select">
               <svg class="pill-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
               <select id="selPermission" aria-label="Permission mode" data-i18n-attrs="aria-label">
                 <option value="ask" data-i18n>Ask before acting</option>
@@ -285,7 +288,40 @@
     <div class="perm-actions"><button type="button" id="tasksClose" class="btn-secondary" data-i18n>Close</button><button type="submit" id="taskSave" class="btn-primary" data-i18n>Create task</button></div>
   </form>
 </dialog>
+<dialog id="reviewDialog" class="review-dialog">
+  <form id="reviewForm" method="dialog">
+    <header class="review-dialog-header">
+      <div><span class="review-dialog-kicker" data-i18n>Cross-engine review</span><h2 data-i18n>Review this change</h2></div>
+      <button id="reviewClose" type="button" class="review-close" aria-label="Close" data-i18n-attrs="aria-label"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="m6 6 12 12M6 18 18 6"/></svg></button>
+    </header>
+    <p class="review-note" data-i18n>Review is read-only and may consume reviewer quota. The reviewer sees an isolated snapshot and cannot edit, commit or push.</p>
+    <div class="review-fields">
+      <label><span data-i18n>Reviewer engine</span><select id="reviewEngine"></select></label>
+      <label><span data-i18n>Reviewer model</span><select id="reviewModel"></select></label>
+      <label><span data-i18n>Review mode</span><select id="reviewMode"><option value="standard" data-i18n>Standard review</option><option value="adversarial" data-i18n>Adversarial review</option></select></label>
+    </div>
+    <p class="review-agent-hint" data-i18n>You can also ask the agent to have another model review this change. The first request asks for confirmation.</p>
+    <details id="reviewAdvanced" class="review-advanced">
+      <summary data-i18n>Advanced options</summary>
+      <div class="review-fields review-advanced-fields">
+        <label><span data-i18n>Compare against (optional)</span><input id="reviewBase" type="text" placeholder="main" autocomplete="off"></label>
+        <label><span data-i18n>Token budget</span><input id="reviewMaxTokens" type="number" min="1000" max="1000000" step="1000" value="50000"></label>
+        <label class="review-focus"><span data-i18n>Focus (optional)</span><textarea id="reviewFocus" rows="2" placeholder="retry policy, data loss, race conditions…" data-i18n-attrs="placeholder"></textarea></label>
+      </div>
+      <div class="review-policy">
+        <label><input id="reviewAgentConsent" type="checkbox"> <span data-i18n>Allow agents to request reviews in this conversation</span></label>
+        <label><input id="reviewGate" type="checkbox"> <span data-i18n>Require a passing review before Goal completion</span></label>
+        <label><input id="reviewTurnGate" type="checkbox"> <span data-i18n>Review each completed turn before the next message</span></label>
+        <label><input id="reviewSameEngine" type="checkbox"> <span data-i18n>Allow the current engine to review itself with an explicit warning</span></label>
+        <p class="review-policy-note" data-i18n>A review gate can block Goal completion, but never applies patches, commits or pushes.</p>
+      </div>
+    </details>
+    <div id="reviewStatus" class="review-status" role="status" aria-live="polite"></div>
+    <div class="review-actions"><button id="reviewOverrideGate" type="button" class="btn-secondary" hidden data-i18n>Override gate for this goal</button><button id="reviewCancel" type="button" class="btn-secondary" hidden data-i18n>Cancel review</button><button id="reviewStart" type="submit" class="btn-primary" data-i18n>Start review</button></div>
+  </form>
+</dialog>
 <script src="../../shared/i18n-messages.js"></script>
+<script src="../shared/tooltip.js"></script>
 <script src="../discussions/discussions-i18n.js"></script>
 <script src="../../shared/i18n.js"></script>
 <script src="../../shared/model-names.js"></script>
@@ -301,6 +337,7 @@
 <script src="../../shared/turn-artifacts.js"></script>
 <script src="../shared/workbench-navigation.js"></script>
 <script src="../shared/auto-hide-scrollbar.js"></script>
+<script src="../../shared/shortcuts.js"></script>
 <script src="./workbench-sidebar.js"></script>
 <script src="./workbench-goal-ui.js"></script>
 <script src="./scheduled-tasks-ui.js"></script>
@@ -329,6 +366,7 @@
 <script src="./work-panel.js"></script>
 <script src="./git-panel.js"></script>
 <script src="./context-panel.js"></script>
+<script src="./review-panel.js"></script>
 <script src="./conversation-navigator.js"></script>
 <script src="./chat.js"></script>
 <script src="../shared/window-chrome.js"></script>

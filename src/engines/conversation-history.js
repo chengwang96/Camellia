@@ -425,7 +425,7 @@ class ConversationHistory {
       const record = this.record(value, i);
       if (record.seq < before && (record.flags & FLAGS.sequence || before === Infinity)) {
         const row = this.row(value, record);
-        if (fs.existsSync(row.file) && (!contextOnly || contextRow(row))) return row;
+        if (typeof row.file === 'string' && row.file && fs.existsSync(row.file) && (!contextOnly || contextRow(row))) return row;
       }
       i = i ? this.record(value, i - 1).summaryIndex : -1;
     }

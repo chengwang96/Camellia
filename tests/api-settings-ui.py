@@ -65,7 +65,7 @@ try:
         page.expose_function('testRpc',rpc);page.add_init_script(bridge)
         page.goto((repo/'src/renderer/settings/api-settings.html').as_uri());page.wait_for_load_state('networkidle')
         nav_icons=page.locator('.settings-nav nav button > svg.nav-icon')
-        expect(nav_icons).to_have_count(11)
+        expect(nav_icons).to_have_count(12)
         for icon in nav_icons.all():
             expect(icon).to_have_attribute('aria-hidden','true')
             expect(icon).to_have_attribute('focusable','false')
@@ -108,6 +108,14 @@ try:
         expect(page.locator('#providers .provider-brand')).to_have_count(5)
         expect(page.locator('#providers .provider-mark').last).to_have_text('API')
         page.locator('[data-view=general]').click()
+        expect(page.locator('#portableSkills')).to_be_checked()
+        expect(page.locator('#skillList')).to_have_count(0)
+        page.locator('#portableSkills').uncheck()
+        page.wait_for_function("async () => (await window.dshDesktop.workbenchSettings()).portableSkills === false")
+        assert rpc('workbenchSettings')['result']['portableSkills'] is False
+        page.locator('#portableSkills').check()
+        page.wait_for_function("async () => (await window.dshDesktop.workbenchSettings()).portableSkills === true")
+        assert rpc('workbenchSettings')['result']['portableSkills'] is True
         page.locator('[data-view=providers]').click()
         expect(page.locator('.router-options summary')).to_have_count(0)
         expect(page.locator('#enabled')).to_be_visible()
@@ -632,6 +640,33 @@ try:
         page.locator('#showConversationNavigator').check()
         expect(page.locator('#status')).to_contain_text('Preferences saved')
         assert rpc('workbenchSettings')['result']['showConversationNavigator'] is True
+        assert page.locator('#showHoverHints').is_checked() is True
+        page.locator('#showHoverHints').uncheck()
+        expect(page.locator('#status')).to_contain_text('Preferences saved')
+        assert rpc('workbenchSettings')['result']['showHoverHints'] is False
+        page.locator('#showHoverHints').check()
+        expect(page.locator('#status')).to_contain_text('Preferences saved')
+        assert rpc('workbenchSettings')['result']['showHoverHints'] is True
+        # Keyboard shortcuts record through the real IPC and can be cleared to an
+        # empty binding. The action stops working and the menu loses its accelerator.
+        page.locator('[data-view=shortcuts]').click()
+        expect(page.locator('#pageTitle')).to_have_text('Keyboard shortcuts')
+        goal_shortcut = page.locator('[data-shortcut-record=goal]')
+        expect(goal_shortcut).to_contain_text('Ctrl+G')
+        goal_shortcut.click()
+        modifier = 'Meta' if page.evaluate("navigator.platform.startsWith('Mac')") else 'Control'
+        page.keyboard.press(modifier + '+Alt+G')
+        page.wait_for_function("async () => (await window.dshDesktop.workbenchSettings()).shortcuts.goal === 'CommandOrControl+Alt+G'")
+        expect(goal_shortcut).to_contain_text('Ctrl+Alt+G')
+        page.locator('[data-shortcut-clear=goal]').click()
+        page.wait_for_function("async () => (await window.dshDesktop.workbenchSettings()).shortcuts.goal === ''")
+        expect(goal_shortcut).to_contain_text('Not set')
+        expect(page.locator('[data-shortcut-clear=goal]')).to_be_hidden()
+        page.reload(wait_until='networkidle')
+        page.locator('[data-view=shortcuts]').click()
+        expect(page.locator('[data-shortcut-record=goal]')).to_contain_text('Not set')
+        assert rpc('workbenchSettings')['result']['shortcuts']['goal'] == ''
+        page.locator('[data-view=general]').click()
         # Antigravity can opt out of the background quota probe on its own, so the
         # official CLI stops opening its Google sign-in page while every other
         # provider keeps refreshing.

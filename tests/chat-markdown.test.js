@@ -133,6 +133,7 @@ test('chat renders local Markdown images with resolved paths and preview control
     assert.match(html, /src="file:\/\/\/D:\/Code\/DSH\/artifacts\/preview.png"/);
     assert.match(html, /data-chat-file="D:\/Code\/DSH\/artifacts\/preview.png"/);
     assert.match(html, /alt="预览"/);
+    assert.doesNotMatch(html, /\stitle=/);
     assert.match(html, /loading="lazy"/);
     assert.match(html, /tabindex="0" role="button"/);
   }
@@ -149,6 +150,7 @@ test('chat renders only explicit Markdown videos as inline players', () => {
     assert.match(html, /controls preload="metadata" playsinline/);
     assert.match(html, /aria-label="演示"/);
     assert.match(html, /data-chat-file="D:\/Code\/DSH\/artifacts\/demo\.(?:mp4|webm|mov)"/);
+    assert.doesNotMatch(html, /\stitle=/);
   }
   assert.match(chatRenderer()('![Remote](https://example.com/demo.mp4?download=1)'),
     /<video class="chat-inline-video" src="https:\/\/example\.com\/demo\.mp4\?download=1"/);
@@ -396,7 +398,10 @@ test('only explicit image syntax promotes a file reference into the conversation
 test('remote images render with a no-referrer hint and non-images stay literal', () => {
   const render = chatRenderer();
   assert.match(render('![chart](https://example.com/chart.png)'),
-    /^<p class="md-paragraph"><img class="chat-inline-image" src="https:\/\/example\.com\/chart\.png" alt="chart" title="https:\/\/example\.com\/chart\.png" loading="lazy" decoding="async" referrerpolicy="no-referrer"><\/p>$/);
+    /^<p class="md-paragraph"><img class="chat-inline-image" src="https:\/\/example\.com\/chart\.png" alt="chart" loading="lazy" decoding="async" referrerpolicy="no-referrer"><\/p>$/);
+  const linkedMedia = render('[chart](https://example.com/chart.png)');
+  assert.match(linkedMedia, /<a /);
+  assert.doesNotMatch(linkedMedia, /\stitle=/);
   for (const value of ['![x](https://example.com/file.txt)', '![x](//example.com/a.png)', '![x](data:image/png;base64,AAAA)']) {
     assert.doesNotMatch(render(value), /<img\b/, value);
   }

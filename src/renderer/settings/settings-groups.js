@@ -99,10 +99,22 @@
       ['background-routing', ['#closeToTray']],
       ['conversation-handoff', ['#conversationMode', '#conversationHandoffHelp', '.setting-note', '#conversationWarn', '#conversationOriginSetting']],
       ['python', ['#pythonCard']],
-      ['application-updates', ['#version', '#checkAppUpdate', '#appUpdateDetails']],
       // Older installed releases keep data controls on General/Archived.
       ['local-data', ['#dataPath']],
       ['data-transfer', ['#dataMigrationSection']],
+    ]);
+    // The installed version closes General regardless of which preference
+    // groups are present, so its divider and row always remain at the bottom.
+    const general = get('generalPage');
+    const version = get('version')?.closest('.setting-row');
+    if (general && version) {
+      group(general, 'version', [version]);
+      const versionGroup = [...general.children].find(node => node.dataset.settingsGroup === 'version');
+      if (versionGroup && general.lastElementChild !== versionGroup) general.append(versionGroup);
+    }
+    arrange('shortcutsPage', [
+      ['shortcuts', ['#shortcutSettingsRow', '#shortcutHomeRow', '#shortcutGoalRow', '#shortcutReviewRow',
+        '#shortcutZoomInRow', '#shortcutZoomOutRow', '#shortcutZoomResetRow']],
     ]);
     arrange('dataPage', [
       ['local-data', ['#dataDirectorySection']], ['data-transfer', ['#dataMigrationSection']], ['storage', ['#storageSection']],

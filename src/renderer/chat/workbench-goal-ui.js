@@ -5,6 +5,7 @@
 function createClaudeGoalUI({ $, context, canChangeContext, openHistorySession, acceptEvents, setStatus, onChange, openActionMenu, closePops }) {
   let goalState = null, draft = false, criterion = '', pending = false, ticker = null, savedPlaceholder = null;
   const input = $('input');
+  const shortcutBindings = window.CamelliaShortcuts?.watchBindings(window.dshDesktop);
   const active = () => Boolean(goalState?.phase === 'active' && goalState.armed);
 
   const TARGET_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1"/></svg>';
@@ -60,7 +61,7 @@ function createClaudeGoalUI({ $, context, canChangeContext, openHistorySession, 
     } else if (draft) {
       row.appendChild(chip('Goal', { className: 'draft', title: 'Goal mode', onRemove: () => setDraft(false), ariaLabel: 'Goal mode' }));
       if (criterion) {
-        row.appendChild(chip('Criterion: ' + criterion, { className: 'draft', title: criterion, onRemove: () => { criterion = ''; render(); }, ariaLabel: 'Completion criterion' }));
+        row.appendChild(chip('Criterion: ' + criterion, { className: 'draft', onRemove: () => { criterion = ''; render(); }, ariaLabel: 'Completion criterion' }));
       } else {
         const add = document.createElement('button');
         add.className = 'goal-chip draft';
@@ -187,11 +188,10 @@ function createClaudeGoalUI({ $, context, canChangeContext, openHistorySession, 
   });
 
   document.addEventListener('keydown', (event) => {
-    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'g') {
-      event.preventDefault();
-      if (goalState) openGoalMenu($('goalToggle'));
-      else setDraft(!draft);
-    }
+    if (!shortcutBindings?.matches(event, 'goal')) return;
+    event.preventDefault();
+    if (goalState) openGoalMenu($('goalToggle'));
+    else setDraft(!draft);
   });
   window.addEventListener('beforeunload', () => clearInterval(ticker));
   return { refresh: refreshGoal, isActive: active, waitingId: () => active() && goalState?.waiting ? goalState.id : null, isDraft: () => draft, startFromComposer,

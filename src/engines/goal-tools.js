@@ -19,8 +19,8 @@ const tools = [
     }, ['reason']) },
 ];
 
-function validateTool(name, args) {
-  const tool = [...tools, ...require('./task-tools').tools, ...require('./conversation-tools').tools, ...require('./find-tools').tools, ...require('./context-tools').tools, ...require('./memory-tools').tools, ...require('./web-tools').tools].find(entry => entry.name === name);
+function validateTool(name, args, extraTools = []) {
+  const tool = [...tools, ...require('./task-tools').tools, ...require('./conversation-tools').tools, ...require('./find-tools').tools, ...require('./context-tools').tools, ...require('./memory-tools').tools, ...extraTools, ...require('./web-tools').tools].find(entry => entry.name === name);
   if (!tool) throw new Error('Unknown Camellia goal tool');
   if (!args || typeof args !== 'object' || Array.isArray(args)) throw new Error('Tool arguments must be an object');
   for (const key of Object.keys(args)) if (!Object.hasOwn(tool.inputSchema.properties, key)) throw new Error('Unexpected argument: ' + key);

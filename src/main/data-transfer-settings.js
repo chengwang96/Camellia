@@ -28,7 +28,8 @@ const SETTINGS_FILES = new Map([
 ]);
 const ENGINES = ['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'grok'];
 const PREFERENCE_KEYS = ['language', 'theme', 'closeToTray', 'autoRefreshBalances', 'accountRefreshMinutes',
-  'chatContentWidth', 'advancedAnimations', 'showConversationNavigator', 'network', 'downloadProxy', 'conversations', 'memoryDirectory', 'contextMemory', 'computerName'];
+  'chatContentWidth', 'advancedAnimations', 'showConversationNavigator', 'network', 'downloadProxy', 'conversations',
+  'memoryDirectory', 'contextMemory', 'computerName', 'reviewDefaults', 'shortcuts'];
 const ENGINE_MAP_KEYS = ['quickSwitchModels', 'quickSwitchConnections', 'quickSwitchLevels', 'hiddenSubscriptionModels',
   'subscriptionAutoRefresh', 'subscriptionAutoSwitch', 'subscriptionWeeklyProbe'];
 const ENGINE_KEYS = ['permissionMode', 'thinkingBudget', 'contextWindow', 'cwd', 'proxyUrl'];

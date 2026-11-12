@@ -28,12 +28,18 @@ with sync_playwright() as p:
         img.scroll_into_view_if_needed()
         page.wait_for_function("document.querySelector('#chat img.chat-inline-image')?.naturalWidth > 0")
         expect(page.locator('#chat img.chat-inline-image')).to_have_count(1)
+        assert img.get_attribute('title') is None
+        img.hover()
+        page.wait_for_timeout(450)
+        expect(page.locator('.camellia-tooltip:popover-open')).to_have_count(0)
         expect(page.get_by_role('link',name='Artifact only',exact=True)).to_be_visible()
         expect(page.locator('#chat code',has_text='ReadMediaFile assets/icon-256.png')).to_be_visible()
         expect(page.locator('#chat .chat-image-fallback')).to_have_text('Missing')
         img.focus();page.keyboard.press('Enter')
         expect(page.locator('#fileViewer')).to_be_visible()
         expect(page.locator('#fileViewerTitle')).to_have_text('icon-256.png')
+        assert page.locator('#fileViewerTitle').get_attribute('title') is None
+        assert page.locator('.file-preview-image img').get_attribute('title') is None
         page.locator('#fileViewerClose').click()
         partial='![Stream](assets/icon-256.png'
         page.evaluate('text=>{onBlockStart({type:"text",phase:"final_answer",text},0);flushBlockRenders();}',partial)

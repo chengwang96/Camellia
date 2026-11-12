@@ -1,11 +1,11 @@
 'use strict';
-window.createWorkPanel = ({ context, setStatus, openFilePreview, shouldFollow, gitPanel }) => {
+window.createWorkPanel = ({ context, setStatus, openFilePreview, shouldFollow, gitPanel, getEngine }) => {
   const panel = document.getElementById('workPanel'), body = document.getElementById('workPanelBody');
   const footer = document.getElementById('workPanelFooter'), count = document.getElementById('workPanelCount');
   const toggle = document.getElementById('workPanelToggle'), badge = document.getElementById('workPanelBadge');
   const main = panel.closest('.main');
   const t = value => window.CamelliaI18n.t(value);
-  let tasks = [], selected = null, epoch = 0, fileTicket = 0, busy = false;
+  let tasks = [], selected = null, epoch = 0, fileTicket = 0, busy = false, reviews = [];
   const files = window.CamelliaArtifacts.artifactStore();
   const drafts = new Map(), expanded = new Map(), detailExpanded = new Map(), scrollPositions = new Map();
   let renderedView = null, footerKey = null;
@@ -47,6 +47,7 @@ window.createWorkPanel = ({ context, setStatus, openFilePreview, shouldFollow, g
       if (window.CamelliaPanelMotion) window.CamelliaPanelMotion.open(panel); else panel.hidden = false;
       window.dispatchEvent(new CustomEvent('camellia:panel-open', { detail: { name: 'work' } }));
       void gitPanel?.refresh();
+      void loadReviews();
     } else {
       main?.classList.remove('has-work-panel');
       if (window.CamelliaPanelMotion) window.CamelliaPanelMotion.close(panel); else panel.hidden = true;
@@ -65,6 +66,51 @@ window.createWorkPanel = ({ context, setStatus, openFilePreview, shouldFollow, g
   function section(label, value) {
     if (!value) return;
     const node = el('section', 'work-detail-section'); node.append(el('h3', '', t(label)), el('p', '', value)); body.append(node); return node;
+  }
+  async function loadReviews() {
+    if (!context.sessionId || !getEngine) return;
+    try {
+      const result = await window.dshDesktop.conversationCommand({
+        engine: getEngine(), action: 'review-list', payload: { sessionId: context.sessionId },
+      });
+      if (!result?.ok) return;
+      reviews = result.reviews || [];
+      render();
+    } catch { /* Review history must not break the work panel. */ }
+  }
+  function reviewSection() {
+    if (!reviews.length) return null;
+    const group = el('details', 'work-group');
+    group.open = true;
+    const summary = el('summary', '', t('Cross-engine reviews'));
+    summary.append(el('span', 'work-section-count', String(reviews.length)));
+    group.append(summary);
+    for (const review of reviews) {
+      const row = el('div', 'work-review-row');
+      const head = el('div', 'work-review-head');
+      head.append(el('strong', '', t(review.mode === 'adversarial' ? 'Adversarial review' : 'Standard review')),
+        el('span', 'work-state work-' + (review.status || 'unavailable'),
+          t(review.status === 'completed' ? 'Completed'
+            : review.status === 'running' ? 'Running'
+              : review.status === 'cancelled' ? 'Cancelled'
+                : review.status === 'stale' ? 'Review is stale'
+                  : review.status === 'interrupted' ? 'Review was interrupted'
+                    : review.status === 'failed' ? 'Failed' : review.status || '')));
+      row.append(head, el('span', 'work-review-meta', review.reviewerEngine || ''));
+      if (review.report?.summary) row.append(el('p', 'work-review-summary', review.report.summary));
+      if (review.error) row.append(el('p', 'work-review-error', review.error));
+      for (const finding of (review.report?.findings || []).slice(0, 6)) {
+        row.append(el('p', 'work-review-finding', '[' + (finding.severity || 'info') + '] '
+          + (finding.file || '') + (finding.line ? ':' + finding.line : '') + ' · ' + (finding.evidence || '')));
+      }
+      if ((review.report?.findings?.length || 0) > 6) row.append(el('small', 'work-review-findings',
+        String(review.report.findings.length) + ' ' + t('findings')));
+      const open = button('Open review', () => window.dispatchEvent(new CustomEvent('camellia:open-review')));
+      open.dataset.workCommand = 'true';
+      row.append(open);
+      group.append(row);
+    }
+    return group;
   }
   async function command(task, operation, extra = {}) {
     if (busy) return false;
@@ -240,7 +286,7 @@ window.createWorkPanel = ({ context, setStatus, openFilePreview, shouldFollow, g
       for (const file of files.values()) {
         const row = button('', () => void openFilePreview(file.path), 'work-artifact'), icon = el('span', 'work-artifact-icon');
         icon.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 3h7l4 4v14H7z"/><path d="M14 3v5h5"/></svg>';
-        row.title = file.path; row.dataset.workFocus = 'file:' + fileKey(file);
+        row.dataset.path = file.path; row.dataset.workFocus = 'file:' + fileKey(file);
         row.append(icon, el('strong', '', file.name), el('small', '', file.origin));
         artifacts.append(row);
       }
@@ -248,6 +294,8 @@ window.createWorkPanel = ({ context, setStatus, openFilePreview, shouldFollow, g
       if (summary) body.append(summary);
       if (changes) body.append(changes);
       body.append(agents, artifacts);
+      const reviewGroup = reviewSection();
+      if (reviewGroup) body.append(reviewGroup);
     }
     if (focused) body.querySelector(`[data-work-focus="${CSS.escape(focused)}"]`)?.focus({ preventScroll: true });
     body.scrollTop = scrollPositions.get(renderedView) || 0;
@@ -265,7 +313,8 @@ window.createWorkPanel = ({ context, setStatus, openFilePreview, shouldFollow, g
     render();
   }
   window.addEventListener('camellia:language', () => { render(); renderCards(); });
-  return { reset() { epoch++; tasks = []; files.clear(); drafts.clear(); expanded.clear(); detailExpanded.clear(); scrollPositions.clear(); renderedView = null; selected = null; gitPanel?.reset(); render(); },
+  return { reset() { epoch++; tasks = []; reviews = []; files.clear(); drafts.clear(); expanded.clear(); detailExpanded.clear(); scrollPositions.clear(); renderedView = null; selected = null; gitPanel?.reset(); render(); },
     update(value) { tasks = orderedTasks(value || []); render(); renderCards(); void childFiles(); },
-    artifacts(value) { for (const file of value || []) addFile(file, t('Main conversation')); render(); }, refreshCards: renderCards, setOpen, render };
+    artifacts(value) { for (const file of value || []) addFile(file, t('Main conversation')); render(); }, refreshCards: renderCards,
+    refreshReviews: loadReviews, setOpen, render };
 };

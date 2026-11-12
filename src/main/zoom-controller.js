@@ -1,6 +1,7 @@
 'use strict';
 
 const { readJson } = require('../shared/json-store');
+const keyboardShortcuts = require('../shared/shortcuts.js');
 const MIN_LEVEL = Math.log(0.5) / Math.log(1.2);
 const MAX_LEVEL = Math.log(3) / Math.log(1.2);
 const valid = value => typeof value === 'number' && Number.isFinite(value);
@@ -21,6 +22,10 @@ function readLegacyZoom(file, urls) {
 function createZoomController({ loadConfig, saveConfig, legacyLevel, log = () => {} }) {
   const saved = loadConfig().zoomLevel;
   let level = valid(saved) ? clamp(saved) : 0;
+  // Parse shortcut preferences once, not on every keydown. Settings refreshes
+  // the cache after saving; imported preferences take effect on restart.
+  let shortcuts = keyboardShortcuts.resolve(loadConfig().shortcuts);
+  const refreshShortcuts = () => { shortcuts = keyboardShortcuts.resolve(loadConfig().shortcuts); };
   if (!valid(saved) && valid(legacyLevel)) {
     level = clamp(legacyLevel);
     saveConfig({ zoomLevel: level });
@@ -55,18 +60,29 @@ function createZoomController({ loadConfig, saveConfig, legacyLevel, log = () =>
     for (const event of ['did-navigate', 'did-navigate-in-page', 'dom-ready', 'did-finish-load']) wc.on(event, () => apply(wc));
     wc.once('destroyed', () => contents.delete(wc));
     wc.on('before-input-event', (event, input) => {
-      if (input.type !== 'keyDown' || !(input.control || input.meta) || input.alt) return;
+      if (input.type !== 'keyDown') return;
+      // Zoom follows the same editable bindings as the menu, so clearing one
+      // in Settings also stops this key from changing the interface size.
+      const keyEvent = { key: input.key, code: input.code, ctrlKey: input.control, metaKey: input.meta,
+        altKey: input.alt, shiftKey: input.shift };
+      // The default bindings historically also accept the shifted character
+      // (Ctrl + + / Ctrl + _) and the numpad. A custom or cleared binding is
+      // matched exactly, so those variants stop working with it.
+      const primary = process.platform === 'darwin' ? input.meta : input.control;
+      const legacyModifiers = primary && !input.alt;
       let action;
-      if (['+', '='].includes(input.key) || input.code === 'NumpadAdd') action = () => adjust(1);
-      else if (['-', '_'].includes(input.key) || input.code === 'NumpadSubtract') action = () => adjust(-1);
-      else if (input.key === '0' || input.code === 'Numpad0') action = () => set(0);
+      if (keyboardShortcuts.matches(keyEvent, shortcuts.zoomIn, process.platform)
+        || (legacyModifiers && shortcuts.zoomIn === 'CommandOrControl+=' && (input.key === '+' || input.code === 'NumpadAdd'))) action = () => adjust(1);
+      else if (keyboardShortcuts.matches(keyEvent, shortcuts.zoomOut, process.platform)
+        || (legacyModifiers && shortcuts.zoomOut === 'CommandOrControl+-' && (input.key === '_' || input.code === 'NumpadSubtract'))) action = () => adjust(-1);
+      else if (keyboardShortcuts.matches(keyEvent, shortcuts.zoomReset, process.platform)) action = () => set(0);
       if (!action) return;
       // Prevent Chromium/menu handling from applying the shortcut a second time.
       event.preventDefault();
       try { action(); } catch (error) { log('Could not save zoom: ' + error.message); }
     });
   }
-  return { attach, set, adjust, get level() { return level; }, get factor() { return 1.2 ** level; },
+  return { attach, set, adjust, refreshShortcuts, get level() { return level; }, get factor() { return 1.2 ** level; },
     factorAt(offset) { return 1.2 ** clamp(level + offset); } };
 }
 

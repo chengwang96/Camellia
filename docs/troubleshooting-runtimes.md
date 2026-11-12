@@ -46,12 +46,12 @@ Add the runtimes directory to your security software's exclusion list so it stop
 1. Open **Settings → Privacy & security → Windows Security → Virus & threat protection**.
 2. Under **Virus & threat protection settings**, click **Manage settings**.
 3. Scroll to **Exclusions** and click **Add or remove exclusions**.
-4. Choose **Add an exclusion → Folder** and select the `runtimes` folder of your Camellia checkout (e.g. `D:\Code\DSH\runtimes`).
+4. Choose **Add an exclusion → Folder** and select the `runtimes` folder of your Camellia checkout (e.g. `D:\Code\Camellia\runtimes`).
 
 Or, from an **administrator** PowerShell:
 
 ```powershell
-Add-MpPreference -ExclusionPath "D:\Code\DSH\runtimes"
+Add-MpPreference -ExclusionPath "D:\Code\Camellia\runtimes"
 ```
 
 Adjust the path to your checkout.

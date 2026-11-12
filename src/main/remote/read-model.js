@@ -202,7 +202,7 @@ class RemoteReadModel {
       const source = info ? this.manager.remoteHistoryRows(conversation, before) : rows.slice(-200).reverse();
       for (const row of source) {
         if (messages.length === 200) { older = true; break; }
-        const selected = message(row);
+        const selected = message(this.manager.withRequestUsage?.(conversation, row) || row);
         size += selected.text.length + JSON.stringify(selected.process || []).length;
         if (messages.length && size > 1024 * 1024) { older = true; break; }
         messages.unshift(selected);

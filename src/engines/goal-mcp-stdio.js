@@ -3,15 +3,23 @@
 const net = require('node:net');
 const { jsonLines } = require('../shared/json-lines');
 const base = require('./goal-tools');
+const includeBaseTools = process.env.CAMELLIA_BASE_TOOLS !== '0';
 const web = process.env.CAMELLIA_WEB_TOOLS === 'deepseek' ? require('./web-tools') : { tools: [], instructions: '' };
-const tools = [...base.tools, ...web.tools], instructions = [base.instructions, web.instructions].filter(Boolean).join('\n');
+let extraTools = [];
+try { extraTools = JSON.parse(process.env.CAMELLIA_EXTRA_TOOLS || '[]'); } catch { extraTools = []; }
+const extraInstructions = process.env.CAMELLIA_EXTRA_INSTRUCTIONS || '';
+const tools = [...(includeBaseTools ? base.tools : []), ...extraTools, ...web.tools],
+  instructions = [includeBaseTools ? base.instructions : '', extraInstructions, web.instructions].filter(Boolean).join('\n');
+const LONG_TOOL_TIMEOUT_MS = 15 * 60 * 1000;
+const LONG_TOOLS = new Set(['camellia_update_goal', 'camellia_review_start', 'camellia_review_cancel']);
 
 function callTool(name, args) {
   return new Promise((resolve, reject) => {
     const socket = net.createConnection(process.env.CAMELLIA_GOAL_ENDPOINT);
     let buffer = '';
     socket.setEncoding('utf8');
-    socket.setTimeout(name.startsWith('camellia_web_') ? 65000 : 10000, () => socket.destroy(new Error('Camellia tool timed out')));
+    socket.setTimeout(name.startsWith('camellia_web_') ? 65000
+      : LONG_TOOLS.has(name) ? LONG_TOOL_TIMEOUT_MS : 10000, () => socket.destroy(new Error('Camellia tool timed out')));
     socket.on('error', reject);
     socket.on('end', () => {
       try { resolve(JSON.parse(buffer)); } catch { reject(new Error('Invalid Camellia goal response')); }
