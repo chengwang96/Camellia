@@ -49,7 +49,7 @@ test('a long Unicode temporary path still supports authenticated Unix IPC and cl
 
 test('packaged stdio helper includes every local tool schema dependency', () => {
   const unpacked = require('../package.json').build.asarUnpack;
-  for (const file of ['goal-mcp-stdio.js', 'goal-tools.js', 'task-tools.js', 'conversation-tools.js'])
+  for (const file of ['goal-mcp-stdio.js', 'goal-tools.js', 'task-tools.js', 'conversation-tools.js', 'find-tools.js', 'context-tools.js', 'memory-tools.js'])
     assert.ok(unpacked.includes('src/engines/' + file), file);
   assert.ok(unpacked.includes('src/shared/json-lines.js'));
 });
@@ -181,6 +181,15 @@ test('stdio MCP lists tools and forwards authenticated calls to the application'
   // File search is exposed to the model so a described-but-unnamed file can be
   // located by content, and its arguments are validated like every other tool.
   assert.ok(listed.some(tool => tool.name === 'camellia_find_files'));
+  for (const name of ['camellia_context_status', 'camellia_context_search', 'camellia_context_expand',
+    'camellia_memory_status', 'camellia_memory_search', 'camellia_memory_remember'])
+    assert.ok(listed.some(tool => tool.name === name), name);
+  const contextStatus = await request('tools/call', { name: 'camellia_context_status', arguments: { run_token: 'current' } });
+  assert.equal(contextStatus.result.isError, false);
+  assert.equal(calls.at(-1).name, 'camellia_context_status');
+  const memoryStatus = await request('tools/call', { name: 'camellia_memory_status', arguments: { run_token: 'current' } });
+  assert.equal(memoryStatus.result.isError, false);
+  assert.equal(calls.at(-1).name, 'camellia_memory_status');
   const search = await request('tools/call', { name: 'camellia_find_files', arguments: { run_token: 'current', query: 'quarterly revenue', inside: true } });
   assert.equal(search.result.isError, false);
   assert.equal(calls.at(-1).name, 'camellia_find_files');
@@ -200,6 +209,14 @@ test('stdio MCP lists tools and forwards authenticated calls to the application'
   const child = await request('tools/call', { name: 'camellia_conversation_create', arguments: { run_token: 'current', request_id: 'child', title: 'Research' } });
   assert.equal(child.result.isError, false);
   assert.equal(calls.at(-1).name, 'camellia_conversation_create');
+  const renameArgs = { run_token: 'current', title: 'Release triage' };
+  const renamed = await request('tools/call', { name: 'camellia_conversation_rename', arguments: renameArgs });
+  assert.equal(renamed.result.isError, false);
+  assert.deepEqual(calls.at(-1), { name: 'camellia_conversation_rename', args: renameArgs });
+  const blankRename = await request('tools/call', { name: 'camellia_conversation_rename', arguments: { run_token: 'current', title: '   ' } });
+  assert.equal(blankRename.result.isError, true);
+  const targetedRename = await request('tools/call', { name: 'camellia_conversation_rename', arguments: { ...renameArgs, conversation_id: 'child' } });
+  assert.equal(targetedRename.result.isError, true);
   const unsafe = await request('tools/call', { name: 'camellia_conversation_configure', arguments: { run_token: 'current', conversation_id: 'child', permissionMode: 'bypassPermissions' } });
   assert.equal(unsafe.result.isError, true);
   const scheduled = await request('tools/call', { name: 'camellia_task_create', arguments: { run_token: 'current', instruction: 'Check logs', user_request: 'Create a scheduled task', intervalMinutes: 10, maxRepairs: 0 } });

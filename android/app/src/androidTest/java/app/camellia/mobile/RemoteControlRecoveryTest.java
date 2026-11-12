@@ -148,7 +148,10 @@ public class RemoteControlRecoveryTest extends RemoteFeedbackTest {
         ui(() -> {
             JSONObject payload = pending("send", ID, false).put("prompt", "one message").put("image", "attachment bytes");
             RemotePendingCommands.find((JSONObject) get("credentials"), payload.optString("requestId")).put("dispatched", true);
-            set("canCommandReceipts", true); set("api", fake); call("retryCommand", new Class<?>[]{boolean.class}, false);
+            set("canCommandReceipts", true); set("api", fake);
+            ((java.util.Map<String, RemoteApi>) get("commandClients"))
+                .put(MainActivity.commandTransportKey((JSONObject) get("credentials")), fake);
+            call("retryCommand", new Class<?>[]{boolean.class}, false);
         });
         assertTrue(queried.await(3, TimeUnit.SECONDS));
     }

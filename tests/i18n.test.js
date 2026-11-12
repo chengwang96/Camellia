@@ -15,6 +15,10 @@ test('UI translations preserve values and fall back to English for unknown copy'
   assert.equal(translate('Mobile access', 'zh-CN'), '手机访问');
   assert.equal(translate('Pair your phone to access this computer', 'zh-CN'), '配对手机，远程访问这台电脑');
   assert.equal(translate('Ready', 'en'), 'Ready');
+  assert.equal(translate('  设置\n', 'en'), '  Settings\n');
+  assert.equal(translate('已自动检测：v3.13.9', 'en'), 'Detected automatically: v3.13.9');
+  assert.equal(translate('已自动检测：v3.13.9', 'zh-CN'), '已自动检测：v3.13.9');
+  assert.equal(translate('未收录的中文', 'en'), '未收录的中文');
 });
 
 test('command, navigation and preview copy is localized in both languages', () => {

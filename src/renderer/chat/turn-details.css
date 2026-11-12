@@ -10,7 +10,7 @@
 .msg-user .bubble .md-code-block { background: var(--dsw-alias-bg-soft); border-color: var(--dsw-alias-border-l2); color: inherit; }
 .msg-user .bubble :is(.md-code-header, .md-code-wrap, .md-code-copy) { color: var(--dsw-alias-label-secondary); }
 .msg-user .bubble :is(.md-code-wrap:hover, .md-code-copy:hover, .md-code-wrap[aria-pressed=true], .md-table th) { background: var(--dsw-alias-bg-muted); color: inherit; }
-.msg-user .bubble :is(.md-table-wrap, .md-table th, .md-table td, .chat-inline-image) { border-color: var(--dsw-alias-border-l2); }
+.msg-user .bubble :is(.md-table-wrap, .md-table th, .md-table td, .chat-inline-image, .chat-inline-video) { border-color: var(--dsw-alias-border-l2); }
 .msg-user .bubble .md-quote { border-color: var(--dsw-alias-border-l3); color: var(--dsw-alias-label-secondary); }
 .msg-user .bubble .md-rule { border-top-color: var(--dsw-alias-border-l2); }
 .msg-user .bubble :is(eq, eqn) { color: inherit; }

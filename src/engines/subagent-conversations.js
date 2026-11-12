@@ -33,7 +33,8 @@ function view(manager, parentId) {
       artifacts: rows.filter(row => row.role === 'assistant').flatMap(row => row.artifacts || []),
       canReply: !busy && !archived, canStop: busy && !archived, approvals: rawApprovals.map(approval),
     }, { engine: active?.engine || child.currentEngine, userSeq: child.controlUserSeq, at: child.updatedAt });
-    return { ...task, createdAt: child.createdAt, connected: !archived, managedConversationId: child.id, cwd: child.cwd };
+    return { ...task, createdAt: child.createdAt, connected: !archived, managedConversationId: child.id, cwd: child.cwd,
+      contextPacket: child.controlContext || null, settlement: child.settlement || null };
   });
 }
 

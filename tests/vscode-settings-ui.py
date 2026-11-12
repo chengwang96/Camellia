@@ -43,7 +43,20 @@ try:
         page.goto((repo / 'src/renderer/settings/api-settings.html').as_uri(), wait_until='networkidle')
         choice = page.locator('#vscodeChoice')
         expect(choice).to_have_value('')
-        expect(page.locator('#vscodeDetectedPath')).to_have_text(fixtures['vscode'])
+        expect(page.locator('#vscodeDetectedPath')).to_have_count(0)
+        assert fixtures['vscode'] not in page.locator('.vscode-setting').inner_text()
+        assert fixtures['vscode'] not in (choice.get_attribute('title') or '')
+        layout = page.evaluate("""() => {
+          const row = document.querySelector('.vscode-setting');
+          return {
+            copy: row.firstElementChild.getBoundingClientRect().width,
+            controls: row.querySelector('.vscode-controls').getBoundingClientRect().width,
+            select: row.querySelector('#vscodeChoice').getBoundingClientRect().width,
+          };
+        }""")
+        assert layout['controls'] <= 280.5, layout
+        assert layout['select'] <= 280.5, layout
+        assert layout['copy'] > layout['controls'], layout
         option_values = choice.locator('option').evaluate_all('options => options.map(option => option.value)')
         assert fixtures['vscode'] in option_values
         assert fixtures['vscodeInsiders'] in option_values
@@ -79,7 +92,8 @@ try:
         choice.select_option('')
         expect(page.locator('#status')).to_have_text('Preferences saved')
         assert rpc('workbenchSettings')['vscodePath'] == ''
-        expect(page.locator('#vscodeDetectedPath')).to_have_text(fixtures['vscode'])
+        assert fixtures['vscode'] not in page.locator('.vscode-setting').inner_text()
+        assert fixtures['vscode'] not in (choice.get_attribute('title') or '')
 
         page.evaluate("CamelliaI18n.setLanguage('zh-CN')")
         expect(choice.locator('option[value=""]')).to_have_text('自动检测')

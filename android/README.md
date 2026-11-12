@@ -1,6 +1,8 @@
 # Camellia for Android
 
-Camellia's Android client is a native Java/View application for Android 8.0 (API 26) and newer. It has local provider chat and a separate remote-control view for paired desktop conversations. The current release is `1.1.0` (`versionCode` 108). The signed phone package is `dist/Camellia-Android-1.1.0.apk` (ARM64), also exported as `dist/Camellia-Android-1.1.0-arm64-v8a.apk`. An optional `dist/Camellia-Android-1.1.0-x86_64.apk` can be built for x86_64 emulators or devices; packages ending in `-debug.apk` are development builds.
+Camellia's Android client is a native Java/View application for Android 8.0 (API 26) and newer. It has local provider chat and a separate remote-control view for paired desktop conversations. The current package is `1.1.0` build 112 (`versionCode` 112). The signed ARM64 APK is `dist/mobile-artifact-view-all-build112/Camellia-Android-1.1.0-arm64-v8a.apk`, with a byte-identical canonical copy at `dist/mobile-artifact-view-all-build112/Camellia-Android-1.1.0.apk`. An optional x86_64 package can be built for emulators or devices; packages ending in `-debug.apk` are development builds.
+
+Build 112 adds a **View all files** action to the selected-file details sheet. Build 111 removes the redundant save-location guidance from that sheet. Build 110 removes the duplicated filename subtitle. Build 109 adds explicit inline image and video previews to local, remote and discussion messages. Markdown video previews use `.mp4`, `.m4v`, `.mov` or `.webm`; remote videos download on tap before playback, up to 512 MiB.
 
 Build 107 retains the remote foreground service and embedded network for up to 30 minutes while away, with matching settings and notification text.
 
@@ -26,7 +28,7 @@ Conversation menus, computer selection and model/settings pickers use opaque the
 
 Local chat storage uses encrypted SQLite records with a process-owned background writer. Opening the list reads metadata; opening a conversation reads its history. Draft updates are coalesced, streamed replies use periodic checkpoints, and normal close waits for pending writes. Existing encrypted preference data is migrated in a verified transaction before its old copy is removed. See [local storage details](../docs/android-local-storage.md) for the format and recovery behavior.
 
-Local chat, remote chat and discussions share an incremental native Markdown renderer, including inline `$...$` / `\(...\)` and display `$$...$$` / `\[...\]` math. Fractions, scripts, sums and matrices render natively; wide display formulas scroll horizontally and copy retains the original TeX. Streaming replies retain completed views, update the unfinished suffix on background parser threads, and reconcile final formatting once on completion. See [streaming Markdown details](../docs/android-streaming-markdown.md) for the update rules and verification limits.
+Local chat, remote chat and discussions share an incremental native Markdown renderer, including inline `$...$` / `\(...\)` and display `$$...$$` / `\[...\]` math. Fractions, scripts, sums and matrices render natively; wide display formulas scroll horizontally and copy retains the original TeX. Streaming replies retain completed views, update the unfinished suffix on background parser threads, and reconcile final formatting once on completion. Explicit `![alt](path)` image and video syntax renders inline; a remote video downloads to the app cache on tap, with a 512 MiB limit, while ordinary file links remain artifact cards. See [streaming Markdown details](../docs/android-streaming-markdown.md) for the update rules and verification limits.
 
 ## Remote desktop conversations
 

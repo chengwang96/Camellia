@@ -1596,6 +1596,10 @@ private struct MessageView: View {
     // by tapping this bubble, not by showing a pencil in the footer.
     private var userBubble: some View {
         VStack(alignment: .leading, spacing: 0) {
+            if !row.message.attachedFiles.isEmpty {
+                RemoteSentAttachmentTray(files: row.message.attachedFiles, seq: row.id, loader: images)
+                    .padding(.bottom, row.message.text.isEmpty ? 0 : 10)
+            }
             if row.message.textTruncated {
                 Text("内容过长，仅显示末尾片段。")
                     .font(.system(size: Palette.textSmall))
@@ -1610,6 +1614,91 @@ private struct MessageView: View {
         .padding(EdgeInsets(top: 8, leading: 14, bottom: 12, trailing: 14))
         .background(RoundedRectangle(cornerRadius: Palette.userBubbleRadius, style: .continuous)
             .fill(Palette.userBubble))
+    }
+}
+
+private struct RemoteSentAttachmentTray: View {
+    let files: [RemoteAttachmentFile]
+    let seq: Int64
+    let loader: InlineImageLoader?
+
+    var body: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(alignment: .bottom, spacing: 8) {
+                ForEach(Array(files.enumerated()), id: \.offset) { index, file in
+                    if file.isImage {
+                        RemoteSentImageAttachment(file: file, seq: seq, index: index, loader: loader)
+                    } else {
+                        HStack(spacing: 7) {
+                            Image(systemName: "doc.fill")
+                                .font(.system(size: 16))
+                                .foregroundColor(Palette.muted)
+                            Text(file.name)
+                                .font(.system(size: Palette.textNote))
+                                .foregroundColor(Palette.ink)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                        }
+                        .padding(.horizontal, 10)
+                        .frame(height: 44)
+                        .background(Capsule().fill(Palette.surface))
+                        .accessibilityLabel(Text("附件 \(file.name)"))
+                    }
+                }
+            }
+        }
+        .accessibilityIdentifier("remote-message-attachments")
+    }
+}
+
+private struct RemoteSentImageAttachment: View {
+    let file: RemoteAttachmentFile
+    let seq: Int64
+    let index: Int
+    let loader: InlineImageLoader?
+
+    @State private var image: UIImage?
+    @State private var request: InlineImageRequest?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            ZStack {
+                RoundedRectangle(cornerRadius: Palette.fieldRadius, style: .continuous)
+                    .fill(Palette.surface)
+                if let image {
+                    Image(uiImage: image)
+                        .resizable()
+                        .scaledToFill()
+                } else {
+                    Image(systemName: "photo")
+                        .font(.system(size: 24))
+                        .foregroundColor(Palette.muted)
+                }
+            }
+            .frame(width: 88, height: 88)
+            .clipShape(RoundedRectangle(cornerRadius: Palette.fieldRadius, style: .continuous))
+            Text(file.name)
+                .font(.system(size: 9))
+                .foregroundColor(Palette.muted)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .frame(width: 88, alignment: .leading)
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(Text("图片 \(file.name)"))
+        .onAppear(perform: load)
+        .onDisappear {
+            request?.cancel()
+            request = nil
+        }
+    }
+
+    private func load() {
+        guard image == nil, request == nil, let loader else { return }
+        request = loader.loadAttachment(seq: seq, index: index, size: file.size) { value in
+            image = value
+            request = nil
+        }
     }
 }
 

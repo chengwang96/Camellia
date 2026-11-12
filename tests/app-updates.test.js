@@ -7,7 +7,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { createHash } = require('node:crypto');
 const { removeTree } = require('./test-fs.cjs');
-const { createAppUpdates, selectAsset, sha256File } = require('../src/main/app-updates');
+const { createAppUpdates, selectAsset, sha256File, packagedApplicationPath } = require('../src/main/app-updates');
 
 function scratch(context) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'camellia-app-update-'));
@@ -93,6 +93,15 @@ test('the portable Windows build is never treated as an installer', () => {
 test('artifacts that name no architecture are treated as universal', () => {
   const selected = selectAsset([{ name: 'Camellia-1.4.0-macOS.zip', browser_download_url: 'https://example.test/mac.zip' }], 'darwin', 'arm64');
   assert.equal(selected.kind, 'archive');
+});
+
+test('packaged application paths resolve the macOS bundle and Windows install directory', () => {
+  assert.equal(packagedApplicationPath('/Applications/Camellia.app/Contents/MacOS/Camellia', 'darwin'),
+    '/Applications/Camellia.app');
+  assert.equal(packagedApplicationPath('/Applications/Camellia.app/Contents/MacOS/Camellia Helper', 'darwin'),
+    '/Applications/Camellia.app');
+  assert.equal(packagedApplicationPath('C:\\Program Files\\Camellia\\Camellia.exe', 'win32'),
+    'C:\\Program Files\\Camellia');
 });
 
 test('a downloaded disk image is kept for the user to open', async context => {

@@ -9,6 +9,7 @@ const { createHash } = require('node:crypto');
 const { planCompaction } = require('../src/engines/compaction-plan');
 const { SharedConversations, preferences, ENGINES } = require('../src/engines/shared-conversations');
 const { createCodex } = require('../src/engines/codex');
+const { callConversationTool } = require('../src/engines/conversation-control');
 
 function fixture(t, overrides = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'shared-chat-'));
@@ -47,6 +48,173 @@ function fixture(t, overrides = {}) {
   return { manager, args, root, sent, events, finish, drivers, flush, get goal() { return [...manager.goals.values()].at(-1); }, setConfig: c => { config = c; },
     restart: () => { manager = new SharedConversations(args); return manager; } };
 }
+
+test('context snapshot commands expose the current request without changing its history', async t => {
+  const h = fixture(t);
+  const run = await h.manager.send('codex', { prompt: 'Inspect this context' });
+  h.finish('codex', 'success', 'Ready');
+  const snapshot = await h.manager.command('codex', 'context-snapshot', { sessionId: run.sessionId });
+  assert.equal(snapshot.ok, true);
+  assert.equal(snapshot.snapshot.turnSeq, 1);
+  assert.ok(snapshot.snapshot.categories.some(category => category.id === 'conversation'));
+  const userNode = snapshot.snapshot.nodes.find(node => node.role === 'user');
+  assert.ok(userNode);
+  const expanded = await h.manager.command('codex', 'context-node', { sessionId: run.sessionId, nodeId: userNode.id });
+  assert.equal(expanded.node.content, 'Inspect this context');
+  const events = await h.manager.command('codex', 'context-events', { sessionId: run.sessionId, limit: 10 });
+  assert.deepEqual(events, { ok: true, events: [] });
+  assert.equal(h.manager.rows(h.manager.get(run.sessionId)).length, 2);
+});
+
+test('context snapshots work for every supported engine', async t => {
+  const h = fixture(t);
+  for (const engine of ENGINES) {
+    const run = await h.manager.send(engine, { prompt: 'Inspect ' + engine });
+    h.finish(engine, 'success', 'Ready', h.sent.at(-1).session);
+    const result = await h.manager.command(engine, 'context-snapshot', { sessionId: run.sessionId });
+    assert.equal(result.ok, true);
+    assert.equal(result.snapshot.engine, engine);
+    assert.ok(result.snapshot.categories.some(category => category.id === 'conversation'), engine);
+  }
+});
+
+test('binding changes are recorded as context events', async t => {
+  const h = fixture(t);
+  const run = await h.manager.send('codex', { prompt: 'Change the binding' });
+  h.finish('codex', 'success', 'Ready');
+  h.manager.saveSettings('codex', { sessionId: run.sessionId, model: 'next-model' });
+  const events = await h.manager.command('codex', 'context-events', { sessionId: run.sessionId });
+  assert.ok(events.events.some(event => event.kind === 'switch' && event.text.includes('model')));
+});
+
+test('retiring a resident portable summary removes it from the next context window and restore returns it', async t => {
+  const h = fixture(t);
+  const run = await h.manager.send('codex', { prompt: 'Build a compacted context' });
+  h.finish('codex', 'success', 'Ready');
+  const conversation = h.manager.get(run.sessionId);
+  const summary = path.join(h.root, 'resident-summary.md');
+  fs.writeFileSync(summary, '# Resident summary\n\nKeep this while active.\n');
+  h.manager.append(conversation, { role: 'notice', engine: 'codex', text: 'Context compacted', file: summary,
+    compaction: { native: false, state: 'completed' } });
+  conversation.segments.codex = { cursor: conversation.seq, compactFile: summary, isolated: true };
+  h.manager.save(conversation);
+  const before = await h.manager.command('codex', 'context-blocks', { sessionId: run.sessionId });
+  assert.equal(before.blocks[0].active, true);
+  const retired = await h.manager.command('codex', 'context-retire', { sessionId: run.sessionId, blockId: 'b1' });
+  assert.equal(retired.ok, true);
+  assert.equal(h.manager.contextSource(conversation, 'codex').files.length, 0);
+  const restored = await h.manager.command('codex', 'context-restore', { sessionId: run.sessionId, blockId: 'b1' });
+  assert.equal(restored.ok, true);
+  const retireEvents = await h.manager.command('codex', 'context-events', { sessionId: run.sessionId });
+  const retireEvent = retireEvents.events.find(event => event.kind === 'retire');
+  assert.ok(retireEvent);
+  assert.ok(retireEvent.deltaTokens < 0);
+  assert.deepEqual(h.manager.contextSource(conversation, 'codex').files, [summary]);
+});
+
+test('managed children receive one quoted context packet and return a settlement', async t => {
+  const h = fixture(t);
+  const parent = await h.manager.send('codex', { prompt: 'Parent request' });
+  h.finish('codex', 'success', 'Parent ready');
+  const active = { userSeq: parent.userSeq, prompt: 'Parent request', controlSendCount: 0 };
+  const created = callConversationTool(h.manager, parent.sessionId, 'camellia_conversation_create',
+    { request_id: 'create-1', title: 'Child task' }, active);
+  assert.equal(created.ok, true);
+  const child = h.manager.get(created.conversation.id);
+  assert.equal(child.controlContext.version, 1);
+  assert.equal(child.controlContext.goal, 'Parent request');
+  const createEvents = await h.manager.command('codex', 'context-events', { sessionId: parent.sessionId });
+  assert.ok(createEvents.events.some(event => event.kind === 'child-create'));
+  const sent = callConversationTool(h.manager, parent.sessionId, 'camellia_conversation_send',
+    { conversation_id: child.id, request_id: 'send-1', prompt: 'Do child work' }, active);
+  assert.equal(sent.ok, true);
+  for (let i = 0; i < 20 && h.sent.length < 2; i++) await new Promise(resolve => setImmediate(resolve));
+  const childSend = h.sent.at(-1);
+  assert.match(childSend.prompt, /<delegation_context>/);
+  assert.match(childSend.prompt, /Current request:\nDo child work/);
+  h.finish('codex', 'success', 'Child result', childSend.session);
+  await h.flush();
+  assert.equal(child.controlContextConsumed, true);
+  assert.equal(child.settlement.status, 'completed');
+  assert.equal(h.manager.get(parent.sessionId).childSettlements.length, 1);
+  assert.equal(h.manager.rows(child).filter(row => row.role === 'user').length, 1);
+  const graph = await h.manager.command('codex', 'agent-graph', { sessionId: parent.sessionId });
+  assert.equal(graph.ok, true);
+  assert.equal(graph.graph.nodes.length, 2);
+  assert.equal(graph.graph.edges[0].from, 'conversation:' + parent.sessionId);
+  assert.equal(graph.graph.nodes[1].settlement.status, 'completed');
+});
+
+test('agent graph includes observed native subagents without inventing their context', async t => {
+  const h = fixture(t);
+  const run = await h.manager.send('codex', { prompt: 'Delegate the task' });
+  const active = h.manager.active.get(run.sessionId);
+  h.manager.capture('codex', { type: 'gui:subagent', conversationId: run.sessionId, runId: active.session.gen,
+    task: { id: 'native-1', title: 'Native helper', goal: 'Inspect', status: 'running' } });
+  const graph = await h.manager.command('codex', 'agent-graph', { sessionId: run.sessionId });
+  const node = graph.graph.nodes.find(entry => entry.kind === 'native');
+  assert.ok(node);
+  assert.equal(node.contextObserved, false);
+  assert.equal(node.parentId, 'conversation:' + run.sessionId);
+  h.finish('codex');
+});
+
+test('working memory is injected only after explicit save language and child writes are refused', async t => {
+  const h = fixture(t);
+  h.setConfig({ contextMemory: { enabled: true } });
+  const run = await h.manager.send('codex', { prompt: 'Remember that tests use node --test' });
+  const conversation = h.manager.get(run.sessionId);
+  const written = h.manager.callMemoryTool(run.sessionId, 'camellia_memory_remember',
+    { text: 'Tests use node --test', scope: 'workspace' },
+    { prompt: 'Remember that tests use node --test', c: conversation });
+  assert.equal(written.ok, true);
+  assert.match(h.manager.contextMemorySnapshot(conversation), /Tests use node --test/);
+  assert.throws(() => h.manager.callMemoryTool(run.sessionId, 'camellia_memory_remember',
+    { text: 'Child fact', scope: 'workspace' },
+    { prompt: 'Remember this', c: { controlParentId: 'parent' } }), /Child agents may read memory/);
+  h.finish('codex', 'success', 'Done');
+  await h.manager.send('codex', { sessionId: run.sessionId, prompt: 'Use what you know' });
+  assert.match(h.sent.at(-1).prompt, /MNEMON WORKING MEMORY SNAPSHOT/);
+  const context = await h.manager.command('codex', 'context-snapshot', { sessionId: run.sessionId });
+  assert.equal(context.snapshot.memory.pinned, true);
+  const inject = context.snapshot.events.find(event => event.kind === 'inject');
+  assert.equal(inject.source, 'working-memory');
+  assert.ok(inject.deltaTokens > 0);
+  h.finish('codex', 'success', 'Used memory');
+});
+
+test('managed children inherit the parent memory snapshot read-only', async t => {
+  const h = fixture(t);
+  h.setConfig({ contextMemory: { enabled: true } });
+  const parent = await h.manager.send('codex', { prompt: 'Parent task' });
+  const parentConversation = h.manager.get(parent.sessionId);
+  h.manager.callMemoryTool(parent.sessionId, 'camellia_memory_remember',
+    { text: 'Parent preference', scope: 'user' }, { prompt: 'Remember Parent preference', c: parentConversation });
+  h.finish('codex', 'success', 'Parent ready');
+  const active = { userSeq: parent.userSeq, prompt: 'Parent task', controlSendCount: 0 };
+  const created = callConversationTool(h.manager, parent.sessionId, 'camellia_conversation_create',
+    { request_id: 'memory-child', title: 'Memory child' }, active);
+  const child = h.manager.get(created.conversation.id);
+  assert.match(child.controlMemorySnapshot, /Parent preference/);
+  h.manager.callMemoryTool(parent.sessionId, 'camellia_memory_remember',
+    { text: 'Newer preference', scope: 'user' }, { prompt: 'Remember Newer preference', c: parentConversation });
+  callConversationTool(h.manager, parent.sessionId, 'camellia_conversation_send',
+    { conversation_id: child.id, request_id: 'memory-send', prompt: 'Use inherited memory' }, active);
+  for (let i = 0; i < 20 && h.sent.length < 2; i++) await new Promise(resolve => setImmediate(resolve));
+  assert.match(h.sent.at(-1).prompt, /Parent preference/);
+  assert.doesNotMatch(h.sent.at(-1).prompt, /Newer preference/);
+  const childActive = h.manager.active.get(child.id);
+  assert.equal(childActive.memorySnapshot, child.controlMemorySnapshot);
+  const status = h.manager.callMemoryTool(child.id, 'camellia_memory_status', {}, childActive);
+  assert.equal(status.pinned, true);
+  assert.equal(status.scope.user, 1);
+  assert.match(status.snapshot, /Parent preference/);
+  assert.doesNotMatch(status.snapshot, /Newer preference/);
+  const search = h.manager.callMemoryTool(child.id, 'camellia_memory_search', { query: 'preference' }, childActive);
+  assert.deepEqual(search.results.map(entry => entry.text), ['Parent preference']);
+  h.finish('codex', 'success', 'Child used memory', h.sent.at(-1).session);
+  await h.flush();
+});
 
 test('Kimi native task follow-up creates a persisted reply and a normal completion event', async t => {
   const h = fixture(t), run = await h.manager.send('kimi', { prompt: 'Build APK' });
@@ -216,16 +384,17 @@ for (const engine of ['claude', 'dsh', 'kimi', 'grok', 'antigravity']) test(`${e
   assert.equal(h.restart().subagentView(conversation.id)[0].result, 'Native child answer');
 });
 
-test('image preview guidance reaches user turns without coupling previews to artifacts or tool reads', async t => {
+test('media preview guidance reaches user turns without coupling previews to artifacts or tool reads', async t => {
   const h = fixture(t, { createGoalBridge: async () => ({ close() {} }) });
   t.after(() => h.manager.closeGoalTools());
   const run = await h.manager.send('codex', { prompt: 'Create a plot' });
   const prompt = h.sent[0].prompt;
-  assert.match(prompt, /^Camellia image presentation:/);
-  assert.match(prompt, /!\[concise alt text\]\(image-path\)/);
+  assert.match(prompt, /^Camellia media presentation:/);
+  assert.match(prompt, /!\[concise alt text\]\(media-path\)/);
+  assert.match(prompt, /\.mp4, \.webm, \.mov or \.m4v/);
   assert.match(prompt, /Only this explicit Markdown image syntax requests an inline preview/);
   assert.match(prompt, /merely an output artifact/);
-  assert.match(prompt, /image-reading tool results/);
+  assert.match(prompt, /media-reading tool results/);
   assert.ok(prompt.endsWith('Create a plot'));
   h.finish('codex'); await run.done;
 });
@@ -394,6 +563,21 @@ test('startup isolates corrupt conversation, goal and task records while retaini
     assert.ok(fs.existsSync(warning.backupFile));
     assert.ok([damaged, '{}'].includes(fs.readFileSync(warning.backupFile, 'utf8')));
   }
+});
+
+test('startup keeps legacy Pi conversation bytes outside the active engine list', t => {
+  const h = fixture(t), good = h.manager.create('codex', null, 'Healthy history');
+  const legacyId = '00000000-0000-4000-8000-000000000001';
+  const legacy = { id: legacyId, origin: 'pi', currentEngine: 'pi', title: 'Legacy Pi',
+    cwd: h.root, workspaceId: null, createdAt: 1, updatedAt: 1, seq: 0, segments: {}, handoffs: [], engineSettings: {} };
+  fs.writeFileSync(path.join(h.root, legacyId + '.json'), JSON.stringify(legacy));
+  const restarted = h.restart();
+  assert.equal(restarted.items.size, 1);
+  assert.equal(restarted.get(good.id).title, 'Healthy history');
+  assert.equal(restarted.legacyConversations.get(legacyId).title, 'Legacy Pi');
+  assert.ok(fs.existsSync(path.join(h.root, legacyId + '.json')));
+  assert.equal(fs.readdirSync(h.root).some(name => name.includes('.invalid-')), false);
+  assert.equal(restarted.recoveryWarnings.length, 0);
 });
 
 test('failed compaction persistence releases switching state and keeps the previous context binding', async t => {
@@ -1593,7 +1777,7 @@ test('engine summary timeout leaves a retryable checkpoint and the original nati
   assert.equal(manager.busy(c.id), false);
 });
 
-test('user /compact falls back to recent context after a provider failure and can continue chatting', async context => {
+test('user /compact falls back to bounded recent context with the first request pinned', async context => {
   const h = fixture(context, { summarize: { available: () => true, run: async () => { throw new Error('Provider unavailable'); } } });
   const manager = h.manager, c = manager.create('kimi');
   c.engineSettings.kimi = { contextWindow: 6000 };
@@ -1606,14 +1790,15 @@ test('user /compact falls back to recent context after a provider failure and ca
   assert.ok(result.omittedRows > 0);
   const markdown = fs.readFileSync(result.file, 'utf8');
   assert.match(markdown, /LATEST_REQUEST: continue the review/);
-  assert.doesNotMatch(markdown, /OLD_CONTEXT_/);
+  assert.match(markdown, /Pinned first user request/);
+  assert.match(markdown, /OLD_CONTEXT_/);
   assert.deepEqual(manager.rows(c).slice(0, original.length), original, 'the transcript remains intact');
   assert.equal(c.lastCompaction.route, 'local-fallback');
   assert.equal(manager.busy(c.id), false);
   const restarted = h.restart();
   const next = await restarted.send('kimi', { sessionId: c.id, prompt: 'Proceed' });
   assert.match(h.sent.at(-1).prompt, /LATEST_REQUEST: continue the review/);
-  assert.doesNotMatch(h.sent.at(-1).prompt, /OLD_CONTEXT_/);
+  assert.match(h.sent.at(-1).prompt, /Pinned first user request/);
   h.finish('kimi'); await next.done;
 });
 
@@ -2726,6 +2911,31 @@ for (const engine of ENGINES) test(engine + ' conversation tools create, fork, c
   assert.equal(call('list').ok, false);
 });
 
+test('conversation configure keeps a reasoning level both models support', async context => {
+  const harness = fixture(context, { createGoalBridge: async options => ({ call: options.call, close() {} }),
+    conversationModels: () => [{ id: 'first', thinking: ['low', 'high'] }, { id: 'second', thinking: ['high', 'max'] }] });
+  context.after(() => harness.manager.closeGoalTools());
+  const manager = harness.manager;
+  harness.drivers.codex.settings = () => ({ model: 'first', connection: 'api', permissionMode: 'default', thinkingBudget: 'high', contextWindow: 100000 });
+  const parent = await manager.send('codex', { prompt: 'Delegate the next task' });
+  const parentSession = harness.sent.at(-1).session;
+  const token = manager.active.get(parent.sessionId).goalRunToken;
+  const call = (operation, args = {}) => manager.callGoalTool(parent.sessionId, 'camellia_conversation_' + operation, { run_token: token, ...args });
+  const child = call('create', { request_id: 'child', title: 'Worker' }).conversation;
+  assert.equal(manager.settings('codex', child.id).thinkingBudget, 'high');
+  // Both models offer high, so switching between them keeps it.
+  assert.equal(call('configure', { conversation_id: child.id, model: 'second' }).ok, true);
+  assert.equal(manager.settings('codex', child.id).model, 'second');
+  assert.equal(manager.settings('codex', child.id).thinkingBudget, 'high');
+  assert.equal(call('configure', { conversation_id: child.id, model: 'first' }).ok, true);
+  assert.equal(manager.settings('codex', child.id).thinkingBudget, 'high');
+  // A level only the old model offered still falls back to the model default.
+  assert.equal(call('configure', { conversation_id: child.id, thinking: 'low' }).ok, true);
+  assert.equal(call('configure', { conversation_id: child.id, model: 'second' }).ok, true);
+  assert.equal(manager.settings('codex', child.id).thinkingBudget, '');
+  harness.finish('codex', 'success', 'Parent finished', parentSession); await parent.done;
+});
+
 test('device-wide read tools list, read and search every stored conversation without side effects', async context => {
   const harness = fixture(context, { createGoalBridge: async options => ({ call: options.call, close() {} }) });
   context.after(() => harness.manager.closeGoalTools());
@@ -2837,6 +3047,30 @@ test('transcript search finds older messages and accepts a single-letter search 
     assert.equal(result.results[0].conversation.id, conversation.id);
     assert.equal(result.results[0].match.seq, 1);
   }
+});
+
+test('an agent renames its current conversation without gaining access to another title', async context => {
+  const harness = fixture(context, { createGoalBridge: async options => ({ call: options.call, close() {} }) });
+  context.after(() => harness.manager.closeGoalTools());
+  const run = await harness.manager.send('codex', { prompt: 'Rename this conversation' });
+  const token = harness.manager.active.get(run.sessionId).goalRunToken;
+  const call = args => harness.manager.callGoalTool(run.sessionId, 'camellia_conversation_rename', { run_token: token, ...args });
+  const renamed = call({ title: '  Release triage  ' });
+  assert.equal(renamed.ok, true, renamed.error);
+  assert.equal(renamed.conversation.title, 'Release triage');
+  assert.equal(harness.manager.workspaces.sessionMeta().titles[run.sessionId], 'Release triage');
+  assert.ok(harness.events.some(event => event.type === 'conversation:title'
+    && event.session_id === run.sessionId && event.title === 'Release triage'));
+  assert.equal((await harness.manager.list('codex', { activeSessionId: run.sessionId })).sessions
+    .find(conversation => conversation.id === run.sessionId).title, 'Release triage');
+  const other = harness.manager.create('codex', undefined, 'Other conversation');
+  const targeted = call({ title: 'Wrong target', conversation_id: other.id });
+  assert.equal(targeted.ok, false);
+  assert.equal(harness.manager.workspaces.sessionMeta().titles[other.id], undefined);
+  assert.equal(harness.manager.get(other.id).title, 'Other conversation');
+  assert.equal(call({ title: 'line\nbreak' }).ok, false);
+  assert.equal(harness.manager.workspaces.sessionMeta().titles[run.sessionId], 'Release triage');
+  harness.finish('codex'); await run.done;
 });
 
 test('owned children and scheduled checks may read the device, but still cannot control conversations', async context => {
@@ -3011,7 +3245,9 @@ test('child sends survive pre-compaction and overflow recovery without duplicate
   assert.equal(manager.active.get(child.id).internal, true);
   harness.finish('codex', 'success', 'Recovered summary');
   await harness.flush();
-  assert.equal(manager.active.get(child.id).internal, false);
+  const recovered = manager.active.get(child.id);
+  assert.ok(recovered, 'the recovered child turn should remain active');
+  assert.equal(recovered.internal, false);
   harness.finish('codex', 'success', 'Completed');
   await harness.flush();
   assert.equal(child.controlSends[0].state, 'finished');
@@ -5363,9 +5599,18 @@ test('portable compaction retains recent interactions exactly across restart and
   const compacted = await pending;
   const markdown = fs.readFileSync(compacted.file, 'utf8');
   assert.match(markdown, /SUMMARY_OF_OLD_TASK/);
+  assert.match(markdown, /Pinned first user request/);
+  assert.match(markdown, /OLD_TASK_MARKER/);
   assert.match(markdown, /RECENT_TASK_MARKER/);
   assert.match(markdown, /EXACT_TOOL_RESULT_中文😀/);
   assert.match(markdown, /recent.csv/);
+  const blocks = await manager.command('kimi', 'context-blocks', { sessionId: conversation.id });
+  assert.equal(blocks.blocks[0].firstUserSeq, 1);
+  assert.equal(blocks.blocks[0].firstUserPinned, true);
+  const compactEvents = await manager.command('kimi', 'context-events', { sessionId: conversation.id });
+  const compactEvent = compactEvents.events.find(event => event.kind === 'compact');
+  assert.equal(compactEvent.source, 'compaction');
+  assert.ok(Number.isFinite(compactEvent.deltaTokens));
   assert.equal(conversation.lastCompaction.reason, 'manual-native-unavailable');
   assert.equal(conversation.lastCompaction.requests, 1);
   assert.equal(conversation.lastCompaction.boundary, 5);
@@ -5387,7 +5632,8 @@ test('portable compaction retains recent interactions exactly across restart and
   assert.match(harness.sent.at(-1).prompt, /SUMMARY_OF_OLD_TASK/);
   assert.match(harness.sent.at(-1).prompt, /RECENT_TASK_MARKER/);
   harness.finish('kimi', 'success', 'Second summary');
-  await again;
+  const second = await again;
+  assert.match(fs.readFileSync(second.file, 'utf8'), /Pinned first user request[\s\S]*OLD_TASK_MARKER/);
 });
 
 test('portable summary enforces a bounded output without replacing context on failure', async context => {
@@ -7561,14 +7807,15 @@ for (const target of ['codex', 'kimi']) test('long native model migrates to a sh
   harness.finish(target); await next.done;
 });
 
-test('a new harness receives the portable summary instead of replaying pre-summary history', async context => {
+test('a new harness receives the portable summary with only the first request pinned', async context => {
   const harness = fixture(context, { summarize: { available: () => true, run: async () => ({ text: 'PORTABLE_FACTS' }) } });
   const manager = harness.manager;
   const first = await manager.send('codex', { prompt: 'RAW_HISTORY' }); harness.finish('codex'); await first.done;
   await manager.compact(first.sessionId, { portable: true });
   const next = await manager.send('kimi', { sessionId: first.sessionId, prompt: 'Next step' });
   assert.match(harness.sent.at(-1).prompt, /PORTABLE_FACTS/);
-  assert.doesNotMatch(harness.sent.at(-1).prompt, /RAW_HISTORY/);
+  assert.match(harness.sent.at(-1).prompt, /Pinned first user request/);
+  assert.match(harness.sent.at(-1).prompt, /RAW_HISTORY/);
   harness.finish('kimi'); await next.done;
 });
 

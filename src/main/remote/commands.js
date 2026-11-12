@@ -6,7 +6,7 @@ const { fail } = require('./access');
 const fs = require('node:fs');
 const path = require('node:path');
 const { configure } = require('./settings');
-const { storeAttachments, MAX_COUNT, MAX_IMAGE, MAX_TOTAL } = require('./attachments');
+const { storeAttachments, openStoredAttachment, MAX_COUNT, MAX_IMAGE, MAX_TOTAL } = require('./attachments');
 const { RemoteMessageQueue } = require('./message-queue');
 const { approval, answer } = require('./approvals');
 const { AttachmentBatch, hasAttachmentReferences } = require('./attachment-batch');
@@ -370,7 +370,7 @@ class RemoteCommands {
           imageBytes.forEach((bytes, index) => {
             const target = path.join(folder, createHash('sha256').update(deviceId + ':' + payload.requestId + ':' + index).digest('hex') + '.jpg');
             fs.writeFileSync(target, bytes, { flag: 'wx', mode: 0o600 });
-            attachments.push(...batch.add([{ path: target, name: `mobile-image-${index + 1}.jpg`, isImage: true }]));
+            attachments.push(...batch.add([{ path: target, name: `mobile-image-${index + 1}.jpg`, isImage: true, size: bytes.length }]));
           });
         }
         const prompt = payload.attachments !== undefined && attachments.length
@@ -432,6 +432,17 @@ class RemoteCommands {
       this.reservations.delete(id);
       manager.publishActivity(id);
     }
+  }
+  async messageAttachment(device, id, seq, index) {
+    const conversation = this.reader.conversation(device, id);
+    if (!Number.isSafeInteger(seq) || seq < 1 || !Number.isSafeInteger(index) || index < 0 || index >= MAX_COUNT)
+      fail(400, 'Invalid attachment location');
+    const rows = this.reader.manager.rows ? this.reader.manager.rows(conversation) : this.reader.manager.messages(conversation);
+    const row = rows.find(item => item.seq === seq);
+    const file = (Array.isArray(row?.attachments) ? row.attachments : [])
+      .filter(item => typeof item?.name === 'string').slice(0, MAX_COUNT)[index];
+    if (!file) fail(404, 'Attachment not found');
+    return openStoredAttachment({ root: path.dirname(this.file), file });
   }
   cancelPending(deviceId) {
     for (const entry of this.reservations.values()) if (!deviceId || entry.deviceId === deviceId) entry.reservation.cancelled = true;

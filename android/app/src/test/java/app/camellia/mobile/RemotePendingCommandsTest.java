@@ -50,4 +50,10 @@ public class RemotePendingCommandsTest {
         assertNull(RemotePendingCommands.get(profile, "one", false));
         assertNotNull(RemotePendingCommands.find(profile, "stop-again"));
     }
+    @Test public void resumeEnumeratesLegacySendAndStopWithoutDuplicates() throws Exception {
+        JSONObject profile = new JSONObject().put("pendingCommand", request("one", "send"));
+        RemotePendingCommands.put(profile, request("one", "send"), false);
+        RemotePendingCommands.put(profile, request("one", "stop"), true);
+        assertEquals(2, RemotePendingCommands.all(profile).size());
+    }
 }

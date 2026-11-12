@@ -473,6 +473,26 @@ public struct RemoteProcessEntry: Sendable, Identifiable, Hashable {
     public var isThinking: Bool { type == "thinking" }
 }
 
+public struct RemoteAttachmentFile: Sendable, Hashable, Identifiable {
+    public let name: String
+    public let isImage: Bool
+    public let size: Int64?
+
+    public init(_ json: JSONObject) {
+        name = json.text("name")
+        isImage = json.bool("isImage")
+        size = json.long("size") > 0 ? json.long("size") : nil
+    }
+
+    public init(name: String, isImage: Bool, size: Int64? = nil) {
+        self.name = name
+        self.isImage = isImage
+        self.size = size
+    }
+
+    public var id: String { "\(name):\(size ?? -1):\(isImage)" }
+}
+
 public struct RemoteMessage: Sendable, Identifiable, Hashable {
     /// `seq` is the primary key, not `id`: the desktop re-emits an edited
     /// message under a higher seq rather than editing it in place, so a
@@ -484,6 +504,7 @@ public struct RemoteMessage: Sendable, Identifiable, Hashable {
     public let at: Int64
     public let process: [RemoteProcessEntry]
     public let turnDetails: TurnDetails?
+    public let attachedFiles: [RemoteAttachmentFile]
 
     public init(_ json: JSONObject) {
         seq = json.long("seq")
@@ -493,15 +514,18 @@ public struct RemoteMessage: Sendable, Identifiable, Hashable {
         at = json.long("at")
         process = json.objects("process").map(RemoteProcessEntry.init)
         turnDetails = json.object("turnDetails").map(TurnDetails.init)
+        attachedFiles = json.objects("attachedFiles").map(RemoteAttachmentFile.init)
     }
 
-    public init(seq: Int64, role: MessageRole, text: String, at: Int64, process: [RemoteProcessEntry] = [], truncated: Bool = false, turnDetails: TurnDetails? = nil) {
+    public init(seq: Int64, role: MessageRole, text: String, at: Int64, process: [RemoteProcessEntry] = [],
+                truncated: Bool = false, turnDetails: TurnDetails? = nil, attachedFiles: [RemoteAttachmentFile] = []) {
         self.seq = seq
         self.role = role
         self.text = text
         self.at = at
         self.process = process
         self.turnDetails = turnDetails
+        self.attachedFiles = attachedFiles
         textTruncated = truncated
     }
 

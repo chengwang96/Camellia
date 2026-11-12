@@ -62,11 +62,12 @@ public class RemoteFeedbackTest extends InstrumentationTestCase {
             if (failure != null) throw failure;
             if (pendingFirst) {
                 if (calls.incrementAndGet() == 1) {
-                    requestId = payload.optString("requestId");
+                    requestId = payload == null ? "" : payload.optString("requestId");
                     try { return new JSONObject().put("state", "pending"); }
                     catch (Exception error) { throw new IOException(error); }
                 }
-                if (!requestId.equals(payload.optString("requestId"))) throw new IOException("Request changed on retry");
+                if (payload != null && !requestId.isEmpty() && !requestId.equals(payload.optString("requestId")))
+                    throw new IOException("Request changed on retry");
                 retried.countDown();
             }
             return path.contains("?before=") ? historyPages.getOrDefault(Long.parseLong(path.substring(path.indexOf("?before=") + 8)), result) : result;
@@ -113,6 +114,8 @@ public class RemoteFeedbackTest extends InstrumentationTestCase {
             field("foreground", true); field("connected", true); field("controlAllowed", true);
             field("instance", "server"); field("conversationSeq", 10L);
             client = new DelayedApi(); field("api", client);
+            ((java.util.Map<String, RemoteApi>) field("commandClients"))
+                .put(MainActivity.commandTransportKey((JSONObject) field("credentials")), client);
         });
     }
 
@@ -678,6 +681,36 @@ public class RemoteFeedbackTest extends InstrumentationTestCase {
         });
     }
 
+    public void testSnapshotMatchingAnUnconfirmedSendClearsThePendingRecord() throws Exception {
+        client.failure = new java.net.SocketTimeoutException("fixture timeout");
+        send();
+        ui(() -> field("commandCheckDeadline", android.os.SystemClock.elapsedRealtime() - 1));
+        awaitResult();
+        ui(() -> {
+            assertEquals("unconfirmed", ((JSONObject) field("outgoingMessage")).getString("delivery"));
+            invoke("applySnapshot", snapshot());
+            assertNull(field("outgoingMessage"));
+            assertFalse(((JSONObject) field("credentials")).has("pendingCommand"));
+            assertNull(((View) field("messages")).findViewWithTag("outgoingRetry"));
+        });
+    }
+
+    public void testUnconfirmedSendRetryRemainsAvailableWhileOffline() throws Exception {
+        client.failure = new java.net.SocketTimeoutException("fixture timeout");
+        send();
+        ui(() -> field("commandCheckDeadline", android.os.SystemClock.elapsedRealtime() - 1));
+        awaitResult();
+        ui(() -> {
+            JSONObject saved = (JSONObject) field("credentials");
+            saved.getJSONObject("pendingCommand").remove("uncertain");
+            field("connected", false);
+            invoke("updateControls");
+            View retry = ((View) field("messages")).findViewWithTag("outgoingRetry");
+            assertNotNull(retry);
+            assertTrue(retry.isEnabled());
+        });
+    }
+
     public void testUnknownOutcomeRetainsRequest() throws Exception {
         client.result = new JSONObject().put("state", "unknown");
         send(); awaitResult();
@@ -756,6 +789,27 @@ public class RemoteFeedbackTest extends InstrumentationTestCase {
             assertEquals("list", field("screen"));
             assertFalse(((JSONObject) field("credentials")).has("pendingCommand"));
             assertEquals(0, countText((View) field("content"), "instant message"));
+        });
+    }
+
+    public void testPendingSendContinuesCheckingAfterReturningToTheList() throws Exception {
+        client.pendingFirst = true;
+        client.result = new JSONObject().put("ok", true).put("userSeq", 11);
+        ui(() -> field("canCommandReceipts", true));
+        send();
+        awaitResult();
+        ui(() -> invoke("listScreen"));
+        assertTrue("The background command check did not run", client.retried.await(5, TimeUnit.SECONDS));
+        long deadline = android.os.SystemClock.elapsedRealtime() + 5000;
+        while (android.os.SystemClock.elapsedRealtime() < deadline) {
+            var pending = new java.util.concurrent.atomic.AtomicBoolean();
+            ui(() -> pending.set(((JSONObject) field("credentials")).has("pendingCommand")));
+            if (!pending.get()) break;
+            getInstrumentation().waitForIdleSync(); Thread.sleep(20);
+        }
+        ui(() -> {
+            assertEquals("list", field("screen"));
+            assertFalse(((JSONObject) field("credentials")).has("pendingCommand"));
         });
     }
 

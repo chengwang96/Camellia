@@ -18,6 +18,15 @@
   const controls = /[\x00-\x1f\x7f]/;
 
   const wwwPattern = /www\.[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+[^\s<>()[\]`"']*/g;
+  const imageExtension = /\.(?:png|jpe?g|gif|webp|bmp|avif|svg|ico)(?:[?#]|$)/i;
+  const videoExtension = /\.(?:mp4|m4v|mov|webm)(?:[?#]|$)/i;
+
+  function mediaKind(value) {
+    if (!value) return '';
+    if (imageExtension.test(value)) return 'image';
+    if (videoExtension.test(value)) return 'video';
+    return '';
+  }
 
   // "www.example.com" is unambiguous, but linkify-it only finds it through the
   // fuzzy-host rule this parser deliberately disables, so link it here.
@@ -146,17 +155,24 @@
   // image, so remote hosts are reachable without being auto-fetched from prose.
   parser.renderer.rules.image = (tokens, index, options, environment) => {
     const token = tokens[index], target = destination(token.attrGet('src'), environment.cwd);
-    const label = token.content || target?.path?.split('/').pop() || 'Image';
     if (!target) return escape('![' + token.content + '](' + token.attrGet('src') + ')');
+    const kind = mediaKind(target.path || target.href);
+    const label = token.content || target.path?.split('/').pop() || (kind === 'video' ? 'Video' : 'Image');
+    if (!kind) return escape('![' + token.content + '](' + token.attrGet('src') + ')');
     if (target.path) {
-      if (!/\.(?:png|jpe?g|gif|webp|bmp|avif|svg|ico)$/i.test(target.path))
-        return escape('![' + token.content + '](' + token.attrGet('src') + ')');
+      if (kind === 'video') {
+        return '<video class="chat-inline-video" src="' + escape(target.href) + '" controls preload="metadata" playsinline'
+          + ' aria-label="' + escape(label) + '" title="' + escape(target.path) + '" data-chat-file="' + escape(target.path) + '"></video>';
+      }
       return '<img class="chat-inline-image" src="' + escape(target.href) + '" alt="' + escape(label)
         + '" title="' + escape(target.path) + '" data-chat-file="' + escape(target.path)
         + '" loading="lazy" decoding="async" referrerpolicy="no-referrer" tabindex="0" role="button">';
     }
-    if (!/^https?:/i.test(target.href) || !/\.(?:png|jpe?g|gif|webp|bmp|avif|svg|ico)(?:[?#]|$)/i.test(target.href))
-      return escape('![' + token.content + '](' + token.attrGet('src') + ')');
+    if (!/^https?:/i.test(target.href)) return escape('![' + token.content + '](' + token.attrGet('src') + ')');
+    if (kind === 'video') {
+      return '<video class="chat-inline-video" src="' + escape(target.href) + '" controls preload="metadata" playsinline'
+        + ' aria-label="' + escape(label) + '" title="' + escape(target.href) + '" referrerpolicy="no-referrer"></video>';
+    }
     return '<img class="chat-inline-image" src="' + escape(target.href) + '" alt="' + escape(label)
       + '" title="' + escape(target.href) + '" loading="lazy" decoding="async" referrerpolicy="no-referrer">';
   };

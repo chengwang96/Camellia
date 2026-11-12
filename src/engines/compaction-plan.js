@@ -1,5 +1,7 @@
 'use strict';
 
+const { pairSafeParts, withPairIds } = require('./context-pairs');
+
 const encode = history => JSON.stringify({ history });
 const summaryLimit = budget => Math.min(12000, Math.floor(budget / 3));
 // Partial summaries are merged afterwards, so each map answer stays small. The
@@ -19,8 +21,8 @@ function historyLength(rows, limit = Infinity) {
   return length;
 }
 
-const compactionRow = row => ({ role: row.role, engine: row.engine, text: row.text || '', sourceSeq: row.seq,
-  ...(row.attachments?.length ? { attachments: row.attachments } : {}) });
+const compactionRow = row => withPairIds({ role: row.role, engine: row.engine, text: row.text || '', sourceSeq: row.seq,
+  ...(row.attachments?.length ? { attachments: row.attachments } : {}) }, row);
 
 function planCompaction(rows, budget) {
   const groups = [];
@@ -97,10 +99,32 @@ function selectFragment(units, limit) {
     if (selectedChars + groupChars - encode([]).length + Number(selected.length > 0 && group.length > 0) <= limit) {
       selected.push(...group); pending.shift(); continue;
     }
-    if (selected.length && groupChars <= limit) break;
+    if (selected.length) {
+      if (groupChars <= limit) break;
+      // An atomic tool pair cannot be split across fragments. A normal
+      // interaction or a single oversized record may still be split to fill
+      // the current fragment.
+      if (group.length > 1) {
+        const parts = pairSafeParts(group);
+        if (parts.length <= 1) break;
+        pending.splice(0, 1, ...parts);
+        continue;
+      }
+    }
     if (group.length > 1) {
-      pending.splice(0, 1, ...group.map(row => [row]));
-      continue;
+      const parts = pairSafeParts(group);
+      if (parts.length > 1) {
+        pending.splice(0, 1, ...parts);
+        continue;
+      }
+      // A tool call/result pair is larger than one fragment. Keep the pair in
+      // one fragment and trim each row only for the summary request; the
+      // complete source remains available through context expansion.
+      const clipped = clipAtomicBlock(group, limit);
+      selected.push(...clipped.rows);
+      splitRecords += clipped.splitRecords;
+      pending.shift();
+      break;
     }
     const row = group[0];
     const offset = row.fragment?.offset || 0;
@@ -121,6 +145,30 @@ function selectFragment(units, limit) {
     break;
   }
   return { text: encode(selected), consumed: selected, remaining: pending, splitRecords };
+}
+
+function clipAtomicBlock(rows, limit) {
+  const base = rows.map(row => ({ ...row, text: '' }));
+  if (historyLength(base, limit) > limit)
+    throw new Error('A tool interaction has metadata too large for the compaction budget; original history is retained.');
+  let low = 0, high = Math.max(...rows.map(row => row.text.length)), best = base;
+  while (low <= high) {
+    const perRow = Math.floor((low + high) / 2);
+    let clipped = 0;
+    const candidate = rows.map(row => {
+      const length = Math.min(row.text.length, perRow);
+      if (length < row.text.length) clipped++;
+      const fragment = row.fragment || length < row.text.length
+        ? { offset: row.fragment?.offset || 0, total: row.fragment?.total || row.text.length } : null;
+      return { ...row, text: row.text.slice(0, length), ...(fragment ? { fragment } : {}) };
+    });
+    if (historyLength(candidate, limit) <= limit) {
+      best = candidate;
+      best.splitRecords = clipped;
+      low = perRow + 1;
+    } else high = perRow - 1;
+  }
+  return { rows: best, splitRecords: best.splitRecords || 0 };
 }
 
 // Keep at most one look-ahead group and the current fragment in memory. The

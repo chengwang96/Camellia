@@ -17,10 +17,10 @@ def rpc(method, payload=None):
         raise RuntimeError(response['error'])
     return response['result']
 
-bridge = """window.wakeCalls = 0;
+bridge = """window.wakeCalls = 0; window.refreshCalls = 0;
 window.camelliaDevices = { onEvent: () => () => {}, onTransfer: () => () => {}, call: async () => ({ok:true,result:{}}) };
 window.dshDesktop = new Proxy({}, {get: (_, method) => {
-  if (method === 'providerRefresh') return payload => { window.lastQuotaRefresh = payload; return window.testRpc('providerInsights'); };
+  if (method === 'kimiAccountRefresh') return async () => { window.refreshCalls++; return window.testRpc('kimiAccountState'); };
   if (method === 'kimiAccountWake') return async () => { window.wakeCalls++; const state = await window.testRpc('kimiAccountState'); return {...state, wakeSent:true}; };
   if (method === 'onKimiAccount') return fn => {window.deliverKimiAccount = fn; return () => {};};
   if (method === 'onProviderInsights') return fn => {window.deliverInsights = fn; return () => {};};
@@ -51,9 +51,11 @@ try:
                 elif interaction == 'focus': note_button.focus()
                 bounds = note_button.bounding_box()
                 assert bounds['width'] == bounds['height'] == 36, (theme, interaction, bounds)
-            page.locator('#kimiUsage').click()
-            expect(page.locator('#status')).to_contain_text('Account status updated.')
-            assert page.evaluate('lastQuotaRefresh') == {'subscriptionId': 'kimi:default'}
+            # The account card owns refresh; there is no duplicate panel button.
+            expect(page.locator('#kimiUsage')).to_have_count(0)
+            card.locator('[data-card-action=refresh]').click()
+            expect(card.locator('[data-card-action=refresh]')).to_be_enabled()
+            assert page.evaluate('refreshCalls') == 1
             # The Kimi card offers the same explicit wake action as Codex, so a
             # user can send one greeting through the subscription on demand.
             wake = card.locator('[data-card-action=wake]')

@@ -24,7 +24,7 @@ android {
         applicationId 'app.camellia.mobile'
         minSdk 26
         targetSdk 35
-        versionCode 108
+        versionCode 112
         versionName '1.1.0'
         testInstrumentationRunner 'android.test.InstrumentationTestRunner'
         if (releaseSmoke) testApplicationId 'app.camellia.mobile.release.test'

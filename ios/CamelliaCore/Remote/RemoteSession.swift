@@ -129,12 +129,10 @@ final class RemoteSession {
         open?.cancel()
         downloads.forEach { $0.cancel() }
         transport.cancelCurrentRequest()
-        if commandTransport !== transport { commandTransport.cancelCurrentRequest() }
-        if urgentTransport !== transport && urgentTransport !== commandTransport { urgentTransport.cancelCurrentRequest() }
     }
 
-    /// Ends the session for good. Stream changes use `invalidate()` alone,
-    /// because the same transport must still serve the next conversation.
+    /// Ends the session for good. Stream changes use `invalidate()` alone:
+    /// commands live on their own transports and must survive a page change.
     func shutdown() {
         invalidate()
         transport.cancel()
@@ -318,6 +316,38 @@ final class RemoteSession {
                 // Even a stale result must reach AppModel so it can remove the
                 // private export folder. Never hand an old computer's file to
                 // the current screen as a success.
+                let active = self.isCurrent(ticket) && (try? transfer.check()) != nil
+                completion(active ? result : .failure(ArtifactTransfer.Failure.cancelled))
+            }
+        }
+        return transfer
+    }
+
+    func messageAttachment(conversationId: String, seq: Int64, index: Int, expectedSize: Int64,
+                           completion: @escaping (Result<Data, Error>) -> Void) -> ArtifactTransfer {
+        let transfer = ArtifactTransfer()
+        let id = UUID()
+        lock.lock()
+        let ticket = generation
+        artifactTransfers[id] = transfer
+        lock.unlock()
+        downloadQueue.async {
+            let result: Result<Data, Error>
+            do {
+                try transfer.check()
+                guard self.isCurrent(ticket) else { throw ArtifactTransfer.Failure.cancelled }
+                let data = try self.transport.messageAttachment(conversationId: conversationId, seq: seq,
+                                                                index: index, expectedSize: expectedSize)
+                try transfer.check()
+                guard self.isCurrent(ticket) else { throw ArtifactTransfer.Failure.cancelled }
+                result = .success(data)
+            } catch {
+                result = .failure(error)
+            }
+            self.lock.lock()
+            self.artifactTransfers.removeValue(forKey: id)
+            self.lock.unlock()
+            DispatchQueue.main.async {
                 let active = self.isCurrent(ticket) && (try? transfer.check()) != nil
                 completion(active ? result : .failure(ArtifactTransfer.Failure.cancelled))
             }

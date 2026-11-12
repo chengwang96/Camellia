@@ -121,7 +121,7 @@ final class ArtifactMessageView extends LinearLayout {
         if (List.of("XLS", "XLSX", "CSV", "TSV").contains(extension)) return "spreadsheet";
         if (List.of("PPT", "PPTX").contains(extension)) return "presentation";
         if (List.of("PNG", "JPG", "JPEG", "GIF", "WEBP", "SVG").contains(extension)) return "image";
-        if (List.of("MP4", "WEBM").contains(extension)) return "video";
+        if (List.of("MP4", "M4V", "MOV", "WEBM").contains(extension)) return "video";
         if (List.of("MP3", "WAV").contains(extension)) return "audio";
         return "text";
     }

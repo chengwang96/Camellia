@@ -142,6 +142,39 @@ test('chat renders local Markdown images with resolved paths and preview control
   assert.doesNotMatch(chatRenderer()('![Preview](D:/Code/DSH/image.png'), /<img /);
 });
 
+test('chat renders only explicit Markdown videos as inline players', () => {
+  for (const target of ['D:/Code/DSH/artifacts/demo.mp4', 'artifacts/demo.webm', 'file:///D:/Code/DSH/artifacts/demo.mov']) {
+    const html = chatRenderer()('![演示](' + target + ')');
+    assert.match(html, /<video class="chat-inline-video"/);
+    assert.match(html, /controls preload="metadata" playsinline/);
+    assert.match(html, /aria-label="演示"/);
+    assert.match(html, /data-chat-file="D:\/Code\/DSH\/artifacts\/demo\.(?:mp4|webm|mov)"/);
+  }
+  assert.match(chatRenderer()('![Remote](https://example.com/demo.mp4?download=1)'),
+    /<video class="chat-inline-video" src="https:\/\/example\.com\/demo\.mp4\?download=1"/);
+  assert.doesNotMatch(chatRenderer()('[Artifact](artifacts/demo.mp4)'), /<video /);
+  assert.doesNotMatch(chatRenderer()('`![Example](artifacts/demo.mp4)`'), /<video /);
+  assert.doesNotMatch(chatRenderer()('![Example](artifacts/demo.html)'), /<video /);
+  assert.doesNotMatch(chatRenderer()('![Example](https://user:secret@example.com/demo.mp4)'), /<video /);
+});
+
+test('macOS paths and file URLs resolve local inline media', () => {
+  const render = chatRenderer('/Users/alice/Camellia Project');
+  for (const target of [
+    '/Users/alice/Movies/会议 录像.mov',
+    'file:///Volumes/External/clip%20one.mp4',
+  ]) {
+    const html = render('![演示](<' + target + '>)');
+    assert.match(html, /<video class="chat-inline-video"/);
+    assert.match(html, /controls preload="metadata" playsinline/);
+    assert.match(html, /data-chat-file="\/Users\/alice\/Movies\/会议 录像\.mov"|data-chat-file="\/Volumes\/External\/clip one\.mp4"/);
+  }
+  const relative = render('![静态图](<media/封面 图.png>)');
+  assert.match(relative, /<img class="chat-inline-image"/);
+  assert.match(relative, /src="file:\/\/\/Users\/alice\/Camellia%20Project\/media\/%E5%B0%81%E9%9D%A2%20%E5%9B%BE\.png"/);
+  assert.match(relative, /data-chat-file="\/Users\/alice\/Camellia Project\/media\/封面 图\.png"/);
+});
+
 test('chat renders inline and display math while leaving prices and code literal', () => {
   const html = chatRenderer()('质能方程 $E = mc^2$，以及 $J_\\nu(z)=\\frac{1}{2}$。\n\n$$\n\\hat{H}\\,\\psi_n = E_n\\,\\psi_n\n$$\n\n价格 $5 and $10 today, `$E=mc^2$`.');
   assert.match(html, /质能方程 <eq><span class="katex">/);

@@ -731,6 +731,9 @@
 "至少填写一个模型 ID" = "Enter at least one model ID";
 "表格" = "Spreadsheet";
 "视频" = "Video";
+"播放视频" = "Play video";
+"正在下载视频…" = "Downloading video…";
+"无法播放视频，点按重试" = "Video unavailable. Tap to retry.";
 "计划" = "Plan";
 "订阅" = "Subscription";
 "讨论最多 16 个附件。" = "Up to 16 discussion attachments.";

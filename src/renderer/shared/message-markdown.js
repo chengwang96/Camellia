@@ -9,25 +9,32 @@
     return /^[\w.!#$%&'*+/=?^`{|}~-]+@[\w-]+(?:\.[\w-]+)+$/.test(value) ? 'mailto:' + value : null;
   }
   const imageExtension = /\.(?:png|jpe?g|gif|webp|bmp|avif|svg|ico)(?:[?#]|$)/i;
+  const videoExtension = /\.(?:mp4|m4v|mov|webm)(?:[?#]|$)/i;
   function fileUrl(value) {
     const encoded = value.split('/').map(encodeURIComponent).join('/');
     if (/^[a-z]:\//i.test(value)) return 'file:///' + encoded.replace(/^([a-z])%3A/i, '$1:');
     if (value.startsWith('/') && !value.startsWith('//')) return 'file://' + encoded;
     return '';
   }
-  // Images match the chat page: local files and explicit http(s) URLs load, while
-  // data:, javascript: and network shares stay literal text.
-  function imageTarget(value) {
-    if (/^https?:\/\//i.test(value)) return imageExtension.test(value) && safeLink(value) ? value : null;
+  // Media matches the chat page: local files and explicit http(s) URLs load,
+  // while data:, javascript: and network shares stay literal text.
+  function mediaTarget(value) {
+    const kind = imageExtension.test(value) ? 'image' : videoExtension.test(value) ? 'video' : '';
+    if (!kind) return null;
+    if (/^https?:\/\//i.test(value)) return safeLink(value) ? { href: value, kind } : null;
     if (/^file:/i.test(value)) {
-      try { const url = new URL(value); return url.host || !imageExtension.test(decodeURIComponent(url.pathname)) ? null : url.href; }
+      try {
+        const url = new URL(value);
+        return url.host || !(imageExtension.test(decodeURIComponent(url.pathname)) || videoExtension.test(decodeURIComponent(url.pathname)))
+          ? null : { href: url.href, kind };
+      }
       catch { return null; }
     }
     if (/^[a-z]:[\\/]/i.test(value)) {
       const path = value.replace(/\\/g, '/');
-      return imageExtension.test(path) ? fileUrl(path) : null;
+      return { href: fileUrl(path), kind };
     }
-    if (/^\/(?!\/)/.test(value)) return imageExtension.test(value) ? fileUrl(value) : null;
+    if (/^\/(?!\/)/.test(value)) return { href: fileUrl(value), kind };
     return null;
   }
   // Discussions load their math library after this module, so resolve it at render time.
@@ -175,11 +182,16 @@
         node = mathNode(document, mathTokens[Number(text.slice(1, -1))]);
       } else if (text.startsWith('![')) {
         const image = /^!\[([^\]\n]*)\]\(([^\s)]+)\)$/.exec(text);
-        const href = image && allowImages ? imageTarget(image[2]) : null;
-        if (href) {
+        const target = image && allowImages ? mediaTarget(image[2]) : null;
+        if (target?.kind === 'video') {
+          node = document.createElement('video');
+          node.className = 'chat-inline-video'; node.src = target.href;
+          node.controls = true; node.preload = 'metadata'; node.playsInline = true;
+          node.title = target.href; node.setAttribute('aria-label', image[1] || 'Video');
+        } else if (target) {
           node = document.createElement('img');
-          node.className = 'chat-inline-image'; node.src = href;
-          node.alt = image[1] || 'Image'; node.title = href;
+          node.className = 'chat-inline-image'; node.src = target.href;
+          node.alt = image[1] || 'Image'; node.title = target.href;
           node.loading = 'lazy'; node.decoding = 'async'; node.referrerPolicy = 'no-referrer';
         } else node = document.createTextNode(text);
       }

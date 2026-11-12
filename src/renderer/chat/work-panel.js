@@ -3,6 +3,7 @@ window.createWorkPanel = ({ context, setStatus, openFilePreview, shouldFollow, g
   const panel = document.getElementById('workPanel'), body = document.getElementById('workPanelBody');
   const footer = document.getElementById('workPanelFooter'), count = document.getElementById('workPanelCount');
   const toggle = document.getElementById('workPanelToggle'), badge = document.getElementById('workPanelBadge');
+  const main = panel.closest('.main');
   const t = value => window.CamelliaI18n.t(value);
   let tasks = [], selected = null, epoch = 0, fileTicket = 0, busy = false;
   const files = window.CamelliaArtifacts.artifactStore();
@@ -38,11 +39,26 @@ window.createWorkPanel = ({ context, setStatus, openFilePreview, shouldFollow, g
     busy = value;
     panel.querySelectorAll('[data-work-command]').forEach(node => { node.disabled = value; });
   }
+  const panelIsOpen = () => window.CamelliaPanelMotion?.isOpen(panel)
+    ?? (!panel.hidden && !panel.classList.contains('is-closing'));
   function setOpen(open) {
-    panel.hidden = !open; toggle.setAttribute('aria-expanded', String(open));
-    if (open) void gitPanel?.refresh();
+    if (open) {
+      main?.classList.add('has-work-panel');
+      if (window.CamelliaPanelMotion) window.CamelliaPanelMotion.open(panel); else panel.hidden = false;
+      window.dispatchEvent(new CustomEvent('camellia:panel-open', { detail: { name: 'work' } }));
+      void gitPanel?.refresh();
+    } else {
+      main?.classList.remove('has-work-panel');
+      if (window.CamelliaPanelMotion) window.CamelliaPanelMotion.close(panel); else panel.hidden = true;
+    }
+    toggle.setAttribute('aria-expanded', String(open));
+    panel.setAttribute('aria-hidden', String(!open));
+    panel.inert = !open;
   }
-  toggle.onclick = () => setOpen(panel.hidden);
+  window.addEventListener('camellia:panel-open', event => {
+    if (event.detail?.name !== 'work' && panelIsOpen()) setOpen(false);
+  });
+  toggle.onclick = () => setOpen(!panelIsOpen());
   document.getElementById('workPanelClose').onclick = () => { setOpen(false); toggle.focus(); };
   panel.onkeydown = event => { if (event.key === 'Escape') { setOpen(false); toggle.focus(); } };
   body.addEventListener('focusout', event => { if (['INPUT', 'TEXTAREA'].includes(event.target.tagName)) requestAnimationFrame(render); });
@@ -95,6 +111,38 @@ window.createWorkPanel = ({ context, setStatus, openFilePreview, shouldFollow, g
     const meta = el('span', 'work-task-meta', engineName(task.engine));
     if (task.approvals?.length) meta.append(el('span', 'work-attention', t('Needs attention')));
     row.append(meta); return row;
+  }
+  function summaryCard(attention) {
+    if (!tasks.length) return null;
+    const groups = [
+      ['running', tasks.filter(task => ['starting', 'running'].includes(state(task))).length],
+      ['waiting', tasks.filter(task => state(task) === 'waiting').length],
+      ['completed', tasks.filter(task => state(task) === 'completed').length],
+      ['failed', tasks.filter(task => state(task) === 'failed').length],
+      ['stopped', tasks.filter(task => state(task) === 'stopped').length],
+      ['unavailable', tasks.filter(task => state(task) === 'unavailable').length],
+      ['ready', tasks.filter(task => state(task) === 'ready').length],
+    ].filter(([, value]) => value > 0);
+    const card = el('section', 'work-overview');
+    const head = el('div', 'work-overview-head'), total = el('div', 'work-overview-total');
+    total.append(el('strong', '', String(tasks.length)), el('span', '', t('Tasks')));
+    head.append(total);
+    if (attention) head.append(el('span', 'work-overview-attention', t('Needs attention') + ' ' + attention));
+    const meter = el('div', 'work-overview-meter');
+    meter.setAttribute('aria-hidden', 'true');
+    for (const [key, value] of groups) {
+      const segment = el('span', 'work-overview-segment is-' + key);
+      segment.style.width = value / tasks.length * 100 + '%';
+      meter.append(segment);
+    }
+    const legend = el('div', 'work-overview-legend');
+    for (const [key, value] of groups) {
+      const item = el('span', 'work-overview-legend-item');
+      item.append(el('span', 'work-overview-dot is-' + key), el('span', '', t(key) + ' ' + value));
+      legend.append(item);
+    }
+    card.append(head, meter, legend);
+    return card;
   }
   function renderCards() {
     const scroll = document.getElementById('chatScroll'), rect = scroll.getBoundingClientRect();
@@ -150,6 +198,16 @@ window.createWorkPanel = ({ context, setStatus, openFilePreview, shouldFollow, g
       for (const request of task.approvals || []) approvalForm(task, request);
       section('Goal', task.goal);
       if (task.result && task.result !== progressText) section('Result', task.result);
+      if (task.contextPacket) {
+        const packet = disclosure('Context packet', taskKey(task) + ':context-packet', false);
+        packet.append(el('pre', 'work-context-json', JSON.stringify(task.contextPacket, null, 2)));
+        body.append(packet);
+      }
+      if (task.settlement) {
+        const settlement = disclosure('Settlement', taskKey(task) + ':settlement', false);
+        settlement.append(el('pre', 'work-context-json', JSON.stringify(task.settlement, null, 2)));
+        body.append(settlement);
+      }
       if (task.canReply) {
         const form = el('form', 'work-reply'), input = el('textarea', ''); input.required = true; input.maxLength = 32000; input.placeholder = t('Reply to subtask'); input.setAttribute('aria-label', t('Reply to subtask'));
         const key = taskKey(task) + ':reply'; input.value = drafts.get(key) || ''; input.oninput = () => drafts.set(key, input.value);
@@ -176,17 +234,18 @@ window.createWorkPanel = ({ context, setStatus, openFilePreview, shouldFollow, g
         gitPanel.renderSummary(changes);
       }
       const agents = disclosure('Subtasks', 'tasks'); agents.querySelector('summary').append(el('span', 'work-section-count', String(tasks.length)));
-      const active = tasks.filter(task => ['starting', 'running'].includes(task.status)).length;
-      if (active || attention) {
-        const summary = el('div', 'work-overview-summary');
-        if (active) summary.append(el('span', 'work-overview-running', `${t('running')} ${active}`));
-        if (attention) summary.append(el('span', 'work-attention', `${t('Needs attention')} ${attention}`));
-        agents.append(summary);
-      }
       if (!tasks.length) agents.append(el('p', 'work-empty', t('No subtasks yet'))); for (const task of tasks) agents.append(taskRow(task));
       const artifacts = disclosure('Artifacts', 'artifacts'); artifacts.querySelector('summary').append(el('span', 'work-section-count', String(files.size)));
       if (!files.size) artifacts.append(el('p', 'work-empty', t('No artifacts yet')));
-      for (const file of files.values()) { const row = button('', () => void openFilePreview(file.path), 'work-artifact'); row.title = file.path; row.dataset.workFocus = 'file:' + fileKey(file); row.append(el('strong', '', file.name), el('small', '', file.origin)); artifacts.append(row); }
+      for (const file of files.values()) {
+        const row = button('', () => void openFilePreview(file.path), 'work-artifact'), icon = el('span', 'work-artifact-icon');
+        icon.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 3h7l4 4v14H7z"/><path d="M14 3v5h5"/></svg>';
+        row.title = file.path; row.dataset.workFocus = 'file:' + fileKey(file);
+        row.append(icon, el('strong', '', file.name), el('small', '', file.origin));
+        artifacts.append(row);
+      }
+      const summary = summaryCard(attention);
+      if (summary) body.append(summary);
       if (changes) body.append(changes);
       body.append(agents, artifacts);
     }

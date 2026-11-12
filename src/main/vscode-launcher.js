@@ -69,8 +69,11 @@ function validateVSCodeExecutable(value, { platform = process.platform, fileSyst
   const p = platformPath(platform);
   if (!p.isAbsolute(executable)) throw new Error('Use an absolute path for the VS Code executable.');
   try {
-    if (!fileSystem.statSync(executable).isFile()) throw new Error('Not a file');
-    fileSystem.accessSync(executable, (fileSystem.constants || fs.constants).R_OK);
+    const stat = fileSystem.statSync(executable);
+    const appBundle = platform === 'darwin' && executable.endsWith('.app') && stat.isDirectory();
+    if (!stat.isFile() && !appBundle) throw new Error('Not a file');
+    fileSystem.accessSync(executable, platform === 'win32'
+      ? (fileSystem.constants || fs.constants).R_OK : (fileSystem.constants || fs.constants).X_OK);
   } catch { throw new Error('The VS Code executable does not exist or cannot be read.'); }
   return p.normalize(executable);
 }
@@ -88,6 +91,32 @@ function validateWorkspaceDirectory(value, { platform = process.platform, fileSy
   return p.normalize(directory);
 }
 
+function macOSAppBundle(executable) {
+  const marker = executable.lastIndexOf('.app/');
+  if (marker !== -1) return executable.slice(0, marker + 4);
+  return executable.endsWith('.app') ? executable : '';
+}
+
+function launchSpec(executable, directory, { platform = process.platform, env = process.env } = {}) {
+  if (platform === 'darwin') {
+    const app = macOSAppBundle(executable);
+    if (app) return { command: '/usr/bin/open', args: ['-a', app, directory] };
+    return { command: executable, args: [directory] };
+  }
+  if (platform !== 'win32') return { command: executable, args: [directory] };
+  const p = path.win32;
+  return {
+    // A copied environment can expose the Windows variable under its original
+    // uppercase spelling, so an exact `SystemRoot` key may be absent.
+    command: p.join(env.SystemRoot || env.SYSTEMROOT || 'C:\\Windows', 'System32', 'cmd.exe'),
+    args: ['/d', '/s', '/c', 'start "" "%CAMELLIA_VSCODE_EXECUTABLE%" "%CAMELLIA_VSCODE_WORKSPACE%"'],
+    options: {
+      windowsVerbatimArguments: true,
+      env: { ...env, CAMELLIA_VSCODE_EXECUTABLE: executable, CAMELLIA_VSCODE_WORKSPACE: directory },
+    },
+  };
+}
+
 async function openWorkspaceInVSCode(workspacePath, options = {}) {
   const fileSystem = options.fileSystem || fs;
   const directory = validateWorkspaceDirectory(workspacePath, { ...options, fileSystem });
@@ -97,7 +126,10 @@ async function openWorkspaceInVSCode(workspacePath, options = {}) {
     : detectVSCodeInstallations({ ...options, fileSystem })[0];
   if (!installation) throw new Error('No VS Code installation was found. Choose an executable in Settings → General.');
   const spawnProcess = options.spawnProcess || spawn;
-  const child = spawnProcess(installation.path, [directory], { detached: true, stdio: 'ignore', windowsHide: true });
+  const launch = launchSpec(installation.path, directory, options);
+  const child = spawnProcess(launch.command, launch.args, {
+    detached: true, stdio: 'ignore', windowsHide: true, ...launch.options,
+  });
   await new Promise((resolve, reject) => {
     child.once('error', reject);
     child.once('spawn', resolve);

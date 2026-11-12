@@ -101,6 +101,7 @@ with sync_playwright() as p:
             expect(page.locator('#goalChipRow .goal-chip').first).to_contain_text('Goal ·')
             page.evaluate('deliverGoal({...currentGoal,phase:"blocked",armed:false,activeSince:null,blockedReason:{message:"The required dataset is unavailable."}})')
             expect(page.locator('#goalChipRow .goal-chip').first).to_contain_text('Goal blocked')
+            expect(page.locator('#goalChipRow .goal-chip').first).to_contain_text('dataset is unavailable')
             page.locator('#goalChipRow .goal-chip').first.click()
             expect(page.locator('.dsh-pop')).to_contain_text('dataset is unavailable')
             page.locator('.dsh-pop .pop-row',has_text='Resume goal').click()
@@ -1073,6 +1074,10 @@ with sync_playwright() as p:
     page.wait_for_function("document.querySelector('#modelPillName').textContent==='model-c'")
     assert not page.evaluate("window.actions.some(a => a.action==='save-settings' && a.payload.thinkingBudget==='ultra')"), \
         'an unsupported reasoning level must not be saved'
+    # The stale quick-switch level is ignored, but the current level both
+    # models offer still survives the switch instead of resetting to Default.
+    assert page.evaluate("window.actions.filter(a => a.action==='save-settings').at(-1).payload.thinkingBudget==='high'"), \
+        'a supported current reasoning level must be kept'
     page.evaluate("window.quickSwitchModels = {}")
     page.evaluate("window.quickSwitchLevels = {}")
     page.locator('#modelPill').dblclick()

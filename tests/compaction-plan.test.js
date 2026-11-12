@@ -31,6 +31,66 @@ test('packs complete tool interactions without splitting JSON or mutating the so
   assert.equal(units.length, 2);
 });
 
+test('a tool call and result remain in the same fragment when an interaction is split', () => {
+  const call = { seq: 2, role: 'tool', text: JSON.stringify({ type: 'tool_use', id: 'tool-1', name: 'read' }) };
+  const middle = { seq: 3, role: 'assistant', text: 'Between call and result.' };
+  const result = { seq: 4, role: 'tool', text: JSON.stringify({ type: 'tool_result', tool_use_id: 'tool-1', content: 'ok' }) };
+  const rows = [{ seq: 1, role: 'user', text: 'Do work.' }, call, middle, result,
+    { seq: 5, role: 'assistant', text: 'x'.repeat(800) }];
+  const group = planCompaction(rows, 100000).units[0];
+  const limit = JSON.stringify({ history: group.slice(0, 4) }).length;
+  const first = takeFragment([group], limit);
+  assert.deepEqual(JSON.parse(first.text).history.map(row => row.sourceSeq), [1, 2, 3, 4]);
+  assert.deepEqual(first.remaining.flat().map(row => row.sourceSeq), [5]);
+});
+
+test('an oversized tool pair is clipped together instead of split across fragments', () => {
+  const call = { seq: 1, role: 'tool', text: JSON.stringify({ type: 'tool_use', id: 'tool-2', name: 'read', input: 'a'.repeat(6000) }) };
+  const result = { seq: 2, role: 'tool', text: JSON.stringify({ type: 'tool_result', tool_use_id: 'tool-2', content: 'b'.repeat(6000) }) };
+  const group = planCompaction([call, result], 100000).units[0];
+  const fragment = takeFragment([group], 1200);
+  const history = JSON.parse(fragment.text).history;
+  assert.equal(history.length, 2);
+  assert.deepEqual(history.map(row => row.sourceSeq), [1, 2]);
+  assert.ok(history.every(row => row.text.length < 6000));
+  assert.ok(history.every(row => row.fragment?.total >= 6000));
+  assert.equal(fragment.remaining.length, 0);
+  assert.equal(fragment.splitRecords, 2);
+});
+
+test('multiple interleaved tool pairs remain atomic across fragment boundaries', () => {
+  const call = (seq, id) => ({ seq, role: 'tool', text: JSON.stringify({ type: 'tool_use', id, name: 'read' }) });
+  const result = (seq, id) => ({ seq, role: 'tool', text: JSON.stringify({ type: 'tool_result', tool_use_id: id, content: 'ok' }) });
+  const rows = [
+    { seq: 1, role: 'user', text: 'Run both checks.' },
+    call(2, 'first'), { seq: 3, role: 'assistant', text: 'Between the calls.' }, result(4, 'first'),
+    call(5, 'second'), result(6, 'second'), { seq: 7, role: 'assistant', text: 'Both checks finished.' },
+  ];
+  const group = planCompaction(rows, 100000).units[0];
+  let pending = [group], fragments = 0;
+  const occurrences = new Map();
+  while (pending.length && fragments++ < 20) {
+    const fragment = takeFragment(pending, 700);
+    const history = JSON.parse(fragment.text).history;
+    for (const row of history) {
+      for (const id of ['first', 'second']) if (row.text.includes(id)) occurrences.set(id, (occurrences.get(id) || 0) + 1);
+    }
+    pending = fragment.remaining;
+  }
+  assert.equal(occurrences.get('first'), 2);
+  assert.equal(occurrences.get('second'), 2);
+});
+
+test('nested tool content ids are paired before a fragment is split', () => {
+  const call = { seq: 1, role: 'tool', text: JSON.stringify({ type: 'gui:tool',
+    message: { content: [{ type: 'tool_use', id: 'nested-1', name: 'read' }] } }) };
+  const result = { seq: 2, role: 'tool', text: JSON.stringify({ content: [
+    { type: 'tool_result', tool_use_id: 'nested-1', content: 'nested result' }] }) };
+  const group = planCompaction([call, result], 100000).units[0];
+  const fragment = takeFragment([group], 500);
+  assert.deepEqual(JSON.parse(fragment.text).history.map(row => row.sourceSeq), [1, 2]);
+});
+
 test('streamed planning retains the same complete recent interactions as array planning', () => {
   const rows = [
     { seq: 1, role: 'assistant', text: 'Earlier context' },

@@ -65,7 +65,11 @@ function configure(manager, conversation, payload) {
     if (!current.quickSwitch?.available) fail(409, 'Set an available quick-switch default model on the desktop first');
     const model = current.models.find(m => m.id === current.quickSwitch.model && m.connection === current.quickSwitch.connection)
       || current.models.find(m => m.id === current.quickSwitch.model);
-    changes = { model: model.id, connection: model.connection, thinking: model.thinking.includes(current.quickSwitch.thinking) ? current.quickSwitch.thinking : '' };
+    // The configured quick-switch level wins when the target model offers it;
+    // otherwise keep the current level if it is also supported.
+    const thinking = model.thinking.includes(current.quickSwitch.thinking) ? current.quickSwitch.thinking
+      : current.thinking && model.thinking.includes(current.thinking) ? current.thinking : '';
+    changes = { model: model.id, connection: model.connection, thinking };
   }
   if (!changes || typeof changes !== 'object' || Array.isArray(changes) || !Object.keys(changes).length
       || Object.keys(changes).some(key => !['model', 'connection', 'thinking', 'permissionMode', 'fastMode'].includes(key))
@@ -90,7 +94,11 @@ function configure(manager, conversation, payload) {
       // Picking a model from the other group switches this conversation's
       // connection, exactly like choosing across groups in the desktop composer.
       if (model.id !== current.model || model.connection !== current.connection) {
-        patch.thinkingBudget = ''; patch.contextWindow = model.contextWindow || 0;
+        // Keep the current reasoning level when the target model offers it;
+        // only an unsupported level falls back to the model default.
+        patch.thinkingBudget = changes.thinking === undefined && current.thinking
+          && model.thinking?.includes(current.thinking) ? current.thinking : '';
+        patch.contextWindow = model.contextWindow || 0;
       }
       if (model.connection !== current.connection) patch.connection = model.connection;
     }

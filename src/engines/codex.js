@@ -16,6 +16,7 @@ const { fastTier } = require('../shared/codex-speed');
 const { downloadSettings } = require('../main/download-network');
 const accountOptions = require('./subscription-accounts');
 const { quotaPatch, createResetCredits } = require('./codex-reset-credits');
+const weeklyProbe = require('./codex-weekly-probe');
 const { getDiscussionLaunch, buildDiscussionSpec, assertDiscussionPoolAccess } = require('./discussions/native-launch');
 
 function createCodex({ dataDir, loadConfig, saveConfig, getRoute, getModels = () => [], getContextWindow = () => undefined, runtimes, environment = () => process.env,
@@ -32,6 +33,8 @@ function createCodex({ dataDir, loadConfig, saveConfig, getRoute, getModels = ()
   let pendingAccount = null;
   const wakingAccounts = new Set();
   const wakeClients = new Set();
+  const weeklyTimers = new Map();
+  let weeklyProbeQueue = Promise.resolve();
   const connections = () => loadConfig().codexSessionConnections || {};
   const accountBindings = () => loadConfig().codexSessionAccounts || {};
   const accountList = () => accountOptions.accountsFor(loadConfig(), 'codex');
@@ -130,22 +133,104 @@ function createCodex({ dataDir, loadConfig, saveConfig, getRoute, getModels = ()
     }
     return accountState();
   }
+  function weeklyProbeEnabled() { return loadConfig().subscriptionWeeklyProbe?.codex === true; }
+  function clearWeeklyCheck(id) {
+    const timer = weeklyTimers.get(id);
+    if (timer === undefined) return;
+    clearTimeout(timer); weeklyTimers.delete(id);
+  }
+  // A known weekly reset time can be checked directly instead of waiting for
+  // the next general account refresh. That refresh remains the fallback.
+  function scheduleWeeklyCheck(id) {
+    clearWeeklyCheck(id);
+    if (!weeklyProbeEnabled()) return;
+    const entry = accountEntry(id);
+    if (entry.removing || !entry.state.account || entry.loginId) return;
+    const next = weeklyProbe.nextWeeklyReset(entry.state.rateLimits);
+    if (next === null) return;
+    const timer = setTimeout(() => {
+      weeklyTimers.delete(id);
+      void refreshAccount(id).catch(error => log('Codex weekly quota check: ' + error.message));
+    }, Math.max(60000, next * 1000 + 60000 - Date.now()));
+    timer.unref?.();
+    weeklyTimers.set(id, timer);
+  }
+  // Record the future reset time first, then decide whether a past cycle needs
+  // a greeting. Without a signed-in account, models or runtime the observation
+  // is still kept but no probe is attempted.
+  function prepareWeeklyProbe(id, entry) {
+    if (!weeklyProbeEnabled() || wakingAccounts.has(id)) return null;
+    const records = weeklyProbe.observeWeekly(entry.state.rateLimits, entry.state.weeklyProbe);
+    if (entry.removing || !entry.state.account || entry.loginId || !entry.state.models?.length) return { records, due: [] };
+    let runtime = null;
+    try { runtime = runtimes().locate('codex'); } catch { /* runtime lookup failure stays retryable */ }
+    if (!runtime) return { records, due: [] };
+    const now = Date.now();
+    const due = weeklyProbe.dueWeeklyProbe({ rateLimits: entry.state.rateLimits, records, now });
+    return { records: due.length ? weeklyProbe.markWeeklyAttempt(records, due, now) : records, due };
+  }
+  async function wakeSubscriptionAccount(id) {
+    const entry = accountEntry(id);
+    if (!entry.state.account || entry.loginId) throw new Error('Sign in to this account first');
+    const runtime = runtimes().locate('codex');
+    if (!runtime) throw new Error('Download Codex CLI in Settings → Engine Settings first');
+    const model = (entry.state.models || []).find(model => model.isDefault)?.id || entry.state.models?.[0]?.id;
+    if (!model) throw new Error('Refresh the account to load its models first');
+    const cwd = path.join(home, 'wake'); fs.mkdirSync(cwd, { recursive: true });
+    let wakeClient;
+    try {
+      await require('./codex-wake').wakeAccount({ cwd, model,
+        usageMeter: createUsageMeter('codex', { settings: { connection: 'subscription', subscriptionId: id, model } }),
+        createClient: callbacks => {
+          wakeClient = createAccountClient({ ...spec('subscription', runtime, cwd, model, undefined, id), ...callbacks, log });
+          wakeClients.add(wakeClient); return wakeClient;
+        } });
+    } finally { wakeClients.delete(wakeClient); }
+    let warning;
+    try { await refreshAccount(id); } catch { warning = 'Greeting sent. Quota refresh failed; refresh it again later.'; }
+    return { model, warning };
+  }
+  async function runWeeklyProbe(id, due) {
+    if (!weeklyProbeEnabled()) return;
+    const entry = accountEntry(id);
+    if (entry.removing || !entry.state.account || entry.loginId || wakingAccounts.has(id)) return;
+    wakingAccounts.add(id);
+    try {
+      const { warning } = await wakeSubscriptionAccount(id);
+      entry.state.weeklyProbe = weeklyProbe.markWeeklyProbe(entry.state.weeklyProbe, due, { warning });
+      writeJson(entry.stateFile, entry.state); onAccount(accountState(id));
+      log('Codex weekly quota refreshed; test message sent for account ' + id);
+    } catch (error) {
+      entry.state.weeklyProbe = weeklyProbe.markWeeklyFailure(entry.state.weeklyProbe, due, { error: error.message });
+      try { writeJson(entry.stateFile, entry.state); onAccount(accountState(id)); } catch { /* keep the retry marker in memory */ }
+      log('Codex weekly quota test message failed for ' + id + ': ' + error.message);
+    } finally { wakingAccounts.delete(id); }
+  }
+  function queueWeeklyProbe(id, due) {
+    // Accounts that refresh together send their greetings one at a time so a
+    // startup check does not launch several Codex processes at once.
+    weeklyProbeQueue = weeklyProbeQueue.then(() => runWeeklyProbe(id, due), () => runWeeklyProbe(id, due));
+  }
   function publishAccount(id, patch) {
     const value = accountEntry(id);
     if (value.removing) return;
     value.state = { ...value.state, ...patch };
     if (patch.rateLimits) value.state.quotaHistory = require('./quota-history').recordQuota(value.state.quotaHistory, patch.rateLimits);
+    const probe = patch.rateLimits ? prepareWeeklyProbe(id, value) : null;
+    if (probe) value.state.weeklyProbe = probe.records;
 
     if (pendingAccount?.id === id && value.state.account) {
       saveAccountConfig({ accounts: [...accountList(), pendingAccount], activeId: id });
       pendingAccount = null;
     }
     writeJson(value.stateFile, value.state); onAccount(accountState(id));
+    scheduleWeeklyCheck(id);
+    if (probe?.due.length) queueWeeklyProbe(id, probe.due);
   }
   async function discardDraft(id) {
     if (accountList().some(account => account.id === id)) return;
     const value = accountEntry(id);
-    value.removing = true;
+    value.removing = true; clearWeeklyCheck(id);
     if (pendingAccount?.id === id) pendingAccount = null;
     await value.client?.shutdown();
     const dir = accountHome(id);
@@ -335,24 +420,11 @@ function createCodex({ dataDir, loadConfig, saveConfig, getRoute, getModels = ()
       if (wakingAccounts.has(id)) throw new Error('This account is already waking');
       const entry = accountEntry(id);
       if (!entry.state.account || entry.loginId) throw new Error('Sign in to this account first');
-      const runtime = runtimes().locate('codex');
-      if (!runtime) throw new Error('Download Codex CLI in Settings → Engine Settings first');
-      const model = (entry.state.models || []).find(model => model.isDefault)?.id || entry.state.models?.[0]?.id;
-      if (!model) throw new Error('Refresh the account to load its models first');
       wakingAccounts.add(id);
-      let wakeClient;
       try {
-        const cwd = path.join(home, 'wake'); fs.mkdirSync(cwd, { recursive: true });
-        await require('./codex-wake').wakeAccount({ cwd, model,
-          usageMeter: createUsageMeter('codex', { settings: { connection: 'subscription', subscriptionId: id, model } }),
-          createClient: callbacks => {
-            wakeClient = new CodexClient({ ...spec('subscription', runtime, cwd, model, undefined, id), ...callbacks, log });
-            wakeClients.add(wakeClient); return wakeClient;
-          } });
-        let warning;
-        try { await refreshAccount(id); } catch { warning = 'Greeting sent. Quota refresh failed; refresh it again later.'; }
+        const { warning } = await wakeSubscriptionAccount(id);
         return { ok: true, ...accountState(), wakeSent: true, warning };
-      } finally { wakingAccounts.delete(id); wakeClients.delete(wakeClient); }
+      } finally { wakingAccounts.delete(id); }
     },
     'account-select': payload => {
       const id = String(payload?.id || '');
@@ -391,7 +463,7 @@ function createCodex({ dataDir, loadConfig, saveConfig, getRoute, getModels = ()
       if (!accounts.some(account => account.id === id)) throw new Error('Unknown Codex account');
       if (sessions.running || goal.armed || isBusy()) throw new Error('Stop the Codex response or goal before removing an account');
       const value = accountEntry(id);
-      value.removing = true;
+      value.removing = true; clearWeeklyCheck(id);
       await sessions.shutdown();
       if (value.loginId) { try { await value.client?.request('account/login/cancel', { loginId: value.loginId }); } catch { /* already gone */ } }
       value.loginId = null;
@@ -469,11 +541,17 @@ function createCodex({ dataDir, loadConfig, saveConfig, getRoute, getModels = ()
   return { get session() { return sessions.legacy; },
     get active() { return Boolean(sessions.active || [...accountEntries.values()].some(entry => entry.client && !entry.client.dead)); },
     home, goal, settings, saveSettings, handlers, ensureSession, forkNative, history, sessions, workspaces, accountState, syncAccountSelection,
+    syncWeeklyChecks: () => {
+      for (const account of accountList()) {
+        try { scheduleWeeklyCheck(account.id); } catch (error) { log('Codex weekly check: ' + error.message); }
+      }
+    },
     generateTitle: ({ conversation, prompt }) => {
       const session = sessions.get({ conversationId: conversation.id });
       return session && !session.dead ? session.generateTitle(prompt) : '';
     },
     async shutdown() {
+      for (const id of [...weeklyTimers.keys()]) clearWeeklyCheck(id);
       await Promise.allSettled([...wakeClients].map(client => client.shutdown()));
       await sessions.shutdown();
       await Promise.allSettled([...accountEntries.values()].map(entry => entry.client?.shutdown()));

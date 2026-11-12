@@ -28,9 +28,9 @@ const SETTINGS_FILES = new Map([
 ]);
 const ENGINES = ['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'grok'];
 const PREFERENCE_KEYS = ['language', 'theme', 'closeToTray', 'autoRefreshBalances', 'accountRefreshMinutes',
-  'chatContentWidth', 'network', 'downloadProxy', 'conversations', 'memoryDirectory', 'computerName'];
+  'chatContentWidth', 'advancedAnimations', 'showConversationNavigator', 'network', 'downloadProxy', 'conversations', 'memoryDirectory', 'contextMemory', 'computerName'];
 const ENGINE_MAP_KEYS = ['quickSwitchModels', 'quickSwitchConnections', 'quickSwitchLevels', 'hiddenSubscriptionModels',
-  'subscriptionAutoRefresh', 'subscriptionAutoSwitch'];
+  'subscriptionAutoRefresh', 'subscriptionAutoSwitch', 'subscriptionWeeklyProbe'];
 const ENGINE_KEYS = ['permissionMode', 'thinkingBudget', 'contextWindow', 'cwd', 'proxyUrl'];
 const CONVERSATION_CONFIG = 'app/conversation-config.json';
 const CONVERSATION_KEYS = ['claudeMeta', 'codexMeta', 'kimiMeta', 'antigravityMeta', 'grokMeta', 'sharedMeta',

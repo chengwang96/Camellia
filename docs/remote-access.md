@@ -48,9 +48,12 @@ The desktop displays the root address, for example `http://100.80.1.2:43127`. JS
 | GET | `/v1/conversations?offset=0` | Up to 100 authorized conversations per page, plus `nextOffset`. |
 | GET | `/v1/conversations/{id}` | Recent history, live state, approvals, queue state, and pagination cursor. |
 | GET | `/v1/conversations/{id}?before={seq}` | Older history page. |
+| GET | `/v1/conversations/{id}/attachments/{seq}/{index}` | Bytes for an attachment the phone sent on that message, scoped to the gateway's mobile-upload folders. |
 | GET | `/v1/conversations/{id}/events` | Server-sent snapshot when the conversation changes. |
 | GET | `/v1/conversations/events` | Server-sent list snapshots with `listVersion`, `instanceId`, and cursor. |
 | GET | `/v1/api-keys` | Plaintext API-route export; requires all-access control permission and the `api-keys` capability. |
+
+User rows may include `attachedFiles` with each file's display name, image flag and, for newly uploaded files, byte size. The attachment endpoint resolves the named message and index again, serves only files this gateway stored under its `device-attachments` or `mobile-images` folders, and never exposes a phone or desktop filesystem path. Desktop-local files that appear in the same history row remain name-only on the phone.
 
 `POST /v1/conversations/{id}/commands` accepts an idempotent `requestId`, the current `instanceId`, and an `action`. Supported actions include `send`, `find`, `stop`, `approve`, `configure`, `compact`, queue control, Goal control, and scheduled-task control when advertised in `capabilities`. `send` accepts `prompt`, `expectedSeq`, and optional `queue: true`; a queue holds at most 50 messages per conversation and 200 overall. `/find …` text is answered on the desktop without starting an engine; a newer client can use the dedicated `find` action. An approval is bound to `runId`, `approvalId`, and a content fingerprint, and only grants or denies one request. `stop` must match the current `runId`.
 

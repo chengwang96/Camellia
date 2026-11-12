@@ -142,6 +142,16 @@ function sha256File(file) {
   return hash.digest('hex');
 }
 
+function packagedApplicationPath(executablePath, platform = process.platform) {
+  const p = platform === 'win32' ? path.win32 : path.posix;
+  const executableDirectory = p.dirname(executablePath);
+  if (platform === 'darwin' && p.basename(executableDirectory) === 'MacOS'
+      && p.basename(p.dirname(executableDirectory)) === 'Contents') {
+    return p.dirname(p.dirname(executableDirectory));
+  }
+  return executableDirectory;
+}
+
 function createAppUpdates({
   currentVersion,
   platform = process.platform,
@@ -259,4 +269,4 @@ function createAppUpdates({
   return { check, install, state: () => ({ installing }) };
 }
 
-module.exports = { createAppUpdates, selectAsset, parseVersion, digestSha256, sha256File };
+module.exports = { createAppUpdates, selectAsset, parseVersion, digestSha256, sha256File, packagedApplicationPath };

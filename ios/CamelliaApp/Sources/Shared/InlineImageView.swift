@@ -37,7 +37,7 @@ struct InlineImageLoader {
         let request = InlineImageRequest()
         let key = "\(session.computer.address):\(conversationId):\(seq):\(reference)"
         if let cached = cache.image(key) { completion(cached); return request }
-        guard InlineImageReference.isSupported(reference) else { completion(nil); return request }
+        guard InlineImageReference.isImage(reference) else { completion(nil); return request }
         if let url = InlineImageReference.remoteURL(reference) {
             let receiver = InlineWebReceiver { [weak request] data in
                 guard let request, !request.cancelled else { return }
@@ -60,7 +60,7 @@ struct InlineImageLoader {
         session.artifacts(conversationId: conversationId, selection: ArtifactSelection(seq: seq, reference: reference)) { result in
             guard !request.cancelled, case .success(let page) = result,
                   let artifact = page.items.first(where: {
-                      InlineImageReference.isSupported($0.name) && $0.size >= 0 && $0.size <= InlineImageReference.maximumBytes
+                      InlineImageReference.isImage($0.name) && $0.size >= 0 && $0.size <= InlineImageReference.maximumBytes
                           && $0.id.range(of: "^[a-f0-9]{64}$", options: .regularExpression) != nil
                   }) else { completion(nil); return }
             let folder = FileManager.default.temporaryDirectory.appendingPathComponent("camellia-inline-\(UUID().uuidString)", isDirectory: true)
@@ -77,6 +77,30 @@ struct InlineImageLoader {
                 if let image { cache.insert(image, key: key) }
                 completion(image)
             }
+        }
+        return request
+    }
+
+    func loadAttachment(seq: Int64, index: Int, size: Int64?,
+                        completion: @escaping (UIImage?) -> Void) -> InlineImageRequest {
+        let request = InlineImageRequest()
+        let expected = size ?? -1
+        let key = "\(session.computer.address):\(conversationId):attachment:\(seq):\(index):\(expected)"
+        if let cached = cache.image(key) { completion(cached); return request }
+        guard seq > 0, index >= 0, expected <= 4 * 1024 * 1024 else {
+            completion(nil)
+            return request
+        }
+        request.transfer = session.messageAttachment(conversationId: conversationId, seq: seq,
+                                                     index: index, expectedSize: expected) { result in
+            guard !request.cancelled, case .success(let data) = result,
+                  Int64(data.count) <= 4 * 1024 * 1024 else {
+                completion(nil)
+                return
+            }
+            let image = InlineImageDecoder.decode(data)
+            if let image { cache.insert(image, key: key) }
+            completion(image)
         }
         return request
     }
@@ -156,7 +180,7 @@ final class InlineImageModel: ObservableObject {
         guard reference != self.reference else { return }
         cancel()
         self.reference = reference
-        failed = loader == nil || !InlineImageReference.isSupported(reference)
+        failed = loader == nil || !InlineImageReference.isImage(reference)
         guard let loader, !failed else { return }
         request = loader.load(reference) { [weak self] image in
             guard let self, self.reference == reference else { return }

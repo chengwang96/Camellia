@@ -12,7 +12,7 @@ const { INLINE_CHARS, projectRow, isStreamingToolRow } = require('./tool-history
 // cumulative statistics, never message bodies. Fixed-size records allow paging
 // without loading an entire conversation's index into the heap.
 const HEADER = 4096, RECORD = 80, BLOCK = RECORD * 512, READ = 128 * 1024;
-const VERSION = 4;
+const VERSION = 5;
 const FLAGS = { public: 1, visible: 2, remote: 4, user: 8, summary: 16, preview: 32, sequence: 64, tool: 128, file: 256 };
 const signature = stat => stat ? [stat.dev, stat.ino, stat.size, stat.mtimeMs, stat.ctimeMs].join(':') : 'missing';
 const tokens = text => {
@@ -201,7 +201,9 @@ class ConversationHistory {
       if (['user', 'assistant', 'notice'].includes(row.role)) flags |= FLAGS.visible;
       if (!streamingTool && ['user', 'assistant', 'notice', 'tool'].includes(row.role)) flags |= FLAGS.remote;
       if (row.role === 'user') { value.userSeq = Math.max(value.userSeq, seq); value.userAt = Math.max(value.userAt, Number(row.at) || 0); }
-      if (row.role === 'notice' && row.file) { flags |= FLAGS.summary; value.lastSummary = value.count; }
+      if (row.role === 'notice' && (row.file || row.compaction || /^(?:Context compacted|Markdown handoff:)\b/i.test(String(row.text || '')))) {
+        flags |= FLAGS.summary; value.lastSummary = value.count;
+      }
       if (row.role === 'user' && row.attachments?.length || row.role === 'assistant' && row.artifacts?.length) flags |= FLAGS.preview;
       if (row.file || row.attachments?.some(file => file.path || file.fullPath)) { flags |= FLAGS.file; value.hasFiles = true; }
     }
@@ -428,6 +430,19 @@ class ConversationHistory {
       i = i ? this.record(value, i - 1).summaryIndex : -1;
     }
     return null;
+  }
+  summaries(id, { before = Infinity, limit = Infinity } = {}) {
+    const value = this.ensure(id), rows = [];
+    const max = Math.max(0, Number.isFinite(limit) ? limit : Infinity);
+    for (let i = value.lastSummary; i >= 0 && rows.length < max;) {
+      const record = this.record(value, i);
+      if (record.seq < before && (record.flags & FLAGS.sequence || before === Infinity)) {
+        const row = this.row(value, record);
+        rows.push(row);
+      }
+      i = i ? this.record(value, i - 1).summaryIndex : -1;
+    }
+    return rows;
   }
   estimateRange(id, { after = -Infinity, before = Infinity } = {}) {
     const value = this.ensure(id);

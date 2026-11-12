@@ -170,7 +170,13 @@
       "icon": "assets/icon-1024.png",
       "artifactName": "${productName}-${version}-macOS-${arch}.${ext}",
       "extendInfo": {
-        "CFBundleDevelopmentRegion": "en"
+        "CFBundleDevelopmentRegion": "en",
+        "NSDesktopFolderUsageDescription": "Camellia needs access to project and output folders you choose on the Desktop.",
+        "NSDocumentsFolderUsageDescription": "Camellia needs access to project and output folders you choose in Documents.",
+        "NSDownloadsFolderUsageDescription": "Camellia needs access to files you choose in Downloads.",
+        "NSRemovableVolumesUsageDescription": "Camellia needs access to project folders stored on removable volumes.",
+        "NSNetworkVolumesUsageDescription": "Camellia needs access to project folders stored on network volumes.",
+        "NSLocalNetworkUsageDescription": "Camellia connects to paired devices, local model services, and your private network."
       }
     },
     "asarUnpack": [
@@ -180,6 +186,8 @@
       "src/engines/task-tools.js",
       "src/engines/conversation-tools.js",
       "src/engines/find-tools.js",
+      "src/engines/context-tools.js",
+      "src/engines/memory-tools.js",
       "src/engines/web-tools.js",
       "src/engines/antigravity/**",
       "src/engines/grok-session.js",

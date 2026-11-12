@@ -91,7 +91,7 @@ test('invalid or stale Grok settings do not partially overwrite defaults or inst
   assert.equal(fs.readFileSync(file, 'utf8'), 'An external edit');
 });
 
-test('desktop IPC exposes Grok settings, blocks running sessions and retires idle sessions after saving', async t => {
+test('desktop IPC saves Grok settings during a response and retires the engine when the turn ends', async t => {
   const { createHarness } = require('./main-process-harness.cjs');
   const h = createHarness(); t.after(() => h.cleanup());
   const driver = h.api.sharedConversations.drivers.grok;
@@ -102,19 +102,20 @@ test('desktop IPC exposes Grok settings, blocks running sessions and retires idl
   assert.equal(value.ok, true, value.error);
   value.files[1].text = 'Use the desktop project conventions.';
   const payload = { ...value, common: { permissionMode: 'full', thinkingBudget: 'high', contextWindow: 98304 } };
-  const blocked = await h.call('engine-settings-save', payload);
-  assert.equal(blocked.ok, false); assert.match(blocked.error, /Stop/);
-  assert.equal(retired, false);
-  session.running = false;
   const saved = await h.call('engine-settings-save', payload);
   assert.equal(saved.ok, true, saved.error);
-  assert.equal(retired, true);
-  assert.equal(driver.sessions.active, false);
+  assert.equal(saved.restartDeferred, true);
+  assert.equal(retired, false);
   assert.equal(driver.settings().permissionMode, 'full');
   assert.equal(driver.settings().thinkingBudget, 'high');
   assert.equal(Number(driver.settings().contextWindow), 98304);
   assert.equal(fs.readFileSync(path.join(h.userData, 'grok-native/AGENTS.md'), 'utf8'), value.files[1].text);
   assert.ok(h.events.some(event => event.channel === 'dsh:engine-settings-changed' && event.data.engine === 'grok'));
+  session.running = false;
+  h.api.retirePendingEngines();
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.equal(retired, true);
+  assert.equal(driver.sessions.active, false);
 });
 test('Claude native settings, MCP and instructions save together without overwriting account state; one original backup', t => {
   const f = fixture(t);

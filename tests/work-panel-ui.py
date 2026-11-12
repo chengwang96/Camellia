@@ -75,6 +75,9 @@ def exercise_design(browser, theme, language, width, height):
     page.locator('#workPanelToggle').click()
     expect(page.locator('#workPanel .work-task')).to_have_count(3)
     expect(page.locator('#workPanelCount')).to_have_text('3')
+    expect(page.locator('.work-overview')).to_be_visible()
+    expect(page.locator('.work-overview-segment')).to_have_count(3)
+    expect(page.locator('.work-overview-legend-item')).to_have_count(3)
     expected_order = ['Nash', 'Ramanujan', 'Chandrasekhar']
     expect(page.locator('#workPanel .work-task-heading strong')).to_have_text(expected_order)
     expect(page.locator('.subtask-turn-card .work-task-heading strong')).to_have_text(expected_order)
@@ -84,6 +87,7 @@ def exercise_design(browser, theme, language, width, height):
     stem = f'{theme}-{language}-{width}x{height}'
     page.locator('#workPanel').screenshot(path=str(output / f'overview-{stem}.png'), animations='disabled')
     page.locator('#workPanel .work-task').first.click()
+    expect(page.locator('.work-overview')).to_have_count(0)
     expect(page.locator('.work-detail-heading h2')).to_have_text('Nash')
     expect(page.locator('.work-detail-heading .work-state')).to_have_text('运行中' if chinese else 'running')
     expect(page.locator('.work-progress')).to_contain_text(progress)
@@ -92,11 +96,17 @@ def exercise_design(browser, theme, language, width, height):
     header = page.locator('.main-header').bounding_box()
     main = page.locator('.main').bounding_box()
     footer = page.locator('#workPanelFooter').bounding_box()
+    chat = page.locator('#chat').bounding_box()
     assert panel['y'] >= header['y'] + header['height'], (header, panel)
     assert panel['height'] <= main['height'] * .62 + 1, (main, panel)
     assert main['x'] <= panel['x'] and panel['x'] + panel['width'] <= width
     assert panel['y'] + panel['height'] <= height
     assert footer['y'] + footer['height'] <= panel['y'] + panel['height']
+    if width >= 1200:
+        assert chat['x'] + chat['width'] <= panel['x'] - 12, (chat, panel)
+        assert page.locator('#chatScroll').evaluate('(node)=>getComputedStyle(node).marginRight') == '496px'
+    else:
+        assert page.locator('#chatScroll').evaluate('(node)=>getComputedStyle(node).marginRight') == '0px'
     assert page.locator('#workPanelBody').evaluate('(node)=>node.scrollWidth<=node.clientWidth')
     assert page.locator('#workPanelBody').evaluate('(node)=>getComputedStyle(node).fontSize') == '14px'
     page.locator('#workPanel').screenshot(path=str(output / f'detail-{stem}.png'), animations='disabled')
@@ -344,8 +354,10 @@ with sync_playwright() as p:
         page.locator('#fileViewerClose').click()
         page.evaluate('tasks => deliverChild(tasks)', alias_tasks)
         expect(page.locator('.work-artifact')).to_have_count(3)
-        panel = page.locator('#workPanel').bounding_box()
-        assert 360 <= panel['width'] <= 420
+        if not page.locator('#workPanel').is_visible():
+            page.locator('#workPanelToggle').click()
+        expect(page.locator('#workPanel')).to_be_visible()
+        assert page.locator('#workPanel').evaluate('(node)=>getComputedStyle(node).width') == '480px'
         assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
         output = repo / 'dist/ui-preview'
         output.mkdir(parents=True, exist_ok=True)

@@ -35,6 +35,11 @@ current row, preserving completed rows and horizontal scroll position; ambiguous
 unfinished rows stay mutable. CRLF code and ambiguous table syntax use the
 ordinary suffix parser. All paths retain the existing block, cell and depth
 budgets, falling back to selectable plaintext when those budgets are exceeded.
+As on the desktop client, a GFM table may immediately follow a paragraph
+without an intervening blank line. Before parsing, the Android renderer inserts
+a parser-only paragraph boundary when a header and alignment row form a valid
+table; the stored reply and copied Markdown remain unchanged. Fenced code and
+list/quote container lines are left alone.
 
 A suffix longer than 8192 characters is parsed after at least 512 new characters
 or one eighth of its previously parsed length, whichever is greater. Intervening
@@ -89,6 +94,8 @@ references, render budgets and five long-reply fixtures in 200-character chunks.
 The fixtures cover paragraphs, fenced code, tables, a 135 KB paragraph and 1100
 list items. Cumulative parsed characters decrease by approximately 86–99% against
 parsing each complete prefix, including completion in both measurements.
+`MarkdownTablesTest` covers paragraph-interrupting tables, escaped pipes, fenced
+code and CRLF, while `MarkdownTest` verifies the native table view is created.
 
 `StreamingMarkdownTest` checks native final-format parity, code copy and wrap,
 nested list/quote bindings, table cell/row identity, selection, horizontal

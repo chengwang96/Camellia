@@ -92,8 +92,8 @@
   }
   function organize() {
     arrange('generalPage', [
-      ['shared-memory', ['#memoryDirectory']],
-      ['appearance', ['#language', '#theme', '#chatContentWidth']],
+      ['shared-memory', ['#memoryDirectory', '#contextMemoryEnabled']],
+      ['appearance', ['#language', '#theme', '#advancedAnimations', '#chatContentWidth', '#showConversationNavigator']],
       ['workspace-tools', ['#vscodeChoice']],
       ['quota-refresh', ['#autoRefreshBalances', '#accountRefreshMinutes', '#antigravityAutoRefresh']],
       ['background-routing', ['#closeToTray']],

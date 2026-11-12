@@ -39,6 +39,29 @@ window.createEngineSettingsUI = ({ api, status, navigate }) => {
       } catch (error) { toggle.checked = !checked; status(error.message, true); }
       finally { toggle.disabled = false; }
     };
+    if (id === 'codex') {
+      // The weekly window has no next reset time until the account sends its
+      // first message after a refresh. One greeting starts the cycle and makes
+      // the new reset time visible.
+      const probe = document.createElement('label');
+      probe.className = 'subscription-rotation';
+      probe.dataset.i18nAttrs = 'title';
+      probe.title = 'After the weekly window resets, send a short hello message once so the new cycle starts and the next reset time becomes known. Uses a small amount of quota.';
+      probe.innerHTML = '<input type="checkbox" id="codexWeeklyProbe"><span data-i18n>Automatically send a test message when the weekly quota refreshes</span>';
+      panel.append(probe);
+      const weekly = probe.querySelector('input');
+      weekly.onchange = async () => {
+        const checked = weekly.checked; weekly.disabled = true;
+        try {
+          const result = await api.subscriptionPreferencesSave({ engine: 'codex', preferences: { weeklyProbe: checked } });
+          if (!result.ok) throw new Error(result.error);
+          loginPreferences.set('codex', { ...accountPreferences('codex'), weeklyProbe: checked });
+          status(checked ? 'Weekly quota test message enabled. It sends a short hello message after the next weekly reset.'
+            : 'Weekly quota test message disabled.');
+        } catch (error) { weekly.checked = !checked; status(error.message, true); }
+        finally { weekly.disabled = false; renderCodexAccount(); }
+      };
+    }
 
     if (id === 'kimi') {
       const control = $('kimiLoginRegion');
@@ -83,7 +106,9 @@ window.createEngineSettingsUI = ({ api, status, navigate }) => {
     try {
       const result = await api.subscriptionPreferencesSave({ engine: id, preferences: submitted });
       if (!result.ok) throw new Error(result.error);
-      loginPreferences.set(id, result.preferences);
+      // Partial responses describe only the fields that page owns; keep the
+      // other login preferences so their checkboxes do not reset.
+      loginPreferences.set(id, { ...loginPreferences.get(id), ...result.preferences });
       // A newer edit may have replaced this draft while the save was in flight;
       // keep that draft so its own queued save still persists it.
       if (loginDrafts.get(id) === submitted) loginDrafts.delete(id);
@@ -170,7 +195,6 @@ window.createEngineSettingsUI = ({ api, status, navigate }) => {
     $('kimiRefresh').disabled = Boolean(busy || pending || !kimiAccount?.installed);
     $('kimiSignOut').disabled = Boolean(busy || pending);
     $('kimiSignOut').hidden = true;
-    $('kimiUsage').hidden = !kimiAccount?.account;
     $('kimiCancelLogin').hidden = !pending;
     $('kimiCancelLogin').disabled = kimiBusy === 'kimiCancelLogin';
     $('kimiLoginRegion').disabled = Boolean(busy || pending);
@@ -231,6 +255,11 @@ window.createEngineSettingsUI = ({ api, status, navigate }) => {
   function renderCodexAccount() {
     renderRotation('codex', codexAccount);
     const preferences = accountPreferences('codex');
+    const weeklyToggle = $('codexWeeklyProbe');
+    if (weeklyToggle) {
+      weeklyToggle.checked = preferences.weeklyProbe === true;
+      weeklyToggle.disabled = Boolean(codexBusy || codexAccount?.loginPending);
+    }
     const hasAccounts = codexAccount?.accounts?.some(account => account.signedIn);
     $('codexSignIn').hidden = Boolean(hasAccounts);
     $('codexAddAccount').hidden = !hasAccounts;
@@ -793,7 +822,5 @@ window.createEngineSettingsUI = ({ api, status, navigate }) => {
   // Installation status and path controls now sit above the native surface.
   // Their height can change without resizing the surface itself.
   new ResizeObserver(layout).observe($('runtimeCards'), { box: 'border-box' });
-  return { select, openAccount, accountsPage, runtimePage, checkRuntimeUpdates, pythonPage, selected: () => engine, setVisible,
-    // Refresh quota for the preferred Kimi account.
-    activeSubscriptionId: () => 'kimi:' + (kimiAccount?.activeId || 'default') };
+  return { select, openAccount, accountsPage, runtimePage, checkRuntimeUpdates, pythonPage, selected: () => engine, setVisible };
 };

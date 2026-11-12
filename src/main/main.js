@@ -31,7 +31,7 @@ const { createProviderInsights } = require('../api/provider-insights.js');
 const { createContextCapacity, explicitContextCap } = require('../api/context-capacity.js');
 const { createRuntimeManager, ENGINES, run: runtimeRun } = require('./runtime-manager.js');
 const { createRuntimeUpdates } = require('./runtime-updates.js');
-const { createAppUpdates } = require('./app-updates.js');
+const { createAppUpdates, packagedApplicationPath } = require('./app-updates.js');
 const { downloadSettings } = require('./download-network.js');
 const { subscriptionEnvironment } = require('./network-settings.js');
 const { createEngineSettings, backup } = require('../engines/engine-settings.js');
@@ -112,7 +112,7 @@ function publishChatEvent(engine, event) {
   try { if (sharedConversations?.capture(engine, event)) return; }
   catch (err) { log(`shared conversation capture failed (${engine}): ${err?.message || err}`); }
   // Native-only sessions do not emit conversation:turn-end, so a deferred
-  // network restart is released here for them.
+  // engine restart is released here for them.
   if (event.type === 'result') retirePendingEngines();
   if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('dsh:' + engine + '-event', event);
 }
@@ -237,6 +237,8 @@ function defaultConfig() {
     claude: {},             // Claude Code GUI settings
     language: 'en',         // Workbench UI language, independent of the engines' prompts.
     chatContentWidth: 'standard', // Conversation column width: standard | wide | full
+    advancedAnimations: true, // Frosted-glass menus and richer menu motion.
+    showConversationNavigator: true, // Short turn markers beside the conversation.
     vscodePath: '',         // Empty selects the first installed VS Code; otherwise an absolute executable path.
     computerName: '',       // Display name of this computer, shared with paired phones.
     downloadProxy: { mode: 'direct', url: '' },
@@ -303,10 +305,10 @@ function engineBusy(engine) {
     || (engine === 'kimi' && (kimiSessions.legacy?.running || kimiGoalDriver.armed))
     || (engine === 'antigravity' && (antigravity.session?.running || antigravity.goal.armed));
 }
-// An engine process reads the proxy environment once, when it is spawned, so a
-// network change only reaches engines started afterwards. These helpers stop
+// An engine process reads its configuration once, when it is spawned, so a
+// settings change only reaches engines started afterwards. These helpers stop
 // the current processes; the next turn builds fresh ones from the new
-// environment, resuming each conversation's native session.
+// configuration, resuming each conversation's native session.
 async function stopEngine(engine) {
   if (engine === 'claude') return claudeSessions.shutdown();
   if (engine === 'kimi') return kimiSessions.shutdown();
@@ -316,15 +318,19 @@ async function stopEngine(engine) {
   if (engine === 'grok') return grokChat.shutdown();
 }
 const NETWORK_ENGINES = ['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'grok'];
-// Engines that still have to be retired because a network change could not
-// reach them yet. A turn in flight is never interrupted; the engine joins this
-// set and is stopped the moment it goes idle.
-const networkRestartPending = new Set();
+// Engines that still have to be retired because a settings or network change
+// could not reach them yet. A turn in flight is never interrupted; the engine
+// joins this map and is stopped the moment it goes idle.
+const pendingEngineRestarts = new Map();
+function deferEngineRestart(engine, reason) {
+  pendingEngineRestarts.set(engine, reason);
+  log(`${engine}: restart deferred until idle (${reason})`);
+}
 function retirePendingEngines() {
-  for (const engine of [...networkRestartPending]) {
+  for (const [engine, reason] of [...pendingEngineRestarts]) {
     if (engineBusy(engine)) continue;
-    networkRestartPending.delete(engine);
-    void stopEngine(engine).catch(error => log(`${engine}: deferred network restart failed: ${error.message}`));
+    pendingEngineRestarts.delete(engine);
+    void stopEngine(engine).catch(error => log(`${engine}: deferred restart after ${reason} failed: ${error.message}`));
   }
 }
 // Called after the network settings are applied. Idle engines are retired at
@@ -333,11 +339,11 @@ function applyNetworkChange() {
   // Every engine has to be replaced: an idle process still holds the old
   // environment. Busy ones wait for their turn to finish.
   for (const engine of NETWORK_ENGINES) {
-    if (engineBusy(engine)) networkRestartPending.add(engine);
+    if (engineBusy(engine)) deferEngineRestart(engine, 'network change');
     else void stopEngine(engine).catch(error => log(`${engine}: network change restart failed: ${error.message}`));
   }
   retirePendingEngines();
-  const deferred = [...networkRestartPending];
+  const deferred = [...pendingEngineRestarts.keys()];
   if (deferred.length) log('network change deferred until these engines are idle: ' + deferred.join(', '));
   return deferred;
 }
@@ -349,9 +355,6 @@ function runtimes() {
     runtimeManager = createRuntimeManager({ root, installRoot: app.getPath('userData'), node, npm,
       customPaths: () => loadConfig().runtimePaths || {},
       saveCustomPaths: runtimePaths => saveConfig({ runtimePaths }),
-      beforePathSave: engine => {
-        if (engineBusy(engine)) throw new Error('Stop conversations using this engine before changing its path');
-      },
       downloadOptions: chooseDownloadConnection,
       runtimeMode: engine => engine === 'antigravity' ? antigravity.settings().connection : 'api',
       onChange: state => {
@@ -386,7 +389,7 @@ function assertRuntimeAvailable(engine) {
 function appUpdates() {
   if (!appUpdatesService) {
     appUpdatesService = createAppUpdates({ currentVersion: app.getVersion(),
-      appPath: app.isPackaged ? path.dirname(process.execPath).replace(/[\\/]MacOS$/, '') : null,
+      appPath: app.isPackaged ? packagedApplicationPath(process.execPath, process.platform) : null,
       platformSupported: app.isPackaged,
       relaunch: () => { app.relaunch(); app.exit(0); },
       quit: () => app.quit(),
@@ -1303,7 +1306,8 @@ sharedConversations = new SharedConversations({ dir: path.join(app.getPath('user
         if (!window.isDestroyed()) window.webContents.send('dsh:engine-settings-changed', { engine: event.engine });
       }
     }
-    // A network change retires busy engines as soon as their turn ends.
+    // A deferred settings or network change retires a busy engine once its
+    // turn ends.
     if (event.type === 'conversation:turn-end') retirePendingEngines();
     if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('dsh:conversation-event', event);
     remoteDesktop?.publish(event);
@@ -1746,18 +1750,38 @@ if (!gotSingleInstanceLock) {
     'subscription-preferences-get': ({ engine }) => {
       if (!['codex', 'kimi', 'antigravity', 'grok'].includes(engine)) throw new Error('Unknown subscription engine');
       const settings = engine === 'codex' ? codex.settings() : engine === 'kimi' ? kimiSettings() : engine === 'grok' ? grokChat.settings() : antigravity.settings();
-      return { ok: true, preferences: { autoSwitchQuota: loadConfig().subscriptionAutoSwitch?.[engine] !== false, connection: settings.connection,
+      return { ok: true, preferences: { autoSwitchQuota: loadConfig().subscriptionAutoSwitch?.[engine] !== false,
+        ...(engine === 'codex' ? { weeklyProbe: loadConfig().subscriptionWeeklyProbe?.codex === true } : {}), connection: settings.connection,
         ...(engine === 'kimi' ? { region: settings.region || 'mainland-cn' } : { proxyUrl: settings.proxyUrl || '' }),
         ...(engine === 'antigravity' ? { useG1Credits: readJson(path.join(os.homedir(), '.gemini/antigravity-cli/settings.json'), {}).useG1Credits === true } : {}) } };
     },
     'subscription-preferences-save': async ({ engine, preferences = {} }) => {
       if (!['codex', 'kimi', 'antigravity', 'grok'].includes(engine)) throw new Error('Unknown subscription engine');
+      let weeklyProbeChanged = false;
+      if (preferences.weeklyProbe !== undefined) {
+        if (engine !== 'codex' || typeof preferences.weeklyProbe !== 'boolean') throw new Error('Invalid weekly quota test message preference');
+        saveConfig({ subscriptionWeeklyProbe: { ...loadConfig().subscriptionWeeklyProbe, codex: preferences.weeklyProbe } });
+        weeklyProbeChanged = true;
+      }
+      if (weeklyProbeChanged) codex.syncWeeklyChecks();
       if (preferences.autoSwitchQuota !== undefined) {
         if (typeof preferences.autoSwitchQuota !== 'boolean') throw new Error('Invalid automatic account switching preference');
         saveConfig({ subscriptionAutoSwitch: { ...loadConfig().subscriptionAutoSwitch, [engine]: preferences.autoSwitchQuota } });
-        if (Object.keys(preferences).length === 1) return { ok: true, preferences: { autoSwitchQuota: preferences.autoSwitchQuota } };
       }
-      if (engineBusy(engine)) throw new Error('Stop the current response or goal before changing global settings');
+      const heavy = Object.keys(preferences).filter(key => key !== 'autoSwitchQuota' && key !== 'weeklyProbe');
+      if (!heavy.length && (preferences.autoSwitchQuota !== undefined || preferences.weeklyProbe !== undefined)) {
+        if (weeklyProbeChanged && preferences.weeklyProbe === true) {
+          // Check signed-in accounts now so a week that already elapsed is
+          // detected without waiting for the next background poll.
+          try {
+            for (const account of codex.accountState().accounts.filter(account => account.signedIn)) {
+              void codex.handlers['account-refresh']({ id: account.id }).catch(error => log('Codex weekly quota check: ' + error.message));
+            }
+          } catch (error) { log('Codex weekly quota check: ' + error.message); }
+        }
+        return { ok: true, preferences: { autoSwitchQuota: loadConfig().subscriptionAutoSwitch?.[engine] !== false,
+          ...(engine === 'codex' ? { weeklyProbe: loadConfig().subscriptionWeeklyProbe?.codex === true } : {}) } };
+      }
       if (preferences.connection !== undefined && !['api', 'subscription'].includes(preferences.connection)) throw new Error('Invalid subscription connection');
       const connection = preferences.connection === undefined ? {} : { connection: preferences.connection };
       if (engine === 'kimi') {
@@ -1768,9 +1792,13 @@ if (!gotSingleInstanceLock) {
       const savedProxy = engine === 'codex' ? codex.settings().proxyUrl : engine === 'grok' ? grokChat.settings().proxyUrl : antigravity.settings().proxyUrl;
       const requestedProxy = preferences.proxyUrl ?? savedProxy ?? '';
       const proxyUrl = downloadSettings({ mode: requestedProxy ? 'proxy' : 'direct', url: requestedProxy }).url;
+      // These preferences only reach a new engine process. Save them now and
+      // replace a running process when its current turn ends.
+      const deferred = engineBusy(engine);
       if (engine === 'codex') {
         if (codex.accountState().accounts.some(account => account.loginPending)) throw new Error('Complete the account operation before changing login preferences');
-        await codex.shutdown();
+        if (deferred) deferEngineRestart(engine, 'login preferences');
+        else await codex.shutdown();
         codex.saveSettings({ proxyUrl, ...connection });
       } else if (engine === 'grok') {
         if (grokAccount.changingAccount) throw new Error('Complete the account operation before changing login preferences');
@@ -1784,52 +1812,51 @@ if (!gotSingleInstanceLock) {
           backup(file);
           writeJson(file, { ...native, useG1Credits: preferences.useG1Credits });
         }
-        await antigravity.shutdown();
+        if (deferred) deferEngineRestart(engine, 'login preferences');
+        else await antigravity.shutdown();
         antigravity.saveSettings({ proxyUrl, ...connection });
         return { ok: true, preferences: { proxyUrl, connection: antigravity.settings().connection,
-          useG1Credits: preferences.useG1Credits ?? (native.useG1Credits === true) } };
+          useG1Credits: preferences.useG1Credits ?? (native.useG1Credits === true) }, restartDeferred: deferred };
       }
-      return { ok: true, preferences: { proxyUrl, connection: codex.settings().connection } };
+      return { ok: true, preferences: { proxyUrl, connection: codex.settings().connection,
+        weeklyProbe: loadConfig().subscriptionWeeklyProbe?.codex === true }, restartDeferred: deferred };
     },
     'engine-settings-save': async ({ engine, ...payload }) => {
       assertRuntimeAvailable(engine);
-      if (engineBusy(engine)) throw new Error("Stop the current response or goal before changing global settings");
       if (engine === 'antigravity' && payload.expectedConnection && payload.expectedConnection !== antigravity.settings().connection)
         throw new Error('The subscription connection changed. Reload engine settings before saving.');
       const result = engineSettings().save(engine, payload);
-      if (engine === 'claude') await claudeSessions.shutdown();
-      if (engine === 'kimi') await kimiSessions.shutdown();
-      if (engine === 'antigravity') await antigravity.shutdown();
-      if (engine === 'codex') await codex.shutdown();
-      if (engine === 'dsh') { await dshChat.shutdown(); syncOllamaBaseUrl(Boolean(ollamaProxyHandle?.getState().running)); }
-      if (engine === 'grok') await grokChat.shutdown();
+      // The files are written immediately; the running native process keeps the
+      // settings it started with. Retire it now when idle, or after its turn.
+      const deferred = engineBusy(engine);
+      if (deferred) deferEngineRestart(engine, 'engine settings');
+      else await stopEngine(engine);
+      if (engine === 'dsh') syncOllamaBaseUrl(Boolean(ollamaProxyHandle?.getState().running));
       if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('dsh:engine-settings-changed', { engine });
-      return { ok: true, ...result };
+      return { ok: true, ...result, restartDeferred: deferred };
     },
     'runtime-state': () => ({ ok: true, engines: runtimeUpdates().state() }),
     'runtime-set-path': async ({ engine, file, mode }) => {
       assertRuntimeAvailable(engine);
-      if (engineBusy(engine)) throw new Error('Stop conversations using this engine before changing its path');
+      // The saved path only affects the next process. A running response keeps
+      // its own executable, and the engine is retired when that turn ends.
       const engines = await runtimes().setPath(engine, file, mode);
-      if (engine === 'claude') await claudeSessions.shutdown();
-      if (engine === 'kimi') await kimiSessions.shutdown();
-      if (engine === 'antigravity') await antigravity.shutdown();
-      if (engine === 'codex') await codex.shutdown();
-      if (engine === 'dsh') await dshChat.shutdown();
-      if (engine === 'grok') await grokChat.shutdown();
-      return { ok: true, engines: runtimeUpdates().state(engines) };
+      const deferred = engineBusy(engine);
+      if (deferred) deferEngineRestart(engine, 'runtime path');
+      else await stopEngine(engine);
+      return { ok: true, engines: runtimeUpdates().state(engines), restartDeferred: deferred };
     },
     'runtime-python-state': () => ({ ok: true, python: runtimes().pythonState() }),
     'runtime-set-python': async ({ file }) => {
       if (anyRuntimeUpdating()) throw new Error('Wait for runtime updates to finish before changing Python');
-      // Python is shared by every harness, so a running session anywhere may be
-      // using it; stop the engines that depend on it before switching.
-      if (['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'grok'].some(engineBusy)) {
-        throw new Error('Stop running responses before changing the shared Python path');
-      }
+      // Antigravity is the only engine that launches through the shared
+      // interpreter. Saving the path does not touch the process already running
+      // it, so a busy Antigravity turn is retired when it ends.
       const engines = await runtimes().setPython(file);
-      await antigravity.shutdown();
-      return { ok: true, engines, python: runtimes().pythonState() };
+      const deferred = engineBusy('antigravity');
+      if (deferred) deferEngineRestart('antigravity', 'Python path');
+      else await antigravity.shutdown();
+      return { ok: true, engines, python: runtimes().pythonState(), restartDeferred: deferred };
     },
     'runtime-ensure': async ({ engine, mode }) => { assertRuntimeAvailable(engine); return { ok: true, runtime: await runtimes().ensure(engine, mode) }; },
     'runtime-check-updates': async () => ({ ok: true, engines: await runtimeUpdates().check() }),
@@ -1981,12 +2008,15 @@ if (!gotSingleInstanceLock) {
       conversations: conversationPreferences(config), autoRefreshBalances: accountRefreshEnabled(config), accountRefreshMinutes: accountRefreshMinutes(config),
       subscriptionAutoRefresh: { antigravity: subscriptionAutoRefreshEnabled('antigravity', config), codex: subscriptionAutoRefreshEnabled('codex', config), kimi: subscriptionAutoRefreshEnabled('kimi', config) },
       closeToTray: config.closeToTray === true,
-      memoryDirectory: config.memoryDirectory || '', vscodePath: config.vscodePath || '',
+      memoryDirectory: config.memoryDirectory || '', contextMemory: { enabled: config.contextMemory?.enabled === true },
+      vscodePath: config.vscodePath || '',
       quickSwitchModels: config.quickSwitchModels || {},
       quickSwitchConnections: config.quickSwitchConnections || {},
       quickSwitchLevels: config.quickSwitchLevels || {},
       hiddenSubscriptionModels: config.hiddenSubscriptionModels || {},
       chatContentWidth: normalizeChatContentWidth(config.chatContentWidth),
+      advancedAnimations: config.advancedAnimations !== false,
+      showConversationNavigator: config.showConversationNavigator !== false,
       computerName: computerName(config), dataPath: app.getPath('userData'), version: app.getVersion(),
       pluginCacheMaintenance: pluginCacheMaintenanceStatus(app.getPath('userData')),
       dataDirectory: { ...dataDirectoryStatus({ appData: appDataDirectory, dataDir: app.getPath('userData') }),
@@ -2001,6 +2031,8 @@ if (!gotSingleInstanceLock) {
       const theme = ['system', 'light', 'dark'].includes(payload?.theme) ? payload.theme : loadConfig().theme || 'system';
       const language = normalizeLanguage(payload?.language ?? loadConfig().language);
       const previousContentWidth = normalizeChatContentWidth(loadConfig().chatContentWidth);
+      const previousAdvancedAnimations = loadConfig().advancedAnimations !== false;
+      const previousConversationNavigator = loadConfig().showConversationNavigator !== false;
       const patch = { theme, language, autoRefreshBalances: payload?.autoRefreshBalances === undefined ? accountRefreshEnabled() : payload.autoRefreshBalances !== false };
       if (payload && Object.prototype.hasOwnProperty.call(payload, 'accountRefreshMinutes')) {
         const minutes = Number(payload.accountRefreshMinutes);
@@ -2009,7 +2041,18 @@ if (!gotSingleInstanceLock) {
       if (payload && Object.prototype.hasOwnProperty.call(payload, 'closeToTray')) patch.closeToTray = payload.closeToTray === true;
       if (payload && Object.prototype.hasOwnProperty.call(payload, 'computerName')) patch.computerName = normalizeComputerName(payload.computerName);
       if (payload && Object.prototype.hasOwnProperty.call(payload, 'chatContentWidth')) patch.chatContentWidth = normalizeChatContentWidth(payload.chatContentWidth);
+      if (payload && Object.prototype.hasOwnProperty.call(payload, 'advancedAnimations')) {
+        if (typeof payload.advancedAnimations !== 'boolean') throw new Error('Invalid advanced animations preference');
+        patch.advancedAnimations = payload.advancedAnimations;
+      }
+      if (payload && Object.prototype.hasOwnProperty.call(payload, 'showConversationNavigator')) {
+        if (typeof payload.showConversationNavigator !== 'boolean') throw new Error('Invalid conversation navigator preference');
+        patch.showConversationNavigator = payload.showConversationNavigator;
+      }
       if (payload && Object.prototype.hasOwnProperty.call(payload, 'memoryDirectory')) patch.memoryDirectory = validateMemoryDirectory(payload.memoryDirectory);
+      if (payload && Object.prototype.hasOwnProperty.call(payload, 'contextMemory')) {
+        patch.contextMemory = { ...(loadConfig().contextMemory || {}), enabled: payload.contextMemory?.enabled === true };
+      }
       if (payload && Object.prototype.hasOwnProperty.call(payload, 'vscodePath')) patch.vscodePath = validateVSCodeExecutable(payload.vscodePath);
       if (payload?.quickSwitchModels !== undefined) {
         const models = payload.quickSwitchModels;
@@ -2073,6 +2116,8 @@ if (!gotSingleInstanceLock) {
       saveConfig(patch);
       if (payload?.conversations) saveConfig({ conversations: conversationPreferences({ conversations: payload.conversations }) });
       const contentWidth = normalizeChatContentWidth(patch.chatContentWidth ?? previousContentWidth);
+      const advancedAnimations = patch.advancedAnimations ?? previousAdvancedAnimations;
+      const showConversationNavigator = patch.showConversationNavigator ?? previousConversationNavigator;
       nativeTheme.themeSource = theme;
       setMenu();
       refreshTrayMenu();
@@ -2082,6 +2127,14 @@ if (!gotSingleInstanceLock) {
       if (nativeSettingsView) nativeSettingsView.webContents.send('dsh:language-changed', language);
       if (contentWidth !== previousContentWidth && mainWindow && !mainWindow.isDestroyed()) {
         mainWindow.webContents.send('dsh:chat-content-width-changed', contentWidth);
+      }
+      if (advancedAnimations !== previousAdvancedAnimations) {
+        for (const window of [mainWindow, settingsWindow]) {
+          if (window && !window.isDestroyed()) window.webContents.send('dsh:advanced-animations-changed', advancedAnimations);
+        }
+      }
+      if (showConversationNavigator !== previousConversationNavigator && mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('dsh:conversation-navigator-changed', showConversationNavigator);
       }
       if (patch.hiddenSubscriptionModels && mainWindow && !mainWindow.isDestroyed()) {
         for (const engine of Object.keys(payload.hiddenSubscriptionModels)) {
@@ -3128,6 +3181,7 @@ if (!gotSingleInstanceLock) {
           { label: "Switch to DSH", click: () => navigateMode('dsh') },
           { label: "Switch to Kimi Code", click: () => navigateMode('kimi') },
           { label: "Switch to Antigravity", click: () => navigateMode('antigravity') },
+          { label: "Switch to Grok Build", click: () => navigateMode('grok') },
         ],
       },
       {

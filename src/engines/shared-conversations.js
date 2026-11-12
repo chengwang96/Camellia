@@ -27,12 +27,20 @@ const { previewKind } = require('../main/file-preview');
 const { subscriptionFailure, subscriptionRecoveryMessage, availableAccount } = require('./subscription-recovery');
 const { memoryInstructions } = require('./global-memory');
 const { ConversationHistory, FLAGS: HISTORY_FLAGS, contextRow: historyContextRow } = require('./conversation-history');
+const { snapshotForConversation, eventsForConversation, nodeForConversation } = require('./context-ledger');
+const { graphForConversation } = require('./agent-context');
+const { statusFor, searchFor, expandFor, retireBlock, restoreBlock, rewriteBlock } = require('./context-retrieval');
+const { viewFor: memoryViewFor, compactView: compactMemoryView, resolveView: resolveMemoryView,
+  statusFor: memoryStatusFor, searchFor: memorySearchFor, remember: memoryRemember } = require('./context-memory');
 const { retainEvent, isStreamingToolEvent } = require('./tool-history');
 const { appendText } = require('../shared/file-open');
 const { fullAccess } = require('./permission-levels');
 
 const ENGINES = ['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'grok'];
-const presentationInstructions = 'Camellia image presentation: To intentionally show an image in the conversation, put ![concise alt text](image-path) in the final response at the desired location. Use an absolute path or a workspace-relative path, wrapping paths with spaces in <...>. Only this explicit Markdown image syntax requests an inline preview. For an image that is merely an output artifact, use a normal [label](path) link instead; never turn file references or image-reading tool results into inline previews automatically.\n\n';
+// Pi was replaced by Grok. Keep its conversation records intact for export or
+// manual recovery instead of treating a valid legacy record as corrupt.
+const LEGACY_ENGINES = new Set(['pi']);
+const presentationInstructions = 'Camellia media presentation: To intentionally show an image or video in the conversation, put ![concise alt text](media-path) in the final response at the desired location. Images and videos use this same Markdown syntax; a supported video extension such as .mp4, .webm, .mov or .m4v makes the result an inline player. Use an absolute path or a workspace-relative path, wrapping paths with spaces in <...>. Only this explicit Markdown image syntax requests an inline preview. For media that is merely an output artifact, use a normal [label](path) link instead; never turn file references or media-reading tool results into inline previews automatically.\n\n';
 
 // History hits are prepended to the filesystem reply, each labelled with the
 // conversation that produced it, so the user recognizes where the file came
@@ -187,7 +195,7 @@ class SharedConversations {
     this.runtimeId = randomUUID();
     this.subagentSessions = new Map();
     fs.mkdirSync(dir, { recursive: true });
-    this.items = new Map(); this.active = new Map(); this.facades = new Map(); this.switching = new Map(); this.goals = new Map(); this.recovering = new Map(); this.sequence = 0; this.clock = 0;
+    this.items = new Map(); this.legacyConversations = new Map(); this.active = new Map(); this.facades = new Map(); this.switching = new Map(); this.goals = new Map(); this.recovering = new Map(); this.sequence = 0; this.clock = 0;
     this.stopping = new Map(); this.deleting = new Set(); this.stopTimeoutMs = stopTimeoutMs;
     this.titleRequests = new Set(); this.titleFollowUps = new Map();
     this.onGoal = onGoal;
@@ -221,9 +229,11 @@ class SharedConversations {
     for (const name of fs.readdirSync(dir).filter(name => name.endsWith('.json'))) {
       let item;
       try { item = readRecoverableJson(path.join(dir, name), null, onLoadError, value => value === null
-        || validSessionId(value?.id) && name === value.id + '.json' && ENGINES.includes(value.origin)); }
+        || validSessionId(value?.id) && name === value.id + '.json'
+          && (ENGINES.includes(value.origin) || LEGACY_ENGINES.has(value.origin))); }
       catch (error) { onLoadError(error); continue; }
       if (!item) continue;
+      if (LEGACY_ENGINES.has(item.origin)) { this.legacyConversations.set(item.id, item); continue; }
       try {
         let changed = false;
         for (const entry of item.controlSends || []) {
@@ -437,6 +447,8 @@ class SharedConversations {
         throw new Error('This goal tool request does not belong to the current user turn');
       if (name.startsWith('camellia_web_')) return this.callWebTool(name, args, active, options);
       if (name.startsWith('camellia_conversation_')) return callConversationTool(this, id, name, args, active);
+      if (name.startsWith('camellia_context_')) return this.callContextTool(id, name, args);
+      if (name.startsWith('camellia_memory_')) return this.callMemoryTool(id, name, args, active);
       // File search is read-only and bounded, so children and scheduled checks
       // may use it to locate their own inputs.
       if (name === 'camellia_find_files') return this.callFindTool(id, args, active);
@@ -537,6 +549,33 @@ class SharedConversations {
       process.platform === 'win32' ? file.path.toLowerCase() : file.path, file.path);
     return { ok: true, query: found.query, mode: args.inside === true ? 'content' : 'history-and-name',
       count: hits.length, searched: found.roots, files: hits };
+  }
+
+  callContextTool(id, name, args = {}) {
+    const c = this.get(id);
+    if (name === 'camellia_context_status') return { ok: true, ...statusFor(this.historyStore, c) };
+    if (name === 'camellia_context_search')
+      return { ok: true, ...searchFor(this.historyStore, c, args.query, args.limit) };
+    if (name === 'camellia_context_expand')
+      return { ok: true, ...expandFor(this.historyStore, c, this.dir, args) };
+    throw new Error('Unknown Camellia context tool');
+  }
+
+  callMemoryTool(id, name, args = {}, active = {}) {
+    const c = this.get(id);
+    const view = this.pinnedMemoryView(c, active);
+    if (name === 'camellia_memory_status') return { ok: true, ...memoryStatusFor(this, c, { view }) };
+    if (name === 'camellia_memory_search')
+      return { ok: true, ...memorySearchFor(this, c, args.query, args.limit, { view }) };
+    if (name === 'camellia_memory_remember') {
+      if (c.controlParentId || active.c?.controlParentId) throw new Error('Child agents may read memory but must not write it; ask the parent or user');
+      if (active.scheduledTaskId) throw new Error('Scheduled checks may read memory but must not write it');
+      const request = active.goalUserPrompt ?? active.prompt ?? '';
+      if (!/(?:remember|save (?:this|that)|keep this|记住|记下|保存|别忘了|不要再|以后都)/i.test(request))
+        throw new Error('The current user request does not explicitly ask to save a memory');
+      return { ok: true, ...memoryRemember(this, c, args) };
+    }
+    throw new Error('Unknown Camellia memory tool');
   }
 
   callTaskTool(id, name, args, active) {
@@ -1022,6 +1061,133 @@ class SharedConversations {
     }
     return selected;
   }
+  contextSnapshot(engine, payload = {}) {
+    const id = payload.sessionId;
+    if (!id) throw new Error('Choose a conversation first');
+    const c = this.get(id);
+    const settings = this.settings(engine, id);
+    const active = this.recovering.get(id) || this.active.get(id);
+    const memoryDirectory = this.loadConfig().memoryDirectory;
+    const activeMemoryView = active && active.memoryView
+      ? active.memoryView : this.contextMemoryView(c);
+    const activeMemory = activeMemoryView?.snapshot || '';
+    const instructions = (memoryDirectory
+      ? memoryInstructions(memoryDirectory, c.hasGlobalMemory === true)
+      : '') + activeMemory;
+    const summaryText = before => {
+      const row = this.historyStore.summary(id, Number.isFinite(before) ? before : Infinity, true);
+      if (!row?.file || !fs.existsSync(row.file)) return '';
+      try { return fs.readFileSync(row.file, 'utf8').slice(0, 24000); }
+      catch (error) { this.log('Context summary read failed: ' + error.message); return ''; }
+    };
+    const snapshot = snapshotForConversation({
+      historyStore: this.historyStore,
+      conversation: c,
+      engine,
+      settings,
+      pressure: this.contextPressure(c, engine, settings, active),
+      turnSeq: Number.isSafeInteger(payload.turnSeq) ? payload.turnSeq : null,
+      pendingText: active && !active.internal ? active.text || '' : '',
+      instructionsText: instructions,
+      summaryText,
+    });
+    const pinned = Boolean(active && active.memoryView)
+      || Boolean(c.controlParentId && (c.controlMemoryView || typeof c.controlMemorySnapshot === 'string'));
+    snapshot.memory = { pinned, chars: activeMemory.length };
+    return { ok: true, snapshot };
+  }
+  pinnedMemoryView(c, active = {}) {
+    if (active && active.memoryView) return active.memoryView;
+    return this.contextMemoryView(c);
+  }
+  pinnedMemorySnapshot(c, active = {}) {
+    return this.pinnedMemoryView(c, active)?.snapshot || '';
+  }
+  contextMemoryView(c) {
+    if (c.controlParentId) {
+      if (c.controlMemoryView) return resolveMemoryView(this, c, c.controlMemoryView);
+      if (typeof c.controlMemorySnapshot === 'string')
+        return resolveMemoryView(this, c, c.controlMemorySnapshot);
+    }
+    return memoryViewFor(this, c);
+  }
+  contextMemorySnapshot(c) {
+    return this.contextMemoryView(c).snapshot;
+  }
+  contextMemoryStatus(engine, payload = {}) {
+    if (!payload.sessionId) throw new Error('Choose a conversation first');
+    const c = this.get(payload.sessionId);
+    const active = this.recovering.get(c.id) || this.active.get(c.id);
+    return { ok: true, ...memoryStatusFor(this, c, { view: this.pinnedMemoryView(c, active) }) };
+  }
+  contextEvents(engine, payload = {}) {
+    if (!payload.sessionId) throw new Error('Choose a conversation first');
+    const c = this.get(payload.sessionId);
+    const limit = Math.min(100, Math.max(1, Number(payload.limit) || 60));
+    return { ok: true, events: eventsForConversation(this.historyStore, c, limit) };
+  }
+  contextNode(engine, payload = {}) {
+    if (!payload.sessionId) throw new Error('Choose a conversation first');
+    const c = this.get(payload.sessionId);
+    return { ok: true, node: nodeForConversation(this.historyStore, c, payload.nodeId) };
+  }
+  agentGraph(engine, payload = {}) {
+    if (!payload.sessionId) throw new Error('Choose a conversation first');
+    this.get(payload.sessionId);
+    return { ok: true, graph: graphForConversation(this, payload.sessionId) };
+  }
+  contextBlocks(engine, payload = {}) {
+    if (!payload.sessionId) throw new Error('Choose a conversation first');
+    const c = this.get(payload.sessionId);
+    return { ok: true, ...statusFor(this.historyStore, c) };
+  }
+  contextExpand(engine, payload = {}) {
+    if (!payload.sessionId) throw new Error('Choose a conversation first');
+    const c = this.get(payload.sessionId);
+    return { ok: true, ...expandFor(this.historyStore, c, this.dir, {
+      blockId: payload.blockId,
+      fromSeq: payload.fromSeq,
+      toSeq: payload.toSeq,
+      maxChars: payload.maxChars,
+      toFile: payload.toFile === true,
+    }) };
+  }
+  contextRetire(engine, payload = {}) {
+    if (!payload.sessionId) throw new Error('Choose a conversation first');
+    const c = this.get(payload.sessionId);
+    if (this.busy(c.id)) throw new Error('Stop this conversation before retiring a context block');
+    const beforeTokens = this.contextEstimate(c, engine);
+    const result = retireBlock(this.historyStore, c, payload.blockId);
+    const afterTokens = this.contextEstimate(c, engine);
+    this.recordContextEvent(c, { kind: 'retire', engine, blockId: result.blockId, source: 'block',
+      beforeTokens, afterTokens, deltaTokens: afterTokens - beforeTokens, deltaSource: 'estimated' });
+    this.save(c);
+    return { ok: true, ...result };
+  }
+  contextRestore(engine, payload = {}) {
+    if (!payload.sessionId) throw new Error('Choose a conversation first');
+    const c = this.get(payload.sessionId);
+    if (this.busy(c.id)) throw new Error('Stop this conversation before restoring a context block');
+    const beforeTokens = this.contextEstimate(c, engine);
+    const result = restoreBlock(this.historyStore, c, payload.blockId);
+    const afterTokens = this.contextEstimate(c, engine);
+    this.recordContextEvent(c, { kind: 'restore', engine, blockId: result.blockId, source: 'block',
+      beforeTokens, afterTokens, deltaTokens: afterTokens - beforeTokens, deltaSource: 'estimated' });
+    this.save(c);
+    return { ok: true, ...result };
+  }
+  contextRewrite(engine, payload = {}) {
+    if (!payload.sessionId) throw new Error('Choose a conversation first');
+    const c = this.get(payload.sessionId);
+    if (this.busy(c.id)) throw new Error('Stop this conversation before rewriting a context block');
+    const beforeTokens = this.contextEstimate(c, engine);
+    const result = rewriteBlock(this.historyStore, c, payload.blockId, payload.summary);
+    const afterTokens = this.contextEstimate(c, engine);
+    this.recordContextEvent(c, { kind: 'rewrite', engine, blockId: result.blockId, source: 'block',
+      beforeTokens, afterTokens, deltaTokens: afterTokens - beforeTokens, deltaSource: 'estimated' });
+    this.save(c);
+    return { ok: true, ...result };
+  }
   listAttachableConversations(query = '', excludeId = null) {
     const term = String(query || '').trim().toLocaleLowerCase().slice(0, 100);
     const meta = this.workspaces.sessionMeta();
@@ -1186,6 +1352,11 @@ class SharedConversations {
   runSettings(a, engine, c) {
     return a.settings || this.settings(engine, c.id);
   }
+  recordContextEvent(c, event) {
+    if (!c || !event) return;
+    const entry = { id: event.id || 'event:' + randomUUID(), at: event.at || Date.now(), ...event };
+    c.contextEvents = [...(c.contextEvents || []), entry].slice(-128);
+  }
   saveSettings(engine, payload) {
     this.validateEngine(engine);
     const c = payload.sessionId ? this.get(payload.sessionId) : null;
@@ -1224,6 +1395,11 @@ class SharedConversations {
     if (c) {
       c.engineSettings ||= {};
       c.engineSettings[engine] = conversationSettings({ ...previous, ...changes });
+      const changed = Object.keys(changes).filter(key => JSON.stringify(previous[key]) !== JSON.stringify(changes[key]));
+      if (changed.length) this.recordContextEvent(c, { kind: 'switch', engine,
+        fields: changed, from: Object.fromEntries(changed.map(key => [key, previous[key]])),
+        to: Object.fromEntries(changed.map(key => [key, changes[key]])), source: 'binding',
+        deltaTokens: 0, deltaSource: 'none' });
       this.save(c);
     }
     return { ok: true, settings: this.settings(engine, c?.id) };
@@ -1232,6 +1408,9 @@ class SharedConversations {
     const segment = c.segments[engine];
     const resetProfile = segment && !segment.isolated && ['codex', 'kimi', 'dsh'].includes(engine) && this.settings(engine, c.id).connection !== 'subscription';
     const latest = this.historyStore.summary(c.id, beforeSeq);
+    if (segment?.summaryRetired) {
+      return { files: [], after: segment.summaryRetired.summarySeq ?? segment.cursor ?? 0, before: beforeSeq };
+    }
     if (segment?.compactFile && !segment.nativeId && !fs.existsSync(segment.compactFile)
         || latest && (!segment || resetProfile || (segment.cursor || 0) < latest.seq))
       return { files: latest ? [latest.file] : [], after: latest?.seq || 0, before: beforeSeq };
@@ -1369,7 +1548,15 @@ class SharedConversations {
     const settings = continuation?.settings ? { ...continuation.settings }
       : internal && ephemeral && summarySettings ? { ...summarySettings } : this.settings(engine, c.id);
     const memoryDirectory = !internal && this.loadConfig().memoryDirectory;
-    const memory = internal ? '' : memoryInstructions(memoryDirectory, c.hasGlobalMemory === true);
+    const memoryView = continuation?.memoryView ?? (internal ? null : this.contextMemoryView(c));
+    const memorySnapshot = continuation?.memorySnapshot ?? (internal ? '' : memoryView?.snapshot || '');
+    const memory = internal ? '' : memoryInstructions(memoryDirectory, c.hasGlobalMemory === true) + memorySnapshot;
+    if (!internal && (memoryDirectory || memorySnapshot)) {
+      this.recordContextEvent(c, { kind: 'inject', engine,
+        sources: [memoryDirectory ? 'global-memory' : null, memorySnapshot ? 'working-memory' : null].filter(Boolean),
+        chars: memory.length, source: memorySnapshot ? 'working-memory' : 'global-memory',
+        deltaTokens: Math.round(contextTokens(memory)), deltaSource: 'estimated' });
+    }
     const goalPrefix = !internal && !goalToolsDisabled && this.createGoalBridge
       && !(engine === 'antigravity' && settings.connection === 'subscription')
       ? this.toolInstructions() + '\nCamellia goal run token for this turn: ' + '0'.repeat(36) + '\n\n' : '';
@@ -1599,6 +1786,8 @@ class SharedConversations {
         : this.context(c, engine, a.userSeq)) + String(a.promptSuffix ?? payload.prompt ?? ''),
       facade: facade || { gen: ++this.sequence, sessionId: c.id, opts: { workspaceId: c.workspaceId } }, priorCursor: nativeFork?.cursor ?? c.segments[engine]?.cursor ?? 0 };
     a.settings = { ...settings };
+    a.memoryView = memoryView;
+    a.memorySnapshot = memorySnapshot;
     a.activeKey = activeKey || c.id;
     a.compactionMetric = compactionMetric;
     if (!continuation) {
@@ -2626,18 +2815,26 @@ class SharedConversations {
       if (this.active.get(key) === active) this.capture(engine, { type: 'result', subtype: 'stopped', result: '', conversationId: key, runId: active.session?.gen });
     }
   }
-  manualFallbackContext(c, engine, sourceRows, settings, maxTokens = Infinity) {
+  manualFallbackContext(c, engine, sourceRows, settings, maxTokens = Infinity, pinnedFirstUser = '') {
     const cap = this.contextPressure(c, engine, settings).cap;
     const limit = Math.min(10000, Math.floor(cap * 0.25), maxTokens);
     if (limit < 0) throw new Error('The target context has no room for the new message and a local handoff. ' + recoveryAdvice);
     let preface = '# Compacted conversation context\n\nSome earlier context was omitted locally. The full transcript remains in Camellia; files and external actions were not rolled back. Ask for missing context when needed.\n\n';
-    const render = rows => preface + this.formatContext(c, rows);
+    const pinLimit = Math.max(0, Math.min(2000, Math.floor(limit * 0.6)));
+    let pinned = '';
+    if (pinnedFirstUser && pinLimit >= 128) {
+      pinned = pinnedFirstUser.length <= pinLimit ? pinnedFirstUser
+        : pinnedFirstUser.slice(0, Math.max(0, pinLimit - 100)).trimEnd()
+          + '\n[Remainder omitted only from this bounded local fallback; the full original remains in the transcript.]\n';
+    }
+    const render = rows => preface + pinned + this.formatContext(c, rows);
     const fits = rows => {
       if (rows.reduce((size, row) => size + row.text.length, 0) > limit * 3) return false;
       const markdown = render(rows);
       return contextTokens(markdown) <= limit && !overInputChars(engine, markdown);
     };
     if (!fits([])) preface = 'Earlier context omitted.\n';
+    if (!fits([]) && pinned) pinned = '';
     if (!fits([])) preface = '';
     let previous;
     for (const row of sourceRows({ reverse: true })) {
@@ -2715,6 +2912,19 @@ class SharedConversations {
       for (const row of manager.historyRows(c, { after, reverse, mask: HISTORY_FLAGS.public, snapshot: true }))
         if (contextRow(row)) yield row;
     }
+    let firstUser = null;
+    if (history) {
+      firstUser = history.find(row => !row.internal && row.role === 'user' && contextRow(row)) || null;
+    } else {
+      for (const row of this.historyRows(c, { mask: HISTORY_FLAGS.user, snapshot: true })) {
+        if (!row.internal && contextRow(row)) { firstUser = row; break; }
+      }
+    }
+    const pinHistoricalFirstUser = firstUser && firstUser.seq !== recovery?.userSeq;
+    const pinnedFirstUser = pinHistoricalFirstUser ? '\n\n## Pinned first user request (verbatim JSON data)\n\n'
+      + JSON.stringify({ cwd: c.cwd, history: [{ seq: firstUser.seq, role: 'user', engine: firstUser.engine,
+        text: String(firstUser.text || ''), ...(firstUser.attachments?.length ? { attachments: firstUser.attachments } : {}) }] })
+      : '';
     // A native compaction needs its cursor, not a clone of the complete saved
     // transcript. Read message bodies only if a portable summary is necessary.
     let boundary = history ? history.findLast(row => !row.internal && contextRow(row))?.seq || 0 : 0;
@@ -2793,6 +3003,7 @@ class SharedConversations {
     const savePortable = (markdown, fallback = null) => {
       status('Saving compacted context…', { state: 'running', stage: 'saving', ...(fallback ? { fallback: true } : {}) });
       const saveStartedAt = Date.now();
+      const beforeTokens = (() => { try { return this.contextEstimate(c, targetEngine); } catch { return null; } })();
       const file = path.join(this.dir, 'handoffs', randomUUID() + '.md');
       const previousSegment = c.segments[targetEngine] && { ...c.segments[targetEngine] };
       const previousRetired = c.retiredSegments?.slice(), previousRecovery = c.compactionRecovery;
@@ -2802,7 +3013,8 @@ class SharedConversations {
       const notice = { role: 'notice', engine,
         text: fallback ? 'Context compacted: older context omitted'
           : automatic ? 'Context compacted automatically' : 'Context compacted: summary saved', file,
-        compaction: { ...(trigger || {}), durationMs, ...details }, seq: c.seq + 1, at: Date.now() };
+        compaction: { ...(trigger || {}), durationMs, ...details, firstUserSeq: firstUser?.seq ?? null,
+          firstUserPinned: Boolean(pinnedFirstUser) }, seq: c.seq + 1, at: Date.now() };
       try {
         fs.mkdirSync(path.dirname(file), { recursive: true });
         fs.writeFileSync(file, markdown, { flag: 'wx', flush: true });
@@ -2811,6 +3023,13 @@ class SharedConversations {
         c.seq = notice.seq;
         c.segments[targetEngine] = { cursor: notice.seq, isolated: true, compactFile: file,
           ...(previousSegment?.nativeCompactionUnsupported ? { nativeCompactionUnsupported: true } : {}) };
+        const afterTokens = (() => { try { return this.contextEstimate(c, targetEngine); } catch { return null; } })();
+        if (Number.isFinite(beforeTokens) && Number.isFinite(afterTokens)) {
+          notice.compaction.beforeTokens = beforeTokens;
+          notice.compaction.afterTokens = afterTokens;
+          notice.compaction.deltaTokens = afterTokens - beforeTokens;
+          notice.compaction.deltaSource = 'estimated';
+        }
         delete c.compactionRecovery;
         c.updatedAt = this.stamp();
         this.save(c);
@@ -2841,7 +3060,7 @@ class SharedConversations {
       const goalTokens = this.createGoalBridge ? contextTokens(this.toolInstructions()) + 64 : 0;
       const available = destination || recovery
         ? Math.floor(targetCap * 0.65) - pendingTokens - goalTokens - 512 : Infinity;
-      const fallback = this.manualFallbackContext(c, targetEngine, sourceRows, targetSettings, available);
+      const fallback = this.manualFallbackContext(c, targetEngine, sourceRows, targetSettings, available, pinnedFirstUser);
       diagnostics.route = 'local-fallback';
       diagnostics.targetEngine = targetEngine;
       diagnostics.targetCap = targetCap;
@@ -2971,12 +3190,14 @@ class SharedConversations {
       if (maxSummaryChars < 512) throw new Error('The target context has no room for a summary and the new message. ' + recoveryAdvice);
       if (destination) budget = Math.min(budget, Math.floor(cap * 0.6));
       let compacted = history ? null : this.historyStore.summary(c.id, Infinity, true);
+      if (compacted && segment?.summaryRetired?.summaryFile === compacted.file) compacted = null;
       if (history) for (const row of sourceRows({ reverse: true })) {
-        if (row.role === 'notice' && row.file && fs.existsSync(row.file)) { compacted = row; break; }
+        if (row.role === 'notice' && row.file && fs.existsSync(row.file)
+            && segment?.summaryRetired?.summaryFile !== row.file) { compacted = row; break; }
       }
       // The committed index remains authoritative if a display notice could
       // not be appended after saving the portable binding.
-      if (!history && segment?.compactFile && segment.cursor > (compacted?.seq || 0) && fs.existsSync(segment.compactFile))
+      if (!history && !segment?.summaryRetired && segment?.compactFile && segment.cursor > (compacted?.seq || 0) && fs.existsSync(segment.compactFile))
         compacted = { file: segment.compactFile, seq: segment.cursor };
       const previous = compacted && fs.existsSync(compacted.file) ? fs.readFileSync(compacted.file, 'utf8') : '';
       const plan = planHistoryCompaction(options => sourceRows({ ...options, after: compacted?.seq || 0 }), budget);
@@ -3029,7 +3250,7 @@ class SharedConversations {
       }
       if (manualFallback && diagnostics.inputChars > 2 && !String(summary).trim())
         throw new Error('The summarizer returned an empty context.');
-      const markdown = '# Compacted conversation context\n\nWorkspace: ' + c.cwd + '\n\n' + summary
+      const markdown = '# Compacted conversation context\n\nWorkspace: ' + c.cwd + '\n\n' + summary + pinnedFirstUser
         + (plan.recent.length ? '\n\n## Recent conversation (verbatim JSON data)\n\n' + this.formatContext(c, plan.recent) : '');
       if (destination && (contextTokens(markdown) > targetTokens + 256 || overInputChars(targetEngine, markdown)))
         throw new Error('The compacted context does not fit the target model. ' + recoveryAdvice);
@@ -3313,6 +3534,16 @@ class SharedConversations {
       case 'steer': return this.steer(engine, payload);
       case 'get-live': return this.live(engine, payload?.sessionId);
       case 'get-settings': return this.settings(engine, payload?.sessionId);
+      case 'context-snapshot': return this.contextSnapshot(engine, payload);
+      case 'context-events': return this.contextEvents(engine, payload);
+      case 'context-node': return this.contextNode(engine, payload);
+      case 'agent-graph': return this.agentGraph(engine, payload);
+      case 'context-blocks': return this.contextBlocks(engine, payload);
+      case 'context-expand': return this.contextExpand(engine, payload);
+      case 'context-memory-status': return this.contextMemoryStatus(engine, payload);
+      case 'context-retire': return this.contextRetire(engine, payload);
+      case 'context-restore': return this.contextRestore(engine, payload);
+      case 'context-rewrite': return this.contextRewrite(engine, payload);
       case 'list-attachable-conversations': return this.listAttachableConversations(payload?.query, payload?.excludeId);
       case 'attach-conversation': return this.attachConversation(payload?.sessionId);
       case 'discard-conversation-attachment': return this.discardConversationAttachment(payload?.path);

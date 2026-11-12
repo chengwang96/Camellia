@@ -147,6 +147,17 @@ async function main() {
         segments: {}, handoffs: [], apiModel: model }));
       fs.writeFileSync(path.join(sharedDir, id + '.jsonl'), JSON.stringify({ role: 'user', seq: 1, text: 'Remember this shared conversation' }) + '\n');
     }
+    const contextSummary = path.join(userData, 'context-fixture-summary.md');
+    fs.writeFileSync(contextSummary, '# Compacted context\n\nThe first request is pinned.\n');
+    fs.writeFileSync(path.join(sharedDir, 'context-fixture.json'), JSON.stringify({
+      id: 'context-fixture', origin: 'claude', currentEngine: 'claude', title: 'Context fixture', cwd: root,
+      workspaceId: null, createdAt: Date.now(), updatedAt: Date.now(), seq: 2,
+      segments: { claude: { cursor: 2, isolated: true, compactFile: contextSummary } }, handoffs: [], apiModel: 'shared-api-a',
+    }));
+    fs.writeFileSync(path.join(sharedDir, 'context-fixture.jsonl'),
+      JSON.stringify({ role: 'user', seq: 1, text: 'Inspect this context' }) + '\n'
+      + JSON.stringify({ role: 'notice', engine: 'claude', seq: 2, text: 'Context compacted', file: contextSummary,
+        compaction: { native: false, state: 'completed' } }) + '\n');
     const errors = [];
     app.on('browser-window-created', (_event, window) => {
       diag('DIAG window created: ' + window.getTitle() + ' id=' + window.id);
@@ -306,6 +317,7 @@ async function main() {
     await home.webContents.executeJavaScript("document.querySelector('#backToHome').click()");
     await waitWindow("document.querySelector('#enterKimi')");
     assert.ok(Menu.getApplicationMenu().items.find(item => item.label === "Engine").submenu.items.some(item => item.label === "Switch to Kimi Code"));
+    assert.ok(Menu.getApplicationMenu().items.find(item => item.label === "Engine").submenu.items.some(item => item.label === "Switch to Grok Build"));
     await home.webContents.executeJavaScript("document.querySelector('#enterKimi').click()");
     await waitWindow("document.body.dataset.harness === 'kimi'");
     assert.equal(await home.webContents.executeJavaScript('document.title'), 'Kimi Code — Camellia');
@@ -592,6 +604,27 @@ async function main() {
     assert.ok(Math.abs(home.webContents.getZoomLevel() - initialZoom) < 0.00001);
     zoomMenu.items.find(item => item.label === 'Actual size').click();
     assert.equal(home.webContents.getZoomLevel(), 0);
+    await home.webContents.executeJavaScript('openHistorySession("context-fixture")');
+    await waitWindow("typeof uiReady !== 'undefined' && uiReady && !loadingSession && context.sessionId === 'context-fixture'");
+    await home.webContents.executeJavaScript("document.querySelector('#contextToggle').click()");
+    await waitWindow("document.querySelector('#contextPanel') && !document.querySelector('#contextPanel').hidden && document.querySelector('#contextPanelBody')?.textContent.includes('Recoverable blocks')");
+    assert.equal(await home.webContents.executeJavaScript("document.querySelectorAll('.ctx-block-actions button').length"), 2);
+    assert.match(await home.webContents.executeJavaScript("document.querySelector('#contextPanelBody')?.textContent || ''"), /First user pinned/);
+    const contextBlocks = () => home.webContents.executeJavaScript("window.dshDesktop.conversationCommand({engine:'claude',action:'context-blocks',payload:{sessionId:'context-fixture'}})");
+    assert.equal((await contextBlocks()).blocks[0].active, true);
+    await home.webContents.executeJavaScript("document.querySelector('.ctx-block-actions button').click()");
+    await waitWindow("document.querySelector('#contextPanelBody')?.textContent.includes('Retired')");
+    assert.equal((await contextBlocks()).blocks[0].retired, true);
+    await home.webContents.executeJavaScript("document.querySelector('.ctx-block-actions button').click()");
+    await waitWindow("!document.querySelector('#contextPanelBody')?.textContent.includes('Retired')");
+    assert.equal((await contextBlocks()).blocks[0].retired, false);
+    await home.webContents.executeJavaScript("[...document.querySelectorAll('.ctx-block-actions button')].find(button => button.textContent === 'Rewrite').click()");
+    await waitWindow("document.querySelector('.ctx-block-rewrite textarea')");
+    await home.webContents.executeJavaScript("document.querySelector('.ctx-block-rewrite textarea').value='Rewritten summary'; document.querySelector('.ctx-block-rewrite').requestSubmit()");
+    await waitWindow("document.querySelector('#contextPanelBody')?.textContent.includes('Rewritten summary')");
+    assert.equal((await contextBlocks()).blocks[0].summaryPreview.includes('Rewritten summary'), true);
+    await home.webContents.executeJavaScript("document.querySelector('#contextPanelClose').click()");
+    diag('PASS context panel: real Electron toggle, retire, restore and rewrite actions');
     diag('PASS saved zoom: Ctrl +, menus, settings window, home, shared DSH and reset');
     assert.ok(BrowserWindow.getAllWindows().every(window => !window.isVisible()), 'Smoke tests must not display or focus windows');
     assert.deepEqual(errors, []);

@@ -618,6 +618,20 @@ try:
         assert rpc('workbenchSettings')['result']['theme']=='dark'
         assert rpc('workbenchSettings')['result']['autoRefreshBalances'] is False
         assert rpc('workbenchSettings')['result']['closeToTray'] is True
+        assert page.locator('#advancedAnimations').is_checked() is True
+        page.locator('#advancedAnimations').uncheck()
+        expect(page.locator('#status')).to_contain_text('Preferences saved')
+        assert rpc('workbenchSettings')['result']['advancedAnimations'] is False
+        page.locator('#advancedAnimations').check()
+        expect(page.locator('#status')).to_contain_text('Preferences saved')
+        assert rpc('workbenchSettings')['result']['advancedAnimations'] is True
+        assert page.locator('#showConversationNavigator').is_checked() is True
+        page.locator('#showConversationNavigator').uncheck()
+        expect(page.locator('#status')).to_contain_text('Preferences saved')
+        assert rpc('workbenchSettings')['result']['showConversationNavigator'] is False
+        page.locator('#showConversationNavigator').check()
+        expect(page.locator('#status')).to_contain_text('Preferences saved')
+        assert rpc('workbenchSettings')['result']['showConversationNavigator'] is True
         # Antigravity can opt out of the background quota probe on its own, so the
         # official CLI stops opening its Google sign-in page while every other
         # provider keeps refreshing.

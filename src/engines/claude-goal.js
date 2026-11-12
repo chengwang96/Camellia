@@ -371,12 +371,12 @@ function verifyPrompt({ objective, criterion, report, cwd }) {
     `Working directory: ${cwd}`,
     `The agent's completion claim: ${String(report || '').trim() || '(no evidence reported)'}`,
     'Inspect the files and run objective checks (tests, builds, git diff) as appropriate. Do not modify project files; temporary test artifacts are fine. Do not fix the work — your only job is to judge it.',
-    'Then output exactly one verdict on its own line: <verify:pass> with a one-line evidence summary if the goal and every point of the criterion are genuinely met, or <verify:fail> followed by the specific gaps that remain.',
+    'Then output exactly one verdict: start a line with <verify:pass> and a one-line evidence summary if the goal and every point of the criterion are genuinely met, or start a line with <verify:fail> and a one-line summary followed by the specific gaps that remain. Put a concrete gap on the verdict line itself, then list every additional gap on the following lines.',
   ].filter(Boolean).join('\n\n');
 }
 
 function verifySignal(result) {
-  let fence = null, signal = null;
+  let fence = null, signal = null, reason = [];
   for (const line of String(result || '').split(/\r?\n/)) {
     const delimiter = line.match(/^ {0,3}(`{3,}|~{3,})/);
     if (delimiter) {
@@ -386,9 +386,14 @@ function verifySignal(result) {
     }
     if (fence) continue;
     const match = line.match(/^ {0,3}<verify:(pass|fail)>[ \t]*(.*)$/i);
-    if (match) signal = { type: match[1].toLowerCase(), reason: match[2].trim() };
+    if (match) {
+      signal = { type: match[1].toLowerCase(), reason: '' };
+      reason = match[2].trim() ? [match[2].trim()] : [];
+    } else if (signal && line.trim()) {
+      reason.push(line.trimEnd());
+    }
   }
-  return signal;
+  return signal ? { ...signal, reason: reason.join('\n').trim() } : null;
 }
 
 module.exports = { ClaudeGoal, goalPrompt, verifyPrompt, verifySignal };

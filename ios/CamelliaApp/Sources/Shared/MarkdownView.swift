@@ -30,7 +30,7 @@ private struct BlockView: View {
                 .foregroundColor(Palette.ink)
                 .padding(.top, 4)
         case .paragraph(let inline):
-            if loader != nil && hasImage(inline) {
+            if loader != nil && hasMedia(inline) {
                 MarkdownInlineContent(inline: inline)
             } else {
                 Text(MarkdownAttributed.build(inline))
@@ -51,7 +51,7 @@ private struct BlockView: View {
         }
     }
 
-    private func hasImage(_ nodes: [MarkdownInline]) -> Bool {
+    private func hasMedia(_ nodes: [MarkdownInline]) -> Bool {
         nodes.contains { node in
             if case .image = node { return true }
             return false
@@ -93,7 +93,11 @@ private struct MarkdownInlineContent: View {
                         .foregroundColor(Palette.ink)
                         .fixedSize(horizontal: false, vertical: true)
                 case .image(let alt, let destination):
-                    InlineImageView(alt: alt, destination: destination)
+                    if InlineImageReference.isVideo(destination) {
+                        InlineVideoView(alt: alt, destination: destination)
+                    } else {
+                        InlineImageView(alt: alt, destination: destination)
+                    }
                 }
             }
         }
@@ -141,7 +145,7 @@ enum MarkdownAttributed {
                 }
                 result.append(piece)
             case .image(let alt, _):
-                // Paragraph images use InlineImageView; other positions retain their alt text.
+                // Paragraph media uses native views; other positions retain their alt text.
                 result.append(AttributedString("["))
                 result.append(build(alt))
                 result.append(AttributedString("]"))

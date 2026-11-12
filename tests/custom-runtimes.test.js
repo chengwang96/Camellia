@@ -134,6 +134,23 @@ test('desktop IPC persists and clears a local executable path', async context =>
   assert.equal(reset.engines.find(row => row.id === 'codex').customPath, '');
 });
 
+test('a runtime path saves during a response and the engine is retired when it ends', async context => {
+  const harness = createHarness();
+  context.after(() => harness.cleanup());
+  let retired = false;
+  const session = { running: true, shutdown: async () => { retired = true; } };
+  harness.api.codex.sessions.sessions.set('legacy', session);
+  const result = await harness.call('runtime-set-path', { engine: 'codex', file: process.execPath, mode: 'api' });
+  assert.equal(result.ok, true, result.error);
+  assert.equal(result.restartDeferred, true);
+  assert.equal(retired, false);
+  assert.equal(result.engines.find(row => row.id === 'codex').customPath, process.execPath);
+  session.running = false;
+  harness.api.retirePendingEngines();
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.equal(retired, true);
+});
+
 test('standard npm wrappers resolve to their package entry without executing a shell', async context => {
   const setup = fixture(context), wrapper = setup.file('dsh.cmd');
   const packageDir = path.join(setup.root, 'node_modules', '@deepseek-ai', 'dsh');

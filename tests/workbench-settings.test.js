@@ -255,6 +255,55 @@ test('only a real conversation-width change broadcasts to the open workbench', (
   } finally { harness.cleanup(); }
 });
 
+const ANIMATION_EVENT = 'dsh:advanced-animations-changed';
+
+test('advanced animations default on, validate, persist, and broadcast only real changes', () => {
+  const first = createHarness();
+  try {
+    assert.equal(first.call('workbench-settings').advancedAnimations, true);
+    first.events.length = 0;
+    assert.equal(first.call('workbench-save-settings', { advancedAnimations: false }).ok, true);
+    assert.equal(first.call('workbench-settings').advancedAnimations, false);
+    assert.deepEqual(first.events.filter(event => event.channel === ANIMATION_EVENT).map(event => event.data), [false]);
+    first.call('workbench-save-settings', { advancedAnimations: false });
+    assert.equal(first.events.filter(event => event.channel === ANIMATION_EVENT).length, 1, 'an unchanged preference stays silent');
+    assert.equal(first.call('workbench-save-settings', { advancedAnimations: 'off' }).ok, false);
+    assert.equal(first.call('workbench-settings').advancedAnimations, false);
+    assert.equal(first.call('workbench-save-settings', { theme: 'dark' }).ok, true);
+    assert.equal(first.call('workbench-settings').advancedAnimations, false);
+    const reopened = createHarness(first.root);
+    assert.equal(reopened.call('workbench-settings').advancedAnimations, false);
+    reopened.call('workbench-save-settings', { advancedAnimations: true });
+    assert.deepEqual(reopened.events.filter(event => event.channel === ANIMATION_EVENT).map(event => event.data), [true]);
+    reopened.cleanup();
+  } finally { first.cleanup(); }
+});
+
+const NAVIGATOR_EVENT = 'dsh:conversation-navigator-changed';
+
+test('conversation navigator defaults on, validates, persists, and broadcasts only real changes', () => {
+  const first = createHarness();
+  try {
+    assert.equal(first.call('workbench-settings').showConversationNavigator, true);
+    first.events.length = 0;
+    assert.equal(first.call('workbench-save-settings', { showConversationNavigator: false }).ok, true);
+    assert.equal(first.call('workbench-settings').showConversationNavigator, false);
+    assert.deepEqual(first.events.filter(event => event.channel === NAVIGATOR_EVENT).map(event => event.data), [false]);
+    first.call('workbench-save-settings', { showConversationNavigator: false });
+    assert.equal(first.events.filter(event => event.channel === NAVIGATOR_EVENT).length, 1,
+      'an unchanged preference stays silent');
+    assert.equal(first.call('workbench-save-settings', { showConversationNavigator: 'off' }).ok, false);
+    assert.equal(first.call('workbench-settings').showConversationNavigator, false);
+    assert.equal(first.call('workbench-save-settings', { theme: 'dark' }).ok, true);
+    assert.equal(first.call('workbench-settings').showConversationNavigator, false);
+    const reopened = createHarness(first.root);
+    assert.equal(reopened.call('workbench-settings').showConversationNavigator, false);
+    reopened.call('workbench-save-settings', { showConversationNavigator: true });
+    assert.deepEqual(reopened.events.filter(event => event.channel === NAVIGATOR_EVENT).map(event => event.data), [true]);
+    reopened.cleanup();
+  } finally { first.cleanup(); }
+});
+
 test('General exposes the conversation width selector and the chat column reads the variable', () => {
   const html = fs.readFileSync(path.join(__dirname, '../src/renderer/settings/api-settings.html'), 'utf8');
   const general = html.slice(html.indexOf('<section id="generalPage"'), html.indexOf('<section id="networkPage"'));
@@ -267,6 +316,15 @@ test('General exposes the conversation width selector and the chat column reads 
   assert.ok(source.includes("$('chatContentWidth').value = preferences.chatContentWidth"));
   const css = fs.readFileSync(path.join(__dirname, '../src/renderer/chat/workbench.css'), 'utf8');
   assert.match(css, /\.column \{ width: 100%; max-width: var\(--content-width\); margin: 0 auto; \}/);
+  assert.match(general, /<input id="advancedAnimations" type="checkbox"[^>]*>/);
+  assert.ok(source.includes("advancedAnimations: $('advancedAnimations').checked"));
+  assert.ok(source.includes("$('advancedAnimations').checked = preferences.advancedAnimations !== false"));
+  assert.match(css, /data-advanced-animations="off"/);
+  assert.match(general, /<input id="showConversationNavigator" type="checkbox"[^>]*>/);
+  assert.ok(source.includes("showConversationNavigator: $('showConversationNavigator').checked"));
+  assert.ok(source.includes("$('showConversationNavigator').checked = preferences.showConversationNavigator !== false"));
+  const navigatorCss = fs.readFileSync(path.join(__dirname, '../src/renderer/chat/conversation-navigator.css'), 'utf8');
+  assert.match(navigatorCss, /\.conversation-marker\.is-current \.conversation-marker-line/);
 });
 
 // The router's quota probe is what keeps an exhausted key out of rotation, so it

@@ -63,7 +63,8 @@ function message(row) {
       .map(block => ({ type: 'text', text: block.text })));
   }
   const attachedFiles = (Array.isArray(row.attachments) ? row.attachments : []).filter(file => typeof file?.name === 'string')
-    .slice(0, MAX_ATTACHMENTS).map(file => ({ name: file.name.replace(/[\\/\x00-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]/g, '_').slice(0, 180), isImage: file.isImage === true }));
+    .slice(0, MAX_ATTACHMENTS).map(file => ({ name: file.name.replace(/[\\/\x00-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]/g, '_').slice(0, 180),
+      isImage: file.isImage === true, ...(Number.isSafeInteger(file.size) && file.size >= 0 ? { size: file.size } : {}) }));
   const compaction = row.role === 'notice' && row.compaction
     ? compactionView({ ...row.compaction, state: row.compaction.state || 'completed', engine: row.engine, seq: row.seq }) : null;
   const turnDetails = mobileTurnDetails(row);

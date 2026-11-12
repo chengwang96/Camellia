@@ -192,10 +192,11 @@ public class RemoteConversationStatusTest extends InstrumentationTestCase {
         });
     }
 
-    public void testUnconfirmedDeliveryIsInlineRetryAndTracksAvailability() {
+    public void testUnconfirmedDeliveryIsInlineRetryAndStaysActionableOffline() {
         ui(() -> {
             JSONObject payload = new JSONObject().put("action", "send").put("requestId", "retry-test").put("prompt", "Hello");
-            JSONObject pending = new JSONObject().put("conversationId", "status-test").put("payload", payload);
+            JSONObject pending = new JSONObject().put("conversationId", "status-test").put("payload", payload)
+                .put("uncertain", true);
             credentials.put("pendingCommand", pending);
             field("conversationId", "status-test");
             var detail = MainActivity.class.getDeclaredMethod("detailScreen"); detail.setAccessible(true); detail.invoke(activity);
@@ -204,14 +205,16 @@ public class RemoteConversationStatusTest extends InstrumentationTestCase {
             assertNotNull(retry);
             assertTrue(retry.getText().toString().contains("点击重试"));
             assertTrue(retry.hasOnClickListeners());
-            assertFalse(retry.isEnabled());
+            // Checking or resolving the pending request works without a live
+            // control connection, so these fields no longer gate the action.
+            assertTrue(retry.isEnabled());
             var update = MainActivity.class.getDeclaredMethod("updateControls"); update.setAccessible(true);
             field("connected", true); field("controlAllowed", true); update.invoke(activity);
             assertTrue(retry.isEnabled());
             field("commandBusy", true); update.invoke(activity);
-            assertFalse(retry.isEnabled());
+            assertTrue(retry.isEnabled());
             field("commandBusy", false); field("controlAllowed", false); update.invoke(activity);
-            assertFalse(retry.isEnabled());
+            assertTrue(retry.isEnabled());
             var state = MainActivity.class.getDeclaredMethod("outgoingState", String.class); state.setAccessible(true);
             for (String delivery : new String[] { "sending", "preparing", "accepted", "failed" }) {
                 state.invoke(activity, delivery);
@@ -222,6 +225,18 @@ public class RemoteConversationStatusTest extends InstrumentationTestCase {
             assertNotNull(retry);
             credentials.remove("pendingCommand"); update.invoke(activity);
             assertFalse(retry.isEnabled());
+        });
+    }
+
+    public void testPendingSendWithoutUncertaintyShowsPreparing() {
+        ui(() -> {
+            JSONObject payload = new JSONObject().put("action", "send").put("requestId", "prepare-test").put("prompt", "Hello");
+            credentials.put("pendingCommand", new JSONObject().put("conversationId", "status-test").put("payload", payload));
+            field("conversationId", "status-test");
+            var detail = MainActivity.class.getDeclaredMethod("detailScreen"); detail.setAccessible(true); detail.invoke(activity);
+            View root = activity.getWindow().getDecorView();
+            assertNotNull(root.findViewWithTag("outgoingDelivery"));
+            assertNull(root.findViewWithTag("outgoingRetry"));
         });
     }
 }

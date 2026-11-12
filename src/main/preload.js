@@ -71,6 +71,8 @@ contextBridge.exposeInMainWorld('dshDesktop', {
   onSettingsNavigate: (callback) => subscribe('dsh:settings-navigate', callback),
   onEngineSettingsChanged: (callback) => subscribe('dsh:engine-settings-changed', callback),
   onChatContentWidthChanged: (callback) => subscribe('dsh:chat-content-width-changed', callback),
+  onConversationNavigatorChanged: (callback) => subscribe('dsh:conversation-navigator-changed', callback),
+  onAdvancedAnimationsChanged: (callback) => subscribe('dsh:advanced-animations-changed', callback),
   // Settings
   getSettings: () => ipcRenderer.invoke('dsh:get-settings'),
   saveSettings: (payload) => ipcRenderer.invoke('dsh:save-settings', payload),

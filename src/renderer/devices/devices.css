@@ -70,7 +70,8 @@ body.cli-devices-standalone { margin: 0; }
 .cli-devices .md-math { white-space: normal; }
 .cli-devices .md-math-display { display: block; margin: 10px 0; overflow-x: auto; overflow-y: hidden; }
 .cli-devices .md-math-display .katex-display { margin: 0; }
-.cli-devices .message-body .chat-inline-image { display: block; max-width: 100%; height: auto; max-height: 560px; object-fit: contain; object-position: left center; margin: 12px 0; border: 1px solid var(--dsw-alias-border-l2); border-radius: 10px; }
+.cli-devices .message-body .chat-inline-image { display: block; width: auto; height: auto; max-width: min(100%, 560px); max-height: 420px; object-fit: contain; object-position: left center; margin: 12px 0; border: 1px solid var(--dsw-alias-border-l2); border-radius: 10px; }
+.cli-devices .message-body .chat-inline-video { display: block; width: auto; height: auto; max-width: min(100%, 560px); max-height: 420px; margin: 12px 0; border: 1px solid var(--dsw-alias-border-l2); border-radius: 10px; background: #000; object-fit: contain; }
 .cli-devices .md-align-center { text-align: center; } .cli-devices .md-align-right { text-align: right; } .cli-devices .md-align-left { text-align: left; }
 .cli-devices .message-body a { color: var(--dsw-alias-state-business-primary); text-decoration: underline; }
 .cli-devices .message.user .message-body { background: var(--dsw-alias-bg-soft); padding: 10px 14px; border-radius: 14px; }

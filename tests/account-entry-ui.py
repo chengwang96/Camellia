@@ -105,6 +105,11 @@ try:
         expect(page.locator('#googleQuotaErrorDetails')).to_be_hidden()
 
         expect(page.locator('#codexAutoSwitchQuota')).not_to_be_visible()
+        expect(page.locator('#codexWeeklyProbe')).to_be_visible()
+        page.locator('#codexWeeklyProbe').check()
+        wait_for(lambda: rpc('subscriptionPreferencesGet', {'engine':'codex'})['preferences']['weeklyProbe'] is True)
+        page.locator('#codexWeeklyProbe').uncheck()
+        wait_for(lambda: rpc('subscriptionPreferencesGet', {'engine':'codex'})['preferences']['weeklyProbe'] is False)
         page.evaluate("accountListeners.onCodexAccount({...signedAccount,accounts:[signedAccount.accounts[0],{id:'backup',signedIn:true,email:'backup@example.test'}]})")
         expect(page.locator('#codexAutoSwitchQuota')).to_be_visible()
         page.locator('#codexAutoSwitchQuota').uncheck()

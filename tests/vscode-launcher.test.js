@@ -75,6 +75,7 @@ test('custom executable validation accepts files, clears automatic mode and reje
   t.after(() => removeTree(directory));
   const executable = path.join(directory, process.platform === 'win32' ? 'Code.exe' : 'code');
   fs.writeFileSync(executable, 'fixture');
+  if (process.platform !== 'win32') fs.chmodSync(executable, 0o755);
   assert.equal(validateVSCodeExecutable('  ' + executable + '  '), path.normalize(executable));
   assert.equal(validateVSCodeExecutable(''), '');
   for (const value of [null, {}, 42, 'relative/code', directory, executable + '-missing', executable + '\n']) {
@@ -82,7 +83,7 @@ test('custom executable validation accepts files, clears automatic mode and reje
   }
 });
 
-test('opening a workspace auto-selects stable, honors a chosen edition and passes the directory verbatim', async () => {
+test('opening a workspace auto-selects stable, honors a chosen edition and hands it to the user shell', async () => {
   const stable = win('C:\\fixtures', 'Programs', 'Microsoft VS Code', 'Code.exe');
   const insiders = win('C:\\fixtures', 'Programs', 'Microsoft VS Code Insiders', 'Code - Insiders.exe');
   const workspace = win('C:\\work', 'Camellia 中文 , & test');
@@ -90,16 +91,68 @@ test('opening a workspace auto-selects stable, honors a chosen edition and passe
   const options = { platform: 'win32', env: { LOCALAPPDATA: 'C:\\fixtures', PATH: '' }, home: 'C:\\fixtures', fileSystem };
   const automatic = spawnHarness();
   assert.deepEqual(await openWorkspaceInVSCode(workspace, { ...options, spawnProcess: automatic.spawnProcess }), { executable: stable, name: 'Visual Studio Code' });
-  assert.equal(automatic.calls[0].command, stable);
-  assert.deepEqual(automatic.calls[0].args, [workspace]);
+  assert.equal(automatic.calls[0].command, win('C:\\Windows', 'System32', 'cmd.exe'));
+  assert.deepEqual(automatic.calls[0].args, ['/d', '/s', '/c', 'start "" "%CAMELLIA_VSCODE_EXECUTABLE%" "%CAMELLIA_VSCODE_WORKSPACE%"']);
   assert.equal(automatic.calls[0].options.detached, true);
   assert.equal(automatic.calls[0].options.stdio, 'ignore');
+  assert.equal(automatic.calls[0].options.windowsHide, true);
+  assert.equal(automatic.calls[0].options.windowsVerbatimArguments, true);
+  assert.equal(automatic.calls[0].options.env.CAMELLIA_VSCODE_EXECUTABLE, stable);
+  assert.equal(automatic.calls[0].options.env.CAMELLIA_VSCODE_WORKSPACE, workspace);
   assert.equal(automatic.calls[0].child.unrefed, true);
 
   const selected = spawnHarness();
   await openWorkspaceInVSCode(workspace, { ...options, vscodePath: insiders, spawnProcess: selected.spawnProcess });
-  assert.equal(selected.calls[0].command, insiders);
-  assert.deepEqual(selected.calls[0].args, [workspace]);
+  assert.equal(selected.calls[0].command, win('C:\\Windows', 'System32', 'cmd.exe'));
+  assert.deepEqual(selected.calls[0].args, ['/d', '/s', '/c', 'start "" "%CAMELLIA_VSCODE_EXECUTABLE%" "%CAMELLIA_VSCODE_WORKSPACE%"']);
+  assert.equal(selected.calls[0].options.env.CAMELLIA_VSCODE_EXECUTABLE, insiders);
+  assert.equal(selected.calls[0].options.env.CAMELLIA_VSCODE_WORKSPACE, workspace);
+});
+
+test('Windows shell paths pass through the environment without command expansion', async () => {
+  const executable = win('C:\\fixtures', 'Microsoft VS Code', 'Code.exe');
+  const workspace = win('C:\\work', 'a&b', '100%TEMP%^c');
+  const fileSystem = virtualFileSystem({ files: [executable], directories: [workspace] });
+  const launched = spawnHarness();
+  await openWorkspaceInVSCode(workspace, {
+    platform: 'win32', vscodePath: executable, home: 'C:\\fixtures', fileSystem, spawnProcess: launched.spawnProcess,
+  });
+  assert.deepEqual(launched.calls[0].args, ['/d', '/s', '/c', 'start "" "%CAMELLIA_VSCODE_EXECUTABLE%" "%CAMELLIA_VSCODE_WORKSPACE%"']);
+  assert.equal(launched.calls[0].options.windowsVerbatimArguments, true);
+  assert.equal(launched.calls[0].options.env.CAMELLIA_VSCODE_EXECUTABLE, executable);
+  assert.equal(launched.calls[0].options.env.CAMELLIA_VSCODE_WORKSPACE, workspace);
+});
+
+test('macOS launches application bundles through LaunchServices', async () => {
+  const executable = '/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code';
+  const workspace = '/Users/test/Camellia 中文 , & test';
+  const fileSystem = virtualFileSystem({ files: [executable], directories: ['/Applications/Visual Studio Code.app', workspace] });
+  const launched = spawnHarness();
+  await openWorkspaceInVSCode(workspace, {
+    platform: 'darwin', vscodePath: executable, home: '/Users/test', fileSystem, spawnProcess: launched.spawnProcess,
+  });
+  assert.equal(launched.calls[0].command, '/usr/bin/open');
+  assert.deepEqual(launched.calls[0].args, ['-a', '/Applications/Visual Studio Code.app', workspace]);
+
+  const bundle = spawnHarness();
+  await openWorkspaceInVSCode(workspace, {
+    platform: 'darwin', vscodePath: '/Applications/Visual Studio Code.app', home: '/Users/test', fileSystem,
+    spawnProcess: bundle.spawnProcess,
+  });
+  assert.equal(bundle.calls[0].command, '/usr/bin/open');
+  assert.deepEqual(bundle.calls[0].args, ['-a', '/Applications/Visual Studio Code.app', workspace]);
+});
+
+test('macOS standalone CLI paths launch directly', async () => {
+  const executable = '/opt/homebrew/bin/code';
+  const workspace = '/Users/test/Camellia 中文 , & test';
+  const fileSystem = virtualFileSystem({ files: [executable], directories: [workspace] });
+  const launched = spawnHarness();
+  await openWorkspaceInVSCode(workspace, {
+    platform: 'darwin', vscodePath: executable, home: '/Users/test', fileSystem, spawnProcess: launched.spawnProcess,
+  });
+  assert.equal(launched.calls[0].command, executable);
+  assert.deepEqual(launched.calls[0].args, [workspace]);
 });
 
 test('missing installations, invalid paths and process failures never silently launch another program', async () => {
@@ -123,6 +176,7 @@ test('VS Code preference persists through partial saves and real IPC launches th
     const executable = path.join(first.home, 'Programs', 'Microsoft VS Code', 'Code.exe');
     fs.mkdirSync(path.dirname(executable), { recursive: true });
     fs.writeFileSync(executable, 'fixture');
+    if (process.platform !== 'win32') fs.chmodSync(executable, 0o755);
     const detected = first.call('vscode-installations');
     assert.equal(detected.ok, true);
     if (process.platform === 'win32') assert.ok(detected.installations.some(item => item.path === executable));
@@ -145,8 +199,13 @@ test('VS Code preference persists through partial saves and real IPC launches th
     assert.equal(opened.ok, true);
     assert.equal(opened.executable, executable);
     const child = reopened.processes.at(-1);
-    assert.equal(child.exe, executable);
-    assert.deepEqual(child.args, [workspace]);
+    if (process.platform === 'win32') {
+      assert.equal(child.exe, path.win32.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'cmd.exe'));
+      assert.deepEqual(child.args, ['/d', '/s', '/c', 'start "" "%CAMELLIA_VSCODE_EXECUTABLE%" "%CAMELLIA_VSCODE_WORKSPACE%"']);
+    } else {
+      assert.equal(child.exe, executable);
+      assert.deepEqual(child.args, [workspace]);
+    }
     assert.equal(child.unrefed, true);
     await reopened.cleanup();
   } finally { await first.cleanup(); }

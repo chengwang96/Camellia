@@ -187,6 +187,16 @@ function closeGroupMenu(restore = false) {
 function openGroupMenu(anchor, row, position) {
   closeGroupMenu(); row = groups.find(value => value.id === row.id) || row;
   const menu = node('div', 'dsh-pop'); menu.setAttribute('role', 'menu');
+  menu.addEventListener('pointermove', event => {
+    if (document.documentElement.dataset.advancedAnimations === 'off') return;
+    const bounds = menu.getBoundingClientRect();
+    menu.style.setProperty('--glass-pointer-x', (event.clientX - bounds.left) + 'px');
+    menu.style.setProperty('--glass-pointer-y', (event.clientY - bounds.top) + 'px');
+  });
+  menu.addEventListener('pointerleave', () => {
+    menu.style.removeProperty('--glass-pointer-x');
+    menu.style.removeProperty('--glass-pointer-y');
+  });
   const actions = [
     { label: 'Rename', action: 'rename', run: () => renameGroup(row) },
     { label: row.pinned ? 'Unpin' : 'Pin discussion', action: 'pin', run: async () => {
@@ -659,8 +669,12 @@ function applyContentWidth(value) {
   try { localStorage.setItem('camellia-chat-content-width', JSON.stringify(value)); } catch { /* optional preference */ }
   resizeComposer();
 }
+function applyAdvancedAnimations(value) {
+  document.documentElement.dataset.advancedAnimations = value === false ? 'off' : 'on';
+}
 try { applyContentWidth(JSON.parse(localStorage.getItem('camellia-chat-content-width'))); } catch { /* use CSS default */ }
 const unsubscribeWidth = desktop.onChatContentWidthChanged?.(applyContentWidth);
+const unsubscribeAnimations = desktop.onAdvancedAnimationsChanged?.(applyAdvancedAnimations);
 const unsubscribeRuntime = desktop.onRuntimeState?.(() => {
   if (!$('memberDialog').open || installingRuntime || verifyingBinding) return;
   clearTimeout(runtimeRefreshTimer);
@@ -668,8 +682,12 @@ const unsubscribeRuntime = desktop.onRuntimeState?.(() => {
     if ($('memberDialog').open && !installingRuntime && !verifyingBinding) void catalog().catch(error);
   }, 60);
 });
-void desktop.workbenchSettings().then(settings => { if (settings?.ok) applyContentWidth(settings.chatContentWidth); }).catch(error);
-window.addEventListener('beforeunload', () => { cancelLatestScroll(); discussionReferenceSources.delete(cleanupReferences); conversationNavigation?.destroy(); rememberDraft(); unsubscribe?.(); unsubscribeWidth?.(); unsubscribeRuntime?.(); clearTimeout(refreshTimer); clearTimeout(runtimeRefreshTimer); });
+void desktop.workbenchSettings().then(settings => {
+  if (!settings?.ok) return;
+  applyContentWidth(settings.chatContentWidth);
+  applyAdvancedAnimations(settings.advancedAnimations);
+}).catch(error);
+window.addEventListener('beforeunload', () => { cancelLatestScroll(); discussionReferenceSources.delete(cleanupReferences); conversationNavigation?.destroy(); rememberDraft(); unsubscribe?.(); unsubscribeWidth?.(); unsubscribeAnimations?.(); unsubscribeRuntime?.(); clearTimeout(refreshTimer); clearTimeout(runtimeRefreshTimer); });
 window.addEventListener('camellia:language', () => { closeGroupMenu(); messageNodes.clear(); render(); if ($('memberDialog').open) renderProviders(); });
 const ready = (async () => {
   await window.CamelliaI18n.ready;

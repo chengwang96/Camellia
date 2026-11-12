@@ -17,6 +17,39 @@ test('quota switching persists independently for each subscription', async t => 
   assert.equal((await h.call('subscription-preferences-save', { engine: 'kimi', preferences: { autoSwitchQuota: 'yes' } })).ok, false);
 });
 
+test('the Codex weekly test-message preference is Codex-only and persists', async t => {
+  const h = createHarness(); t.after(() => h.cleanup());
+  assert.equal((await h.call('subscription-preferences-get', { engine: 'codex' })).preferences.weeklyProbe, false);
+  assert.equal((await h.call('subscription-preferences-save', { engine: 'codex', preferences: { weeklyProbe: true } })).ok, true);
+  assert.equal((await h.call('subscription-preferences-get', { engine: 'codex' })).preferences.weeklyProbe, true);
+  const invalid = await h.call('subscription-preferences-save', { engine: 'kimi', preferences: { weeklyProbe: true } });
+  assert.equal(invalid.ok, false);
+  assert.equal((await h.call('subscription-preferences-get', { engine: 'kimi' })).preferences.weeklyProbe, undefined);
+});
+
+test('subscription preferences save while the engine is running and the restart waits for the turn to end', async t => {
+  const h = createHarness(); t.after(() => h.cleanup());
+  let retired = false;
+  const session = { running: true, shutdown: async () => { retired = true; } };
+  h.api.codex.sessions.sessions.set('legacy', session);
+  const quota = await h.call('subscription-preferences-save', { engine: 'codex', preferences: { autoSwitchQuota: false } });
+  assert.equal(quota.ok, true, quota.error);
+  const probe = await h.call('subscription-preferences-save', { engine: 'codex', preferences: { weeklyProbe: true } });
+  assert.equal(probe.ok, true, probe.error);
+  const proxy = await h.call('subscription-preferences-save', { engine: 'codex', preferences: { proxyUrl: 'http://localhost:12345' } });
+  assert.equal(proxy.ok, true, proxy.error);
+  assert.equal(proxy.restartDeferred, true);
+  assert.equal(retired, false);
+  const preferences = (await h.call('subscription-preferences-get', { engine: 'codex' })).preferences;
+  assert.equal(preferences.autoSwitchQuota, false);
+  assert.equal(preferences.weeklyProbe, true);
+  assert.equal(preferences.proxyUrl, 'http://localhost:12345/');
+  session.running = false;
+  h.api.retirePendingEngines();
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.equal(retired, true);
+});
+
 for (const engine of ['kimi', 'codex', 'antigravity']) test(`${engine} login preferences never save native configuration or change connection`, async context => {
   const harness = createHarness(); context.after(() => harness.cleanup());
   await harness.call(engine + '-save-settings', { connection: 'api' });

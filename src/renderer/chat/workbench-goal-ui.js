@@ -31,6 +31,13 @@ function createClaudeGoalUI({ $, context, canChangeContext, openHistorySession, 
 
   function phaseOf() { return goalState?.phase === 'active' && !goalState.armed ? 'paused' : goalState?.phase; }
 
+  function blockedSummary(reason) {
+    const lines = String(reason || '').split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+    const detail = lines.find(line => /^(?:[-*]|\d+[.)])\s+/.test(line)) || lines[0] || '';
+    const text = detail.replace(/^(?:[-*]|\d+[.)])\s+/, '');
+    return text.length > 120 ? text.slice(0, 117).trimEnd() + '…' : text;
+  }
+
   function render() {
     clearInterval(ticker); ticker = null;
     onChange();
@@ -41,10 +48,13 @@ function createClaudeGoalUI({ $, context, canChangeContext, openHistorySession, 
     toggle.setAttribute('aria-pressed', String(draft || Boolean(goalState)));
     if (goalState) {
       const phase = phaseOf();
+      const blockerDetail = phase === 'blocked' ? String(goalState.blockedReason?.message || goalState.blockedReason?.code || '').trim() : '';
+      const blocker = blockedSummary(blockerDetail);
       const text = goalState.verifying && phase === 'active' ? 'Verifying…'
         : goalState.waiting && phase === 'active' ? 'Goal waiting · ' + elapsed()
-        : { active: 'Goal · ' + elapsed(), paused: 'Goal paused', blocked: 'Goal blocked', complete: goalState.verified ? 'Goal verified' : 'Goal completed' }[phase] || 'Goal';
-      row.appendChild(chip(text, { className: phase, title: goalState.objective, onClick: (e) => openGoalMenu(e.currentTarget) }));
+        : { active: 'Goal · ' + elapsed(), paused: 'Goal paused', blocked: 'Goal blocked' + (blocker ? ' · ' + blocker : ''), complete: goalState.verified ? 'Goal verified' : 'Goal completed' }[phase] || 'Goal';
+      const title = [goalState.objective, blockerDetail].filter(Boolean).join('\n\n');
+      row.appendChild(chip(text, { className: phase, title, onClick: (e) => openGoalMenu(e.currentTarget) }));
       row.hidden = false;
       if (active()) ticker = setInterval(render, 1000);
     } else if (draft) {

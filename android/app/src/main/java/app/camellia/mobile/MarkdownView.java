@@ -35,6 +35,7 @@ import org.commonmark.ext.gfm.tables.TableCell;
 import org.commonmark.ext.gfm.tables.TableRow;
 import org.commonmark.node.*;
 import org.commonmark.parser.Parser;
+import java.io.File;
 import java.net.URI;
 import java.util.ArrayList;
 import java.util.List;
@@ -50,8 +51,13 @@ final class MarkdownView {
         void loaded(Bitmap bitmap);
         void failed();
     }
+    interface VideoCallback {
+        void loaded(File file);
+        void failed();
+    }
     interface ImageLoader {
         void load(String reference, ImageCallback callback);
+        default void loadVideo(String reference, VideoCallback callback) { callback.failed(); }
         void close();
     }
     private int blocks;
@@ -81,7 +87,7 @@ final class MarkdownView {
     View render(String source) {
         LinearLayout container = column(); container.setTag("markdown");
         blocks = 0;
-        Node document = parser.parse(source);
+        Node document = parser.parse(MarkdownTables.normalize(source));
         try { renderChildren(document, container, 0); }
         catch (RenderLimit limit) { container.removeAllViews(); container.addView(text(source, 15)); }
         return container;
@@ -96,7 +102,7 @@ final class MarkdownView {
         private TextView preview, raw;
         int createdRoots;
         Session(LinearLayout target) { this.target = target; }
-        void history(String source) { apply(MarkdownStream.completed(parser.parse(source), source)); }
+        void history(String source) { apply(MarkdownStream.completed(parser.parse(MarkdownTables.normalize(source)), source)); }
 
         void apply(MarkdownStream.Update update) {
             for (MarkdownStream.Change change : update.changes) {
@@ -328,7 +334,9 @@ final class MarkdownView {
             Image image = (Image) child; String destination = image.getDestination();
             if (!InlineRemoteImages.supported(destination)) { target.addView(text(imageText(image), 15)); continue; }
             String alt = inline(image).toString(); if (alt.isEmpty()) alt = ArtifactReferences.name(destination);
-            target.addView(new InlineImageView(context, alt, destination, ink, imageLoader), new LinearLayout.LayoutParams(-1, -2));
+            if (InlineRemoteImages.supportedVideo(destination))
+                target.addView(new InlineVideoView(context, alt, destination, ink, surface, imageLoader), new LinearLayout.LayoutParams(-1, -2));
+            else target.addView(new InlineImageView(context, alt, destination, ink, imageLoader), new LinearLayout.LayoutParams(-1, -2));
         }
         return true;
     }

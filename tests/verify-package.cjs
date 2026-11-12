@@ -39,6 +39,11 @@ if (isMac) {
   assert.equal(jobHeader.readUInt32LE(0), 0xfeedfacf, 'Discussion helper is a Mach-O executable');
   assert.equal(jobHeader.readUInt32LE(4), 0x0100000c, 'Discussion helper targets Apple Silicon');
   assert.match(fs.readFileSync(path.join(resources, 'runtime/DISCUSSION-JOB-NOTICES.txt'), 'utf8'), /Go runtime and standard library:/);
+  const tailnetHelper = path.join(resources, 'runtime/camellia-tailnet');
+  assert.ok(fs.statSync(tailnetHelper).mode & 0o111, 'Missing executable embedded-network helper');
+  const tailnetHeader = fs.readFileSync(tailnetHelper);
+  assert.equal(tailnetHeader.readUInt32LE(0), 0xfeedfacf, 'Embedded-network helper is a Mach-O executable');
+  assert.equal(tailnetHeader.readUInt32LE(4), 0x0100000c, 'Embedded-network helper targets Apple Silicon');
 }
 assert.equal(runtimeInfo.platform, isMac ? 'darwin' : 'win32');
 assert.equal(runtimeInfo.arch, isMac ? 'arm64' : 'x64');
@@ -69,7 +74,7 @@ for (const file of ['runtime.json', 'requirements.lock']) {
 }
 assert.ok(fs.existsSync(path.join(resources, 'app.asar.unpacked/src/engines/antigravity/bridge.py')), 'Python bridge must be outside the ASAR archive');
 assert.ok(fs.existsSync(path.join(resources, 'app.asar.unpacked/src/engines/antigravity/session_storage.py')), 'Python session storage must be importable outside the ASAR archive');
-for (const file of ['goal-mcp-stdio.js', 'goal-tools.js', 'task-tools.js', 'conversation-tools.js']) {
+for (const file of ['goal-mcp-stdio.js', 'goal-tools.js', 'task-tools.js', 'conversation-tools.js', 'find-tools.js', 'context-tools.js', 'memory-tools.js']) {
   assert.ok(fs.existsSync(path.join(resources, 'app.asar.unpacked/src/engines', file)), 'Goal MCP helper must run under bundled Node outside ASAR: ' + file);
 }
 assert.ok(fs.existsSync(path.join(resources, 'app.asar.unpacked/src/engines/antigravity/cli-bridge.cjs')), 'The Google CLI bridge must run under bundled Node outside ASAR');
@@ -81,6 +86,12 @@ assert.ok(createRuntimeManager({ root: resources, installRoot: resources, discov
 assert.equal(createRuntimeManager({ root: resources, installRoot: resources, discoverLocal: false }).locate('antigravity', 'subscription'), null, 'The Google CLI is an optional download too');
 
 if (isMac) {
+  const infoPlist = fs.readFileSync(path.join(unpacked, 'Contents/Info.plist'), 'utf8');
+  for (const key of ['NSDesktopFolderUsageDescription', 'NSDocumentsFolderUsageDescription',
+    'NSDownloadsFolderUsageDescription', 'NSRemovableVolumesUsageDescription',
+    'NSNetworkVolumesUsageDescription', 'NSLocalNetworkUsageDescription']) {
+    assert.match(infoPlist, new RegExp('<key>' + key + '</key>'), 'Missing macOS usage description: ' + key);
+  }
   const header = fs.readFileSync(path.join(resources, runtimeNode));
   assert.equal(header.readUInt32LE(0), 0xfeedfacf, 'Bundled Node is a Mach-O executable');
   assert.equal(header.readUInt32LE(4), 0x0100000c, 'Bundled Node targets Apple Silicon');

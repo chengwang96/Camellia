@@ -17,7 +17,7 @@ function fixture(overrides = {}) {
     loadingSession: false, switchingEngine: false, goalUI: { isActive: () => false },
     conversationBusy: () => state.running || Boolean(state.conversationActivity) || Boolean(state.pendingConversationSend()) || state.goalUI.isActive(),
     chatApi: { saveSettings: async patch => { saved.push(patch); return { ok: true, settings: { model: patch.model, thinkingBudget: patch.thinkingBudget, permissionMode: 'default' } }; } },
-    levelLabel: level => level,
+    levelLabel: level => level, currentLevel: '',
     applySessionSettings() {}, updateCtxRing() {}, applyApiLevels() {},
     visibleAccountModels: () => state.accountModels || [],
     setStatus(text) { state.status = text; },

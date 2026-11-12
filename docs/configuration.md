@@ -85,6 +85,8 @@ Account cards show each account's reported quota windows and reset times. The bo
 
 Existing sessions keep their connection. Subscription requests go through the official CLI and use the account's eligible Codex access. They do not enter the shared Key pool or fall back to API billing. The settings page shows account quota windows and reset times when the official account API returns them; these are separate from API provider balance and quota cards. Subscription requests are not included in shared provider/key usage statistics.
 
+**Automatically send a test message when the weekly quota refreshes** is optional. Once a weekly window's known reset time has passed, Camellia normally has no next reset time until the account sends its first message in the new cycle. With this option on, Camellia sends one 你好 through the same isolated greeting used by **Wake account**, then refreshes the quota so the new reset time appears. It checks shortly after a known reset time and on the normal account refresh cadence, uses a small amount of subscription allowance, and retries a failed greeting after 30 minutes.
+
 Every ChatGPT account keeps its own application-owned `CODEX_HOME` under `<app-data>/subscription-accounts/codex/<account>`, so several sign-ins and their native threads stay separate. The first account keeps using the original single-account directory.
 
 Camellia uses the official [app-server interface](https://developers.openai.com/codex/app-server) for authentication, models, approvals, streaming, native history, resume, fork, and cancellation. No personal Codex login or configuration is copied. The child process gets an application-owned `CODEX_HOME`; the parent environment and personal `~/.codex` remain unchanged.

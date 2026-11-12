@@ -34,6 +34,7 @@ public protocol RemoteTransport: AnyObject {
     func artifact(conversationId: String, hash: String, expectedSize: Int64) throws -> Data
     func artifact(conversationId: String, hash: String, expectedSize: Int64, to destination: URL,
                   transfer: ArtifactTransfer, progress: @escaping (Int64, Int64) -> Void) throws
+    func messageAttachment(conversationId: String, seq: Int64, index: Int, expectedSize: Int64) throws -> Data
     func stream(_ path: String) throws -> RemoteStreamHandle
 }
 
@@ -59,6 +60,14 @@ public extension RemoteTransport {
         try transfer.check()
         try data.write(to: destination, options: .atomic)
         progress(Int64(data.count), expectedSize)
+    }
+
+    /// Older transports and test doubles never fetch message attachments.
+    /// `RemoteApi` overrides this; the protocol surface must stay free of
+    /// Networking-only error types because the protocol checks compile here
+    /// without the Tailnet framework.
+    func messageAttachment(conversationId: String, seq: Int64, index: Int, expectedSize: Int64) throws -> Data {
+        throw EndpointError.unsupportedPath
     }
 }
 

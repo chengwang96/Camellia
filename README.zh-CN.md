@@ -16,6 +16,7 @@ Camellia 将 **Claude Code、Codex CLI、DeepSeek Harness、Kimi Code、Antigrav
 - **Agent 讨论（beta）。** 邀请最多四个已配置的 Agent，指定身份和回答者；桌面端与已配对的 Android 客户端都能查看消息、成员状态、工具过程和审批。
 - **统一的路由与账号视图。** 在应用中管理 API 供应商、多把 Key、受支持的订阅登录、同模型故障转移、用量、余额和按需安装的运行时。
 - **远程工作。** 将无界面的 Linux 服务器配对为另一台工作台，或经内置 Tailscale 连接授权 Android 设备读取和控制指定桌面会话。
+- **对话内媒体。** 显式 `![说明](路径)` Markdown 会在桌面和配对手机的对话区直接显示图片或视频；普通文件链接仍作为产物卡片。
 - **长期任务。** 目标模式、定时检查、消息队列和下一轮模型切换帮助管理跨越多轮回复的工作。桌面[工作面板](docs/conversation-work-panel.md)集中展示子任务与产物；手机使用轮次卡片和子任务页面，支持独立控制。
 
 ![当前桌面界面中的共享会话示例](docs/images/shared-conversation.png)

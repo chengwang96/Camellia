@@ -34,6 +34,7 @@ public class ArtifactDownloadsTest extends InstrumentationTestCase {
                     var id = MainActivity.class.getDeclaredField("conversationId"); id.setAccessible(true); id.set(activity, conversation);
                     var credentials = MainActivity.class.getDeclaredField("credentials"); credentials.setAccessible(true);
                     credentials.set(activity, new JSONObject().put("address", "http://100.64.0.1:43127").put("token", "t".repeat(43)));
+                    DownloadDirectory.clear(activity);
                     var detail = MainActivity.class.getDeclaredMethod("detailScreen"); detail.setAccessible(true); detail.invoke(activity);
                     var history = MainActivity.class.getDeclaredField("history"); history.setAccessible(true);
                     @SuppressWarnings("unchecked") java.util.TreeMap<Long, JSONObject> rows = (java.util.TreeMap<Long, JSONObject>) history.get(activity);
@@ -44,6 +45,15 @@ public class ArtifactDownloadsTest extends InstrumentationTestCase {
             });
             awaitFile(downloads, "a".repeat(64));
             assertEquals("/v1/conversations/" + conversation + "/artifacts?offset=0&seq=17&reference=new+build%2Fphone.apk", requested.get());
+            getInstrumentation().runOnMainSync(() -> {
+                try {
+                    assertEquals("the selected file name should appear once", 1,
+                        exactTextCount(artifactSheet(downloads).getWindow().getDecorView(), "phone.apk"));
+                    View status = artifactSheet(downloads).getWindow().getDecorView().findViewWithTag("artifactStatus");
+                    assertNotNull(status);
+                    assertEquals("file details should not show save-location guidance", View.GONE, status.getVisibility());
+                } catch (Exception error) { throw new AssertionError(error); }
+            });
             screenshot(activity, "artifact-selected-file");
             getInstrumentation().runOnMainSync(() -> {
                 try {
@@ -55,7 +65,9 @@ public class ArtifactDownloadsTest extends InstrumentationTestCase {
                     assertSame("a different running download must not replace the selected file", sheet, artifactSheet(downloads));
                     assertNull(sheet.getWindow().getDecorView().findViewWithTag("downloadPercent"));
                     downloadState.set(null, new ArtifactDownloadService.State("unrelated.pdf", "http://100.64.0.1:43127", 1, 1, "completed", ""));
-                    downloads.stop(); downloads.show("http://100.64.0.1:43127", "t".repeat(43), conversation);
+                    View all = sheet.getWindow().getDecorView().findViewWithTag("artifactViewAll");
+                    assertNotNull(all);
+                    all.performClick();
                 } catch (Exception error) { throw new AssertionError(error); }
             });
             awaitFile(downloads, "b".repeat(64));
@@ -87,6 +99,15 @@ public class ArtifactDownloadsTest extends InstrumentationTestCase {
             android.os.SystemClock.sleep(50);
         }
         fail("The expected artifact did not load");
+    }
+
+    private static int exactTextCount(View root, String value) {
+        int count = root instanceof android.widget.TextView && value.contentEquals(((android.widget.TextView) root).getText()) ? 1 : 0;
+        if (root instanceof android.view.ViewGroup) {
+            android.view.ViewGroup group = (android.view.ViewGroup) root;
+            for (int index = 0; index < group.getChildCount(); index++) count += exactTextCount(group.getChildAt(index), value);
+        }
+        return count;
     }
 
     public void testComputerSwitcherHasAccessibleTouchTarget() throws Exception {

@@ -51,10 +51,41 @@ function storeAttachments({ directory, deviceId, requestId, entries }) {
       const extension = entry.isImage ? '.jpg' : /^\.[a-zA-Z0-9]{1,12}$/.test(path.extname(entry.name)) ? path.extname(entry.name) : '.bin';
       const file = path.join(directory, createHash('sha256').update(`${deviceId}:${requestId}:${index}`).digest('hex') + extension);
       fs.writeFileSync(file, entry.bytes, { flag: 'wx', mode: 0o600 });
-      written.push({ path: file, name: entry.name, isImage: entry.isImage });
+      written.push({ path: file, name: entry.name, isImage: entry.isImage, size: entry.bytes.length });
     }
     return written;
   } catch (error) { for (const entry of written) fs.unlinkSync(entry.path); throw error; }
 }
 
-module.exports = { MAX_COUNT, MAX_IMAGE, MAX_FILE, MAX_TOTAL, MAX_REQUEST, attachmentName, decodeAttachments, storeAttachments };
+async function openStoredAttachment({ root, file }) {
+  const source = typeof file?.path === 'string' ? file.path : file?.fullPath;
+  if (typeof source !== 'string' || typeof file?.name !== 'string') fail(404, 'Attachment not found');
+  let canonicalRoot, canonical;
+  try {
+    canonicalRoot = await fs.promises.realpath(root);
+    canonical = await fs.promises.realpath(source);
+  } catch {
+    fail(404, 'Attachment unavailable; refresh the conversation');
+  }
+  const relative = path.relative(canonicalRoot, canonical);
+  const folder = relative.split(path.sep)[0];
+  if (!relative || path.isAbsolute(relative) || relative === '..' || relative.startsWith('..' + path.sep)
+    || !['device-attachments', 'mobile-images'].includes(folder)) {
+    fail(404, 'Attachment not found');
+  }
+  const maximum = file.isImage === true ? MAX_IMAGE : MAX_FILE;
+  let handle;
+  try {
+    handle = await fs.promises.open(canonical, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0));
+    const stat = await handle.stat();
+    if (!stat.isFile() || stat.size > maximum) fail(404, 'Attachment unavailable; refresh the conversation');
+    return { handle, size: stat.size, name: file.name, isImage: file.isImage === true };
+  } catch (error) {
+    await handle?.close();
+    if (error.status) throw error;
+    fail(404, 'Attachment unavailable; refresh the conversation');
+  }
+}
+
+module.exports = { MAX_COUNT, MAX_IMAGE, MAX_FILE, MAX_TOTAL, MAX_REQUEST, attachmentName, decodeAttachments, storeAttachments,
+  openStoredAttachment };

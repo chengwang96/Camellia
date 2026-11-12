@@ -22,10 +22,20 @@ function createUiHarness(root) {
 }
 let h = createUiHarness();
 const fixtures = { alpha: h.folder('Alpha Project'), beta: h.folder('Beta Project') };
-for (const [key, relative] of Object.entries({ vscode: 'Programs/Microsoft VS Code/Code.exe', vscodeInsiders: 'Programs/Microsoft VS Code Insiders/Code - Insiders.exe', vscodeCustom: 'Custom VS Code/Code.exe' })) {
+const vscodeInstallations = process.platform === 'darwin'
+  ? {
+    vscode: 'Applications/Visual Studio Code.app/Contents/Resources/app/bin/code',
+    vscodeInsiders: 'Applications/Visual Studio Code - Insiders.app/Contents/Resources/app/bin/code',
+  }
+  : {
+    vscode: 'Programs/Microsoft VS Code/Code.exe',
+    vscodeInsiders: 'Programs/Microsoft VS Code Insiders/Code - Insiders.exe',
+  };
+for (const [key, relative] of Object.entries({ ...vscodeInstallations, vscodeCustom: 'Custom VS Code/Code.exe' })) {
   fixtures[key] = path.join(h.home, relative);
   require('node:fs').mkdirSync(path.dirname(fixtures[key]), { recursive: true });
   require('node:fs').writeFileSync(fixtures[key], 'VS Code UI fixture');
+  if (process.platform !== 'win32') require('node:fs').chmodSync(fixtures[key], 0o755);
 }
 fixtures.legacy = h.seedSession('legacy-chat', fixtures.alpha, '已有的独立会话');
 const conversation = h.api.sharedConversations.create('claude', null, '已有的独立会话', fixtures.alpha);

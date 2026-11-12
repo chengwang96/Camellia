@@ -6,6 +6,7 @@ Requires Python Playwright and its Chromium browser; no API credentials needed.
 import argparse
 import json
 import re
+import sys
 from pathlib import Path
 import subprocess
 from playwright.sync_api import sync_playwright, expect
@@ -43,7 +44,8 @@ bridge = r"""
   window.dshDesktop = new Proxy({}, { get: (_, method) => {
     if (method === 'platform') return window.testPlatform || 'win32';
     if (method === 'discussion') return async () => ({ok:true,groups:[]});
-    if (['onDiscussionEvent', 'onNetworkHealth', 'onChatContentWidthChanged', 'onDiscussionNavigate', 'onSettingsOverlay'].includes(method)) return () => () => {};
+    if (['onDiscussionEvent', 'onNetworkHealth', 'onChatContentWidthChanged', 'onDiscussionNavigate', 'onSettingsOverlay',
+         'onAdvancedAnimationsChanged', 'onConversationNavigatorChanged'].includes(method)) return () => () => {};
     if (method === 'onEngineSettingsChanged') return () => () => {};
     if (method === 'onLanguageChanged') return () => () => {};
     if (method === 'onArchivedChanged') return () => () => {};
@@ -60,6 +62,29 @@ bridge = r"""
 try:
     rpc('configureTestApi')
     fixtures = rpc('fixtures')['result']
+
+    def mac_app_bundle(executable):
+        marker = executable.rfind('.app/')
+        if marker >= 0:
+            return executable[:marker + 4]
+        return executable if executable.endswith('.app') else None
+
+    def assert_vscode_launch(process, executable, workspace, app):
+        if sys.platform == 'win32':
+            assert Path(process['exe']).name.lower() == 'cmd.exe', process
+            assert process['args'] == ['/d', '/s', '/c',
+                'start "" "%CAMELLIA_VSCODE_EXECUTABLE%" "%CAMELLIA_VSCODE_WORKSPACE%"'], process
+        elif sys.platform == 'darwin':
+            if app:
+                assert process['exe'] == '/usr/bin/open', process
+                assert process['args'] == ['-a', app, workspace], process
+            else:
+                assert process['exe'] == executable, process
+                assert process['args'] == [workspace], process
+        else:
+            assert process['exe'] == executable, process
+            assert process['args'] == [workspace], process
+
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         page = browser.new_page(viewport={'width': 1320, 'height': 900}, device_scale_factor=1)
@@ -107,6 +132,9 @@ try:
         page.evaluate("window.testPlatform = 'win32'; window.CamelliaI18n.setLanguage('en')")
 
         # VS Code auto-detection and an explicitly selected installation use the real launcher IPC.
+        installations = rpc('vscodeInstallations')['result']['installations']
+        assert installations, 'The UI fixture did not expose a VS Code installation'
+        detected_vscode = installations[0]['path']
         for language, label in [('en', 'Open in VS Code'), ('zh-CN', '在 VS Code 中打开')]:
             page.evaluate('(language) => window.CamelliaI18n.setLanguage(language)', language)
             page.locator(f'section[data-workspace-id="{alpha}"] .ws-row .session-more').last.click()
@@ -116,16 +144,17 @@ try:
                 action.click()
                 page.wait_for_function("() => window.testCall('lastProcess').then(proc => proc && proc.unrefed)")
                 launched = rpc('lastProcess')['result']
-                assert launched['exe'] == fixtures['vscode']
-                assert launched['args'] == [fixtures['alpha']]
+                assert_vscode_launch(launched, detected_vscode, fixtures['alpha'], mac_app_bundle(detected_vscode))
             else:
                 page.keyboard.press('Escape')
         assert rpc('workbenchSaveSettings', {'vscodePath': fixtures['vscodeInsiders']})['result']['ok']
         page.evaluate("window.CamelliaI18n.setLanguage('en')")
         page.locator(f'section[data-workspace-id="{alpha}"] .ws-row .session-more').last.click()
         page.get_by_role('menuitem', name='Open in VS Code', exact=True).click()
-        page.wait_for_function("expected => window.testCall('lastProcess').then(proc => proc && proc.exe === expected)", arg=fixtures['vscodeInsiders'])
-        assert rpc('lastProcess')['result']['args'] == [fixtures['alpha']]
+        page.wait_for_function("expected => window.testCall('lastProcess').then(proc => proc && (proc.exe === expected || proc.exe.endsWith('/open') || proc.exe.toLowerCase().endsWith('\\\\cmd.exe')))",
+            arg=fixtures['vscodeInsiders'])
+        launched = rpc('lastProcess')['result']
+        assert_vscode_launch(launched, fixtures['vscodeInsiders'], fixtures['alpha'], mac_app_bundle(fixtures['vscodeInsiders']))
         assert rpc('workbenchSaveSettings', {'vscodePath': ''})['result']['ok']
 
         # Drafts stay under their workspace; send uses that directory and records ID.

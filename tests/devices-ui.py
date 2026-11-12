@@ -182,7 +182,7 @@ with sync_playwright() as playwright:
     assert page.locator("#messages script").count() == 0
     page.evaluate("""([assetPng, assetUrl]) => {
       const area = document.createElement('article'); area.id = 'markdown-fixture'; area.className = 'message message-body';
-      const markdown = '# Result\\n\\n**bold** and `inline`\\n\\n| Item | Count |\\n| --- | ---: |\\n| one | 2 |\\n\\n- first\\n- second\\n  - nested one\\n  - nested two\\n- [x] done task\\n- [ ] todo task\\n\\n质能 $E = mc^2$ 与 Bessel $J_\\\\nu(z)=\\\\frac{1}{2}$\\n\\n$$\\n\\\\hat{H}\\\\,\\\\psi_n = E_n\\\\,\\\\psi_n, \\\\qquad E_n = -\\\\frac{m_e e^4}{2\\\\hbar^2}\\\\cdot\\\\frac{1}{n^2}\\n$$\\n\\n价格 $5 and $10 today\\n\\n```js\\nconst html = "<script>not executable</script>";\\n```\\n\\n    const indented = true;\\n\\n[unsafe](javascript:evil) [safe](https://example.com) 自动链接 https://example.com/path 与 me@example.com\\n\\n![remote](https://evil.example/pixel.png) ![abs](' + assetPng + ') ![file](' + assetUrl + ')\\n\\n![unsafe](javascript:alert(1)) ![inline](data:image/png;base64,AAAA)\\n\\n文件 README.md 和 setup.sh 保持原样\\n<img src=https://evil.example/pixel onerror=alert(1)>';
+      const markdown = '# Result\\n\\n**bold** and `inline`\\n\\n| Item | Count |\\n| --- | ---: |\\n| one | 2 |\\n\\n- first\\n- second\\n  - nested one\\n  - nested two\\n- [x] done task\\n- [ ] todo task\\n\\n质能 $E = mc^2$ 与 Bessel $J_\\\\nu(z)=\\\\frac{1}{2}$\\n\\n$$\\n\\\\hat{H}\\\\,\\\\psi_n = E_n\\\\,\\\\psi_n, \\\\qquad E_n = -\\\\frac{m_e e^4}{2\\\\hbar^2}\\\\cdot\\\\frac{1}{n^2}\\n$$\\n\\n价格 $5 and $10 today\\n\\n```js\\nconst html = "<script>not executable</script>";\\n```\\n\\n    const indented = true;\\n\\n[unsafe](javascript:evil) [safe](https://example.com) 自动链接 https://example.com/path 与 me@example.com\\n\\n![remote](https://evil.example/pixel.png) ![abs](' + assetPng + ') ![file](' + assetUrl + ')\\n\\n![video](https://example.com/demo.mp4) [video artifact](https://example.com/demo.mp4)\\n\\n![unsafe](javascript:alert(1)) ![inline](data:image/png;base64,AAAA)\\n\\n文件 README.md 和 setup.sh 保持原样\\n<img src=https://evil.example/pixel onerror=alert(1)>';
       area.append(CamelliaMarkdown.render(document, markdown, {copy: async text => {window.copiedCode=text}}));
       document.querySelector('main').append(area);
     }""", [asset_png, asset_url])
@@ -201,7 +201,9 @@ with sync_playwright() as playwright:
     assert page.locator('#markdown-fixture script').count() == 0
     assert page.locator('#markdown-fixture img.chat-inline-image').count() == 3
     assert page.locator('#markdown-fixture img.chat-inline-image[src^="file:"]').count() == 2
-    assert page.locator('#markdown-fixture a').count() == 3
+    assert page.locator('#markdown-fixture video.chat-inline-video').count() == 1
+    assert page.locator('#markdown-fixture a[href="https://example.com/demo.mp4"]').count() == 1
+    assert page.locator('#markdown-fixture a').count() == 4
     assert page.locator('#markdown-fixture a[href="mailto:me@example.com"]').count() == 1
     expect(page.locator('#markdown-fixture')).to_contain_text('README.md 和 setup.sh 保持原样')
     page.locator('#markdown-fixture .md-code-copy').first.click()

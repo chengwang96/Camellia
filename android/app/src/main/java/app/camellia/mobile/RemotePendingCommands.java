@@ -26,6 +26,27 @@ final class RemotePendingCommands {
         JSONObject legacy = profile.optJSONObject("pendingCommand");
         return matches(legacy, request) ? legacy : null;
     }
+    static java.util.List<JSONObject> all(JSONObject profile) {
+        java.util.ArrayList<JSONObject> result = new java.util.ArrayList<>();
+        java.util.HashSet<String> seen = new java.util.HashSet<>();
+        for (String name : new String[]{"pendingCommands", "pendingStops"}) {
+            JSONObject values = profile.optJSONObject(name);
+            if (values == null) continue;
+            var keys = values.keys();
+            while (keys.hasNext()) {
+                JSONObject value = values.optJSONObject(keys.next());
+                if (value == null) continue;
+                JSONObject payload = value.optJSONObject("payload");
+                String request = payload == null ? "" : payload.optString("requestId");
+                if (!request.isEmpty() && seen.add(request)) result.add(value);
+            }
+        }
+        JSONObject legacy = profile.optJSONObject("pendingCommand");
+        JSONObject payload = legacy == null ? null : legacy.optJSONObject("payload");
+        String request = payload == null ? "" : payload.optString("requestId");
+        if (!request.isEmpty() && seen.add(request)) result.add(legacy);
+        return result;
+    }
     private static boolean matches(JSONObject value, String request) {
         JSONObject payload = value == null ? null : value.optJSONObject("payload");
         return payload != null && request.equals(payload.optString("requestId"));

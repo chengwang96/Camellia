@@ -92,7 +92,12 @@
           const permission = element('select'); permission.setAttribute('aria-label', text('权限', 'Permissions'));
           permission.append(new Option(text('询问', 'Ask'), 'ask'), new Option(text('自动', 'Auto'), 'auto'), new Option(text('完全访问', 'Full access'), 'full')); permission.value = engine.permissionMode || 'ask';
           const thinking = element('select'); thinking.setAttribute('aria-label', text('思考级别', 'Thinking level'));
-          const levels = () => { thinking.replaceChildren(new Option(text('默认思考级别', 'Default thinking'), ''), ...(engine.models?.find(model => model.id === select.value)?.thinking || []).map(value => new Option(value, value))); };
+          const levels = () => {
+            const previous = thinking.value;
+            thinking.replaceChildren(new Option(text('默认思考级别', 'Default thinking'), ''), ...(engine.models?.find(model => model.id === select.value)?.thinking || []).map(value => new Option(value, value)));
+            // Keep the level already chosen when the new model also offers it.
+            thinking.value = [...thinking.options].some(option => option.value === previous) ? previous : '';
+          };
           levels(); thinking.value = engine.thinkingBudget || ''; select.onchange = levels;
           row.append(element('strong', names[engine.id]), select, permission, thinking);
           button(text('保存引擎设置', 'Save engine settings'), () => confirm(text('更新此服务器的新会话默认值？已有会话不变。', 'Update new-conversation defaults on this server? Existing conversations are unchanged.'), async () => { await job('engine-settings', { engine: engine.id, model: select.value, connection: 'api', permissionMode: permission.value, thinkingBudget: thinking.value }); }), row);

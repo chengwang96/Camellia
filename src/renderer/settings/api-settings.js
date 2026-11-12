@@ -226,7 +226,6 @@ function navigateSettings(target = {}) {
   setView(target.subscriptionId ? 'subscriptions' : target.page || 'general', target.engine, target.subscriptionId ? 'kimi' : target.focus);
 }
 const engineUI = window.createEngineSettingsUI({ api, status, navigate: navigateSettings });
-$('kimiUsage').onclick = () => refreshBalances({ subscriptionId: engineUI.activeSubscriptionId() });
 api.onSettingsNavigate(navigateSettings);
 // The main process downgrades a stale system proxy in the background; surface
 // the same notice here even when the network page is not open.
@@ -441,7 +440,7 @@ function usageSources() {
         keys: [], models: [], source: 'api' };
       providers.push(provider);
     }
-    const label = archived.keyName || archived.maskedKey || 'Key';
+    const label = archived.keyName || archived.maskedKey || window.CamelliaI18n.t('Key');
     provider.keys.push({ id: archived.id, name: `${label} · ${window.CamelliaI18n.t('Previous key')}`,
       usage: archived.usage });
   }
@@ -591,7 +590,7 @@ function renderBalances() {
 }
 async function refreshBalances(payload = {}) {
   try {
-    if (!payload.subscriptionId) await assertClean(); $('refreshBalances').disabled = true; $('kimiUsage').disabled = true; status("Querying balances and quotas…");
+    if (!payload.subscriptionId) await assertClean(); $('refreshBalances').disabled = true; status("Querying balances and quotas…");
     const result = await api.providerRefresh(payload.subscriptionId ? payload : { ...payload, apiOnly: true }); if (!result.ok) throw new Error(result.error);
     applyProviderInsights(result);
     const refreshed = payload.subscriptionId
@@ -599,7 +598,7 @@ async function refreshBalances(payload = {}) {
       : Object.values(insight.keys);
     const errors = refreshed.filter(info => info.status === 'error').length;
     status(errors ? `Query complete. ${errors} accounts could not be queried. See their cards for details.` : "Account status updated.");
-  } catch (e) { status(e.message, true); } finally { $('refreshBalances').disabled = false; $('kimiUsage').disabled = false; }
+  } catch (e) { status(e.message, true); } finally { $('refreshBalances').disabled = false; }
 }
 document.querySelector('.settings-nav nav').onclick = e => { const button = e.target.closest('[data-view]'); if (button) setView(button.dataset.view); };
 $('providers').onclick = e => {
@@ -1292,6 +1291,13 @@ function saveMemoryDirectory() {
   return memorySaveQueue;
 }
 $('memoryDirectory').addEventListener('change', saveMemoryDirectory);
+$('contextMemoryEnabled').addEventListener('change', async () => {
+  try {
+    const result = await api.workbenchSaveSettings({ contextMemory: { enabled: $('contextMemoryEnabled').checked } });
+    if (!result.ok) throw new Error(result.error);
+    status('Working-memory snapshot saved. Applies from the next message.');
+  } catch (error) { status(error.message, true); }
+});
 $('chooseMemoryDirectory').onclick = async () => {
   try {
     const result = await api.pickFile({ kind: 'directory', title: 'Choose a memory folder' });
@@ -1309,7 +1315,7 @@ function renderVSCodeSettings() {
   automatic.value = ''; automatic.dataset.i18n = ''; automatic.textContent = 'Auto-detect'; select.appendChild(automatic);
   for (const installation of vscodePreferences.installations) {
     const option = document.createElement('option');
-    option.value = installation.path; option.textContent = installation.name; option.title = installation.path;
+    option.value = installation.path; option.textContent = installation.name;
     select.appendChild(option);
   }
   const custom = document.createElement('option');
@@ -1319,8 +1325,7 @@ function renderVSCodeSettings() {
   $('vscodeCustomPath').hidden = select.value !== VSCODE_CUSTOM;
   if (select.value === VSCODE_CUSTOM) $('vscodePath').value = vscodePreferences.path;
   const detected = selected || (!vscodePreferences.path ? vscodePreferences.installations[0] : null);
-  $('vscodeDetectedPath').textContent = detected?.path || vscodePreferences.path || t('No VS Code installation detected.');
-  select.title = detected?.path || vscodePreferences.path || '';
+  select.title = detected?.name || (vscodePreferences.path ? '' : t('No VS Code installation detected.'));
 }
 async function refreshVSCodeSettings(savedPath) {
   try {
@@ -1385,7 +1390,8 @@ $('theme').addEventListener('change', syncThemeChoices);
 async function saveGeneral() {
   try {
     const result = await api.workbenchSaveSettings({ language: $('language').value, theme: $('theme').value, autoRefreshBalances: $('autoRefreshBalances').checked, closeToTray: $('closeToTray').checked,
-      chatContentWidth: $('chatContentWidth').value,
+      chatContentWidth: $('chatContentWidth').value, advancedAnimations: $('advancedAnimations').checked,
+      showConversationNavigator: $('showConversationNavigator').checked,
       subscriptionAutoRefresh: { antigravity: $('antigravityAutoRefresh').checked },
       accountRefreshMinutes: Number($('accountRefreshMinutes').value),
       conversations: { mode: $('conversationMode').value, warnOnSwitch: $('conversationWarn').checked, showOrigin: $('conversationOriginSetting').checked,
@@ -1394,7 +1400,7 @@ async function saveGeneral() {
     window.CamelliaI18n.setLanguage($('language').value); status("Preferences saved");
   } catch (e) { status(e.message, true); }
 }
-for (const id of ['language', 'theme', 'chatContentWidth', 'autoRefreshBalances', 'antigravityAutoRefresh', 'accountRefreshMinutes', 'closeToTray', 'conversationMode', 'conversationWarn', 'conversationOriginSetting', 'conversationSessionTtl', 'conversationSessionLimit']) {
+for (const id of ['language', 'theme', 'chatContentWidth', 'advancedAnimations', 'showConversationNavigator', 'autoRefreshBalances', 'antigravityAutoRefresh', 'accountRefreshMinutes', 'closeToTray', 'conversationMode', 'conversationWarn', 'conversationOriginSetting', 'conversationSessionTtl', 'conversationSessionLimit']) {
   $(id).addEventListener('change', saveGeneral);
 }
 // General connection preference: serialized saves preserve the latest choice.
@@ -1538,7 +1544,10 @@ async function refreshPreferences() {
     $('theme').value = preferences.theme; syncThemeChoices(); $('autoRefreshBalances').checked = preferences.autoRefreshBalances; $('closeToTray').checked = !!preferences.closeToTray;
     $('antigravityAutoRefresh').checked = preferences.subscriptionAutoRefresh?.antigravity !== false;
     $('chatContentWidth').value = preferences.chatContentWidth || 'standard';
+    $('showConversationNavigator').checked = preferences.showConversationNavigator !== false;
+    $('advancedAnimations').checked = preferences.advancedAnimations !== false;
     $('memoryDirectory').value = preferences.memoryDirectory || '';
+    $('contextMemoryEnabled').checked = preferences.contextMemory?.enabled === true;
     void refreshVSCodeSettings(preferences.vscodePath);
     $('accountRefreshMinutes').value = String(preferences.accountRefreshMinutes || 15);
     $('conversationMode').value = preferences.conversations?.mode || 'direct'; $('conversationWarn').checked = !!preferences.conversations?.warnOnSwitch;

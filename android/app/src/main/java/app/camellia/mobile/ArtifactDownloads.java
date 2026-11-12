@@ -67,15 +67,24 @@ final class ArtifactDownloads {
         int ticket = generation;
         RemoteApi request = apiFactory.apply(address); client = request;
         dialog = new ArtifactSheet(activity, reference == null ? tr("会话产物", "Conversation files") : tr("文件详情", "File details"),
-            reference == null ? tr("电脑上的成果，随身带走。", "Take your work with you.") : ArtifactReferences.name(reference));
+            reference == null ? tr("电脑上的成果，随身带走。", "Take your work with you.") : "");
         ArtifactSheet sheet = dialog;
         if (reference == null && !ArtifactDownloadService.snapshot().phase.equals("idle")) {
             LinearLayout task = sheet.style.group(sheet.content, tr("下载任务", "Download"));
             sheet.style.action(task, ArtifactDownloadService.snapshot().name, tr("查看进度与结果", "View progress and result"), "artifactCurrentTask", false, this::showProgress);
         }
-        TextView status = label(tr("正在读取产物…", "Loading files…"), 13); status.setTextColor(sheet.style.secondary); sheet.content.addView(status);
+        TextView status = label(tr("正在读取产物…", "Loading files…"), 13); status.setTextColor(sheet.style.secondary);
+        status.setTag("artifactStatus"); sheet.content.addView(status);
         LinearLayout rows = sheet.column(); sheet.content.addView(rows);
         TextView more = sheet.action(tr("加载更多", "Load more"), false, () -> {}); more.setVisibility(View.GONE); sheet.content.addView(more);
+        if (reference != null) {
+            TextView all = sheet.action(tr("查看全部产物", "View all files"), false,
+                () -> show(address, token, conversation, discussion, 0, null));
+            all.setTag("artifactViewAll");
+            LinearLayout.LayoutParams layout = new LinearLayout.LayoutParams(-1, -2);
+            layout.bottomMargin = style.dp(10);
+            sheet.actions.addView(all, layout);
+        }
         sheet.actions.addView(sheet.action(tr("完成", "Done"), false, sheet::dismiss));
         dialog.setOnDismissListener(ignored -> { if (ticket == generation) { request.cancel(); client = null; generation++; } });
         dialog.show();
@@ -111,12 +120,14 @@ final class ArtifactDownloads {
                             preview.setTag("artifactPreview:" + file.optString("id")); row.addView(preview);
                         }
                     }
-                    status.setText(rows.getChildCount() == 0 ? selectedReference != null
+                    String statusText = rows.getChildCount() == 0 ? selectedReference != null
                         ? tr("此文件不可用，可能已被移动或删除。请更新并重启电脑端后重试。", "This file is unavailable. It may have been moved or deleted. Update and restart the desktop, then retry.")
                         : tr("未找到可下载文件。只显示此会话引用且仍存在的产物（含在其他目录中生成的文件）；若刚生成，请关闭后重新打开，或更新并重启电脑端。", "No downloadable files found. Only files this conversation referenced and that still exist are shown, including ones produced in another directory. Reopen this panel after generation, or update and restart the desktop.")
                         : DownloadDirectory.selected(activity) != null
                             ? tr("保存到：", "Save to: ") + DownloadDirectory.label(activity)
-                            : tr("选择保存位置后可切换应用或锁屏，下载会继续。", "Choose a save location, then switch apps or lock your phone. Downloads continue."));
+                            : "";
+                    status.setText(statusText);
+                    status.setVisibility(statusText.isEmpty() ? View.GONE : View.VISIBLE);
                     long next = result.optLong("nextOffset", -1);
                     more.setText(tr("加载更多", "Load more"));
                     more.setVisibility(next >= 0 ? View.VISIBLE : View.GONE); more.setEnabled(true);
@@ -128,6 +139,7 @@ final class ArtifactDownloads {
                     status.setText(error instanceof RemoteApi.Failure && (((RemoteApi.Failure) error).status == 404 || selectedReference != null && ((RemoteApi.Failure) error).status == 400)
                         ? tr("请更新并重启电脑端，或检查会话访问权限。", "Update and restart the desktop, or check conversation access.")
                         : RemoteApi.failureMessage(error, chinese));
+                    status.setVisibility(View.VISIBLE);
                     more.setVisibility(View.VISIBLE); more.setEnabled(true); more.setText(tr("重试", "Retry"));
                     more.setOnClickListener(view -> loadPage(request, address, token, conversation, offset, ticket, rows, status, more));
                 });

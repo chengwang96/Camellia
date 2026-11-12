@@ -78,6 +78,31 @@ public class InlineImageTest extends InstrumentationTestCase {
         } finally { getInstrumentation().runOnMainSync(activity::finish); }
     }
 
+    public void testOnlyExplicitMarkdownVideosRenderAsInlineCards() throws Exception {
+        Activity activity = start();
+        try {
+            getInstrumentation().runOnMainSync(() -> {
+                List<String> loaded = new ArrayList<>();
+                MarkdownView.ImageLoader loader = new MarkdownView.ImageLoader() {
+                    @Override public void load(String reference, MarkdownView.ImageCallback callback) { callback.failed(); }
+                    @Override public void loadVideo(String reference, MarkdownView.VideoCallback callback) { loaded.add(reference); }
+                    @Override public void close() { }
+                };
+                MarkdownView renderer = new MarkdownView(activity, Color.BLACK, Color.GRAY, Color.LTGRAY, Color.BLUE, loader);
+                View root = renderer.render("Before\n\n![演示](assets/demo.mp4)\n\n[ordinary file](assets/demo.mp4)\n\n"
+                    + "![not a video](assets/readme.txt)\n\n```text\n![code](code.webm)\n```");
+                assertEquals(1, tagged(root, "markdownInlineVideo").size());
+                assertEquals(1, tagged(root, "markdownInlineVideoCard").size());
+                assertNotNull(root.findViewWithTag("markdownInlineVideoCard"));
+                root.findViewWithTag("markdownInlineVideoCard").performClick();
+                assertEquals(List.of("assets/demo.mp4"), loaded);
+                assertNotNull(findText(root, "Before")); assertNotNull(findText(root, "ordinary file"));
+                assertNotNull(findText(root, "not a video")); assertNotNull(findText(root, "code"));
+                renderer.close();
+            });
+        } finally { getInstrumentation().runOnMainSync(activity::finish); }
+    }
+
     public void testRemoteSnapshotCompletionDisplaysInlineImage() throws Exception {
         Activity activity = start(); String id = "12345678-1234-1234-1234-123456789abc";
         List<String> loaded = new ArrayList<>(); AtomicReference<StreamingMarkdownView> body = new AtomicReference<>();
@@ -156,11 +181,50 @@ public class InlineImageTest extends InstrumentationTestCase {
         assertTrue(InlineRemoteImages.supported("assets/icon.png"));
         assertTrue(InlineRemoteImages.supported("D:/Code/Camellia/assets/photo.JPEG"));
         assertTrue(InlineRemoteImages.supported("https://example.com/chart.png?size=large"));
+        assertTrue(InlineRemoteImages.supported("assets/demo.mp4"));
+        assertTrue(InlineRemoteImages.supportedVideo("D:/Code/Camellia/assets/demo.MOV"));
+        assertTrue(InlineRemoteImages.supportedVideo("https://example.com/demo.webm?download=1"));
         assertFalse(InlineRemoteImages.supported("assets/vector.svg"));
+        assertFalse(InlineRemoteImages.supportedImage("assets/demo.mp4"));
         assertFalse(InlineRemoteImages.supported("https://user:secret@example.com/chart.png"));
         assertTrue(InlineRemoteImages.hasSupportedImage("![chart](assets/chart.png)"));
+        assertTrue(InlineRemoteImages.hasSupportedMedia("![demo](assets/demo.mp4)"));
         assertFalse(InlineRemoteImages.hasSupportedImage("[ordinary](assets/chart.png)"));
         assertFalse(InlineRemoteImages.hasSupportedImage("```text\n![chart](assets/chart.png)\n```"));
+    }
+
+    public void testRemoteLoaderDownloadsVideoArtifactToCache() throws Exception {
+        Activity activity = start();
+        String conversation = "12345678-1234-1234-1234-123456789abc";
+        String id = (java.util.UUID.randomUUID().toString() + java.util.UUID.randomUUID()).replace("-", "");
+        byte[] bytes = new byte[2048]; java.util.Arrays.fill(bytes, (byte) 7);
+        AtomicReference<String> query = new AtomicReference<>(), download = new AtomicReference<>();
+        InlineRemoteImages loader = new InlineRemoteImages(activity, "http://100.64.0.1:43127", "t".repeat(43), conversation, 18,
+            address -> new RemoteApi(address) {
+                @Override public JSONObject json(String path, String token, JSONObject payload) {
+                    query.set(path);
+                    try {
+                        JSONObject file = new JSONObject().put("name", "demo.mp4").put("id", id).put("size", bytes.length).put("extension", "mp4");
+                        return new JSONObject().put("artifacts", new org.json.JSONArray().put(file)).put("nextOffset", JSONObject.NULL);
+                    } catch (Exception error) { throw new AssertionError(error); }
+                }
+                @Override public void download(String path, String token, java.io.OutputStream output, long expectedSize, DownloadProgress progress) throws java.io.IOException {
+                    download.set(path); output.write(bytes); progress.update(expectedSize, expectedSize);
+                }
+            });
+        AtomicReference<java.io.File> saved = new AtomicReference<>(), failure = new AtomicReference<>();
+        CountDownLatch ready = new CountDownLatch(1);
+        try {
+            getInstrumentation().runOnMainSync(() -> loader.loadVideo("assets/demo.mp4", new MarkdownView.VideoCallback() {
+                @Override public void loaded(java.io.File file) { saved.set(file); ready.countDown(); }
+                @Override public void failed() { failure.set(new java.io.File("failed")); ready.countDown(); }
+            }));
+            assertTrue("Video callback timed out", ready.await(10, TimeUnit.SECONDS));
+            assertNull(failure.get()); assertNotNull(saved.get());
+            assertEquals(bytes.length, saved.get().length());
+            assertEquals("/v1/conversations/" + conversation + "/artifacts?offset=0&seq=18&reference=assets%2Fdemo.mp4", query.get());
+            assertEquals("/v1/conversations/" + conversation + "/artifacts/" + id, download.get());
+        } finally { loader.close(); getInstrumentation().runOnMainSync(activity::finish); }
     }
 
     private void await(java.util.function.BooleanSupplier condition) throws Exception {

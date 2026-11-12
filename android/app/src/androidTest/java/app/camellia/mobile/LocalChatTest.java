@@ -587,7 +587,7 @@ public class LocalChatTest extends InstrumentationTestCase {
                 ui(() -> activity.getWindow().getDecorView().findViewWithTag("localModel").performClick());
                 ui(() -> picker(activity).findViewWithTag("modelOption:test-provider/deepseek-v4-pro").performClick());
                 JSONObject changed = new LocalChatFixture(getInstrumentation().getTargetContext()).conversation(id);
-                assertEquals("test-provider/deepseek-v4-pro", changed.getString("routeId")); assertEquals("auto", changed.getString("thinking"));
+                assertEquals("test-provider/deepseek-v4-pro", changed.getString("routeId")); assertEquals("high", changed.getString("thinking"));
                 ui(() -> activity.getWindow().getDecorView().findViewWithTag("localModel").performClick());
                 ui(() -> picker(activity).findViewWithTag("thinkingSettings").performClick());
                 ui(() -> picker(activity).findViewWithTag("thinkingBack").performClick());

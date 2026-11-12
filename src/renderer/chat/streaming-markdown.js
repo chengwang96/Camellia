@@ -216,7 +216,7 @@
     }
     paint(html) {
       const fresh = fragment(this.element, html);
-      this.hasContent ||= /\S/.test(fresh.textContent) || !!fresh.querySelector('.chat-inline-image');
+      this.hasContent ||= /\S/.test(fresh.textContent) || !!fresh.querySelector('.chat-inline-image, .chat-inline-video');
       patchChildren(this.element, fresh, this.onCodeChange, this.anchor, this.cursor);
     }
     consume(length) {

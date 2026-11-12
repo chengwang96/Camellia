@@ -253,6 +253,8 @@ td { border-top: 1px solid var(--dsw-alias-border-l2); padding: 10px 8px; overfl
 .memory-setting h2 label { margin: 0; }
 .memory-folder { display: flex; gap: 8px; margin-top: 12px; }
 .memory-folder input { flex: 1; }
+.memory-snapshot-toggle { display: flex; align-items: center; gap: 8px; margin-top: 12px; color: var(--dsw-alias-label-secondary); font: var(--f-s-14); cursor: pointer; }
+.memory-snapshot-toggle input { width: 15px; height: 15px; margin: 0; }
 /* Quick-switch defaults: one grid keeps the engine, model and reasoning
    columns aligned across every engine row. */
 .quick-switch-row { display: grid; grid-template-columns: 140px minmax(0, 1.4fr) minmax(0, 1fr); align-items: center; gap: 8px 20px; padding: 10px 0; }

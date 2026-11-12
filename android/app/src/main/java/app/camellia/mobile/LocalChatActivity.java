@@ -825,7 +825,10 @@ public final class LocalChatActivity extends Activity {
                 store.conversation(conversationId).optString("thinking", "auto"), new ModelPickerPopup.Listener() {
                     public void onModel(LocalChatConfig.Route route) {
                         JSONObject conversation = store.conversation(conversationId);
-                        saveModelPreference(route.id, route.id.equals(conversation.optString("routeId")) ? conversation.optString("thinking", "auto") : "auto");
+                        // Switching models keeps the current level when the new
+                        // route supports it; only an unsupported level falls
+                        // back to the model default.
+                        saveModelPreference(route.id, LocalChatThinking.effective(route, conversation.optString("thinking", "auto")));
                     }
                     public void onThinking(String level) { saveModelPreference(store.conversation(conversationId).optString("routeId"), level); }
                     public void onImport() { providerSettings(); }

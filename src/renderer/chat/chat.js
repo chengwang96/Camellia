@@ -27,6 +27,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
   let handoffTimeoutMs = 10 * 60 * 1000;
   let conversationPrefs = { mode: 'direct', warnOnSwitch: false, showOrigin: false };
   let loadedEngine = harnessId;
+  let contextPanel = null;
   const eventsDuringRestore = [];
   let turnEl = null;          // current assistant turn container
   let turnEngine = null;      // harness that owns the in-flight turn, which may differ from this page's
@@ -634,6 +635,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
   }
 
   chat.addEventListener('click', event => {
+    if (event.target.closest('video')) return;
     const link = event.target.closest('.md [data-chat-file]');
     if (!link) return;
     event.preventDefault();
@@ -644,16 +646,19 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     event.preventDefault();
     void openFilePreview(event.target.dataset.chatFile);
   });
-  // Resource errors do not bubble. Keep a useful preview link when an image
-  // was moved, removed, or is unsupported, rather than a broken image icon.
+  // Resource errors do not bubble. Keep a useful preview link when media was
+  // moved, removed, or is unsupported, rather than a broken player or image.
   chat.addEventListener('error', event => {
-    const img = event.target;
-    if (!img.matches?.('img.chat-inline-image')) return;
+    const media = event.target;
+    if (!media.matches?.('img.chat-inline-image, video.chat-inline-video')) return;
     const link = document.createElement('a');
-    link.href = img.src; link.dataset.chatFile = img.dataset.chatFile;
-    link.className = 'chat-image-fallback'; link.textContent = img.alt || img.dataset.chatFile;
-    link.title = img.dataset.chatFile;
-    img.replaceWith(link);
+    link.href = media.src;
+    if (media.dataset.chatFile) link.dataset.chatFile = media.dataset.chatFile;
+    else { link.target = '_blank'; link.rel = 'noopener noreferrer'; }
+    link.className = 'chat-image-fallback' + (media.matches('video') ? ' chat-video-fallback' : '');
+    link.textContent = media.alt || media.getAttribute('aria-label') || media.dataset.chatFile || media.src;
+    link.title = media.dataset.chatFile || media.src;
+    media.replaceWith(link);
   }, true);
 
   function fmtTokens(n) {
@@ -867,17 +872,23 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       else if (!inCurrent && inOther) connection = accountSubscription() ? 'api' : 'subscription';
     }
     const targetConnection = connection || currentConnection;
-    const supportedLevels = !quickLevel ? [] : targetConnection === 'subscription' && supportsAccounts()
+    const supportedLevels = targetConnection === 'subscription' && supportsAccounts()
       ? (accountModels.find(item => item.id === model)?.supportedReasoningEfforts || [])
         .map(item => item.reasoningEffort || item).filter(id => typeof id === 'string')
       : window.CamelliaModelLevels.levelsFor(model, routeModelCatalog);
-    const selectedLevel = quickLevel && supportedLevels.includes(quickLevel) ? quickLevel : '';
+    // An explicitly configured quick-switch level wins when the new model
+    // offers it. Otherwise a model switch keeps the current level whenever the
+    // new model supports it; only an unsupported level falls back to Default.
+    const selectedLevel = quickLevel && supportedLevels.includes(quickLevel) ? quickLevel
+      : currentLevel && supportedLevels.includes(currentLevel) ? currentLevel : '';
+    const levelChanged = selectedLevel ? selectedLevel !== currentLevel
+      : !googleSubscription() && Boolean(currentLevel);
     // Google base models own their reasoning timeline, so a model change keeps
     // the saved effort (the engine falls back to the family default if unset).
     return persistSettings({ model, ...(connection ? { connection } : {}),
       ...(selectedLevel ? { thinkingBudget: selectedLevel }
         : !googleSubscription() ? { thinkingBudget: '' } : {}) },
-      (selectedLevel ? "Model and reasoning level changed: " : "Model changed: ") + modelLabel(model, targetConnection) + " (applies to the next message)")
+      (levelChanged ? "Model and reasoning level changed: " : "Model changed: ") + modelLabel(model, targetConnection) + " (applies to the next message)")
       .then(() => { if (connection) void loadSettings(); });
   }
   function persistLevel(level) {
@@ -1149,13 +1160,29 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     document.documentElement.style.setProperty('--content-width', width);
     writeUi('content-width', value);
   }
+  function applyAdvancedAnimations(value) {
+    document.documentElement.dataset.advancedAnimations = value === false ? 'off' : 'on';
+  }
+  let showConversationNavigator = readUi('conversation-navigator') !== false;
+  let conversationNavigator = null;
+  function applyConversationNavigator(value) {
+    showConversationNavigator = value !== false;
+    writeUi('conversation-navigator', showConversationNavigator);
+    conversationNavigator?.setEnabled(showConversationNavigator);
+  }
   window.dshDesktop.onChatContentWidthChanged?.(applyChatContentWidth);
+  window.dshDesktop.onAdvancedAnimationsChanged?.(applyAdvancedAnimations);
+  window.dshDesktop.onConversationNavigatorChanged?.(applyConversationNavigator);
   // Paint the cached width first so the column never flashes at the default
   // when this window opens; the saved preference confirms or corrects it.
   const cachedContentWidth = readUi('content-width');
   if (CHAT_CONTENT_WIDTHS[cachedContentWidth]) applyChatContentWidth(cachedContentWidth);
   void window.dshDesktop.workbenchSettings().then(settings => {
-    if (settings?.ok) applyChatContentWidth(settings.chatContentWidth);
+    if (settings?.ok) {
+      applyChatContentWidth(settings.chatContentWidth);
+      applyAdvancedAnimations(settings.advancedAnimations);
+      applyConversationNavigator(settings.showConversationNavigator);
+    }
   }).catch(() => {});
   let gitUI = null;
   const { openFilePreview, closeFilePreview, openPreviewExternally, revealFile, revealLabel, formatFileSize, attachmentDragType } = window.CamelliaFilePreview.create({ fileViewer, inputCard, mdRender, setStatus, finishPreviewResize,
@@ -2057,7 +2084,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     }
     const texts = entries.filter(el => {
       if (!el.classList.contains('md')) return false;
-      el.markdownHasContent ??= !!(el.textContent.trim() || el.querySelector('.chat-inline-image'));
+      el.markdownHasContent ??= !!(el.textContent.trim() || el.querySelector('.chat-inline-image, .chat-inline-video'));
       return el.markdownHasContent;
     });
     const settled = texts.filter(el => el.dataset.phase !== 'commentary');
@@ -2210,7 +2237,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
         const previousContent = b.el.markdownHasContent;
         if (b.stopped) {
           b.markdown.finish(body); b.markdown = null;
-          b.el.markdownHasContent = !!(b.el.textContent.trim() || b.el.querySelector('.chat-inline-image'));
+          b.el.markdownHasContent = !!(b.el.textContent.trim() || b.el.querySelector('.chat-inline-image, .chat-inline-video'));
         } else {
           b.markdown.flush(); b.el.markdownHasContent = b.markdown.hasContent;
         }
@@ -2355,7 +2382,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
           window.CamelliaStreamingMarkdown.reconcile(el, mdRender(text), updateStreamingLatex);
           el.artifactText = text;
           el.markdownFinal = true;
-          el.markdownHasContent = !!(el.textContent.trim() || el.querySelector('.chat-inline-image'));
+          el.markdownHasContent = !!(el.textContent.trim() || el.querySelector('.chat-inline-image, .chat-inline-video'));
         }
       } else if (blk.type === 'thinking' && blk.thinking) {
         const el = oldThinking.find(el => !reused.has(el) && el.querySelector('.think-body').textContent === blk.thinking) || makeThinkBlock();
@@ -2819,12 +2846,14 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       handleConversationStatus({ sessionId: ev.session_id, text: ev.state === 'running' ? 'Compacting context…' : '',
         compaction: { state: ev.state, native: ev.native !== false, engine: ev.engine || turnEngine || loadedEngine, seq: ev.compactionSeq,
           durationMs: ev.compactionDurationMs, startedAt: ev.compactionStartedAt, elapsedMs: ev.compactionElapsedMs } });
+      contextPanel?.refresh();
       return;
     }
 
     if (ev.type === 'gui:usage') {
       lastCallUsage = ev.usage;
       updateCtxRing();
+      contextPanel?.refresh();
       return;
     }
 
@@ -2832,6 +2861,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       loadedEngine = harnessId;
       context.sessionId = ev.session_id || context.sessionId;
       context.workspaceId = ev.workspaceId || null;
+      contextPanel?.refresh();
       sidebar.render();
       void sidebar.load();
       return;
@@ -2979,6 +3009,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       currentRunId = null;
       void sidebar.load();
       void gitUI.refresh(true);
+      contextPanel?.refresh();
       maybeScroll(was);
       drainMessageQueue();
       if (ok && !messageQueue.length && !goalUI.isActive()) {
@@ -3459,6 +3490,9 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     acceptSessionEvents = false;
     currentRunId = null;
     context.sessionId = null;
+    // The previous reset ran before the id was cleared; render the new
+    // session's empty state now that there is no conversation to inspect.
+    contextPanel?.reset();
     void tasksUI.refresh();
     loadedEngine = harnessId;
     $('conversationOrigin').hidden = true;
@@ -3851,6 +3885,16 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     const pop = document.createElement('div');
     pop.className = 'dsh-pop action-menu';
     pop.setAttribute('role', 'menu');
+    pop.addEventListener('pointermove', (event) => {
+      if (document.documentElement.dataset.advancedAnimations === 'off') return;
+      const bounds = pop.getBoundingClientRect();
+      pop.style.setProperty('--glass-pointer-x', (event.clientX - bounds.left) + 'px');
+      pop.style.setProperty('--glass-pointer-y', (event.clientY - bounds.top) + 'px');
+    });
+    pop.addEventListener('pointerleave', () => {
+      pop.style.removeProperty('--glass-pointer-x');
+      pop.style.removeProperty('--glass-pointer-y');
+    });
     actions.forEach((action) => {
       const row = document.createElement('button');
       row.type = 'button';
@@ -3949,6 +3993,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     currentFastMode = false;
     chatScroll.classList.remove('history-opening');
     workPanel.reset();
+    contextPanel?.reset();
     historyOpening = false;
     replayingLiveSnapshot = false;
     deferredTurnLayouts.clear();
@@ -3992,6 +4037,42 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
   });
   const workPanel = window.createWorkPanel({ context, setStatus, openFilePreview,
     shouldFollow: () => followRunOutput && !userScrollActive, gitPanel: gitUI });
+  contextPanel = window.createContextPanel({
+    context,
+    getEngine: () => loadedEngine || harnessId,
+    setStatus,
+    onOpen: () => workPanel.setOpen(false),
+    openConversation: id => void openHistorySession(id),
+  });
+  $('ctxRing').addEventListener('click', () => contextPanel?.setOpen(!contextPanel.isOpen()));
+  // A side panel reserves room beside the chat only while the remaining
+  // column still fits inline media at its fixed size. When the window narrows
+  // past that budget the panel gives way first, before the conversation list
+  // collapses, so the conversation keeps its width. A panel opened by hand in
+  // a tighter window floats over the chat instead of shrinking it.
+  const mainElement = document.querySelector('.app > .main');
+  conversationNavigator = window.CamelliaConversationNavigator?.create({
+    rail: $('conversationRail'), scroll: chatScroll, chat, main: mainElement, enabled: showConversationNavigator,
+  });
+  const INLINE_MEDIA_WIDTH = 560; // Keep in sync with --inline-media-width
+  const CHAT_GUTTER = 48;         // chat-scroll left and right padding
+  const SIDE_PANEL_RESERVE = 496; // Keep in sync with --side-panel-width + 16px
+  let sidePanelFitKind = null, sidePanelFits = false;
+  function updatePanelReservation() {
+    const open = mainElement.classList.contains('has-context-panel') ? 'context'
+      : mainElement.classList.contains('has-work-panel') ? 'work' : null;
+    const fits = Boolean(open)
+      && mainElement.clientWidth - SIDE_PANEL_RESERVE - CHAT_GUTTER >= INLINE_MEDIA_WIDTH;
+    mainElement.classList.toggle('panel-fits', fits);
+    if (open && open === sidePanelFitKind && sidePanelFits && !fits) {
+      (open === 'context' ? contextPanel : workPanel).setOpen(false);
+    }
+    sidePanelFitKind = open;
+    sidePanelFits = fits;
+  }
+  new ResizeObserver(updatePanelReservation).observe(mainElement);
+  new MutationObserver(updatePanelReservation).observe(mainElement, { attributes: true, attributeFilter: ['class'] });
+  updatePanelReservation();
   $('conversationActions').onclick = () => sidebar.openCurrentActions($('conversationActions'));
   const goalUI = createClaudeGoalUI({ $, context, canChangeContext: () => !editingMessage && !handoffForCurrentSession() && canChangeContext() && !running, openHistorySession, setStatus,
     acceptEvents: () => { acceptSessionEvents = true; }, onChange: () => { sidebar.updateLabel(); updateConversationControls(); queueMicrotask(drainMessageQueue); }, openActionMenu, closePops });
@@ -4130,6 +4211,10 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     historyOpening = true;
     restoringRun = true;
     context.sessionId = id;
+    // resetConversationView cleared the panel while the old session id was
+    // still current; clear it again for the incoming id so it shows the new
+    // conversation's loading state instead of the previous one's request.
+    contextPanel?.reset();
     context.workspaceId = sidebar.sessions.find(entry => entry.id === id)?.workspaceId || null;
     conversationActivity = sidebar.sessions.find(entry => entry.id === id)?.activity || null;
     input.value = ''; attachments = []; renderAttachments();
@@ -4142,6 +4227,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       if (seq !== sessionOpenSeq) return false;
       if (!res.ok) {
         context.sessionId = null;
+        contextPanel?.reset();
         conversationActivity = null;
         chat.replaceChildren(emptyStateTemplate.cloneNode(true));
         throw new Error(res.error);
@@ -4163,6 +4249,10 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
         if (res.settings?.ok === false) throw new Error(res.settings.error);
       }
       context.sessionId = id;
+      // The side panel follows the conversation: fetch the incoming session's
+      // snapshot now that its engine is confirmed, not only when a run event
+      // happens to refresh it.
+      contextPanel?.refresh();
       if (res.remoteQueue) applyRemoteQueue(res.remoteQueue);
       void tasksUI.refresh();
       context.workspaceId = res.workspaceId || null;
@@ -4236,7 +4326,15 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       flushBlockRenders();
       if (followRunOutput && !userScrollActive) scrollToLatest();
       return true;
-    } catch (err) { if (seq === sessionOpenSeq && !/archived/i.test(err.message)) setStatus("Could not load: " + err.message); return false; }
+    } catch (err) {
+      if (seq === sessionOpenSeq) {
+        if (!/archived/i.test(err.message)) setStatus("Could not load: " + err.message);
+        // Do not leave the panel on its switch-in-progress row when opening
+        // the session failed after the id was adopted.
+        contextPanel?.refresh();
+      }
+      return false;
+    }
     finally {
       if (seq === sessionOpenSeq) {
         historyOpening = false; loadingSession = false; input.disabled = handoffForCurrentSession(); restoringRun = false;
@@ -4717,6 +4815,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
         saveDraft(); ++sessionOpenSeq; resetConversationView(); closeFilePreview();
         loadingSession = false; input.disabled = false;
         context.sessionId = null; context.workspaceId = null;
+        contextPanel?.reset();
         discussionVisible = true; document.querySelector('.app > .main').hidden = true;
         $('discussionSurface').hidden = false;
       }
@@ -4747,18 +4846,57 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
   const discussionHost = document.createElement('section');
   discussionHost.id = 'discussionSurface'; discussionHost.className = 'discussion-surface'; discussionHost.hidden = true;
   document.querySelector('.app').append(discussionHost);
-  function setWorkbenchSidebarOpen(open) {
-    const narrow = innerWidth <= 680;
-    document.body.classList.toggle('workbench-sidebar-open', narrow && open);
-    $('sidebar').inert = narrow && !open;
-    $('workbenchSidebarBackdrop').hidden = !narrow || !open;
-    $('workbenchSidebarToggle').setAttribute('aria-expanded', String(narrow && open));
-    discussionHost.shadowRoot?.getElementById('sidebarToggle')?.setAttribute('aria-expanded', String(narrow && open));
+  // The conversation list is a drawer on phones and a collapsible column on
+  // desktop. As the window narrows the side panels close first, then the
+  // sidebar collapses, so the conversation keeps its width for as long as
+  // possible.
+  const SIDEBAR_DRAWER_WIDTH = 680;
+  // The list stays open while the chat column beside it can still show inline
+  // media at full width. Below that it collapses before the media is squeezed.
+  const sidebarAutoCollapseWidth = () => (preferredSidebarWidth || 260) + INLINE_MEDIA_WIDTH + CHAT_GUTTER;
+  let sidebarCollapsedPreference = readUi('sidebar-collapsed') === true;
+  let sidebarAutoOverride = false;
+  const sidebarDrawer = () => innerWidth <= SIDEBAR_DRAWER_WIDTH;
+  function sidebarCollapsedNow() {
+    return !sidebarDrawer() && (sidebarCollapsedPreference
+      || (innerWidth < sidebarAutoCollapseWidth() && !sidebarAutoOverride));
   }
-  const toggleWorkbenchSidebar = () => setWorkbenchSidebarOpen(!document.body.classList.contains('workbench-sidebar-open'));
+  function syncSidebarChrome() {
+    const drawerOpen = sidebarDrawer() && document.body.classList.contains('workbench-sidebar-open');
+    const collapsed = sidebarCollapsedNow();
+    const visible = sidebarDrawer() ? drawerOpen : !collapsed;
+    document.body.classList.toggle('workbench-sidebar-collapsed', collapsed);
+    $('sidebar').inert = !visible;
+    $('workbenchSidebarBackdrop').hidden = !drawerOpen;
+    const toggle = $('workbenchSidebarToggle');
+    toggle.setAttribute('aria-expanded', String(visible));
+    const label = window.CamelliaI18n.t(visible ? 'Hide sidebar' : 'Show sidebar');
+    toggle.setAttribute('aria-label', label);
+    toggle.title = label;
+    discussionHost.shadowRoot?.getElementById('sidebarToggle')?.setAttribute('aria-expanded', String(visible));
+  }
+  function setWorkbenchSidebarOpen(open) {
+    if (sidebarDrawer()) document.body.classList.toggle('workbench-sidebar-open', open);
+    else document.body.classList.remove('workbench-sidebar-open');
+    syncSidebarChrome();
+  }
+  const toggleWorkbenchSidebar = () => {
+    if (sidebarDrawer()) {
+      setWorkbenchSidebarOpen(!document.body.classList.contains('workbench-sidebar-open'));
+      return;
+    }
+    const collapsed = sidebarCollapsedNow();
+    sidebarCollapsedPreference = !collapsed;
+    sidebarAutoOverride = collapsed && innerWidth < sidebarAutoCollapseWidth();
+    writeUi('sidebar-collapsed', sidebarCollapsedPreference);
+    syncSidebarChrome();
+  };
   $('workbenchSidebarToggle').onclick = toggleWorkbenchSidebar;
   $('workbenchSidebarBackdrop').onclick = () => setWorkbenchSidebarOpen(false);
-  window.addEventListener('resize', () => setWorkbenchSidebarOpen(false));
+  window.addEventListener('resize', () => {
+    if (innerWidth >= sidebarAutoCollapseWidth()) sidebarAutoOverride = false;
+    setWorkbenchSidebarOpen(false);
+  });
   document.addEventListener('keydown', event => {
     if (event.key === 'Escape' && !document.querySelector('dialog[open]') && !discussionHost.shadowRoot?.querySelector('dialog[open]')) setWorkbenchSidebarOpen(false);
   });

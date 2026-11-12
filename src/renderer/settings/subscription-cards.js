@@ -124,7 +124,7 @@ window.renderSubscriptionCards = ({ container, state, busy, engine, manage = tru
       : account.models ? t('Available account models') + ' · ' + account.models : '';
     const badges = `${account.active ? `<span class="subscription-current">${esc(t('Current'))}</span>` : ''}<span class="subscription-plan${account.plan ? planClass(account.plan) : ''}">${esc(account.plan || (engine === 'codex' ? 'ChatGPT' : engine === 'antigravity' ? 'Google' : engine === 'grok' ? 'Grok' : 'Kimi'))}</span>`;
     const wake = engine === 'codex' || engine === 'kimi'
-      ? action('wake', 'Wake account', !account.signedIn, 'Send 你好 once and refresh quota. Uses subscription allowance; does not reset an active window.') : '';
+      ? action('wake', 'Wake account', !account.signedIn, 'Send a short hello message once and refresh quota. Uses subscription allowance; does not reset an active window.') : '';
     const signIn = typeof onSignIn === 'function' && (!manage || !account.signedIn)
       ? action('login', engine === 'antigravity' ? account.stale || account.error ? 'Sign in again' : 'Sign in with Google' : 'Sign in') : '';
     const verify = typeof onVerify === 'function'

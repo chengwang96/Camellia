@@ -519,6 +519,8 @@ test('verify verdicts ignore fenced or quoted markers', () => {
   assert.equal(verifySignal('```\n<verify:pass>\n```'), null);
   assert.equal(verifySignal('> <verify:pass>'), null);
   assert.deepEqual(verifySignal('Checked.\n<verify:fail> tests missing'), { type: 'fail', reason: 'tests missing' });
+  assert.deepEqual(verifySignal('Checked.\n<verify:fail>\nTests are missing.\n- Exact retrieval truncates long rows.\n- Memory is not read-only.'), {
+    type: 'fail', reason: 'Tests are missing.\n- Exact retrieval truncates long rows.\n- Memory is not read-only.' });
   assert.deepEqual(verifySignal('<verify:pass> all green'), { type: 'pass', reason: 'all green' });
 });
 

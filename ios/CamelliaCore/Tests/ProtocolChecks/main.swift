@@ -199,6 +199,8 @@ for path in [
     "/v1/conversations/\(uuid)/read",
     "/v1/conversations/\(uuid)/artifacts",
     "/v1/conversations/\(uuid)/artifacts/\(hash64)",
+    "/v1/conversations/\(uuid)/attachments/42/0",
+    "/v1/conversations/\(uuid)/attachments/999999999999/19",
     "/v1/conversations/\(uuid)?before=42",
 ] {
     check(endpoint.isAllowed(path: path), "allow \(path)")
@@ -218,6 +220,9 @@ for path in [
     "/v1/conversations/notauuid/events",     // ids are 36 hex characters
     "/v1/conversations/\(String(uuid.dropLast()))",   // too short
     "/v1/conversations/\(uuid)/artifacts/\(String(hash64.dropLast()))", // hash is 64 characters
+    "/v1/conversations/\(uuid)/attachments/0/0",       // sequence starts at one
+    "/v1/conversations/\(uuid)/attachments/42/20",     // at most twenty attachments
+    "/v1/conversations/\(uuid)/attachments/42/0?x=1",
     "/v1/conversations?offset=1234567890123",          // offset is at most 12 digits
     "/v1/conversations?after=1",                       // only offset and before
     "/v1/conversations/\(uuid)/artifacts?x=1",
@@ -1318,6 +1323,14 @@ do {
     let live = RemoteLive(try! JSONBody.object(Data(
         #"{"text":"tail","textTruncated":true}"#.utf8)))
     check(live.textTruncated, "the live reply also preserves the truncation flag")
+    let attached = RemoteMessage(try! JSONBody.object(Data(
+        #"{"seq":9,"role":"user","text":"Use these","attachedFiles":[{"name":"photo.jpg","isImage":true,"size":42},{"name":"notes.pdf","isImage":false}]}"#.utf8)))
+    checkEqual(attached.attachedFiles.map(\.name), ["photo.jpg", "notes.pdf"],
+               "sent attachments keep their names in transcript order")
+    check(attached.attachedFiles[0].isImage && attached.attachedFiles[0].size == 42,
+          "an image attachment keeps its preview identity")
+    check(!attached.attachedFiles[1].isImage && attached.attachedFiles[1].size == nil,
+          "a document without a reported size remains renderable")
 }
 
 // MARK: - Sealed credentials
@@ -2619,7 +2632,7 @@ do {
     checkEqual(ArtifactReferences.priority(of: "x.pdf"), 2, "a PDF is not")
 }
 
-// MARK: - Inline image references
+// MARK: - Inline media references
 
 for reference in [
     "assets/icon-1024.png",
@@ -2628,6 +2641,19 @@ for reference in [
     "https://example.com/chart.png?size=large#preview",
 ] {
     check(InlineImageReference.isSupported(reference), "accept inline image \(reference)")
+}
+for reference in [
+    "assets/demo.mp4",
+    "D:/Code/Camellia/assets/demo.M4V",
+    "file:///D:/Code/Camellia/assets/demo.mov",
+    "https://example.com/demo.webm?download=1",
+] {
+    check(InlineImageReference.isSupported(reference), "accept inline video \(reference)")
+    check(InlineImageReference.isVideo(reference), "classify inline video \(reference)")
+}
+for reference in ["assets/icon-1024.png", "https://example.com/chart.png?size=large"] {
+    check(!InlineImageReference.isVideo(reference), "do not classify inline image as video \(reference)")
+    check(InlineImageReference.isImage(reference), "classify inline image \(reference)")
 }
 for reference in [
     "assets/readme.md",

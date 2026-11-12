@@ -155,6 +155,40 @@ public class RemoteApi {
         }
     }
 
+    public byte[] bytes(String path, String token, int limit) throws IOException {
+        if (limit < 1) throw new IOException("Invalid response limit");
+        if (EmbeddedNetwork.enabled()) {
+            tailnet.Response response = embeddedOpen(path, token, null);
+            try (InputStream input = input(response)) {
+                if (!"application/octet-stream".equals(response.contentType())) throw new IOException("Unexpected response type");
+                return readBytes(input, limit, () -> cancelled);
+            } finally { release(response); }
+        }
+        HttpURLConnection connection = open(path, token);
+        try {
+            connection.setRequestProperty("Accept", "application/octet-stream");
+            int status = connection.getResponseCode();
+            if (status != 200) throw new Failure(status, readFailure(connection));
+            if (!"application/octet-stream".equals(connection.getContentType())) throw new IOException("Unexpected response type");
+            if (connection.getContentLengthLong() > limit) throw new IOException("Oversized response");
+            try (InputStream input = connection.getInputStream()) {
+                return readBytes(input, limit, () -> cancelled);
+            }
+        } finally { release(connection); }
+    }
+
+    private static byte[] readBytes(InputStream input, int limit, java.util.function.BooleanSupplier cancelled) throws IOException {
+        try (var output = new ByteArrayOutputStream()) {
+            byte[] buffer = new byte[8192]; int count;
+            while ((count = input.read(buffer)) != -1) {
+                if (cancelled.getAsBoolean() || output.size() + count > limit) throw new IOException("Cancelled or oversized response");
+                output.write(buffer, 0, count);
+            }
+            if (cancelled.getAsBoolean()) throw new IOException("Cancelled");
+            return output.toByteArray();
+        }
+    }
+
     static JSONObject readJson(InputStream input, int limit, java.util.function.BooleanSupplier cancelled) throws IOException {
         try (var output = new ByteArrayOutputStream()) {
             byte[] buffer = new byte[8192]; int count;

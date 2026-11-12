@@ -7,7 +7,7 @@ import java.util.regex.Pattern;
 
 final class ArtifactReferences {
     private static final Pattern REFERENCES = Pattern.compile("!?\\[[^\\]\\n]*\\]\\(<?((?:[^()\\n]|\\([^()\\n]*\\))+?)>?\\)|`([^`\\n]+)`");
-    private static final Pattern EXTENSION = Pattern.compile("(?i).+\\.(apk|exe|msi|dmg|deb|rpm|pdf|docx?|pptx?|xlsx?|csv|tsv|txt|md|html?|png|jpe?g|gif|webp|svg|mp4|webm|mp3|wav)$");
+    private static final Pattern EXTENSION = Pattern.compile("(?i).+\\.(apk|exe|msi|dmg|deb|rpm|pdf|docx?|pptx?|xlsx?|csv|tsv|txt|md|html?|png|jpe?g|gif|webp|svg|mp4|m4v|mov|webm|mp3|wav)$");
 
     static List<String> names(String text) {
         LinkedHashSet<String> names = new LinkedHashSet<>();

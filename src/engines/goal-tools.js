@@ -20,7 +20,7 @@ const tools = [
 ];
 
 function validateTool(name, args) {
-  const tool = [...tools, ...require('./task-tools').tools, ...require('./conversation-tools').tools, ...require('./find-tools').tools, ...require('./web-tools').tools].find(entry => entry.name === name);
+  const tool = [...tools, ...require('./task-tools').tools, ...require('./conversation-tools').tools, ...require('./find-tools').tools, ...require('./context-tools').tools, ...require('./memory-tools').tools, ...require('./web-tools').tools].find(entry => entry.name === name);
   if (!tool) throw new Error('Unknown Camellia goal tool');
   if (!args || typeof args !== 'object' || Array.isArray(args)) throw new Error('Tool arguments must be an object');
   for (const key of Object.keys(args)) if (!Object.hasOwn(tool.inputSchema.properties, key)) throw new Error('Unexpected argument: ' + key);
@@ -54,4 +54,4 @@ function matchesUserRequest(prompt, quote) {
   return typeof prompt === 'string' && typeof quote === 'string' && Boolean(quote.trim()) && prompt.includes(quote.trim());
 }
 
-module.exports = { tools: [...tools, ...require('./task-tools').tools, ...require('./conversation-tools').tools, ...require('./find-tools').tools], instructions: instructions + '\n' + waitingInstructions + '\n' + require('./task-tools').instructions + '\n' + require('./conversation-tools').instructions + '\n' + require('./find-tools').instructions, validateTool, matchesUserRequest };
+module.exports = { tools: [...tools, ...require('./task-tools').tools, ...require('./conversation-tools').tools, ...require('./find-tools').tools, ...require('./context-tools').tools, ...require('./memory-tools').tools], instructions: instructions + '\n' + waitingInstructions + '\n' + require('./task-tools').instructions + '\n' + require('./conversation-tools').instructions + '\n' + require('./find-tools').instructions + '\n' + require('./context-tools').instructions + '\n' + require('./memory-tools').instructions, validateTool, matchesUserRequest };

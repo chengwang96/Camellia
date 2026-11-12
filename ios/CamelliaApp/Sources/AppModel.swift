@@ -339,6 +339,7 @@ final class AppModel: ObservableObject {
     /// other's request record.
     @Published private(set) var commandBusy = false
     private var commandTaskId: UUID?
+    private var activeCommandTasks: Set<UUID> = []
     @Published private(set) var stopBusy = false
     private var stopTaskId: UUID?
 
@@ -1080,6 +1081,7 @@ final class AppModel: ObservableObject {
         configuring = false
         commandBusy = false
         commandTaskId = nil
+        activeCommandTasks.removeAll()
         attaching = false
         attachmentTaskId = nil
         artifacts = []
@@ -1221,6 +1223,8 @@ final class AppModel: ObservableObject {
             pendingListEvent = nil
             session?.shutdown()
             session = nil
+            activeCommandTasks.removeAll()
+            commandTaskId = nil
             streamState = .idle
             detailAccessFailure = nil
             openId = nil
@@ -1235,6 +1239,8 @@ final class AppModel: ObservableObject {
         abandonActiveCommand()
         session?.shutdown()
         session = nil
+        activeCommandTasks.removeAll()
+        commandTaskId = nil
         pendingListEvent = nil
         let sameDetail = openId.flatMap { detailIdentity(for: $0) }
             .map { $0 == activeDetailIdentity } ?? false
@@ -1797,6 +1803,7 @@ final class AppModel: ObservableObject {
                 if snapshot.hasMessages {
                     self.detailAccessFailure = nil
                     self.syncRead(snapshot)
+                    self.settleOutgoing()
                 }
                 self.remember(snapshot)
                 self.publish()
@@ -1930,15 +1937,12 @@ final class AppModel: ObservableObject {
         refreshList()
     }
 
-    /// A stream replacement invalidates the session generation and therefore
-    /// drops a command callback. The encrypted journal remains the authority;
-    /// only the transient spinner is released and the message becomes
-    /// explicitly retryable.
+    /// Releases the visible command spinner without dropping the journaled
+    /// request. Its dedicated transport and active task continue off-screen.
     private func abandonActiveCommand() {
         stopTaskId = nil
         stopBusy = false
         guard commandBusy else { return }
-        commandTaskId = nil
         commandBusy = false
         configuring = false
         switch outgoing {
@@ -2097,7 +2101,7 @@ final class AppModel: ObservableObject {
 
         let deliveryId: UUID
         if journaled {
-            guard let taskId, commandTaskId == taskId else { return false }
+            guard let taskId, activeCommandTasks.contains(taskId) else { return false }
             deliveryId = taskId
         } else {
             guard !commandBusy else {
@@ -2139,6 +2143,7 @@ final class AppModel: ObservableObject {
                 return false
             }
             deliveryId = UUID()
+            activeCommandTasks.insert(deliveryId)
             commandTaskId = deliveryId
             commandBusy = true
             publish()
@@ -2146,7 +2151,7 @@ final class AppModel: ObservableObject {
 
         session.command(action, conversationId: conversationId, payload: body,
                         lookupReceipt: lookupReceipt && access.capabilities.contains(.commandReceipts)) { [weak self] result in
-            guard let self, self.commandTaskId == deliveryId else { return }
+            guard let self, self.activeCommandTasks.contains(deliveryId) else { return }
             // Any newer command answer supersedes the previous status line.
             // A new 403/404 below immediately replaces it with its own cause.
             if slot == .detail { self.detailAccessFailure = nil }
@@ -2160,10 +2165,13 @@ final class AppModel: ObservableObject {
                     DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
                         let active = self.foregrounded && self.remoteScreenActive && self.session === session
                             && (slot == .list ? self.openId == nil : self.openId == conversationId && self.canDrive)
-                        guard active, self.commandTaskId == deliveryId else {
-                            self.finishCommand(id: deliveryId, slot: slot, address: address,
-                                               requestId: requestId, clearJournal: false,
-                                               outcome: .unconfirmed("连接或页面已切换；请重试同一请求。"), completion: outcome)
+                        guard self.activeCommandTasks.contains(deliveryId) else { return }
+                        guard active else {
+                            self.scheduleBackgroundCommandCheck(
+                                session: session, action: action, conversationId: conversationId,
+                                payload: payload, draft: draft, slot: slot, attempt: attempt,
+                                requestId: requestId, taskId: deliveryId, deadline: deadline,
+                                outcome: outcome)
                             return
                         }
                         self.deliver(session: session, action: action, conversationId: conversationId,
@@ -2201,11 +2209,13 @@ final class AppModel: ObservableObject {
                             && self.session === session
                             && (slot == .list ? self.openId == nil
                                 : self.openId == conversationId && self.canDrive)
+                        guard self.activeCommandTasks.contains(deliveryId) else { return }
                         guard active else {
-                            self.finishCommand(id: deliveryId, slot: slot, address: address,
-                                               requestId: requestId, clearJournal: false,
-                                               outcome: .unconfirmed("连接或页面已切换；请重试同一请求。"),
-                                               completion: outcome)
+                            self.scheduleBackgroundCommandCheck(
+                                session: session, action: action, conversationId: conversationId,
+                                payload: payload, draft: draft, slot: slot, attempt: attempt,
+                                requestId: requestId, taskId: deliveryId, deadline: deadline,
+                                outcome: outcome)
                             return
                         }
                         self.deliver(session: session, action: action, conversationId: conversationId,
@@ -2238,12 +2248,38 @@ final class AppModel: ObservableObject {
         return true
     }
 
+    /// Keeps one journaled command moving after its page has gone away. The
+    /// command transport is deliberately separate from the snapshot stream, so
+    /// this only waits for the next receipt instead of re-sending the message.
+    private func scheduleBackgroundCommandCheck(
+        session: RemoteSession, action: String, conversationId: String?,
+        payload: [String: Any], draft: String?, slot: PendingSlot, attempt: Int,
+        requestId: String, taskId: UUID, deadline: TimeInterval,
+        outcome: @escaping (CommandOutcome) -> Void
+    ) {
+        guard ProcessInfo.processInfo.systemUptime < deadline else {
+            finishCommand(id: taskId, slot: slot, address: session.computer.address,
+                          requestId: requestId, clearJournal: false,
+                          outcome: .unconfirmed("等待电脑确认超时；请重试同一请求，不要重复操作。"),
+                          completion: outcome)
+            return
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+            guard let self, self.activeCommandTasks.contains(taskId) else { return }
+            self.deliver(session: session, action: action, conversationId: conversationId,
+                         payload: payload, draft: draft, pendingSlot: slot,
+                         attempt: attempt + 1, requestId: requestId, journaled: true,
+                         taskId: taskId, lookupReceipt: true, confirmUntil: deadline,
+                         outcome: outcome)
+        }
+    }
+
     /// Ends one delivery, conditionally removing only its own journal entry.
     private func finishCommand(id: UUID, slot: PendingSlot, address: String,
                                requestId: String, clearJournal: Bool,
                                outcome: CommandOutcome,
                                completion: @escaping (CommandOutcome) -> Void) {
-        guard commandTaskId == id else { return }
+        guard activeCommandTasks.contains(id) else { return }
         var final = outcome
         if clearJournal {
             do {
@@ -2261,8 +2297,11 @@ final class AppModel: ObservableObject {
                 final = .unconfirmed("无法保存操作结果：\(Self.describe(error))。请重试同一请求。")
             }
         }
-        commandTaskId = nil
-        commandBusy = false
+        activeCommandTasks.remove(id)
+        if commandTaskId == id {
+            commandTaskId = nil
+            commandBusy = false
+        }
         completion(final)
         publish()
     }
@@ -2301,6 +2340,7 @@ final class AppModel: ObservableObject {
             target = payload.removeValue(forKey: "moveSessionId") as? String
         }
         let taskId = UUID()
+        activeCommandTasks.insert(taskId)
         commandTaskId = taskId
         commandBusy = true
         publish()
@@ -2327,6 +2367,7 @@ final class AppModel: ObservableObject {
             }
         }
         if !started {
+            activeCommandTasks.remove(taskId)
             commandTaskId = nil
             commandBusy = false
             publish()
@@ -2359,6 +2400,7 @@ final class AppModel: ObservableObject {
             outgoing = .sending(visibleText)
         }
         let taskId = UUID()
+        activeCommandTasks.insert(taskId)
         commandTaskId = taskId
         commandBusy = true
         publish()
@@ -2367,25 +2409,28 @@ final class AppModel: ObservableObject {
                               requestId: requestId, journaled: true, taskId: taskId,
                               lookupReceipt: true) { [weak self] result in
             guard let self else { return }
+            let visible = self.openId == target
             if action.hasPrefix("codex-reset-") {
-                self.handleCodexReset(result, action: action)
+                if visible { self.handleCodexReset(result, action: action) }
                 return
             }
             switch result {
             case .accepted(let value):
                 if submitted {
-                    self.outgoing = value.state == "queued" ? nil : .accepted(visibleText)
-                    self.outgoingEcho?.userSeq = value.userSeq
-                    if value.state == "queued" {
-                        self.outgoingEcho = nil
-                        self.outgoingAt = 0
-                        self.outgoingLegacyImage = false
-                    }
                     self.removeAttachmentBlobs(in: payloadObject)
                     self.pendingAttachments = []
+                    if visible {
+                        self.outgoing = value.state == "queued" ? nil : .accepted(visibleText)
+                        self.outgoingEcho?.userSeq = value.userSeq
+                        if value.state == "queued" {
+                            self.outgoingEcho = nil
+                            self.outgoingAt = 0
+                            self.outgoingLegacyImage = false
+                        }
+                    }
                 }
             case .refused(let message):
-                if submitted {
+                if submitted, visible {
                     self.draft = visibleText
                     let edit = payloadObject.long("editSeq", fallback: -1)
                     self.editingSeq = edit > 0 ? edit : nil
@@ -2395,19 +2440,22 @@ final class AppModel: ObservableObject {
                     self.outgoing = .failed(visibleText)
                     self.notice = Notice(text: message, serious: true, kind: .rejectedSend)
                     self.stashDraft()
-                } else {
+                } else if !submitted, visible {
                     self.notice = Notice(text: message, serious: false)
                 }
             case .unconfirmed(let message):
-                if submitted { self.outgoing = .unconfirmed(visibleText, message) }
-                else { self.notice = Notice(text: message, serious: false) }
+                if submitted, visible { self.outgoing = .unconfirmed(visibleText, message) }
+                else if !submitted, visible { self.notice = Notice(text: message, serious: false) }
             case .transportUnconfirmed(let error):
-                if submitted { self.outgoing = .unconfirmed(visibleText, "未收到电脑确认：\(error)") }
-                self.report(result)
+                if visible {
+                    if submitted { self.outgoing = .unconfirmed(visibleText, "未收到电脑确认：\(error)") }
+                    self.report(result)
+                }
             }
             self.publish()
         }
         if !started {
+            activeCommandTasks.remove(taskId)
             commandTaskId = nil
             commandBusy = false
             publish()
@@ -2532,17 +2580,22 @@ final class AppModel: ObservableObject {
                 conversationId: prepared.conversationId, payload: payload,
                 draft: visibleText) { [weak self] result in
             guard let self else { return }
+            let visible = self.openId == prepared.conversationId
             switch result {
             case .accepted(let value):
-                self.outgoing = value.state == "queued" ? nil : .accepted(visibleText)
-                self.outgoingEcho?.userSeq = value.userSeq
-                if value.state == "queued" {
-                    self.outgoingEcho = nil
-                    self.outgoingAt = 0
-                    self.outgoingLegacyImage = false
+                self.removeAttachmentBlobs(in: JSONObject(dictionary: payload))
+                self.pendingAttachments = []
+                if visible {
+                    self.outgoing = value.state == "queued" ? nil : .accepted(visibleText)
+                    self.outgoingEcho?.userSeq = value.userSeq
+                    if value.state == "queued" {
+                        self.outgoingEcho = nil
+                        self.outgoingAt = 0
+                        self.outgoingLegacyImage = false
+                    }
                 }
-                self.clearPendingBlobs()
             case .refused(let message):
+                guard visible else { break }
                 // The edit target comes back with the draft, so a retry is the
                 // same rewrite rather than a new message appended after it.
                 self.draft = prepared.draft
@@ -2553,10 +2606,12 @@ final class AppModel: ObservableObject {
                 self.notice = Notice(text: message, serious: true, kind: .rejectedSend)
                 self.stashDraft()
             case .unconfirmed(let message):
-                self.outgoing = .unconfirmed(visibleText, message)
+                if visible { self.outgoing = .unconfirmed(visibleText, message) }
             case .transportUnconfirmed(let error):
-                self.outgoing = .unconfirmed(visibleText, "未收到电脑确认：\(error)")
-                self.report(result)
+                if visible {
+                    self.outgoing = .unconfirmed(visibleText, "未收到电脑确认：\(error)")
+                    self.report(result)
+                }
             }
             self.publish()
         }
@@ -2996,12 +3051,16 @@ final class AppModel: ObservableObject {
     /// Clears the local bubble once the desktop has echoed the message back, or
     /// once it is clear it never will.
     private func settleOutgoing() {
-        guard case .accepted = outgoing else { return }
+        switch outgoing {
+        case .accepted, .unconfirmed: break
+        default: return
+        }
         guard let outgoingEcho else { return }
         let matched = transcript.messages.contains {
             outgoingEcho.matches($0.message, currentInstanceId: transcript.instanceId)
         }
         if matched {
+            if case .unconfirmed = outgoing, !confirmPendingFromTranscript() { return }
             outgoing = nil
             self.outgoingEcho = nil
             outgoingAt = 0
@@ -3009,8 +3068,31 @@ final class AppModel: ObservableObject {
         }
     }
 
-    /// Android suppresses the pending bubble as soon as its user row appears,
-    /// even when the command remains unconfirmed and its retry status stays.
+    /// The desktop echoing the exact user row is stronger evidence than a lost
+    /// command response. Drop the journal so the stale retry marker cannot
+    /// outlive a message that is already in the conversation.
+    private func confirmPendingFromTranscript() -> Bool {
+        guard let address = current?.address,
+              let payload = current?.pendingCommand?.object("payload"),
+              let requestId = payload.string("requestId") else { return true }
+        do {
+            let updated = try store.update(address: address) { computer in
+                guard self.pendingRequestId(computer, slot: .detail) == requestId else { return }
+                computer.pendingCommand = nil
+            }
+            adopt(updated)
+            clearPendingBlobs()
+            draft = ""
+            editingSeq = nil
+            return true
+        } catch {
+            notice = Notice(text: "无法保存已确认的发送记录：\(Self.describe(error))", serious: false)
+            return false
+        }
+    }
+
+    /// Android suppresses the pending bubble as soon as its user row appears;
+    /// the same echo also clears an unconfirmed retry marker.
     var outgoingBubbleIsSynced: Bool {
         guard let outgoingEcho else { return false }
         return transcript.messages.contains {

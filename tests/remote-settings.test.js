@@ -82,6 +82,16 @@ test('picking a route model switches the conversation connection and clears stal
   assert.deepEqual(result.settings.models.map(model => model.connection), ['api', 'api', 'subscription', 'subscription']);
 });
 
+test('a model switch keeps a reasoning level both models offer', () => {
+  const target = manager({ connection: 'api', model: 'route-a' });
+  choose(target, { model: 'route-a', thinking: 'low' });
+  const result = choose(target, { model: 'shared-id' });
+  assert.equal(result.ok, true);
+  assert.equal(target.state.model, 'shared-id');
+  assert.equal(target.state.thinkingBudget, 'low');
+  assert.equal(result.settings.thinking, 'low');
+});
+
 test('picking an account model from an API conversation switches back to the subscription', () => {
   const target = manager({ connection: 'api', model: 'route-a' });
   const result = choose(target, { model: 'account-a' });
@@ -124,6 +134,16 @@ test('explicit connection disambiguates the same model and busy model changes re
   assert.equal(api.settings.connection, 'api');
   assert.equal(api.settings.thinking, '');
   assert.throws(() => choose(target, { permissionMode: 'full' }), /Stop/);
+});
+
+test('quick switch ignores an unsupported saved level instead of clearing a supported current one', () => {
+  const target = manager();
+  target.state.thinkingBudget = 'high';
+  target.loadConfig = () => ({ quickSwitchModels: { codex: 'account-a' }, quickSwitchLevels: { codex: 'ultra' } });
+  const result = choose(target, { quickSwitch: true });
+  assert.equal(result.ok, true);
+  assert.equal(target.state.model, 'account-a');
+  assert.equal(target.state.thinkingBudget, 'high');
 });
 
 test('fast uses catalog support and quick switch uses the host preference', () => {

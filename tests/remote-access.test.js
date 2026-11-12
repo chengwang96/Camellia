@@ -2361,7 +2361,7 @@ test('archived listing and restore obey workspace scopes and reject stale sequen
 });
 
 test('desktop attachments are scoped, bounded and deduplicated without accepting client filesystem paths', async context => {
-  const { gateway, manager, visible, pair, root } = fixture(context);
+  const { gateway, manager, visible, hidden, pair, root } = fixture(context);
   const credential = pair(); await gateway.start('127.0.0.1', 0);
   let sent = 0, files, prompt;
   manager.drivers.codex.ensure = () => ({ gen: 42, sendUserMessage(text, attachments) { sent++; files = attachments; prompt = text; return true; }, interrupt() {} });
@@ -2377,9 +2377,24 @@ test('desktop attachments are scoped, bounded and deduplicated without accepting
   assert.equal(path.dirname(files[0].path), path.join(root, 'device-attachments'));
   assert.ok(prompt.includes(files[0].path.replace(/\\/g, '\\\\')));
   const snapshot = await request(gateway, `/v1/conversations/${visible.id}`, { token: credential.token });
-  assert.equal(snapshot.body.messages.at(-1).text, 'Read notes');
-  assert.deepEqual(snapshot.body.messages.at(-1).attachedFiles, [{ name: 'notes.txt', isImage: false }]);
+  const snapshotMessage = snapshot.body.messages.at(-1);
+  assert.equal(snapshotMessage.text, 'Read notes');
+  assert.deepEqual(snapshotMessage.attachedFiles, [{ name: 'notes.txt', isImage: false, size: Buffer.byteLength('Only fixture data') }]);
   assert.equal(JSON.stringify(snapshot.body.messages).includes('device-attachments'), false);
+  const download = await fetch(gateway.url + `/v1/conversations/${visible.id}/attachments/${snapshotMessage.seq}/0`,
+    { headers: { Authorization: `Bearer ${credential.token}` } });
+  assert.equal(download.status, 200);
+  assert.equal(download.headers.get('content-type'), 'application/octet-stream');
+  assert.equal(download.headers.get('content-length'), String(snapshotMessage.attachedFiles[0].size));
+  assert.equal(Buffer.from(await download.arrayBuffer()).toString(), 'Only fixture data');
+  for (const bad of ['1', '20']) {
+    assert.equal((await request(gateway, `/v1/conversations/${visible.id}/attachments/${snapshotMessage.seq}/${bad}`,
+      { token: credential.token })).status, bad === '20' ? 400 : 404);
+  }
+  assert.equal((await request(gateway, `/v1/conversations/${visible.id}/attachments/1/0`,
+    { token: credential.token })).status, 404);
+  assert.equal((await request(gateway, `/v1/conversations/${hidden.id}/attachments/${snapshotMessage.seq}/0`,
+    { token: credential.token })).status, 404);
 });
 
 test('remote PDF and mainstream office attachments reach the computer unchanged', async context => {
@@ -2404,7 +2419,8 @@ test('remote PDF and mainstream office attachments reach the computer unchanged'
     assert.deepEqual(fs.readFileSync(file.path), originals.get(file.name));
   }
   const snapshot = await request(gateway, `/v1/conversations/${visible.id}`, { token: credential.token });
-  assert.deepEqual(snapshot.body.messages.at(-1).attachedFiles, names.map(name => ({ name, isImage: false })));
+  assert.deepEqual(snapshot.body.messages.at(-1).attachedFiles,
+    names.map(name => ({ name, isImage: false, size: originals.get(name).length })));
 });
 
 test('mobile images use bounded server-owned paths and retry sends only once', async context => {
@@ -2420,6 +2436,14 @@ test('mobile images use bounded server-owned paths and retry sends only once', a
   assert.equal((await send(payload)).body.ok, true); assert.equal((await send(payload)).body.ok, true); assert.equal(sent, 1);
   assert.equal(images[0].isImage, true); assert.equal(path.dirname(images[0].path), path.join(root, 'mobile-images'));
   assert.deepEqual(fs.readFileSync(images[0].path), Buffer.from(image, 'base64'));
+  const snapshot = await request(gateway, `/v1/conversations/${visible.id}`, { token: credential.token });
+  const sentMessage = snapshot.body.messages.at(-1);
+  assert.deepEqual(sentMessage.attachedFiles,
+    [{ name: 'mobile-image-1.jpg', isImage: true, size: Buffer.from(image, 'base64').length }]);
+  const preview = await fetch(gateway.url + `/v1/conversations/${visible.id}/attachments/${sentMessage.seq}/0`,
+    { headers: { Authorization: `Bearer ${credential.token}` } });
+  assert.equal(preview.status, 200);
+  assert.deepEqual(Buffer.from(await preview.arrayBuffer()), Buffer.from(image, 'base64'));
 });
 
 test('mobile multi-image batches validate every item before writing and retry only once', async context => {

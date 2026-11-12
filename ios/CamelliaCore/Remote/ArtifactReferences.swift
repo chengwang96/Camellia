@@ -71,7 +71,7 @@ public enum ArtifactReferences {
     /// Fenced code is stripped first: a path inside a code block is being shown
     /// as an example far more often than it is a file the answer made.
     private static let fencePattern = "```.*?(?:```|$)"
-    private static let extensions = "(?i).+\\.(apk|exe|msi|dmg|deb|rpm|pdf|docx?|pptx?|xlsx?|csv|tsv|txt|md|html?|png|jpe?g|gif|webp|svg|mp4|webm|mp3|wav)$"
+    private static let extensions = "(?i).+\\.(apk|exe|msi|dmg|deb|rpm|pdf|docx?|pptx?|xlsx?|csv|tsv|txt|md|html?|png|jpe?g|gif|webp|svg|mp4|m4v|mov|webm|mp3|wav)$"
     private static let schemes = "(?i)^(https?|data|javascript|mailto):.*"
 
     private static let reference = try? NSRegularExpression(pattern: referencePattern)
@@ -130,7 +130,7 @@ public enum ArtifactReferences {
         case "XLS", "XLSX", "CSV", "TSV": return .spreadsheet
         case "PPT", "PPTX": return .presentation
         case "PNG", "JPG", "JPEG", "GIF", "WEBP", "SVG": return .image
-        case "MP4", "WEBM": return .video
+        case "MP4", "M4V", "MOV", "WEBM": return .video
         case "MP3", "WAV": return .audio
         default: return .text
         }

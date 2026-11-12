@@ -43,7 +43,7 @@ public class MarkdownStreamTest {
             }
         }
         void matches(String source) {
-            List<Node> expected = MarkdownStream.children(MarkdownStream.newParser().parse(source));
+            List<Node> expected = MarkdownStream.children(MarkdownStream.newParser().parse(MarkdownTables.normalize(source)));
             assertNull("unexpected plaintext fallback", raw);
             assertEquals("source: " + source, expected.size(), blocks.size());
             for (int i = 0; i < expected.size(); i++) assertEquals("block " + i + " source: " + source + " expected " + tree(expected.get(i)) + " actual " + tree(blocks.get(i)),
@@ -61,6 +61,9 @@ public class MarkdownStreamTest {
             "> quote\n>\n> - item\n> - other\n\nA heading\n---\n\nA rule\n\n***\n",
             "Before\n\n````java\nfirst\n``` inside\n\0 emoji 😀\n````\n\nAfter\n\n~~~text\nlast\n~~~\n",
             "| Left | Right |\n| :--- | ---: |\n| **one** | `two` |\n| three | four |\n\nAfter",
+            "优先级建议\n| 优先级 | 来源 | 值得借鉴的点 | Camellia 当前情况 |\n|---|---|---|---|\n"
+                + "| P0 | billion-context | 压缩切分时保证 tool call/result 成对 | 已 pair-safe |\n"
+                + "| P0/P1 | dsh-mnemon | 常驻记忆和可检索档案分层 | 固定 8K 快照 |\n\nAfter",
             "[early]: https://example.com/early\n\n[early]\n\n[late]\n\n[late]: https://example.com/late\n",
             "<script>\nline\n\n</script>\n\nLiteral ![image](https://example.com/image)\n\n```\nunfinished",
             "中文\r\n\r\n```java\r\ncode\r\n```\r\n\r\nEnd"

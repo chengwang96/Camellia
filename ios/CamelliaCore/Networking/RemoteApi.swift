@@ -165,6 +165,16 @@ public final class RemoteApi {
         return data
     }
 
+    public func messageAttachment(conversationId: String, seq: Int64, index: Int,
+                                  expectedSize: Int64) throws -> Data {
+        guard seq > 0, index >= 0, index < 20, expectedSize >= -1,
+              expectedSize <= 4 * 1024 * 1024 else { throw RemoteApiError.sizeChanged }
+        let path = "/v1/conversations/\(conversationId)/attachments/\(seq)/\(index)"
+        let data = try read(path, expectedContentType: "application/octet-stream")
+        guard expectedSize < 0 || Int64(data.count) == expectedSize else { throw RemoteApiError.sizeChanged }
+        return data
+    }
+
     /// The app's export path: stream a file to its private temporary URL,
     /// without reusing the 8 MiB JSON ceiling or holding the file in memory.
     public func artifact(conversationId: String, hash: String, expectedSize: Int64,

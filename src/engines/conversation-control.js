@@ -1,5 +1,8 @@
 'use strict';
 
+const { buildDelegationPacket, promptWithPacket, recordSettlement } = require('./agent-context');
+const { compactView } = require('./context-memory');
+
 function accessible(manager, parentId, id = parentId) {
   const conversation = manager.get(id);
   if (id !== parentId && conversation.controlParentId !== parentId) throw new Error('Conversation is not owned by this caller');
@@ -9,7 +12,8 @@ function accessible(manager, parentId, id = parentId) {
 
 function view(manager, conversation) {
   const settings = manager.settings(conversation.currentEngine, conversation.id);
-  return { id: conversation.id, title: conversation.title, engine: conversation.currentEngine,
+  return { id: conversation.id, title: manager.workspaces.sessionMeta().titles[conversation.id] || conversation.title,
+    engine: conversation.currentEngine,
     model: settings.model, thinking: settings.thinkingBudget || '', connection: settings.connection || 'api',
     activity: manager.activity(conversation.id), parent_id: conversation.controlParentId || null };
 }
@@ -83,7 +87,10 @@ function configured(manager, conversation, args) {
   if (!model) throw new Error('Model is unavailable; list configured models first');
   if (args.thinking && !model.thinking.includes(args.thinking)) throw new Error('Unsupported thinking level; use a listed level or the empty default');
   if (args.model !== undefined && args.model !== selected.model) {
-    selected.thinkingBudget = '';
+    // Keep the current reasoning level when the target model offers it; only
+    // an unsupported level falls back to the model default.
+    const keepLevel = args.thinking === undefined && selected.thinkingBudget && (model.thinking || []).includes(selected.thinkingBudget);
+    selected.thinkingBudget = keepLevel ? selected.thinkingBudget : '';
     selected.contextWindow = model.contextWindow || 0;
   }
   if (args.model !== undefined) selected.model = args.model;
@@ -134,6 +141,15 @@ function callConversationTool(manager, parentId, name, args, active) {
     const target = accessible(manager, parentId, args.conversation_id);
     return { ok: true, models: manager.conversationModels(target.currentEngine, manager.settings(target.currentEngine, target.id)) };
   }
+  if (operation === 'rename') {
+    const title = String(args.title || '').trim();
+    if (!title) throw new Error('Title cannot be empty');
+    if ([...title].length > 100) throw new Error('Title cannot exceed 100 characters');
+    if (/[\x00-\x1f\x7f]/.test(title)) throw new Error('Title cannot contain control characters');
+    manager.workspaces.renameSession(parentId, title);
+    manager.onEvent({ type: 'conversation:title', session_id: parentId, title });
+    return { ok: true, conversation: view(manager, parent) };
+  }
   if (active.scheduledTaskId || parent.controlParentId) throw new Error('Automatic checks and tool-created children cannot control other conversations');
   if (operation === 'create' || operation === 'fork') {
     const fingerprint = JSON.stringify([operation, args.title, args.model ?? null, args.thinking ?? null]);
@@ -148,9 +164,16 @@ function callConversationTool(manager, parentId, name, args, active) {
     const selected = configured(manager, parent, args);
     const child = operation === 'fork' ? manager.fork(parent.currentEngine, { sessionId: parent.id, title: args.title.trim() })
       : manager.create(parent.currentEngine, parent.workspaceId, args.title.trim(), parent.cwd);
+    const memoryView = manager.contextMemoryView(parent);
     Object.assign(child, { controlParentId: parentId, controlRequestId: args.request_id, controlFingerprint: fingerprint,
-      controlUserSeq: active.userSeq, controlHistoryBoundary: child.seq });
+      controlUserSeq: active.userSeq, controlHistoryBoundary: child.seq,
+      controlContext: buildDelegationPacket(manager, parent, active), controlContextConsumed: false,
+      controlMemorySnapshot: memoryView.snapshot, controlMemoryView: compactView(memoryView) });
     saveSettings(manager, child, selected);
+    manager.recordContextEvent(parent, { kind: operation === 'fork' ? 'fork' : 'child-create',
+      engine: parent.currentEngine, childId: child.id, title: child.title, source: 'agent',
+      deltaTokens: 0, deltaSource: 'none' });
+    manager.save(parent);
     const response = { ok: true, conversation: view(manager, child), shared_workspace: true };
     return operation === 'fork' && typeof manager.drivers[parent.currentEngine].forkNative === 'function'
       ? manager.prepareNativeFork(parent, child).then(() => response) : response;
@@ -160,6 +183,7 @@ function callConversationTool(manager, parentId, name, args, active) {
   if (operation === 'read') {
     const all = manager.messages(child), recent = all.slice(-8);
     return { ok: true, conversation: view(manager, child), interrupted: Boolean(child.interrupted),
+      context_packet: child.controlContext || null, settlement: child.settlement || null,
       requests: (child.controlSends || []).slice(-8).map(entry => ({ request_id: entry.requestId, state: entry.state, run_id: entry.runId, error: entry.error })),
       truncated: all.length > recent.length || recent.some(row => String(row.text || '').length > 4000),
       messages: recent.map(row => ({ role: row.role, text: String(row.text || '').slice(-4000), seq: row.seq })) };
@@ -187,16 +211,21 @@ function callConversationTool(manager, parentId, name, args, active) {
     (child.controlSends ||= []).push(entry);
     manager.save(child);
     manager.controlStarts.set(child.id, reservation);
+    const sendPrompt = child.controlContext && !child.controlContextConsumed
+      ? promptWithPacket(child.controlContext, args.prompt) : args.prompt;
     const persist = () => {
       if (manager.items.get(child.id) !== child) return;
       try { manager.save(child); } catch (error) { manager.log('Child request persistence failed: ' + error.message); }
     };
-    void manager.send(child.currentEngine, { sessionId: child.id, prompt: args.prompt }, { controlStart: reservation }).then(run => {
+    void manager.send(child.currentEngine, { sessionId: child.id, prompt: sendPrompt }, { controlStart: reservation }).then(run => {
       if (!run.ok || !run.done) throw new Error(run.error || 'Child could not start');
-      entry.runId = run.runId; entry.state = 'running'; persist();
+      entry.runId = run.runId; entry.state = 'running';
+      if (child.controlContext) child.controlContextConsumed = true;
+      persist();
       return run.done.then(result => {
         entry.state = result.subtype === 'stopped' ? 'stopped' : result.is_error ? 'error' : 'finished';
         if (result.is_error) entry.error = String(result.result || 'Child turn failed').slice(0, 2000);
+        recordSettlement(manager, parentId, child, entry, result);
         persist();
       });
     }).catch(error => {

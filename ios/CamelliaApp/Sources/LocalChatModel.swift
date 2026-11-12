@@ -591,12 +591,10 @@ final class LocalChatModel: ObservableObject {
 
     func selectRoute(_ route: LocalChatRoute) {
         guard !running, let id = openId else { return }
-        // Changing the model resets the thinking level, because a level the new
-        // model does not take would be sent anyway.
+        // A model switch keeps the current level when the new route supports
+        // it; only an unsupported level falls back to the model default.
         let current = conversation(id)
-        let thinking = route.id == (current["routeId"] as? String ?? "")
-            ? (current["thinking"] as? String ?? "auto") : "auto"
-        saveModel(route.id, thinking: thinking)
+        saveModel(route.id, thinking: LocalChatThinking.effective(route, current["thinking"] as? String ?? "auto"))
     }
 
     func selectThinking(_ level: String) {

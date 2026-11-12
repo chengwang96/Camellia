@@ -64,6 +64,7 @@ final class MarkdownStream {
     }
 
     Update update(String source, boolean finished) {
+        source = MarkdownTables.normalize(source);
         Update result = new Update(finished);
         if (finished) {
             complete(source, result);

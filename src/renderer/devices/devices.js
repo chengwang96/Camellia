@@ -647,7 +647,10 @@ function configureConversation(prepared = false) {
   elements.fields.querySelector('[name="model"]').onchange = event => {
     const model = settings.models.find(model => model.id === event.target.value);
     const input = elements.fields.querySelector('[name="thinking"]');
+    const previous = input.value;
     input.replaceChildren(new Option(copy('default'), ''), ...(model?.thinking || []).map(id => new Option(id, id)));
+    // Keep the level already chosen when the new model also offers it.
+    input.value = [...input.options].some(option => option.value === previous) ? previous : '';
   };
 };
 elements.configure.onclick = () => {

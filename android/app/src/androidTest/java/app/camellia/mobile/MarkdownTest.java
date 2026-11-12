@@ -62,6 +62,19 @@ public class MarkdownTest extends InstrumentationTestCase {
         }
     }
 
+    public void testTableImmediatelyAfterParagraphUsesNativeTable() {
+        Activity activity = start();
+        try {
+            getInstrumentation().runOnMainSync(() -> {
+                String source = "优先级建议\n| 优先级 | 来源 | 当前情况 |\n|---|---|---|\n| P0 | billion-context | 已 pair-safe |";
+                View rendered = new MarkdownView(activity, Color.BLACK, Color.GRAY, Color.LTGRAY, Color.BLUE).render(source);
+                assertNotNull(rendered.findViewWithTag("markdownTable"));
+                assertNull(findText(rendered, "|---|---|---|"));
+                assertNotNull(findText(rendered, "已 pair-safe"));
+            });
+        } finally { getInstrumentation().runOnMainSync(activity::finish); }
+    }
+
     public void testNativeFormattingTablesAndCodeCopy() throws Exception {
         Activity activity = start();
         boolean dark = (activity.getResources().getConfiguration().uiMode & android.content.res.Configuration.UI_MODE_NIGHT_MASK) == android.content.res.Configuration.UI_MODE_NIGHT_YES;

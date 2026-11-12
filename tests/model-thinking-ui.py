@@ -116,23 +116,27 @@ with sync_playwright() as playwright:
             assert page.evaluate('LEVELS.map(level=>level.id)') == ['', 'low', 'high', 'max']
 
         page.evaluate("router.modelThinking['glm-5.3']={values:['high','max','ultra'],default:'max'}; refreshRouter(router)")
-        reasoning_menu(['Default', 'High', 'Max', 'Ultra']).get_by_text('Ultra', exact=True).click()
-        page.wait_for_function("settings.thinkingBudget==='ultra'")
+        reasoning_menu(['Default', 'High', 'Max', 'Ultra']).get_by_text('High', exact=True).click()
+        page.wait_for_function("settings.thinkingBudget==='high'")
 
+        # A level both models offer survives the switch; one only the old model
+        # offered falls back to Default.
         page.evaluate("persistModel('deepseek-v4.1-flash')")
-        page.wait_for_function("settings.model==='deepseek-v4.1-flash' && LEVELS.map(level=>level.id).join(',')===',none,low,high,max'")
+        page.wait_for_function("settings.model==='deepseek-v4.1-flash' && settings.thinkingBudget==='high' && LEVELS.map(level=>level.id).join(',')===',none,low,high,max'")
         reasoning_menu(['Default', 'Off', 'Low', 'High', 'Max']).get_by_text('Off', exact=True).click()
         page.wait_for_function("settings.thinkingBudget==='none'")
         reasoning_menu(['Default', 'Off', 'Low', 'High', 'Max']).get_by_text('Max', exact=True).click()
         page.wait_for_function("settings.thinkingBudget==='max'")
+        reasoning_menu(['Default', 'Off', 'Low', 'High', 'Max']).get_by_text('High', exact=True).click()
+        page.wait_for_function("settings.thinkingBudget==='high'")
 
         page.evaluate("persistModel('kimi-k2.6')")
-        page.wait_for_function("settings.model==='kimi-k2.6' && LEVELS.map(level=>level.id).join(',')===',none,high'")
+        page.wait_for_function("settings.model==='kimi-k2.6' && settings.thinkingBudget==='high' && LEVELS.map(level=>level.id).join(',')===',none,high'")
         reasoning_menu(['Default', 'Off', 'On']).get_by_text('Off', exact=True).click()
         page.wait_for_function("settings.thinkingBudget==='none'")
 
         page.evaluate("persistModel('unknown-model')")
-        page.wait_for_function("settings.model==='unknown-model' && LEVELS.map(level=>level.id).join(',')===',low,medium,high'")
+        page.wait_for_function("settings.model==='unknown-model' && settings.thinkingBudget==='' && LEVELS.map(level=>level.id).join(',')===',low,medium,high'")
         reasoning_menu(['Default', 'Low', 'Medium', 'High']).get_by_text('Medium', exact=True).click()
         page.wait_for_function("settings.thinkingBudget==='medium'")
         # Background discovery replaces the generic fallback without a reload.

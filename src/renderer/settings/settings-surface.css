@@ -4,6 +4,7 @@ body {
   --settings-control-fill: light-dark(#f5f6f7, #292a2d);
   --settings-selected-stroke: light-dark(#adb2b8, #737981);
   --settings-card-stroke: light-dark(#d6d6d8, #424448);
+  --settings-select-max: 280px;
 }
 .settings-shell { display: contents; }
 html[data-settings-window], html[data-settings-window] body { background: transparent; }
@@ -48,6 +49,10 @@ input:not([type=checkbox]), textarea { border-radius: 10px; }
 .settings-main .setting-row { gap: 24px; }
 .settings-main .setting-row h2 { margin-bottom: 0; font-size: 14px; line-height: 22px; font-weight: 400; }
 .settings-main .setting-row .hint { margin: 4px 0 0; }
+.settings-main :is(.setting-row, .engine-field, .section-head, .document-toolbar) > select,
+.settings-main .vscode-controls select {
+  width: auto; max-width: min(var(--settings-select-max), 100%); min-width: 0; text-overflow: ellipsis;
+}
 /* Related rows remain grouped; appearance is the one expansive visual choice. */
 .appearance-setting { align-items: stretch; }
 .theme-choices { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin-top: 10px; }
@@ -56,11 +61,10 @@ input:not([type=checkbox]), textarea { border-radius: 10px; }
 .theme-choices svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
 .vscode-setting { align-items: flex-start; flex-wrap: wrap; }
 .vscode-setting > div:first-child { flex: 1 1 280px; }
-.vscode-setting > .vscode-controls { flex: 0 1 360px; display: flex; flex-direction: column; align-items: stretch; gap: 8px; }
-.vscode-controls select { width: 100%; min-width: 0; text-overflow: ellipsis; }
-.vscode-custom-path { display: flex; gap: 8px; }
+.vscode-setting > .vscode-controls { flex: 0 1 auto; display: flex; flex-direction: column; align-items: flex-end; gap: 8px; max-width: var(--settings-select-max); }
+.vscode-controls:has(.vscode-custom-path:not([hidden])) { flex-basis: var(--settings-select-max); }
+.vscode-custom-path { display: flex; gap: 8px; width: 100%; }
 .vscode-custom-path input { flex: 1; min-width: 0; }
-.vscode-detected-path { overflow-wrap: anywhere; }
 /* Selection controls keep native form semantics without platform-specific paint. */
 input[type=checkbox] {
   appearance: none; display: inline-grid; place-items: center; vertical-align: middle;

@@ -64,6 +64,7 @@ try:
         settings.locator('#language').select_option('zh-CN')
         expect(settings.locator('#status')).to_have_text('偏好设置已保存')
         expect(settings.locator('#pageTitle')).to_have_text('通用')
+        expect(settings.locator('.memory-snapshot-toggle')).to_contain_text('每轮注入有界的工作记忆快照')
         assert rpc('workbenchSettings')['result']['language'] == 'zh-CN'
         for page in [home, chat]:
             page.evaluate("window.testLanguage('zh-CN')")
@@ -106,6 +107,9 @@ try:
         settings.locator('#language').select_option('en')
         expect(settings.locator('#pageTitle')).to_have_text('General')
         expect(settings.locator('#status')).to_have_text('Preferences saved')
+        expect(settings.locator('.memory-snapshot-toggle')).to_contain_text('Inject a bounded working-memory snapshot on each turn')
+        general_en = settings.locator('#generalPage').inner_text()
+        assert not re.search(r'[\u4e00-\u9fff]', general_en), general_en
         for page in [home, chat]:
             page.evaluate("window.testLanguage('en')")
         expect(home.locator('h1')).to_have_text('Start working')

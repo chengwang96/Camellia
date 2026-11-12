@@ -242,6 +242,14 @@ class RemoteGateway {
       else await this.download(response, device, artifact[1], artifact[2]);
       return;
     }
+    const attachment = /^\/v1\/conversations\/([a-f0-9-]{36})\/attachments\/(\d{1,12})\/(\d{1,2})$/.exec(url.pathname);
+    if (attachment && this.commands) {
+      if (url.search) fail(400, 'Unsupported attachment query');
+      const seq = number(attachment[2], 0), index = number(attachment[3], 0);
+      if (seq < 1 || index < 0 || index >= 20) fail(400, 'Invalid attachment location');
+      await this.sendFile(response, device, await this.commands.messageAttachment(device, attachment[1], seq, index));
+      return;
+    }
     const incremental = /\/events$/.test(url.pathname) && url.searchParams.get('incremental') === '1';
     for (const key of url.searchParams.keys()) if (!['before', 'offset'].includes(key) && !(key === 'incremental' && incremental)
       && !(url.pathname === '/v1/conversations' && ['limit', 'query'].includes(key))) fail(400, 'Unsupported query parameter');
@@ -317,16 +325,21 @@ class RemoteGateway {
     this.json(response, 200, { ...result, ...this.stamp() });
   }
   async download(response, device, conversationId, id, discussion = false) {
-    if (this.downloads.size >= DOWNLOAD_GLOBAL_LIMIT || [...this.downloads].filter(entry => entry.device.id === device.id).length >= DOWNLOAD_DEVICE_LIMIT) fail(429, 'Too many downloads');
+    const file = discussion ? await this.discussions.openArtifact(device, conversationId, id) : await openArtifact(this.reader, device, conversationId, id);
+    await this.sendFile(response, device, file);
+  }
+  async sendFile(response, device, file) {
+    if (this.downloads.size >= DOWNLOAD_GLOBAL_LIMIT || [...this.downloads].filter(entry => entry.device.id === device.id).length >= DOWNLOAD_DEVICE_LIMIT) {
+      await file?.handle?.close();
+      fail(429, 'Too many downloads');
+    }
     const entry = { response, device };
     this.downloads.add(entry);
-    let file;
     response.once('close', () => {
       this.downloads.delete(entry);
       if (file?.handle) file.handle.close().catch(() => {});
     });
     try {
-      file = discussion ? await this.discussions.openArtifact(device, conversationId, id) : await openArtifact(this.reader, device, conversationId, id);
       if (response.destroyed) return;
       response.writeHead(200, { 'Content-Type': 'application/octet-stream', 'Content-Length': file.size,
         'Content-Disposition': `attachment; filename="artifact"; filename*=UTF-8''${encodeURIComponent(file.name).replace(/['()*]/g, value => '%' + value.charCodeAt(0).toString(16))}`,
