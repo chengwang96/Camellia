@@ -141,21 +141,23 @@ public class PopupPowerSaveTest extends InstrumentationTestCase {
         powerSave(true);
         for (String kind : new String[] {"conversation", "computer", "remote-model", "local-model"}) {
             PopupSurface surface = open(kind);
-            ui(() -> assertSolid(surface, Color.WHITE));
+            int color = (int) field(surface, "color");
+            ui(() -> assertSolid(surface, color));
             screenshot("power-save-" + kind);
-            ui(() -> { page.setBackgroundColor(Color.GREEN); assertSolid(surface, Color.WHITE); dismiss.run(); });
+            ui(() -> { page.setBackgroundColor(Color.GREEN); assertSolid(surface, color); dismiss.run(); });
         }
     }
 
     public void testOpenMenusFollowPowerModeAndReleaseTheirResources() throws Exception {
         for (String kind : new String[] {"conversation", "computer", "remote-model", "local-model"}) {
             PopupSurface surface = open(kind);
+            int color = (int) field(surface, "color");
             Bitmap previous = (Bitmap) field(surface, "snapshot"); assertNotNull(previous);
             Bitmap scratch = (Bitmap) field(surface, "scratch");
             powerSave(true);
             awaitBackdrop(surface, false);
             ui(() -> {
-                assertSolid(surface, Color.WHITE); assertTrue(previous.isRecycled());
+                assertSolid(surface, color); assertTrue(previous.isRecycled());
                 if (scratch != null) assertTrue(scratch.isRecycled());
             });
             powerSave(false);

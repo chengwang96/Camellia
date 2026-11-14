@@ -30,6 +30,64 @@
   }
   const api = window.camelliaWindowChrome;
   if (!api) return;
+  const overlayRoots = new Set([document]);
+  const watchedRoots = new WeakSet();
+  const maskObservers = new WeakMap();
+  let nativeDimmed = false;
+  function hasVisibleOverlay(root) {
+    for (const dialog of root.querySelectorAll('dialog[open]')) {
+      if (dialog.matches(':modal')) return true;
+    }
+    return Boolean(root.querySelector('.perm-mask.visible, .ws-mask.visible'));
+  }
+  function syncNativeDim() {
+    const visible = [...overlayRoots].some(hasVisibleOverlay);
+    if (visible === nativeDimmed) return;
+    nativeDimmed = visible;
+    try {
+      const pending = api.setDimmed?.(visible);
+      if (pending?.catch) pending.catch(() => {});
+    } catch { /* Browser previews and non-Windows frames have no native caption. */ }
+  }
+  function watchMask(mask) {
+    if (maskObservers.has(mask)) return;
+    const observer = new MutationObserver(syncNativeDim);
+    observer.observe(mask, { attributes: true, attributeFilter: ['class'] });
+    maskObservers.set(mask, observer);
+  }
+  function watchOverlayRoot(root) {
+    if (!root || watchedRoots.has(root)) return;
+    watchedRoots.add(root);
+    overlayRoots.add(root);
+    const observer = new MutationObserver(records => {
+      let changed = false;
+      for (const record of records) {
+        if (record.type === 'attributes') {
+          if (record.target.matches?.('dialog')) changed = true;
+          continue;
+        }
+        for (const node of record.removedNodes || []) {
+          if (node.nodeType === Node.ELEMENT_NODE
+            && (node.matches('dialog[open], .perm-mask.visible, .ws-mask.visible')
+              || node.querySelector('dialog[open], .perm-mask.visible, .ws-mask.visible'))) changed = true;
+        }
+        for (const node of record.addedNodes || []) {
+          if (node.nodeType !== Node.ELEMENT_NODE) continue;
+          if (node.matches('.perm-mask, .ws-mask')) watchMask(node);
+          for (const mask of node.querySelectorAll('.perm-mask, .ws-mask')) watchMask(mask);
+          if (node.matches('dialog[open], .perm-mask.visible, .ws-mask.visible')
+            || node.querySelector('dialog[open], .perm-mask.visible, .ws-mask.visible')) changed = true;
+        }
+      }
+      if (changed) syncNativeDim();
+    });
+    observer.observe(root, { subtree: true, childList: true, attributes: true, attributeFilter: ['open'] });
+    for (const mask of root.querySelectorAll('.perm-mask, .ws-mask')) watchMask(mask);
+    syncNativeDim();
+  }
+  window.CamelliaNativeOverlay = { observe: watchOverlayRoot };
+  watchOverlayRoot(document);
+
   let bar, opening = false, previousFocus = null;
   const leaveMenu = () => { document.activeElement.blur(); previousFocus?.focus(); };
   function apply(state) {

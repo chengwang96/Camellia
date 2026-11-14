@@ -44,14 +44,45 @@ xcrun simctl boot "$UDID" >/dev/null 2>&1 || true
 # Keep an unavailable simulator from leaving the regression job waiting forever.
 perl -e 'alarm shift; exec @ARGV' 60 xcrun simctl bootstatus "$UDID" -b
 xcrun simctl install "$UDID" "$APP"
+LOGS="$PWD/dist/simulator-checks"
+mkdir -p "$LOGS"
+CONTAINER="$(xcrun simctl get_app_container "$UDID" app.camellia.mobile.remediationcheck data)"
+RESULT="$CONTAINER/Documents/remediation-result.json"
+# The app container survives reinstall. Only this launch may provide its verdict.
+rm -f "$RESULT"
 set +e
-OUTPUT="$(perl -e 'alarm shift; exec @ARGV' 240 xcrun simctl launch --console "$UDID" app.camellia.mobile.remediationcheck 2>&1)"
+OUTPUT="$(perl -e 'alarm shift; exec @ARGV' 240 xcrun simctl launch --terminate-running-process --console "$UDID" app.camellia.mobile.remediationcheck 2>&1)"
 STATUS=$?
 set -e
-printf '%s\n' "$OUTPUT"
-if [ "$STATUS" -eq 0 ] && [[ "$OUTPUT" == *"verdict=PASS"* ]]; then
+printf '%s\n' "$OUTPUT" | tee "$LOGS/remediation-console.log"
+# simctl can detach its console before delivering the final stdout lines.
+# A complete result is written atomically only after every assertion finishes.
+if [ "$STATUS" -eq 0 ]; then
+  for _ in {1..100}; do
+    [ -f "$RESULT" ] && break
+    sleep 0.1
+  done
+fi
+if [ -f "$RESULT" ]; then cp "$RESULT" "$LOGS/remediation-result.json"; fi
+if [ "$STATUS" -eq 0 ] && python3 - "$RESULT" <<'PY'
+import json, sys
+try:
+    with open(sys.argv[1], encoding="utf-8") as source:
+        result = json.load(source)
+    passed = result.get("version") == 1 and result.get("verdict") == "PASS" \
+        and isinstance(result.get("checks"), int) and result["checks"] > 0 \
+        and result.get("failures") == []
+except (OSError, ValueError, TypeError):
+    passed = False
+raise SystemExit(0 if passed else 1)
+PY
+then
   echo "verdict: PASS"
 else
+  echo "simulator launch exit code: $STATUS" >&2
+  perl -e 'alarm shift; exec @ARGV' 15 xcrun simctl io "$UDID" screenshot "$LOGS/remediation-failure.png" || true
+  perl -e 'alarm shift; exec @ARGV' 15 xcrun simctl spawn "$UDID" log show --last 3m --style compact \
+    --predicate 'process == "CamelliaRemediationCheck"' > "$LOGS/remediation-system.log" 2>&1 || true
   echo "verdict: FAIL" >&2
   exit 1
 fi

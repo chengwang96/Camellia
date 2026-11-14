@@ -48,6 +48,7 @@ public final class QrScanActivity extends Activity implements TextureView.Surfac
 
     @Override protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        MobileOrientation.lockPhonePortrait(this);
         SettingsStyle style = new SettingsStyle(this);
         displays = (DisplayManager) getSystemService(DISPLAY_SERVICE);
         getWindow().setStatusBarColor(style.background); getWindow().setNavigationBarColor(style.background);

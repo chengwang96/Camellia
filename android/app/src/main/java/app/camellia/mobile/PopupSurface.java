@@ -21,6 +21,18 @@ import android.widget.ImageView;
 
 @android.annotation.SuppressLint("ViewConstructor")
 final class PopupSurface extends FrameLayout {
+    static final int COMPACT_MENU_MAX_WIDTH_DP = 264;
+    static final int BOTTOM_SHEET_MAX_WIDTH_DP = 420;
+    static final int MODEL_MENU_MAX_WIDTH_DP = 340;
+    static final int MODEL_MENU_MIN_WIDTH_DP = 280;
+    static final float MODEL_MENU_WIDTH_FRACTION = .82f;
+    static final int BOTTOM_SHEET_GUTTER_DP = 12;
+    static final int BOTTOM_SHEET_BOTTOM_GAP_DP = 10;
+    static final int PHONE_MENU_MAX_HEIGHT_DP = 420;
+    static final int TABLET_MENU_MAX_HEIGHT_DP = 400;
+    static final int MENU_MIN_HEIGHT_DP = 240;
+    static final float PHONE_MENU_HEIGHT_FRACTION = .56f;
+    static final float TABLET_MENU_HEIGHT_FRACTION = .42f;
     private Bitmap snapshot;
     private Bitmap scratch;
     private ImageView backdrop;
@@ -44,6 +56,99 @@ final class PopupSurface extends FrameLayout {
     }
 
     private int dp(int value) { return Math.round(value * getResources().getDisplayMetrics().density); }
+
+    static int menuWidth(Context context, Rect visible, int maxWidthDp) {
+        float density = context.getResources().getDisplayMetrics().density;
+        int gutter = Math.round(12 * density);
+        return Math.max(1, Math.min(Math.round(maxWidthDp * density), visible.width() - gutter * 2));
+    }
+
+    static int sheetWidth(Context context, Rect visible) {
+        return menuWidth(context, visible, BOTTOM_SHEET_MAX_WIDTH_DP);
+    }
+
+    static int modelMenuWidth(Context context, Rect visible) {
+        float density = context.getResources().getDisplayMetrics().density;
+        int gutter = Math.round(BOTTOM_SHEET_GUTTER_DP * density);
+        int available = Math.max(1, visible.width() - gutter * 2);
+        int minimum = Math.min(Math.round(MODEL_MENU_MIN_WIDTH_DP * density), available);
+        return Math.max(minimum, Math.min(available, Math.min(
+            Math.round(MODEL_MENU_MAX_WIDTH_DP * density),
+            Math.round(visible.width() * MODEL_MENU_WIDTH_FRACTION))));
+    }
+
+    /**
+     * getWindowVisibleDisplayFrame normally excludes the IME. Some popup
+     * anchors still report the pre-IME frame while the keyboard is animating,
+     * so use the live IME inset as an additional ceiling when it is available.
+     */
+    static Rect visibleFrame(View anchor) {
+        Rect visible = new Rect();
+        anchor.getWindowVisibleDisplayFrame(visible);
+        if (Build.VERSION.SDK_INT >= 30) {
+            android.view.WindowInsets insets = anchor.getRootView().getRootWindowInsets();
+            if (insets != null) {
+                int keyboard = insets.getInsets(android.view.WindowInsets.Type.ime()).bottom;
+                if (keyboard > 0) {
+                    int[] root = new int[2];
+                    anchor.getRootView().getLocationOnScreen(root);
+                    int keyboardTop = root[1] + anchor.getRootView().getHeight() - keyboard;
+                    if (keyboardTop > visible.top && keyboardTop < visible.bottom) visible.bottom = keyboardTop;
+                }
+            }
+        }
+        return visible;
+    }
+
+    /**
+     * The model and settings menus scroll internally; they must not turn into a
+     * near-full-screen sheet just because many models are configured.
+     *
+     * <p>Phones may use up to 56% of the visible frame, with a 420dp cap. A
+     * tablet uses 42% and a 400dp cap, so portrait tablets keep most of the
+     * conversation visible and landscape tablets still show a useful list.
+     */
+    static int menuHeightLimit(Context context, Rect visible) {
+        float density = context.getResources().getDisplayMetrics().density;
+        int available = Math.max(1, visible.height()
+            - Math.round(BOTTOM_SHEET_BOTTOM_GAP_DP * density)
+            - Math.round(BOTTOM_SHEET_GUTTER_DP * density));
+        boolean tablet = visible.width() >= Math.round(600 * density);
+        int cap = Math.round((tablet ? TABLET_MENU_MAX_HEIGHT_DP : PHONE_MENU_MAX_HEIGHT_DP) * density);
+        int fraction = Math.round(visible.height()
+            * (tablet ? TABLET_MENU_HEIGHT_FRACTION : PHONE_MENU_HEIGHT_FRACTION));
+        int minimum = Math.min(available, Math.round(MENU_MIN_HEIGHT_DP * density));
+        return Math.max(minimum, Math.min(available, Math.min(cap, fraction)));
+    }
+
+    static int sheetLeft(int anchorCenter, int width, int visibleLeft, int visibleRight, int gutter) {
+        return Math.max(visibleLeft + gutter,
+            Math.min(anchorCenter - width / 2, visibleRight - width - gutter));
+    }
+
+    static View grip(Context context) {
+        View view = new View(context);
+        GradientDrawable shape = new GradientDrawable();
+        shape.setColor(Palette.of(context).dark ? 0x40ffffff : 0x30000000);
+        shape.setCornerRadius(99 * context.getResources().getDisplayMetrics().density);
+        view.setBackground(shape);
+        return view;
+    }
+
+    /**
+     * A quiet bottom fade that only appears while a menu can still scroll down.
+     * The compact menu cap intentionally clips its list; without this cue the
+     * final visible row reads as if it were cut off by mistake.
+     */
+    static View scrollFade(Context context, int panelColor) {
+        View fade = new View(context);
+        fade.setTag("glassScrollFade");
+        fade.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+        int rgb = panelColor & 0x00ffffff;
+        fade.setBackground(new GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM,
+            new int[] { rgb, rgb | 0xc0000000 }));
+        return fade;
+    }
 
     static boolean supportsBlur(Context context) {
         return Build.VERSION.SDK_INT >= 31 && !isPowerSaveMode(context);

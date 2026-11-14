@@ -63,9 +63,9 @@ public class PendingCommandTest extends InstrumentationTestCase {
                     assertEquals("accepted", ((JSONObject) field(activity, "outgoingMessage")).getString("delivery"));
                 } catch (Exception error) { throw new AssertionError(error); }
             });
-            ExecutorService worker = (ExecutorService) field(activity, "worker");
-            CountDownLatch occupied = new CountDownLatch(2), dispatched = new CountDownLatch(1);
-            for (int index = 0; index < 2; index++) worker.submit(() -> {
+            ExecutorService streams = (ExecutorService) field(activity, "eventWorker");
+            CountDownLatch occupied = new CountDownLatch(1), dispatched = new CountDownLatch(1);
+            streams.submit(() -> {
                 occupied.countDown();
                 try { release.await(); } catch (InterruptedException error) { Thread.currentThread().interrupt(); }
             });

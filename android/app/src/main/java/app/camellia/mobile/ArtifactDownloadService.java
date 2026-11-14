@@ -19,6 +19,7 @@ public final class ArtifactDownloadService extends Service {
     private static final int NOTICE = 704;
     private static final Object LOCK = new Object();
     private static Job current;
+    private static volatile Uri retainedOpenUri;
     private static volatile State state = new State("", "", 0, 0, "idle", "");
     private RemoteApi client;
     private Job job;
@@ -29,8 +30,13 @@ public final class ArtifactDownloadService extends Service {
     static final class State {
         final String name, address, phase, detail;
         final long received, total;
+        final Uri destination;
         State(String name, String address, long received, long total, String phase, String detail) {
+            this(name, address, received, total, phase, detail, null);
+        }
+        State(String name, String address, long received, long total, String phase, String detail, Uri destination) {
             this.name = name; this.address = address; this.received = received; this.total = total; this.phase = phase; this.detail = detail;
+            this.destination = destination;
         }
         boolean active() { return phase.equals("running"); }
     }
@@ -70,8 +76,9 @@ public final class ArtifactDownloadService extends Service {
         Job next = new Job(file, token, target, inDirectory);
         synchronized (LOCK) {
             if (current != null) throw new IOException("A download is already running");
+            releaseRetainedOpenPermission(context);
             current = next;
-            state = new State(next.name, next.address, 0, next.size, "running", "");
+            state = new State(next.name, next.address, 0, next.size, "running", "", next.destination);
             try {
                 Intent intent = new Intent(context, ArtifactDownloadService.class).addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
                 intent.setClipData(android.content.ClipData.newRawUri("download", target));
@@ -79,6 +86,27 @@ public final class ArtifactDownloadService extends Service {
             }
             catch (Exception error) { current = null; state = new State(next.name, next.address, 0, next.size, "failed", ""); throw error; }
         }
+    }
+
+    private static void releaseRetainedOpenPermission(Context context) {
+        if (retainedOpenUri == null) return;
+        try {
+            // A completed single-file picker grant is kept only long enough for
+            // the result sheet to hand the document to another app.
+            releasePersistedPermission(context, retainedOpenUri);
+        } finally {
+            retainedOpenUri = null;
+        }
+    }
+
+    private static void releasePersistedPermission(Context context, Uri uri) {
+        if (uri == null) return;
+        try {
+            context.getContentResolver().releasePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        } catch (RuntimeException ignored) { }
+        try {
+            context.getContentResolver().releasePersistableUriPermission(uri, Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
+        } catch (RuntimeException ignored) { }
     }
 
     static void cancel(Context context) {
@@ -111,6 +139,13 @@ public final class ArtifactDownloadService extends Service {
             builder.setProgress(100, percent(value.received, value.total), value.total == 0)
                 .addAction(new Notification.Action.Builder(null, tr("取消", "Cancel"), PendingIntent.getService(this, NOTICE, cancel,
                     PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE)).build());
+        } else if ("complete".equals(value.phase) && value.destination != null) {
+            Intent openIntent = ArtifactOpen.intent(this, value.destination, value.name)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            PendingIntent openFile = PendingIntent.getActivity(this, NOTICE + 1,
+                openIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+            builder.addAction(new Notification.Action.Builder(null, tr("打开", "Open"), openFile).build());
         }
         return builder.build();
     }
@@ -136,7 +171,8 @@ public final class ArtifactDownloadService extends Service {
     }
 
     private void download() {
-        String phase = "complete", detail = tr("已保存到所选位置，可在文件管理器查看。", "Saved to your chosen location. Open your file manager to view it.");
+        String phase = "complete", detail = tr("下载完成，可直接用系统默认应用打开；也可在文件管理器中查看。",
+            "Download complete. Open it with your default app, or find it in your file manager.");
         boolean creating = job.directory != null;
         try {
             if (job.cancelled) throw new IOException("Cancelled");
@@ -146,7 +182,7 @@ public final class ArtifactDownloadService extends Service {
             try (var output = getContentResolver().openOutputStream(job.destination, "wt")) {
                 if (output == null) throw new IOException("Cannot open destination");
                 client.download(job.path, job.token, output, job.size, (received, total) -> {
-                    state = new State(job.name, job.address, received, total, "running", "");
+                    state = new State(job.name, job.address, received, total, "running", "", job.destination);
                     getSystemService(NotificationManager.class).notify(NOTICE, notification(state));
                 });
             }
@@ -170,12 +206,14 @@ public final class ArtifactDownloadService extends Service {
     private void finish(String phase, String detail) {
         new android.os.Handler(getMainLooper()).post(() -> {
             finished = true;
-            state = new State(job.name, job.address, state.received, job.size, phase, detail);
+            state = new State(job.name, job.address, state.received, job.size, phase, detail, job.destination);
             synchronized (LOCK) { if (current == job) current = null; }
             stopForeground(STOP_FOREGROUND_REMOVE);
             getSystemService(NotificationManager.class).notify(NOTICE, notification(state));
-            try { if (job.directory == null) getContentResolver().releasePersistableUriPermission(job.destination, Intent.FLAG_GRANT_WRITE_URI_PERMISSION | Intent.FLAG_GRANT_READ_URI_PERMISSION); }
-            catch (SecurityException ignored) { }
+            if (job.directory == null && job.destination != null) {
+                if ("complete".equals(phase)) retainedOpenUri = job.destination;
+                else releasePersistedPermission(this, job.destination);
+            }
             releaseResources(); stopSelf();
         });
     }

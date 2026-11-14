@@ -48,6 +48,7 @@ public class RemoteApi {
     private volatile boolean cancelled;
     private boolean incremental;
     void incremental(boolean enabled) { incremental = enabled; }
+    boolean incremental() { return incremental; }
     private final Set<tailnet.Response> embeddedResponses = ConcurrentHashMap.newKeySet();
 
     public RemoteApi(String address) { this(null, address); }

@@ -23,8 +23,10 @@ final class RemoteSettingsPopup {
     private final PopupSurface surface;
     private final ScrollView scroll;
     private final LinearLayout body;
+    private final View scrollFade;
     private View anchor;
     private int left, bottom, width, heightLimit;
+    private int updateOffsetY, requestedTop;
     private boolean resetCreditsAvailable;
 
     void setResetCreditsAvailable(boolean available) { resetCreditsAvailable = available; }
@@ -37,6 +39,10 @@ final class RemoteSettingsPopup {
         surface = new PopupSurface(context, background); surface.setTag("remoteSettingsPanel");
         scroll = new ScrollView(context); scroll.setFillViewport(false); scroll.setVerticalScrollBarEnabled(false); scroll.setClipToPadding(false); scroll.addView(body);
         surface.addView(scroll, new android.widget.FrameLayout.LayoutParams(-1, -1));
+        scrollFade = PopupSurface.scrollFade(context, background);
+        scrollFade.setVisibility(View.GONE);
+        surface.addView(scrollFade, new android.widget.FrameLayout.LayoutParams(-1, dp(30), Gravity.BOTTOM));
+        scroll.setOnScrollChangeListener((view, scrollX, scrollY, oldScrollX, oldScrollY) -> updateScrollFade());
         popup.setContentView(surface); popup.setBackgroundDrawable(round(background, 26)); popup.setElevation(dp(8));
         popup.setFocusable(true); popup.setOutsideTouchable(true); popup.setInputMethodMode(PopupWindow.INPUT_METHOD_NOT_NEEDED);
     }
@@ -57,6 +63,7 @@ final class RemoteSettingsPopup {
     }
     private void models() {
         body.removeAllViews();
+        addGrip();
         if (settings.optBoolean("appliesNextTurn")) heading(tr("模型与思考等级更改从下一轮生效", "Changes apply to the next message"));
         JSONObject quick = settings.optJSONObject("quickSwitch");
         if (quick != null && quick.optBoolean("available")) row(tr("切换默认模型", "Quick-switch default"), quick.optString("model"), false,
@@ -109,6 +116,7 @@ final class RemoteSettingsPopup {
     }
     private void thinking() {
         body.removeAllViews();
+        addGrip();
         row(tr("返回模型", "Back to models"), "", false, "remoteThinkingBack", this::models); divider();
         row(tr("默认", "Default"), tr("遵循引擎默认设置", "Use engine defaults"), settings.optString("thinking").isEmpty(), "remoteThinkingOption:", () -> choose("thinking", ""));
         JSONArray models = settings.optJSONArray("models");
@@ -131,6 +139,7 @@ final class RemoteSettingsPopup {
     }
     private void permissions() {
         body.removeAllViews();
+        addGrip();
         String[] levels = { "ask", "auto", "full" };
         String[] descriptions = { tr("执行需要授权的操作前先询问", "Ask before actions that need authorization"),
             tr("常规操作自动执行，风险操作会询问", "Run routine actions; ask about risky ones"),
@@ -143,12 +152,14 @@ final class RemoteSettingsPopup {
     }
     void show(View anchor, boolean permissions) {
         this.anchor = anchor;
-        Rect visible = new Rect(); anchor.getWindowVisibleDisplayFrame(visible);
+        Rect visible = PopupSurface.visibleFrame(anchor);
         int[] location = new int[2]; anchor.getLocationOnScreen(location);
-        width = Math.min(dp(320), visible.width() - dp(24));
-        left = Math.max(visible.left + dp(12), Math.min(location[0], visible.right - width - dp(12)));
-        bottom = Math.min(location[1] - dp(6), visible.bottom - dp(12));
-        heightLimit = Math.max(dp(48), bottom - visible.top - dp(12));
+        width = permissions ? PopupSurface.sheetWidth(context, visible) : PopupSurface.modelMenuWidth(context, visible);
+        int anchorCenter = location[0] + anchor.getWidth() / 2;
+        left = PopupSurface.sheetLeft(anchorCenter, width, visible.left, visible.right, dp(PopupSurface.BOTTOM_SHEET_GUTTER_DP));
+        bottom = visible.bottom - dp(PopupSurface.BOTTOM_SHEET_BOTTOM_GAP_DP);
+        heightLimit = PopupSurface.menuHeightLimit(context, visible);
+        updateOffsetY = 0;
         popup.setWidth(width);
         if (permissions) permissions(); else models();
     }
@@ -158,11 +169,49 @@ final class RemoteSettingsPopup {
         body.measure(View.MeasureSpec.makeMeasureSpec(contentWidth, View.MeasureSpec.EXACTLY), View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED));
         int height = Math.min(heightLimit, body.getMeasuredHeight());
         popup.setHeight(height);
-        if (popup.isShowing()) popup.update(left, bottom - height, width, height);
+        int top = bottom - height - updateOffsetY;
+        if (popup.isShowing()) popup.update(left, top, width, height);
         else {
             surface.capture(anchor.getRootView(), left, bottom - height, width, height);
+            requestedTop = bottom - height;
             popup.showAtLocation(anchor, Gravity.TOP | Gravity.LEFT, left, bottom - height);
+            scroll.setAlpha(0f);
+            surface.post(() -> settleInitialPosition(0));
         }
+        surface.post(this::updateScrollFade);
     }
     void dismiss() { popup.dismiss(); }
+
+    private void updateScrollFade() {
+        scrollFade.setVisibility(scroll.canScrollVertically(1) ? View.VISIBLE : View.GONE);
+    }
+
+    private void addGrip() {
+        View grip = PopupSurface.grip(context);
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(dp(36), dp(4));
+        params.gravity = Gravity.CENTER_HORIZONTAL;
+        params.bottomMargin = dp(8);
+        body.addView(grip, params);
+    }
+
+    private void settleInitialPosition(int attempt) {
+        if (!popup.isShowing()) return;
+        int[] location = new int[2];
+        surface.getLocationOnScreen(location);
+        int error = location[1] + surface.getHeight() - bottom;
+        if (Math.abs(error) > 1 && attempt < 3) {
+            requestedTop -= error;
+            popup.update(left, requestedTop, width, surface.getHeight());
+            surface.post(() -> settleInitialPosition(attempt + 1));
+            return;
+        }
+        updateOffsetY = location[1] - requestedTop;
+        if (android.animation.ValueAnimator.areAnimatorsEnabled()) {
+            scroll.setTranslationY(dp(18));
+            scroll.animate().alpha(1f).translationY(0f).setDuration(180).start();
+        } else {
+            scroll.setAlpha(1f);
+            scroll.setTranslationY(0f);
+        }
+    }
 }

@@ -16,14 +16,15 @@ function deferred() {
 }
 
 function fixture() {
-  const requests = [], requestEngines = [], replies = [], settings = deferred(), drafts = new Map(), cancellations = [];
+  const requests = [], requestEngines = [], replies = [], settings = deferred(), drafts = new Map(), cancellations = [], userTexts = [];
   const state = {
     sharedChat: true, context: { sessionId: 'conversation-a', workspaceId: 'workspace-a' }, sessionOpenSeq: 1,
     sending: false, loadingSession: false, switchingEngine: false, handoffSessions: new Map(), running: false, conversationActivity: null,
-    editingMessage: null, harnessId: 'codex', loadedEngine: 'codex', pendingForkId: null, currentRunId: null, currentFastMode: false,
+    editingMessage: null, turnEl: null, harnessId: 'codex', loadedEngine: 'codex', pendingForkId: null, currentRunId: null, currentFastMode: false,
     input: { value: 'Continue' }, attachments: [], chatProfile: {}, statusText: '', eventsDuringRestore: [],
     messageQueue: [], messageQueuePaused: false, conversationQueues: new Map(), drainingQueue: false,
-    sendBtn: { classList: { toggle() {} } }, pendingConversationSends: new Map(),
+    sendBtn: { classList: { toggle() {} } }, pendingConversationSends: new Map(), latestConversationSends: new Map(),
+    window: { CamelliaContextOverflow: require('../src/shared/context-overflow') },
     goalUI: { isActive: () => false, isDraft: () => false },
     sidebar: { render() {}, load() {} }, chat: { querySelector: () => null, querySelectorAll: () => [], appendChild() {} },
     renderAttachments() {}, renderMessageQueue() {}, drainMessageQueue() {}, autoResize() {}, updateConversationControls() { state.updateSendEnabled(); },
@@ -33,12 +34,12 @@ function fixture() {
     writeUi: (key, value) => drafts.set(key, value), readUi: key => drafts.get(key),
     saveDraft: () => drafts.set('draft:' + state.context.sessionId, { text: state.input.value, attachments: state.attachments.slice() }),
     restoreDraft() { state.input.value = drafts.get('draft:' + state.context.sessionId)?.text || ''; },
-    addUser: () => ({ messageData: {} }), buildPrompt: text => text,
+    addUser: text => { userTexts.push(text); return { messageData: {}, remove() {} }; }, buildPrompt: text => text,
     showFailedSend: attempt => { state.failedSend = attempt; },
     setRunning: value => { state.running = value; }, setStatus: text => { state.statusText = text; },
     handleEvent() {}, clearTextChoice() {},
     setRunStatus() {}, clearRunStatus() {}, finalizeStreamBlocks() {}, updateSwitchHint() {},
-    document: { createElement: () => ({}) },
+    document: { createElement: () => ({ dataset: {} }) },
     chatApi: {
       getSettings: () => settings.promise,
       send(payload, engine) { requests.push(payload); requestEngines.push(engine); const reply = deferred(); replies.push(reply); return reply.promise; },
@@ -53,6 +54,7 @@ function fixture() {
     extract('  function conversationBusy()', '  function canChangeContext()'),
     extract('  function updateSendEnabled()', '  async function steerQueuedMessage('),
     extract('  async function steerQueuedMessage(', '  async function send('),
+    extract('  function takePendingSendBubble(', '  function pendingSendCommitted('),
     extract('  async function send(', '  function autoResize()'),
   ].join('\n'), state);
   const navigate = id => {
@@ -66,7 +68,7 @@ function fixture() {
     state.restoringRun = false;
     state.input.value = '';
   };
-  return { state, requests, requestEngines, replies, settings, drafts, cancellations, navigate };
+  return { state, requests, requestEngines, replies, settings, drafts, cancellations, userTexts, navigate };
 }
 
 const flush = () => new Promise(resolve => setImmediate(resolve));
@@ -195,6 +197,51 @@ test('stopping before settings resolve prevents dispatch and restores the draft'
   assert.equal(state.running, false);
   assert.equal(state.restoringRun, false);
   assert.equal(state.conversationBusy(), false);
+  assert.equal(state.statusText, 'Stopped');
+});
+
+test('cancellation during compaction preserves the message and a newer composer draft without error chips', async () => {
+  const harness = fixture(), { state } = harness;
+  state.chat.appendChild = () => assert.fail('Cancellation must not append an error chip');
+  state.attachments = [{ path: 'D:/input.csv' }];
+  const pending = state.send();
+  harness.settings.resolve({});
+  await flush();
+  state.input.value = 'New draft';
+  state.conversationActivity = 'running';
+  state.eventsDuringRestore.push({ type: 'conversation:activity', activity: null });
+  state.handleEvent = event => { if (event.type === 'conversation:activity') state.conversationActivity = event.activity; };
+  harness.replies[0].resolve({ ok: false, error: 'Compaction canceled' });
+  assert.equal(await pending, false);
+  assert.equal(state.failedSend.cancelled, true);
+  assert.equal(state.failedSend.text, 'Continue');
+  assert.equal(state.failedSend.attachments[0].path, 'D:/input.csv');
+  assert.equal(state.input.value, 'New draft');
+  assert.equal(state.statusText, 'Stopped');
+  assert.equal(state.conversationActivity, null);
+  assert.equal(state.running, false);
+  assert.equal(state.conversationBusy(), false);
+});
+
+for (const ok of [false, true]) test(`superseded send replies cannot clear a newer pending send (ok=${ok})`, async () => {
+  const harness = fixture(), { state } = harness;
+  const old = state.send();
+  harness.settings.resolve({});
+  await flush();
+  const newer = { id: 'newer-send' };
+  state.pendingConversationSends.set('conversation-a', newer);
+  state.latestConversationSends.set('conversation-a', newer.id);
+  state.statusText = 'New attempt';
+  state.input.value = 'New draft';
+  harness.replies[0].resolve({ ok, error: 'Compaction canceled', runId: 123 });
+  await old;
+  assert.equal(state.pendingConversationSend(), newer);
+  assert.equal(state.statusText, 'New attempt');
+  assert.equal(state.input.value, 'New draft');
+  assert.equal(state.sending, true);
+  assert.equal(state.running, true);
+  assert.equal(state.restoringRun, true);
+  assert.equal(state.currentRunId, null);
 });
 
 test('returning with a nonempty composer queues behind a pending send without duplicating it', async () => {
@@ -425,6 +472,22 @@ test('an idle conversation sends its queued message with the current harness', a
   harness.replies[0].resolve({ ok: true, sessionId: 'conversation-a', runId: 1 });
   assert.equal(await pending, true);
   assert.equal(state.input.value, 'Continue');
+});
+
+test('a queued card action keeps the full prompt but sends a concise display text', async () => {
+  const harness = fixture(), { state } = harness;
+  harness.settings.resolve({});
+  const promise = state.send({
+    text: 'Camellia card action (structured user choice):\n{"cardId":"card-1"}',
+    displayText: 'Card decision · 提交方案 · 发布作战室',
+    attachments: [],
+  });
+  await flush();
+  assert.equal(harness.requests[0].prompt, 'Camellia card action (structured user choice):\n{"cardId":"card-1"}');
+  assert.equal(harness.requests[0].displayText, 'Card decision · 提交方案 · 发布作战室');
+  assert.equal(harness.userTexts.at(-1), 'Card decision · 提交方案 · 发布作战室');
+  harness.replies[0].resolve({ ok: true, sessionId: 'conversation-a', runId: 1, userSeq: 1 });
+  assert.equal(await promise, true);
 });
 
 test('a failed harness reopen retains the queued message and composer draft', async () => {

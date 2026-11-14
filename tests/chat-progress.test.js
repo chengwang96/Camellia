@@ -19,7 +19,9 @@ function harness() {
     statusLine: { textContent: '' }, rows: [],
     $: () => stopButton,
     setRunStatus: text => state.rows.push(text),
-    renderCompactionStatus() {},
+    compactions: [],
+    renderCompactionStatus(value) { if (value) state.compactions.push(value); },
+    discardRestoredPendingSend() {},
     setInterval: callback => { state.tick = callback; return 1; },
     clearInterval() {}, fmtDuration: () => '5m',
   };
@@ -80,4 +82,26 @@ test('stopping survives timer ticks and the next run starts without a stale phas
   state.startRunTicker();
   state.tick();
   assert.equal(state.statusLine.textContent, 'Running… · Elapsed 5m');
+});
+
+test('late summary progress and cancellation cannot replace a newer compaction', () => {
+  const { state } = harness();
+  state.handleConversationStatus({ sessionId: 'conversation-a', text: 'New attempt', compaction: { state: 'running', startedAt: 2000 } });
+  for (const status of ['running', 'cancelled', 'failed', 'completed']) {
+    state.handleConversationStatus({ sessionId: 'conversation-a', text: 'Old attempt', compaction: { state: status, startedAt: 1000 } });
+    assert.equal(state.statusLine.textContent, 'New attempt');
+    assert.equal(state.compactions.length, 1);
+  }
+});
+
+test('a stopped compaction cannot restart its clock and old failures cannot attach to a new pending send', () => {
+  const { state } = harness();
+  state.handleConversationStatus({ sessionId: 'conversation-a', text: '', compaction: { state: 'cancelled', startedAt: 1000 } });
+  state.setStatus('Stopped');
+  state.handleConversationStatus({ sessionId: 'conversation-a', text: 'Late progress', compaction: { state: 'running', startedAt: 1000 } });
+  assert.equal(state.statusLine.textContent, 'Stopped');
+  state.pendingConversationSends.set('conversation-a', { at: 2000, phase: 'Preparing' });
+  state.handleConversationStatus({ sessionId: 'conversation-a', text: 'Old failure', compaction: { state: 'failed', startedAt: 1000 } });
+  assert.equal(state.pendingConversationSends.get('conversation-a').phase, 'Preparing');
+  assert.equal(state.compactions.length, 1);
 });

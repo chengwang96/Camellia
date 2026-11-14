@@ -78,18 +78,24 @@ async function main() {
     manager.capture('codex', { type: 'result', conversationId: conversation.id, runId: this.gen, subtype: 'stopped', result: '' });
   } });
   const subscribe = gateway.subscribe.bind(gateway);
-  let listSubscriptions = 0;
+  let legacyList = false, unsupportedListSubscriptions = 0, legacySubscriptionsAtAdd;
   let addedConversation, listChanges = 0;
   const handle = gateway.handle.bind(gateway);
   gateway.handle = async (request, response) => {
     // The phone acknowledges each observed list before advancing the fixture.
     // Fixed timers race SSE delivery, HTTP reads and UI rendering on CI hosts.
-    if (request.method === 'POST' && ['/fixture/list/add', '/fixture/list/remove'].includes(request.url)) {
+    if (request.method === 'POST' && ['/fixture/list/add', '/fixture/list/remove', '/fixture/list/legacy', '/fixture/list/current'].includes(request.url)) {
       access.authenticate(String(request.headers.authorization || '').slice(7));
       request.resume();
+      if (request.url.endsWith('/legacy') || request.url.endsWith('/current')) {
+        legacyList = request.url.endsWith('/legacy');
+        gateway.json(response, 200, { ok: true });
+        return;
+      }
       if (request.url.endsWith('/add')) {
         assert.equal(addedConversation, undefined);
-        addedConversation = manager.create('codex', 'fixture', listSubscriptions >= 3 ? 'Legacy desktop conversation' : 'Desktop-created conversation');
+        if (legacyList) legacySubscriptionsAtAdd = unsupportedListSubscriptions;
+        addedConversation = manager.create('codex', 'fixture', legacyList ? 'Legacy desktop conversation' : 'Desktop-created conversation');
       } else {
         assert.ok(addedConversation);
         await manager.purge(addedConversation.id); addedConversation = undefined;
@@ -101,7 +107,8 @@ async function main() {
     return handle(request, response);
   };
   gateway.subscribe = (response, device, id) => {
-    if (!id && ++listSubscriptions >= 3) {
+    if (!id && legacyList) {
+      unsupportedListSubscriptions++;
       gateway.json(response, 404, { error: 'Endpoint not found' });
       return;
     }
@@ -135,7 +142,8 @@ async function main() {
     assert.equal(goalSchedules, 2, 'Initial goal plus one deduplicated remote resume');
     assert.equal(goal.view(), null, 'Remote clear must clear the goal');
     assert.equal(manager.tasks.get(task.id, conversation.id).status, 'cancelled');
-    assert.equal(listSubscriptions, 3, 'Unsupported list streams must not be retried during polling');
+    assert.ok(legacySubscriptionsAtAdd >= 1, 'Legacy fallback must encounter an unsupported stream');
+    assert.equal(unsupportedListSubscriptions, legacySubscriptionsAtAdd, 'Unsupported list streams must not be retried during polling');
     assert.equal(listChanges, 5, 'Stream, list UI and legacy polling must observe each desktop change');
     console.log('PASS Android ↔ desktop gateway: goal/task pause, resume and cancellation; content search/download and retry deduplication; rename/pin/batch delete with stale-state rejection; artifact downloads, live list sync, legacy polling, send deduplication, approval, stop, history, SSE and revocation');
   } finally {

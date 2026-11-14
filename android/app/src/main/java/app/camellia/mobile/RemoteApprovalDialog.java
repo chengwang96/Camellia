@@ -14,12 +14,11 @@ import java.util.List;
 final class RemoteApprovalDialog {
     interface Answer { boolean send(boolean allow, JSONObject input, String optionId) throws Exception; }
     private static final class Field {
-        JSONObject question; EditText custom; final List<CompoundButton> choices = new ArrayList<>();
+        JSONObject question; EditText custom; final List<ChoiceRow> choices = new ArrayList<>();
     }
     static AlertDialog show(Activity activity, JSONObject request, String member, Answer answer) {
         boolean zh = activity.getResources().getConfiguration().getLocales().get(0).getLanguage().equals("zh");
         ChatStyle style = new ChatStyle(activity);
-        SettingsStyle settings = new SettingsStyle(activity);
         LinearLayout body = new LinearLayout(activity); body.setOrientation(LinearLayout.VERTICAL);
         body.setPadding(style.dp(18), style.dp(8), style.dp(18), style.dp(8));
         String nativeDetails = request.optString("details"), reason = request.optString("reason");
@@ -35,21 +34,31 @@ final class RemoteApprovalDialog {
             TextView label = new TextView(activity); label.setText(question.optString("question", question.optString("header")));
             label.setTextSize(16); label.setTextColor(style.ink); label.setPadding(0, style.dp(18), 0, style.dp(8)); body.addView(label);
             boolean multi = question.optBoolean("multiSelect");
-            LinearLayout choices = multi ? new LinearLayout(activity) : new RadioGroup(activity); choices.setOrientation(LinearLayout.VERTICAL); body.addView(choices);
+            LinearLayout choices = new LinearLayout(activity); choices.setOrientation(LinearLayout.VERTICAL); body.addView(choices);
             JSONArray options = question.optJSONArray("options");
             for (int optionIndex = 0; options != null && optionIndex < options.length(); optionIndex++) {
                 JSONObject option = options.optJSONObject(optionIndex); if (option == null) continue;
-                CompoundButton choice = multi ? new CheckBox(activity) : new RadioButton(activity);
-                settings.selection(choice);
-                String value = option.optString("label"); choice.setText(option.optString("description").isEmpty() ? value : String.join("\n", value, option.optString("description")));
-                choice.setTextColor(style.ink); choice.setMinHeight(style.dp(48)); choice.setId(android.view.View.generateViewId());
-                choice.setTag(value); choices.addView(choice); field.choices.add(choice);
+                String value = option.optString("label");
+                ChoiceRow choice = new ChoiceRow(activity, value, option.optString("description"), multi, false);
+                choice.setId(android.view.View.generateViewId());
+                choice.setTag(value);
+                if (!multi) choice.setOnCheckedChangeListener((row, checked) -> {
+                    if (!checked) return;
+                    for (ChoiceRow other : field.choices) if (other != row) other.setChecked(false);
+                });
+                LinearLayout.LayoutParams choiceParams = new LinearLayout.LayoutParams(-1, -2);
+                choiceParams.bottomMargin = style.dp(8);
+                choices.addView(choice, choiceParams);
+                field.choices.add(choice);
             }
             field.custom = new EditText(activity); field.custom.setTextColor(style.ink); field.custom.setHintTextColor(style.muted);
             field.custom.setHint(zh ? "输入回答（也可补充其他答案）" : "Type an answer or another option"); field.custom.setMinHeight(style.dp(52));
             field.custom.setTag("approvalAnswer:" + question.optString("id")); field.custom.setMaxLines(4);
             field.custom.setInputType(InputType.TYPE_CLASS_TEXT | (question.optBoolean("isSecret") ? InputType.TYPE_TEXT_VARIATION_PASSWORD : InputType.TYPE_TEXT_FLAG_MULTI_LINE));
-            field.custom.setImportantForAutofill(android.view.View.IMPORTANT_FOR_AUTOFILL_NO); body.addView(field.custom);
+            field.custom.setImportantForAutofill(android.view.View.IMPORTANT_FOR_AUTOFILL_NO);
+            LinearLayout.LayoutParams customParams = new LinearLayout.LayoutParams(-1, -2);
+            customParams.topMargin = style.dp(10);
+            body.addView(new SettingsField(field.custom), customParams);
         }
         TextView error = new TextView(activity); error.setTextColor(new SettingsStyle(activity).error); body.addView(error);
         ScrollView scroll = new ScrollView(activity); scroll.addView(body);
@@ -65,7 +74,7 @@ final class RemoteApprovalDialog {
                         input = new JSONObject();
                         for (Field field : fields) {
                             JSONArray values = new JSONArray();
-                            for (CompoundButton choice : field.choices) if (choice.isChecked()) values.put(choice.getTag().toString());
+                            for (ChoiceRow choice : field.choices) if (choice.isChecked()) values.put(choice.getTag().toString());
                             String custom = field.custom.getText().toString().trim(); if (!custom.isEmpty()) values.put(custom);
                             if (values.length() == 0) throw new IllegalArgumentException(zh ? "请回答每个问题。" : "Answer each question.");
                             input.put(field.question.getString("id"), field.question.optBoolean("multiSelect") ? values : values.getString(values.length() - 1));

@@ -40,6 +40,7 @@ bridge = r"""(() => {
     apiRouterGetState:async()=>({enabled:true,models:['fixture-model']}),
     workbenchSettings:async()=>({ok:true,conversations:{mode:'direct',showOrigin:false}}),
     previewFile:async()=>({ok:false,error:'fixture'}),openFileExternally:async()=>({ok:true}),
+    conversationSwitch:async()=>({ok:true}),
     conversationCommand:async({action,payload})=>{
       if(action === 'list-sessions') return {ok:true,sessions:[...sessions.values()],workspaces:[],pagination:{}};
       if(action === 'get-settings') return settings;

@@ -59,6 +59,33 @@ test('a modal backdrop dims native caption backgrounds and symbols, follows them
   assert.deepEqual(f.window.overlay, { color: '#ffffff', symbolColor: '#61666b', height: 40 });
 });
 
+test('renderer dialogs dim and restore the native caption without clearing another modal', async () => {
+  const f = fixture();
+  assert.deepEqual(await f.call('dimmed', true), { ok: true });
+  assert.equal(f.window.overlay.color, '#c2c2c2');
+  f.chrome.setDimmed(f.window, true);
+  assert.deepEqual(await f.call('dimmed', false), { ok: true });
+  assert.equal(f.window.overlay.color, '#c2c2c2', 'closing one modal must not clear another');
+  f.chrome.setDimmed(f.window, false);
+  assert.equal(f.window.overlay.color, '#ffffff');
+  assert.deepEqual(await f.call('dimmed', 'yes'), { ok: false });
+  assert.deepEqual(await f.call('dimmed', true, { sender: f.window.webContents, senderFrame: {} }), { ok: false });
+  assert.equal(f.window.overlay.color, '#ffffff');
+});
+
+test('a renderer reload clears a stale dialog dim without touching another modal reason', async () => {
+  const f = fixture();
+  assert.deepEqual(await f.call('dimmed', true), { ok: true });
+  f.window.webContents.emit('did-start-navigation', { isMainFrame: true, isSameDocument: false });
+  assert.equal(f.window.overlay.color, '#ffffff');
+  assert.deepEqual(await f.call('dimmed', true), { ok: true });
+  f.chrome.setDimmed(f.window, true);
+  f.window.webContents.emit('did-start-navigation', { isMainFrame: true, isSameDocument: false });
+  assert.equal(f.window.overlay.color, '#c2c2c2', 'navigation must preserve an unrelated modal reason');
+  f.window.webContents.emit('did-start-navigation', { isMainFrame: true, isSameDocument: true });
+  assert.equal(f.window.overlay.color, '#c2c2c2', 'same-document navigation keeps the dialog state');
+});
+
 test('caption dimming is scoped to its modal owner and ignores unavailable native surfaces', () => {
   const f = fixture();
   const otherContents = Object.assign(new EventEmitter(), { mainFrame: {}, isDestroyed: () => false,

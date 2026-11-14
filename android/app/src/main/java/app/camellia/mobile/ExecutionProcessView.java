@@ -2,7 +2,6 @@ package app.camellia.mobile;
 
 import android.content.Context;
 import android.graphics.Typeface;
-import android.graphics.drawable.GradientDrawable;
 import android.view.Gravity;
 import android.view.View;
 import android.widget.ImageView;
@@ -36,13 +35,14 @@ final class ExecutionProcessView extends LinearLayout {
     private final ImageView arrow;
     private JSONArray entries = new JSONArray();
     private boolean expanded;
+    private int fileCount;
 
     ExecutionProcessView(Context context, ChatStyle style, State state, String key) {
         super(context); this.style = style; this.state = state; this.key = key;
         chinese = context.getResources().getConfiguration().getLocales().get(0).getLanguage().equals("zh");
         setOrientation(VERTICAL); setTag("executionProcess:" + key);
-        GradientDrawable border = style.rounded(style.background); border.setStroke(style.dp(1), ModelPickerPopup.blend(style.background, style.muted, .22f)); setBackground(border);
-        LayoutParams params = new LayoutParams(-1, -2); params.setMargins(0, 0, 0, style.dp(14)); setLayoutParams(params);
+        setBackgroundColor(android.graphics.Color.TRANSPARENT);
+        LayoutParams params = new LayoutParams(-1, -2); params.setMargins(0, 0, 0, style.dp(10)); setLayoutParams(params);
         header = new LinearLayout(context); header.setGravity(Gravity.CENTER_VERTICAL); header.setMinimumHeight(style.dp(48));
         header.setPadding(style.dp(12), style.dp(8), style.dp(12), style.dp(8)); header.setFocusable(true); header.setTag("processToggle:" + key);
         icon = label("◇", 19); icon.setPadding(0, 0, style.dp(10), 0); header.addView(icon);
@@ -62,11 +62,16 @@ final class ExecutionProcessView extends LinearLayout {
     }
 
     void update(JSONArray process, boolean live) {
-        update(process, live, null);
+        update(process, live, null, 0);
     }
 
     void update(JSONArray process, boolean live, TurnDetails details) {
+        update(process, live, details, 0);
+    }
+
+    void update(JSONArray process, boolean live, TurnDetails details, int files) {
         entries = process == null ? new JSONArray() : process;
+        fileCount = Math.max(0, files);
         expanded = state.open(key, live);
         int tools = 0; boolean onlyThinking = entries.length() > 0;
         for (int index = 0; index < entries.length(); index++) {
@@ -75,20 +80,31 @@ final class ExecutionProcessView extends LinearLayout {
             if (!entry.optString("type").equals("thinking")) onlyThinking = false;
         }
         String title = onlyThinking ? live ? tr("正在思考", "Thinking") : tr("思考已完成", "Thinking completed")
-            : live ? tr("执行过程 · 进行中", "Execution process · Running") : tr("执行过程", "Execution process");
-        String summary = title + (tools > 0 ? " · " + tools + tr(" 次工具调用", " tool calls") : ""); caption.setText(summary);
+            : live ? tr("执行中", "Running") : tr("已完成", "Completed");
+        String summary = title + (tools > 0 ? " · " + tools + tr(" 次工具调用", " tool calls") : "")
+            + (fileCount > 0 ? " · " + fileCount + tr(" 个文件", " files") : "");
+        caption.setText(summary);
         boolean terminal = !live && details != null && details.terminal();
         if (terminal) {
-            int label = details.state.equals("stopped") ? R.string.turn_stopped : details.state.equals("error") ? R.string.turn_failed : R.string.turn_completed;
             int elapsed = details.state.equals("stopped") ? R.string.turn_stopped_elapsed : details.state.equals("error") ? R.string.turn_failed_elapsed : R.string.turn_completion_elapsed;
-            caption.setText(details.duration == null ? getContext().getString(label) : getContext().getString(elapsed, details.elapsed()));
+            String state = details.state.equals("stopped") ? tr("已停止", "Stopped")
+                : details.state.equals("error") ? tr("失败", "Failed") : tr("已完成", "Completed");
+            String stateAndElapsed = details.duration == null ? state : getContext().getString(elapsed, details.elapsed());
+            caption.setText(stateAndElapsed
+                + (tools > 0 ? " · " + tools + tr(" 次工具调用", " tool calls") : "")
+                + (fileCount > 0 ? " · " + fileCount + tr(" 个文件", " files") : ""));
         }
-        icon.setVisibility(terminal ? GONE : VISIBLE); rule.setVisibility(terminal ? VISIBLE : GONE);
-        header.setPadding(terminal ? 0 : style.dp(12), style.dp(8), terminal ? 0 : style.dp(12), style.dp(8));
+        icon.setText(details != null && details.state.equals("error") ? "!"
+            : details != null && details.state.equals("stopped") ? "■" : live ? "◌" : "✓");
+        icon.setTextSize(14);
+        icon.setTextColor(details != null && details.state.equals("error") ? Palette.of(getContext()).error
+            : details != null && details.state.equals("stopped") ? style.muted : live ? style.accent : Palette.of(getContext()).success);
+        icon.setVisibility(entries.length() == 0 && !terminal ? GONE : VISIBLE);
+        rule.setVisibility(View.GONE);
+        header.setPadding(0, style.dp(8), 0, style.dp(8));
         header.setClickable(entries.length() > 0); header.setFocusable(entries.length() > 0);
         caption.setTextColor(terminal ? style.faint : style.muted);
-        if (terminal) setBackgroundColor(android.graphics.Color.TRANSPARENT);
-        else { GradientDrawable border = style.rounded(style.background); border.setStroke(style.dp(1), ModelPickerPopup.blend(style.background, style.muted, .22f)); setBackground(border); }
+        setBackgroundColor(android.graphics.Color.TRANSPARENT);
         setVisibility(entries.length() == 0 && !terminal ? GONE : VISIBLE); renderBody();
     }
 
@@ -97,6 +113,7 @@ final class ExecutionProcessView extends LinearLayout {
         arrow.setVisibility(entries.length() == 0 ? GONE : VISIBLE);
         header.setContentDescription(caption.getText() + (entries.length() == 0 ? "" : expanded ? tr("，收起", ", collapse") : tr("，展开", ", expand")));
         body.setVisibility(expanded ? VISIBLE : GONE); body.removeAllViews();
+        rule.setVisibility(expanded && entries.length() > 0 ? VISIBLE : GONE);
         if (!expanded) return;
         for (int index = 0; index < entries.length(); index++) {
             JSONObject entry = entries.optJSONObject(index); if (entry == null) continue;

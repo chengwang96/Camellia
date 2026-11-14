@@ -241,6 +241,8 @@ final class AppModel: ObservableObject {
     }
 
     private var session: RemoteSession?
+    private var conversationSync: RemoteSession?
+    private var conversationSyncIdentity = ""
     let inlineImages = InlineImageCache()
     private var remoteScreenActive = false
     private var listFetchId: UUID?
@@ -251,6 +253,7 @@ final class AppModel: ObservableObject {
         let instance: String
         let cursor: Int64
         let maySkipUnchanged: Bool
+        let page: RemoteListPage?
         let finish: (Result<Void, Error>) -> Void
     }
     private var pendingListEvent: PendingListEvent?
@@ -481,10 +484,12 @@ final class AppModel: ObservableObject {
         // current screen here for the same reason.
         resumeTick += 1
         resume()
+        startConversationSync()
     }
 
     func background() {
         foregrounded = false
+        stopConversationSync()
         // A command may have reached the desktop even if iOS suspends before
         // its answer. Keep the persisted request id, but do not leave a
         // spinner blocking the foreground reconnect or poll it off-screen.
@@ -505,6 +510,7 @@ final class AppModel: ObservableObject {
 
     /// The platform says the extra background time is spent.
     func endBackground() {
+        stopConversationSync()
         EmbeddedNetwork.shared.endBackground()
     }
 
@@ -517,12 +523,14 @@ final class AppModel: ObservableObject {
     /// now would fail on the way out; the reconnect happens on the next route
     /// change, which is what the going-online event is.
     private func networkRouteChanged() {
+        stopConversationSync()
         restartRemoteEntry()
         refreshNode()
         objectWillChange.send()
         guard foregrounded, EmbeddedNetwork.shared.isOnline else { return }
         resumeTick += 1
         resume()
+        startConversationSync()
     }
 
     /// Reopens whatever subscription the open screen depends on.
@@ -659,6 +667,7 @@ final class AppModel: ObservableObject {
         if EmbeddedNetwork.shared.isOnline, current?.isPaired == true {
             connect()
         } else {
+            stopConversationSync()
             session?.shutdown()
             session = nil
             transcript.suspend()
@@ -1038,6 +1047,7 @@ final class AppModel: ObservableObject {
     /// computer. The session generation drops late callbacks before the
     /// published state is reset.
     private func resetComputerContext() {
+        stopConversationSync()
         session?.shutdown()
         session = nil
         location.cancel()
@@ -1202,9 +1212,8 @@ final class AppModel: ObservableObject {
 
     // MARK: - Connection
 
-    /// Android stops the remote API when leaving the remote pages. Keeping its
-    /// list stream alive under Home or local chat wastes the tunnel and lets a
-    /// late list answer repaint a page no longer being viewed.
+    /// Detail and command transports belong to the remote pages; the silent
+    /// list subscription independently keeps cached conversation state fresh.
     func remoteScreenChanged(active: Bool) {
         guard remoteScreenActive != active else { return }
         remoteScreenActive = active
@@ -1229,12 +1238,14 @@ final class AppModel: ObservableObject {
             detailAccessFailure = nil
             openId = nil
             activeDetailIdentity = nil
+            startConversationSync()
         }
     }
 
     /// Opens a session to the current computer and starts whatever stream the
     /// open screen needs.
     func connect() {
+        startConversationSync()
         guard remoteScreenActive else { return }
         abandonActiveCommand()
         session?.shutdown()
@@ -1306,6 +1317,7 @@ final class AppModel: ObservableObject {
     /// and spin: a snapshot, a refetch, a new stream, another snapshot.
     private func startListStream() {
         guard remoteScreenActive, let session else { return }
+        stopConversationSync()
         streamState = .idle
         listPoll?.cancel()
         listFetchId = nil
@@ -1319,7 +1331,7 @@ final class AppModel: ObservableObject {
                 return
             }
             let event = PendingListEvent(instance: snapshot.instanceId, cursor: snapshot.cursor,
-                                         maySkipUnchanged: maySkipUnchanged, finish: finish)
+                                         maySkipUnchanged: maySkipUnchanged, page: snapshot.conversationList, finish: finish)
             if self.listFetchId != nil {
                 // The initial/manual fetch is already on the request queue.
                 // Hold this receipt until its result says whether a second
@@ -1335,8 +1347,26 @@ final class AppModel: ObservableObject {
     }
 
     private func applyListEvent(_ event: PendingListEvent) {
-        if event.maySkipUnchanged, listCursor >= 0,
-           event.instance == listInstanceId, event.cursor == listCursor {
+        if listCursor >= 0, event.instance == listInstanceId,
+           event.cursor < listCursor || event.maySkipUnchanged && event.cursor == listCursor {
+            event.finish(.success(()))
+        } else if let page = event.page,
+                  page.coversVisibleList(count: conversations.count, searching: isSearching) {
+            conversations = page.conversations
+            workspaces = page.workspaces
+            nextListOffset = page.nextOffset
+            includeUnassigned = page.includeUnassigned
+            access = page.access ?? .readOnly
+            availableEngines = page.availableEngines
+            listInstanceId = event.instance
+            listCursor = event.cursor
+            serverListQuery = ""
+            listLoading = false
+            listError = nil
+            loadCollapsed()
+            saveCachedList()
+            if let address = current?.address { computerStates[address] = ComputerStatus.connected }
+            publish()
             event.finish(.success(()))
         } else {
             fetchList(preservingVisibleCount: true, event: event)
@@ -1753,6 +1783,7 @@ final class AppModel: ObservableObject {
             detailAccessFailure = nil
         }
         openId = id
+        startConversationSync()
         activeDetailIdentity = identity
         streamState = .idle
         loadingOlder = false
@@ -1775,11 +1806,8 @@ final class AppModel: ObservableObject {
         }
         publish()
         guard let session else { return }
-        // The stream is opened *before* the fetch, not after. Opening it bumps
-        // the session's generation — that is how the previous screen's stream is
-        // retired — and a fetch submitted first would have its answer discarded
-        // as stale when it came back. The old order also lost the fetch twice
-        // over: the stream held the queue it was submitted to.
+        // Every detail subscription starts with a full current snapshot. A
+        // simultaneous GET would download and render the same history twice.
         session.watch(conversationId: id, incremental: access.capabilities.contains(.incrementalSnapshots),
                       onSnapshot: { [weak self] snapshot in
             guard let self else { return }
@@ -1795,38 +1823,79 @@ final class AppModel: ObservableObject {
             guard let self, let session else { return }
             self.acceptStreamState(state, session: session)
         })
-        session.snapshot(conversationId: id) { [weak self] result in
-            guard let self else { return }
-            switch result {
-            case .success(let snapshot):
-                guard self.transcript.apply(snapshot) else { return }
-                if snapshot.hasMessages {
-                    self.detailAccessFailure = nil
-                    self.syncRead(snapshot)
-                    self.settleOutgoing()
-                }
-                self.remember(snapshot)
-                self.publish()
-            case .failure(let error):
-                if self.handleAuthenticatedFailure(error, session: session) { return }
-                let http = error as? RemoteHttpError
-                let status = http?.status
-                let restored: Bool
-                if let http, http.status == 403 || http.status == 404 {
-                    restored = self.discardDeniedDetail(error: http, session: session)
-                } else {
-                    restored = false
-                }
-                if status == 404, restored {
-                    self.notice = Notice(
-                        text: "会话不可用，可能已归档或不再授权。未确认的消息已恢复到输入框且未发送。",
-                        serious: false)
-                } else {
-                    self.notice = Notice(text: Self.describe(error), serious: false)
-                }
-            }
-        }
         if artifactSheetOpen { loadArtifacts() }
+    }
+
+    /// A separate silent subscription keeps list state current while the
+    /// main session watches a conversation, or while Home is on screen.
+    private func startConversationSync() {
+        guard foregrounded, EmbeddedNetwork.shared.isOnline,
+              !remoteScreenActive || openId != nil,
+              let computer = current, computer.isPaired,
+              let endpoint = computer.endpoint, let token = computer.token else {
+            stopConversationSync()
+            return
+        }
+        let identity = computer.address + "\n" + token
+        if conversationSync != nil, conversationSyncIdentity == identity { return }
+        stopConversationSync()
+        do {
+            let sync = try RemoteSession(computer: computer,
+                transport: RemoteApi(endpoint: endpoint, token: token))
+            conversationSync = sync
+            conversationSyncIdentity = identity
+            sync.watchList(onEvent: { [weak self, weak sync] snapshot, _, finish in
+                guard let self, let sync, self.conversationSync === sync else {
+                    finish(.failure(CancellationError()))
+                    return
+                }
+                if let page = snapshot.conversationList {
+                    self.applyConversationSync(page, computer: computer, token: token)
+                    finish(.success(()))
+                } else {
+                    // Compatibility with desktops that send invalidations only.
+                    sync.conversations { [weak self, weak sync] result in
+                        guard let self, let sync, self.conversationSync === sync else {
+                            finish(.failure(CancellationError()))
+                            return
+                        }
+                        switch result {
+                        case .success(let page):
+                            self.listCache.save(address: computer.address, token: token,
+                                conversations: page.conversations, nextOffset: page.nextOffset,
+                                workspaces: page.workspaces, includeUnassigned: page.includeUnassigned)
+                            if !self.isSearching { self.conversations = page.conversations }
+                            finish(.success(()))
+                        case .failure(let error): finish(.failure(error))
+                        }
+                    }
+                }
+            }, onState: { _ in })
+        } catch {
+            // No user-facing controls or notices belong to this subscription.
+            stopConversationSync()
+        }
+    }
+
+    private func applyConversationSync(_ page: RemoteListPage, computer: PairedComputer, token: String) {
+        listCache.save(address: computer.address, token: token,
+            conversations: page.conversations, nextOffset: page.nextOffset,
+            workspaces: page.workspaces, includeUnassigned: page.includeUnassigned)
+        if !isSearching {
+            conversations = page.conversations
+            workspaces = page.workspaces
+            nextListOffset = page.nextOffset
+            includeUnassigned = page.includeUnassigned
+            listInstanceId = page.instanceId
+            listCursor = page.cursor
+        }
+    }
+
+    private func stopConversationSync() {
+        let previous = conversationSync
+        conversationSync = nil
+        conversationSyncIdentity = ""
+        previous?.shutdown()
     }
 
     /// Releases a journal that can never be acknowledged because its target

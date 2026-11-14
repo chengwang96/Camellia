@@ -5,6 +5,7 @@ const { randomUUID, timingSafeEqual } = require('node:crypto');
 const { fail } = require('./access');
 const { isTailscaleIPv4 } = require('./tailscale');
 const { listArtifacts, openArtifact } = require('./artifacts');
+const { visualizationDocument } = require('./visualizations');
 const { pipeline } = require('node:stream/promises');
 const { MAX_REQUEST } = require('./attachments');
 const DOWNLOAD_GLOBAL_LIMIT = 32;
@@ -35,6 +36,9 @@ class RemoteGateway {
     this.sequence = 0;
     this.rate = new Map();
     this.peerAddresses = new Map();
+    // Live subscriptions are separate from persisted pairing credentials. A
+    // disconnected device must not accumulate notifications or retry jobs.
+    this.onlineDevices = new Map();
     this.server = null;
   }
   async start(host, port = 43127, transport = null) {
@@ -62,15 +66,7 @@ class RemoteGateway {
     this.server = server;
     this.authority = transport ? `${transport.address}:43127` : `${host}:${server.address().port}`;
     this.url = `http://${this.authority}`;
-    this.heartbeat = setInterval(() => {
-      for (const stream of this.streams) {
-        try {
-          if (stream.kind === 'discussions') this.discussions.authorize(stream.device);
-          else if (stream.id) this.reader.conversation(stream.device, stream.id);
-          if (!stream.blocked) stream.blocked = !stream.response.write(': heartbeat\n\n');
-        } catch { stream.response.end(); }
-      }
-    }, 10_000);
+    this.heartbeat = setInterval(() => this.checkStreams(), 10_000);
     this.heartbeat.unref();
     return this.url;
   }
@@ -141,8 +137,11 @@ class RemoteGateway {
     }
     // Only the authenticated embedded helper can supply the phone's Tailnet IP.
     // Never learn it from forwarded headers on a plain HTTP listener.
-    if (this.transport && isTailscaleIPv4(request.headers['x-camellia-peer'])) {
-      this.peerAddresses.set(device.id, request.headers['x-camellia-peer']);
+    const peer = this.transport ? request.headers['x-camellia-peer'] : request.socket.remoteAddress;
+    if (isTailscaleIPv4(peer)) {
+      this.peerAddresses.set(device.id, peer);
+      const online = this.onlineDevices.get(device.id);
+      if (online) online.ip = peer;
     }
     const receipt = /^\/v1\/commands\/([a-f0-9-]{36})$/.exec(url.pathname);
     if (receipt && request.method === 'GET' && !url.search && this.commands) {
@@ -250,6 +249,29 @@ class RemoteGateway {
       await this.sendFile(response, device, await this.commands.messageAttachment(device, attachment[1], seq, index));
       return;
     }
+    const visualization = /^\/v1\/conversations\/([a-f0-9-]{36})\/visualizations\/([a-f0-9-]{36})$/.exec(url.pathname);
+    if (visualization) {
+      for (const key of url.searchParams.keys()) {
+        if (key !== 'theme' || url.searchParams.getAll(key).length !== 1) fail(400, 'Unsupported visualization query');
+      }
+      const theme = url.searchParams.get('theme') || 'light';
+      if (!['light', 'dark'].includes(theme)) fail(400, 'Invalid visualization theme');
+      this.reader.conversation(device, visualization[1]);
+      let card;
+      try { card = this.reader.manager.visualize?.get(visualization[1], visualization[2]); }
+      catch { fail(404, 'Visualization not found'); }
+      if (!card) fail(404, 'Visualization not found');
+      this.json(response, 200, { ok: true, card: {
+        cardId: card.cardId,
+        title: card.title,
+        summary: card.summary,
+        mode: card.mode,
+        style: card.style,
+        revision: card.revision,
+        html: visualizationDocument(card, theme),
+      } });
+      return;
+    }
     const incremental = /\/events$/.test(url.pathname) && url.searchParams.get('incremental') === '1';
     for (const key of url.searchParams.keys()) if (!['before', 'offset'].includes(key) && !(key === 'incremental' && incremental)
       && !(url.pathname === '/v1/conversations' && ['limit', 'query'].includes(key))) fail(400, 'Unsupported query parameter');
@@ -284,7 +306,8 @@ class RemoteGateway {
     if (this.commands) capabilities.push('fork', 'switch-engine', 'compact', 'find', 'resend', 'automation-control', 'message-queue');
     if (this.commands) capabilities.push('command-receipts', 'stop-start', 'incremental-snapshots');
     if (this.commands && this.reader.manager.stopBackgroundWork) capabilities.push('stop-background-work');
-    if (this.commands && fullControl && this.reader.manager.drivers.codex?.resetCredits) capabilities.push('codex-reset-credits');
+    if (this.reader.manager?.visualize) capabilities.push('visualizations');
+    if (this.commands && fullControl && this.reader.manager.drivers?.codex?.resetCredits) capabilities.push('codex-reset-credits');
     capabilities.push('list-query');
     return { protocol: 1, permission: device.permission, capabilities,
       engines: (this.reader.manager.remoteEngines || ['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'grok']).filter(engine => ['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'grok'].includes(engine)),
@@ -356,7 +379,7 @@ class RemoteGateway {
     const snapshot = this.discussions.list(device);
     return { discussionGroups: snapshot.groups, discussionsNextOffset: snapshot.nextOffset, discussionVersion: snapshot.listVersion };
   }
-  streamSnapshot({ device, id, kind, incremental, historyVersion }) {
+  streamSnapshot({ device, id, kind, incremental, historyVersion, listVersion }) {
     if (kind === 'discussions') {
       if (!id) return this.discussions.list(device);
       try { return this.discussions.snapshot(device, id); }
@@ -364,7 +387,13 @@ class RemoteGateway {
     }
     if (id) return this.reader.snapshot(device, id, undefined, incremental ? historyVersion : undefined);
     const snapshot = this.reader.listSnapshot(device), discussions = this.discussionNavigation(device);
-    return { ...snapshot, listVersion: snapshot.listVersion + (discussions.discussionVersion ? ':' + discussions.discussionVersion : '') };
+    const version = snapshot.listVersion + (discussions.discussionVersion ? ':' + discussions.discussionVersion : '');
+    if (version === listVersion) return { listVersion: version };
+    // Carry the first page with the invalidation, avoiding a second network
+    // round trip for Home and the conversation sidebar. Older clients can
+    // continue treating this as an invalidation and fetching their own range.
+    const conversationList = { ...this.connectionInfo(device), ...this.reader.list(device), ...discussions };
+    return { ...snapshot, conversationList, listVersion: version };
   }
   subscribe(response, device, id, kind = 'conversations', incremental = false) {
     if (this.streams.size >= 16 || [...this.streams].filter(stream => stream.device.id === device.id).length >= 4) fail(429, 'Too many event streams');
@@ -372,19 +401,62 @@ class RemoteGateway {
     response.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' });
     const stream = { response, device, id, kind, incremental, dirty: false, blocked: false };
     this.streams.add(stream);
-    response.on('close', () => this.streams.delete(stream));
+    const ip = this.peerAddresses.get(device.id) || (this.transport ? null : response.socket?.remoteAddress) || null;
+    let online = this.onlineDevices.get(device.id);
+    if (!online) {
+      online = { id: device.id, ip, connectedAt: Date.now(), streams: new Set() };
+      this.onlineDevices.set(device.id, online);
+    }
+    online.ip = ip;
+    online.streams.add(stream);
+    stream.online = online;
+    response.socket?.setKeepAlive(true, 10_000);
+    response.once('close', () => this.forgetStream(stream));
+    response.once('error', () => this.closeStream(stream));
     response.on('drain', () => {
       stream.blocked = false;
+      stream.blockedAt = null;
       if (stream.dirty) this.scheduleFlush();
     });
     this.writeSnapshot(stream, snapshot);
+  }
+  forgetStream(stream) {
+    this.streams.delete(stream);
+    if (!this.streams.size) { clearTimeout(this.flushTimer); this.flushTimer = null; }
+    const online = stream.online;
+    online?.streams.delete(stream);
+    // A late close from an old connection cannot remove its replacement.
+    if (online && !online.streams.size && this.onlineDevices.get(stream.device.id) === online) this.onlineDevices.delete(stream.device.id);
+  }
+  closeStream(stream, graceful = false) {
+    this.forgetStream(stream);
+    if (graceful) stream.response.end();
+    else stream.response.destroy();
+  }
+  writeFrame(stream, frame) {
+    if (stream.response.destroyed || stream.response.writableEnded) { this.closeStream(stream); return; }
+    stream.blocked = !stream.response.write(frame);
+    stream.blockedAt = stream.blocked ? Date.now() : null;
+  }
+  checkStreams(now = Date.now()) {
+    for (const stream of this.streams) {
+      try {
+        if (stream.response.destroyed || stream.response.writableEnded || stream.blocked && now - stream.blockedAt >= 30_000) {
+          this.closeStream(stream); continue;
+        }
+        if (stream.kind === 'discussions') this.discussions.authorize(stream.device);
+        else if (stream.id) this.reader.conversation(stream.device, stream.id);
+        if (!stream.blocked) this.writeFrame(stream, ': heartbeat\n\n');
+      } catch { this.closeStream(stream, true); }
+    }
   }
   writeSnapshot(stream, snapshot) {
     if (!stream.id && stream.listVersion === snapshot.listVersion) return;
     stream.listVersion = snapshot.listVersion;
     if (snapshot.messages) stream.historyVersion = snapshot.historyVersion;
-    const payload = { ...snapshot, ...this.stamp() };
-    stream.blocked = !stream.response.write(`id: ${this.instanceId}:${this.sequence}\nevent: snapshot\ndata: ${JSON.stringify(payload)}\n\n`);
+    const payload = { ...snapshot, ...this.stamp(),
+      ...(snapshot.conversationList ? { conversationList: { ...snapshot.conversationList, ...this.stamp() } } : {}) };
+    this.writeFrame(stream, `id: ${this.instanceId}:${this.sequence}\nevent: snapshot\ndata: ${JSON.stringify(payload)}\n\n`);
   }
   publish(update) {
     if (this.commands?.trimJournal()) {
@@ -405,11 +477,11 @@ class RemoteGateway {
         if (!stream.dirty || stream.blocked) continue;
         stream.dirty = false;
         try {
-          const key = JSON.stringify([stream.device.id, stream.kind, stream.id, stream.incremental, stream.historyVersion]);
+          const key = JSON.stringify([stream.device.id, stream.kind, stream.id, stream.incremental, stream.historyVersion, stream.listVersion]);
           if (!snapshots.has(key)) snapshots.set(key, this.streamSnapshot(stream));
           this.writeSnapshot(stream, snapshots.get(key));
         }
-        catch { stream.response.end(); }
+        catch { this.closeStream(stream, true); }
       }
     }, 250);
     this.flushTimer.unref();
@@ -417,7 +489,7 @@ class RemoteGateway {
   revoke(id) {
     this.peerAddresses.delete(id);
     this.commands?.cancelPending(id);
-    for (const stream of this.streams) if (stream.device.id === id) stream.response.end();
+    for (const stream of this.streams) if (stream.device.id === id) { this.forgetStream(stream); stream.response.end(); }
     for (const entry of this.downloads) if (entry.device.id === id) entry.response.destroy();
   }
   async stop() {
@@ -430,6 +502,7 @@ class RemoteGateway {
     for (const entry of this.downloads) entry.response.destroy();
     for (const stream of this.streams) stream.response.destroy();
     this.streams.clear();
+    this.onlineDevices.clear();
     const server = this.server;
     this.server = null;
     this.url = null;

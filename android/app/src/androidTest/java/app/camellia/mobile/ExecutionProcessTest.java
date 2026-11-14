@@ -81,4 +81,26 @@ public class ExecutionProcessTest extends InstrumentationTestCase {
             assertTrue(user.getWidth() < assistant.getWidth()); assertNull(assistant.getBackground());
         });
     }
+
+    public void testCompletedHeaderDoesNotRepeatCompletionState() throws Throwable {
+        runTestOnUiThread(() -> {
+            try {
+                var context = getInstrumentation().getTargetContext();
+                ExecutionProcessView.State state = new ExecutionProcessView.State();
+                JSONArray process = new JSONArray().put(new JSONObject().put("type", "tool")
+                    .put("title", "Shell").put("text", "test").put("status", "completed"));
+                ExecutionProcessView view = new ExecutionProcessView(context, new ChatStyle(context), state, "turn");
+                view.update(process, false, new TurnDetails(new JSONObject().put("state", "complete").put("duration_ms", 138000)), 1);
+                LinearLayout header = (LinearLayout) view.findViewWithTag("processToggle:turn");
+                String caption = ((TextView) header.getChildAt(1)).getText().toString();
+                String marker = caption.contains("已完成") ? "已完成" : "Completed";
+                int first = caption.indexOf(marker);
+                assertTrue(first >= 0);
+                assertTrue(caption.indexOf(marker, first + marker.length()) < 0);
+                assertTrue(caption.contains("耗时") || caption.contains("Elapsed"));
+            } catch (Exception error) {
+                throw new AssertionError(error);
+            }
+        });
+    }
 }

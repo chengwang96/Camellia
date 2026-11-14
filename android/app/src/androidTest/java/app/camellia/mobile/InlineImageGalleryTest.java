@@ -42,6 +42,13 @@ public class InlineImageGalleryTest extends InstrumentationTestCase {
                     gallery.layout(0, 0, width, height);
                     assertEquals(width, gallery.image.getWidth()); assertEquals(height, gallery.image.getHeight());
                     assertTrue(gallery.share.isEnabled()); assertTrue(gallery.save.isEnabled());
+                    assertTrue(gallery.share instanceof android.widget.ImageButton);
+                    assertTrue(gallery.save instanceof android.widget.ImageButton);
+                    assertNotNull(gallery.share.getContentDescription());
+                    assertNotNull(gallery.save.getContentDescription());
+                    android.widget.FrameLayout.LayoutParams actions =
+                        (android.widget.FrameLayout.LayoutParams) gallery.bottom.getLayoutParams();
+                    assertEquals(android.view.Gravity.END, actions.gravity & android.view.Gravity.END);
                     long now = android.os.SystemClock.uptimeMillis();
                     MotionEvent down = MotionEvent.obtain(now, now, MotionEvent.ACTION_DOWN, 100, 400, 0);
                     MotionEvent right = MotionEvent.obtain(now, now + 100, MotionEvent.ACTION_UP, 500, 410, 0);

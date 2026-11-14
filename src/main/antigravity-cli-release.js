@@ -13,6 +13,7 @@ const { checkedAntigravityCliVersion } = require('./antigravity-cli-runtime');
 const MANIFEST_BASE = 'https://antigravity-cli-auto-updater-974169037036.us-central1.run.app/manifests/';
 const PLATFORMS = Object.freeze({ 'win32-x64': 'windows_amd64', 'win32-arm64': 'windows_arm64',
   'darwin-x64': 'darwin_amd64', 'darwin-arm64': 'darwin_arm64', 'linux-x64': 'linux_amd64', 'linux-arm64': 'linux_arm64' });
+const STAGING_NAME = /^\.update-[A-Za-z0-9]{6}$/;
 
 function manifestUrl(platform = process.platform, arch = process.arch) {
   const name = PLATFORMS[platform + '-' + arch];
@@ -53,12 +54,31 @@ async function latestAntigravityCli(connection, { url = manifestUrl(), signal = 
   return validateRelease(await response.json());
 }
 
+// Interrupted downloads cannot run their cleanup handler. Only directories
+// created by mkdtempSync in this exact CLI directory are eligible, and removal
+// stays best effort so a locked stale file never blocks a new update.
+function cleanupAntigravityStaging(cliDir) {
+  let cleaned = 0;
+  for (const name of fs.readdirSync(cliDir)) {
+    if (!STAGING_NAME.test(name)) continue;
+    const stale = path.join(cliDir, name);
+    if (path.dirname(stale) !== cliDir) continue;
+    try {
+      if (!fs.lstatSync(stale).isDirectory()) continue;
+      fs.rmSync(stale, { recursive: true, force: true });
+      cleaned++;
+    } catch { /* A stale locked directory can be retried on the next update. */ }
+  }
+  return cleaned;
+}
+
 async function upgradeAntigravityCli({ dir, release, connection, run, report = () => {},
   probe = checkedAntigravityCliVersion, platform = process.platform }) {
   release = validateRelease(release);
   const cliDir = path.resolve(dir, 'cli');
   const file = path.join(cliDir, platform === 'win32' ? 'agy.exe' : 'agy');
   if (!fs.existsSync(file)) throw new Error('Download the Antigravity CLI before updating it');
+  cleanupAntigravityStaging(cliDir);
   const marker = path.join(cliDir, 'installed.json');
   const previousMarker = fs.existsSync(marker) ? fs.readFileSync(marker) : null;
   const staging = fs.mkdtempSync(path.join(cliDir, '.update-'));
@@ -111,4 +131,4 @@ async function upgradeAntigravityCli({ dir, release, connection, run, report = (
   }
 }
 
-module.exports = { manifestUrl, validateRelease, latestAntigravityCli, upgradeAntigravityCli };
+module.exports = { manifestUrl, validateRelease, latestAntigravityCli, cleanupAntigravityStaging, upgradeAntigravityCli };

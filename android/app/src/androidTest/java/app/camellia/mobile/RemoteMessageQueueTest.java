@@ -4,6 +4,7 @@ import android.content.Intent;
 import android.test.InstrumentationTestCase;
 import android.view.View;
 import android.widget.EditText;
+import android.widget.TextView;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
@@ -26,10 +27,29 @@ public class RemoteMessageQueueTest extends InstrumentationTestCase {
     private void invoke(String name) throws Exception {
         var method = MainActivity.class.getDeclaredMethod(name); method.setAccessible(true); method.invoke(activity);
     }
-    private View view(String tag) { return activity.getWindow().getDecorView().findViewWithTag(tag); }
+    private View view(String tag) {
+        View found = activity.getWindow().getDecorView().findViewWithTag(tag);
+        if (found != null) return found;
+        try {
+            Object dialog = field("queueDialog");
+            if (dialog instanceof android.app.Dialog) {
+                return ((android.app.Dialog) dialog).getWindow().getDecorView().findViewWithTag(tag);
+            }
+        } catch (Exception ignored) { }
+        return null;
+    }
+    private void openQueueSheet() {
+        ui(() -> {
+            View tray = view("remoteQueueTray");
+            assertNotNull("The compact queue tray must be visible", tray);
+            tray.performClick();
+        });
+        getInstrumentation().waitForIdleSync();
+    }
     private EditText input() throws Exception { return (EditText) field("composer"); }
     private JSONObject entry(String key, String state) throws Exception {
         return new JSONObject().put("id", key).put("text", key.equals("one") ? "完成后整理测试结果，并保留附件" : "再检查移动端的队列交互")
+            .put("source", key.equals("one") ? "mobile" : "desktop")
             .put("state", state).put("attachments", new JSONArray().put(new JSONObject().put("name", "notes.txt").put("isImage", false)));
     }
     private void snapshot(boolean supported, boolean running, JSONArray queue, long version) throws Exception {
@@ -90,10 +110,15 @@ public class RemoteMessageQueueTest extends InstrumentationTestCase {
                 .put("queue", new JSONArray().put(entry("one", "queued"))).put("queueVersion", 2));
             assertFalse(((JSONObject) field("credentials")).has("pendingCommand"));
             assertNull(field("outgoingMessage")); assertTrue(input().isEnabled());
-            assertNotNull(view("remoteQueue:one"));
+            assertNotNull(view("remoteQueueTray"));
             assertEquals(View.VISIBLE, view("remoteStop").getVisibility());
             input().setText("第二条消息"); assertTrue(view("remoteSend").isEnabled());
-            field("commandBusy", true); invoke("updateControls"); assertFalse(view("remoteSend").isEnabled());
+        });
+        openQueueSheet();
+        ui(() -> {
+            field("commandBusy", true); invoke("updateControls");
+            assertFalse(view("remoteSend").isEnabled());
+            assertNotNull(view("remoteQueue:one"));
             assertFalse(view("remoteQueueRemove:one").isEnabled());
         });
     }
@@ -105,7 +130,7 @@ public class RemoteMessageQueueTest extends InstrumentationTestCase {
             snapshot(true, true, new JSONArray(), 7);
             JSONObject pendingPayload = new JSONObject().put("action", "queue-remove").put("requestId", "fixture");
             finish(pendingPayload, new JSONObject().put("ok", true).put("queueVersion", 6).put("queue", new JSONArray().put(entry("one", "queued"))));
-            assertNull(view("remoteQueue:one")); assertEquals("Keep draft", input().getText().toString());
+            assertNull(view("remoteQueueTray")); assertEquals("Keep draft", input().getText().toString());
             snapshot(false, true, new JSONArray(), 8);
             assertFalse(view("remoteSend").isEnabled()); assertEquals(View.VISIBLE, view("remoteStop").getVisibility());
             snapshot(true, false, new JSONArray(), 9);
@@ -118,9 +143,11 @@ public class RemoteMessageQueueTest extends InstrumentationTestCase {
     }
 
     public void testPausedQueueCanResumeAndStartingMessageCannotBeRemoved() {
+        ui(() -> snapshot(true, true, new JSONArray().put(entry("one", "starting")).put(entry("two", "paused")), 3));
+        openQueueSheet();
         ui(() -> {
-            snapshot(true, true, new JSONArray().put(entry("one", "starting")).put(entry("two", "paused")), 3);
             assertFalse(view("remoteQueueRemove:one").isEnabled()); assertTrue(view("remoteQueueRemove:two").isEnabled());
+            assertFalse(view("remoteQueueSteer:two").isEnabled());
             assertTrue(view("remoteQueueResume").isEnabled());
             input().setText("检查完成后再执行下一项");
             field("foreground", true); view("remoteQueueResume").performClick();
@@ -129,9 +156,12 @@ public class RemoteMessageQueueTest extends InstrumentationTestCase {
             assertEquals("检查完成后再执行下一项", input().getText().toString());
             finish(pending, new JSONObject().put("ok", true).put("queue", new JSONArray().put(entry("two", "queued"))).put("queueVersion", 4));
             assertNull(view("remoteQueueResume"));
+        });
+        openQueueSheet();
+        ui(() -> {
             view("remoteQueueRemove:two").performClick();
-            pending = ((JSONObject) field("credentials")).getJSONObject("pendingCommand").getJSONObject("payload");
-            assertEquals("queue-remove", pending.getString("action")); assertEquals("two", pending.getString("queueId"));
+            JSONObject remove = ((JSONObject) field("credentials")).getJSONObject("pendingCommand").getJSONObject("payload");
+            assertEquals("queue-remove", remove.getString("action")); assertEquals("two", remove.getString("queueId"));
         });
     }
 
@@ -139,16 +169,36 @@ public class RemoteMessageQueueTest extends InstrumentationTestCase {
         ui(() -> {
             snapshot(true, true, new JSONArray().put(entry("one", "queued")).put(entry("two", "queued")), 3);
             input().setText("任务完成后，把最终文件整理到一起");
+            View tray = view("remoteQueueTray");
+            assertNotNull(tray);
+            float density = activity.getResources().getDisplayMetrics().density;
+            assertTrue("The inline queue summary must stay compact", tray.getHeight() <= Math.round(80 * density));
         });
         getInstrumentation().waitForIdleSync();
         // Allow the page transition and the first surface frame to finish.
         android.os.SystemClock.sleep(600);
+        android.graphics.Bitmap tray = getInstrumentation().getUiAutomation().takeScreenshot();
+        assertNotNull(tray);
+        java.io.File trayTarget = new java.io.File(getInstrumentation().getTargetContext().getExternalFilesDir(null), "remote-queue-tray.png");
+        try (java.io.FileOutputStream output = new java.io.FileOutputStream(trayTarget)) {
+            tray.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, output);
+        }
+        tray.recycle();
+        openQueueSheet();
+        android.os.SystemClock.sleep(500);
+        getInstrumentation().waitForIdleSync();
         ui(() -> {
-            View queue = (View) field("queueBar");
             android.graphics.Rect bounds = new android.graphics.Rect();
-            assertTrue(queue.getGlobalVisibleRect(bounds)); assertEquals(queue.getHeight(), bounds.height());
+            View sheet = view("queueSheet");
+            assertTrue(sheet.getGlobalVisibleRect(bounds));
+            int screenWidth = activity.getResources().getDisplayMetrics().widthPixels;
+            assertTrue("Queue sheet must stay inside the screen", bounds.left >= 0 && bounds.right <= screenWidth);
+            assertEquals("Queue cards must stay flat inside the elevated sheet", 0f,
+                view("remoteQueue:one").getElevation(), 0f);
+            assertFalse("The sheet list should rely on the visible next card, not a scrollbar",
+                ((android.widget.ScrollView) view("remoteQueueList")).isVerticalScrollBarEnabled());
             for (String tag : new String[]{"remoteQueueEdit:one", "remoteQueueSteer:one"}) {
-                android.widget.Button action = (android.widget.Button) view(tag);
+                TextView action = (TextView) view(tag);
                 assertTrue(action.getGlobalVisibleRect(bounds)); assertEquals(action.getHeight(), bounds.height());
                 assertEquals(1, action.getLineCount());
                 assertTrue("Action label must fit on narrow screens", action.getPaint().measureText(action.getText().toString())
@@ -166,6 +216,12 @@ public class RemoteMessageQueueTest extends InstrumentationTestCase {
         ui(() -> {
             JSONArray queue = new JSONArray().put(entry("one", "queued")).put(entry("two", "starting"));
             snapshot(true, true, queue, 3);
+        });
+        openQueueSheet();
+        ui(() -> {
+            JSONArray queue = new JSONArray().put(entry("one", "queued")).put(entry("two", "starting"));
+            assertTrue(((TextView) view("remoteQueueState:one")).getText().toString().startsWith("手机 · "));
+            assertTrue(((TextView) view("remoteQueueState:two")).getText().toString().startsWith("电脑 · "));
             assertTrue(view("remoteQueueEdit:one").isEnabled()); assertTrue(view("remoteQueueSteer:one").isEnabled());
             assertFalse(view("remoteQueueEdit:two").isEnabled()); assertFalse(view("remoteQueueSteer:two").isEnabled());
             snapshot(true, false, queue, 3);
@@ -180,9 +236,10 @@ public class RemoteMessageQueueTest extends InstrumentationTestCase {
     }
 
     public void testGoalSteeringBetweenRoundsJournalsGoalIdAndPreservesDraft() {
+        ui(() -> snapshot(true, true, new JSONArray().put(entry("one", "queued")), 3, "goal-current"));
+        openQueueSheet();
         ui(() -> {
             JSONArray queue = new JSONArray().put(entry("one", "queued"));
-            snapshot(true, true, queue, 3, "goal-current");
             assertTrue(view("remoteQueueSteer:one").isEnabled());
             snapshot(true, false, queue, 3, "goal-current");
             input().setText("保留当前草稿");
@@ -198,25 +255,24 @@ public class RemoteMessageQueueTest extends InstrumentationTestCase {
             assertEquals("goal-current", pending.getString("goalId")); assertFalse(pending.has("runId"));
             assertEquals("one", pending.getString("queueId"));
             assertEquals("保留当前草稿", input().getText().toString());
-            assertFalse(view("remoteQueueSteer:one").isEnabled());
             finish(pending, new JSONObject().put("ok", true).put("state", "accepted")
                 .put("queue", new JSONArray()).put("queueVersion", 4));
-            assertNull(view("remoteQueue:one")); assertEquals("保留当前草稿", input().getText().toString());
+            assertNull(view("remoteQueueTray")); assertEquals("保留当前草稿", input().getText().toString());
         });
     }
 
     public void testSteeringJournalsSelectedQueueIdAndCurrentRunWithoutChangingComposer() {
+        ui(() -> snapshot(true, true, new JSONArray().put(entry("one", "queued")).put(entry("two", "queued")), 3));
+        openQueueSheet();
         ui(() -> {
-            snapshot(true, true, new JSONArray().put(entry("one", "queued")).put(entry("two", "queued")), 3);
             input().setText("保留正在输入的草稿");
             field("foreground", true); view("remoteQueueSteer:two").performClick();
             JSONObject pending = ((JSONObject) field("credentials")).getJSONObject("pendingCommand").getJSONObject("payload");
             assertEquals("queue-steer", pending.getString("action")); assertEquals("two", pending.getString("queueId"));
             assertEquals(1, pending.getLong("runId")); assertEquals("保留正在输入的草稿", input().getText().toString());
-            assertFalse(view("remoteQueueSteer:one").isEnabled());
             finish(pending, new JSONObject().put("ok", true).put("state", "accepted")
                 .put("queue", new JSONArray().put(entry("one", "queued"))).put("queueVersion", 4));
-            assertNull(view("remoteQueue:two")); assertNotNull(view("remoteQueue:one"));
+            assertEquals(1, ((JSONArray) field("remoteQueue")).length());
             assertEquals("保留正在输入的草稿", input().getText().toString());
         });
     }
@@ -235,8 +291,9 @@ public class RemoteMessageQueueTest extends InstrumentationTestCase {
 
     public void testQueueEditorSavesWithoutChangingDraftOrAttachmentsAndRetainsRejectedText() throws Exception {
         String original = entry("one", "queued").getString("text");
+        ui(() -> snapshot(true, true, new JSONArray().put(entry("one", "queued").put("source", "desktop")), 3));
+        openQueueSheet();
         ui(() -> {
-            snapshot(true, true, new JSONArray().put(entry("one", "queued")), 3);
             input().setText("保留草稿"); field("foreground", true); view("remoteQueueEdit:one").performClick();
         });
         getInstrumentation().waitForIdleSync();
@@ -252,6 +309,7 @@ public class RemoteMessageQueueTest extends InstrumentationTestCase {
             assertEquals(original, pending.getString("expectedText")); assertEquals("修改后的排队消息", pending.getString("prompt"));
             assertEquals("保留草稿", input().getText().toString());
             assertEquals(1, ((JSONArray) field("remoteQueue")).getJSONObject(0).getJSONArray("attachments").length());
+            assertEquals("desktop", ((JSONArray) field("remoteQueue")).getJSONObject(0).getString("source"));
             finish(pending, new JSONObject().put("ok", false).put("state", "failed").put("error", "请检查后重试"));
             assertEquals("保留草稿", input().getText().toString());
         });

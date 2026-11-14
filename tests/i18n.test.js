@@ -28,6 +28,16 @@ test('command, navigation and preview copy is localized in both languages', () =
     'CLI servers': 'CLI 服务器',
     'Conversations': '会话',
     'Worksheet': '工作表',
+    'Present': '演示',
+    'Presentation menu': '放映菜单',
+    'Previous slide': '上一页',
+    'Next slide': '下一页',
+    'End slide show': '结束放映',
+    'Expand': '展开',
+    'Copy snapshot': '复制快照',
+    'Export HTML': '导出 HTML',
+    'Reset state': '重置状态',
+    'Continue in chat': '在对话中继续',
   };
   for (const [source, translated] of Object.entries(copy)) {
     assert.equal(translate(source, 'zh-CN'), translated);

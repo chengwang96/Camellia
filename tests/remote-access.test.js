@@ -164,6 +164,214 @@ test('mobile queue accepts running turns, deduplicates and drains text and attac
   assert.equal(manager.rawRows(visible).filter(row => row.queueId === first.queueId).length, 1);
 });
 
+test('desktop and mobile queue entries share one send-time order and retain their source', async context => {
+  const { manager, commands, gateway, access, pair, visible, reader } = fixture(context);
+  const device = access.authenticate(pair().token), runs = queuedRuns(manager, visible.id);
+  const execute = (action, extra = {}) => commands.execute(device, visible.id, {
+    requestId: require('node:crypto').randomUUID(), instanceId: gateway.instanceId,
+    action, ...(action === 'send' ? { queue: true, prompt: 'Queued', expectedSeq: visible.seq } : {}), ...extra,
+  }, gateway.instanceId);
+
+  await manager.send('codex', { sessionId: visible.id, prompt: 'Original task' });
+  const mobileFirst = await execute('send', { prompt: 'Phone first' });
+  const desktopSecond = await manager.command('codex', 'message-queue-add', {
+    sessionId: visible.id, text: 'Computer second', displayText: 'Computer second',
+    prompt: 'Computer second', attachments: [],
+  });
+  assert.equal(mobileFirst.ok, true);
+  assert.equal(desktopSecond.ok, true, desktopSecond.error);
+  assert.deepEqual(desktopSecond.queue.map(entry => [entry.text, entry.source]), [
+    ['Phone first', 'mobile'],
+    ['Computer second', 'desktop'],
+  ]);
+  assert.deepEqual(reader.snapshot(device, visible.id).queue.map(entry => [entry.text, entry.source]),
+    [['Phone first', 'mobile'], ['Computer second', 'desktop']]);
+
+  runs.finish(); await flushQueue();
+  assert.equal(runs.sent.length, 2);
+  assert.match(runs.sent[1].prompt, /Phone first/);
+  assert.deepEqual(commands.queue.view(visible.id).map(entry => [entry.text, entry.state, entry.source]),
+    [['Computer second', 'queued', 'desktop']]);
+  runs.finish(); await flushQueue();
+  assert.equal(runs.sent.length, 3);
+  assert.match(runs.sent[2].prompt, /Computer second/);
+  assert.deepEqual(commands.queue.view(visible.id), []);
+  runs.finish(); await flushQueue();
+
+  await manager.send('codex', { sessionId: visible.id, prompt: 'Another original task' });
+  const desktopFirst = await manager.command('codex', 'message-queue-add', {
+    sessionId: visible.id, text: 'Computer first', displayText: 'Computer first',
+    prompt: 'Computer first', attachments: [],
+  });
+  const mobileSecond = await execute('send', { prompt: 'Phone second' });
+  assert.deepEqual(desktopFirst.queue.map(entry => entry.source), ['desktop']);
+  assert.equal(mobileSecond.ok, true);
+  assert.deepEqual(commands.queue.view(visible.id).map(entry => [entry.source, entry.text]), [
+    ['desktop', 'Computer first'],
+    ['mobile', 'Phone second'],
+  ]);
+  runs.finish(); await flushQueue();
+  assert.equal(runs.sent.length, 5);
+  assert.match(runs.sent[4].prompt, /Computer first/);
+  runs.finish(); await flushQueue();
+  assert.equal(runs.sent.length, 6);
+  assert.match(runs.sent[5].prompt, /Phone second/);
+});
+
+test('legacy desktop queue edits return the prepared attachments and leave later entries ordered', async context => {
+  const { manager, commands, gateway, access, pair, visible } = fixture(context);
+  const device = access.authenticate(pair().token), runs = queuedRuns(manager, visible.id);
+  await manager.send('codex', { sessionId: visible.id, prompt: 'Original task' });
+  const attachment = path.join(visible.cwd, 'queued.txt');
+  const desktop = await manager.command('codex', 'message-queue-add', {
+    sessionId: visible.id, text: 'Desktop draft', displayText: 'Desktop draft', prompt: 'Desktop draft',
+    attachments: [{ path: attachment, name: 'queued.txt', isImage: false }],
+  });
+  const mobile = await commands.execute(device, visible.id, {
+    requestId: require('node:crypto').randomUUID(), instanceId: gateway.instanceId,
+    action: 'send', queue: true, prompt: 'Phone later', expectedSeq: visible.seq,
+  }, gateway.instanceId);
+  const edited = await manager.command('codex', 'message-queue-edit', {
+    sessionId: visible.id, queueId: desktop.queueId,
+  });
+  assert.equal(edited.ok, true);
+  assert.equal(edited.entry.text, 'Desktop draft');
+  assert.equal(edited.entry.attachments[0].path, attachment);
+  assert.deepEqual(edited.queue.map(entry => [entry.text, entry.source]), [['Phone later', 'mobile']]);
+  const removed = await manager.command('codex', 'message-queue-remove', {
+    sessionId: visible.id, queueId: mobile.queueId,
+  });
+  assert.equal(removed.ok, true);
+  assert.deepEqual(removed.queue, []);
+  runs.finish(); await flushQueue();
+});
+
+test('cross-device queue edits retain ownership, order and prepared files in snapshots and receipts', async context => {
+  const { manager, commands, gateway, reader, access, pair, visible, hidden } = fixture(context);
+  const device = access.authenticate(pair().token), runs = queuedRuns(manager, visible.id);
+  await manager.send('codex', { sessionId: visible.id, prompt: 'Current task' });
+  const execute = (action, extra = {}) => commands.execute(device, visible.id, {
+    requestId: require('node:crypto').randomUUID(), instanceId: gateway.instanceId, action, ...extra,
+  }, gateway.instanceId);
+  const mobile = await execute('send', { queue: true, prompt: 'Phone original', expectedSeq: visible.seq,
+    attachments: [{ name: 'notes.txt', isImage: false, data: Buffer.from('Keep original file').toString('base64') }] });
+  const file = { name: 'computer.txt', path: path.join(visible.cwd, 'computer.txt'), isImage: false };
+  const desktop = await manager.command('codex', 'message-queue-add', {
+    sessionId: visible.id, text: 'Computer original', displayText: 'Computer original',
+    prompt: 'Computer original\n\n[Attachment] ' + file.path, attachments: [file],
+  });
+  const before = structuredClone(commands.queue.entries);
+  const editMobile = await manager.command('codex', 'message-queue-edit', {
+    sessionId: visible.id, queueId: mobile.queueId, prompt: 'Phone revised on computer', expectedText: 'Phone original',
+  });
+  assert.equal(editMobile.ok, true, editMobile.error);
+  const edit = { action: 'queue-edit', queueId: desktop.queueId, prompt: 'Computer revised on phone', expectedText: 'Computer original',
+    requestId: require('node:crypto').randomUUID(), instanceId: gateway.instanceId };
+  const edited = await commands.execute(device, visible.id, edit, gateway.instanceId);
+  assert.equal(edited.ok, true, edited.error);
+  assert.deepEqual(edited.queue.map(entry => [entry.id, entry.source, entry.text]), [
+    [mobile.queueId, 'mobile', 'Phone revised on computer'], [desktop.queueId, 'desktop', 'Computer revised on phone'],
+  ]);
+  for (let index = 0; index < 2; index++) {
+    const entry = commands.queue.entries[index], original = before[index];
+    assert.deepEqual([entry.id, entry.source, entry.deviceId, entry.order, entry.at, entry.state],
+      [original.id, original.source, original.deviceId, original.order, original.at, original.state]);
+    assert.deepEqual(entry.payload.attachments, original.payload.attachments);
+    assert.ok(entry.payload.prompt.endsWith(original.payload.prompt.slice(original.payload.displayText.length)));
+  }
+  assert.equal(commands.queue.entries[1].payload.text, 'Computer revised on phone');
+  const snapshot = reader.snapshot(device, visible.id);
+  const replay = await commands.execute(device, visible.id, edit, gateway.instanceId);
+  const receipt = commands.receipt(device, edit.requestId);
+  for (const value of [edited, snapshot, replay, receipt]) {
+    assert.deepEqual(value.queue, snapshot.queue);
+    assert.deepEqual(value.queue.map(entry => entry.attachments), [
+      [{ name: 'notes.txt', isImage: false }], [{ name: 'computer.txt', isImage: false }],
+    ]);
+    assert.ok(!JSON.stringify(value.queue).includes(file.path));
+    assert.ok(!JSON.stringify(value.queue).includes('device-attachments'));
+  }
+  await assert.rejects(manager.command('codex', 'message-queue-edit', {
+    sessionId: visible.id, queueId: desktop.queueId, prompt: 'Stale desktop edit', expectedText: 'Computer original',
+  }), /changed/);
+  assert.equal((await execute('queue-edit', {
+    queueId: mobile.queueId, prompt: 'Stale phone edit', expectedText: 'Phone original',
+  })).ok, false);
+  await assert.rejects(commands.execute(device, hidden.id, { ...edit, requestId: require('node:crypto').randomUUID() }, gateway.instanceId), /not found/);
+  commands.queue.entries[1].state = 'starting';
+  assert.equal((await execute('queue-edit', { queueId: desktop.queueId, prompt: 'Too late', expectedText: 'Computer revised on phone' })).ok, false);
+  commands.queue.entries[1].state = 'queued';
+  // A phone can also remove a computer entry without moving its own message.
+  assert.equal((await execute('queue-remove', { queueId: desktop.queueId })).ok, true);
+  assert.equal(commands.queue.entries[0].deviceId, device.id);
+  runs.finish(); await flushQueue();
+  assert.deepEqual(runs.sent[1].attachments, before[0].payload.attachments);
+  assert.match(runs.sent[1].prompt, /Phone revised on computer/);
+  runs.finish(); await flushQueue();
+});
+
+for (const fromDesktop of [true, false]) test(`cross-device queue steering keeps the selected payload and ownership (fromDesktop=${fromDesktop})`, async context => {
+  const { manager, commands, gateway, access, pair, visible } = fixture(context);
+  const device = access.authenticate(pair().token), runs = queuedRuns(manager, visible.id);
+  await manager.send('codex', { sessionId: visible.id, prompt: 'Current task' });
+  const execute = (action, extra = {}) => commands.execute(device, visible.id, {
+    requestId: require('node:crypto').randomUUID(), instanceId: gateway.instanceId, action, ...extra,
+  }, gateway.instanceId);
+  const earlier = await execute('send', { queue: true, prompt: 'Wait in place', expectedSeq: visible.seq });
+  const selected = fromDesktop
+    ? await execute('send', { queue: true, prompt: 'Phone instruction', expectedSeq: visible.seq,
+      attachments: [{ name: 'phone.txt', isImage: false, data: Buffer.from('Phone file').toString('base64') }] })
+    : await manager.command('codex', 'message-queue-add', { sessionId: visible.id,
+      text: 'Computer instruction', displayText: 'Computer instruction', prompt: 'Computer instruction\n\n[Attachment] desktop.txt',
+      attachments: [{ name: 'desktop.txt', path: 'desktop.txt', isImage: false }] });
+  const original = structuredClone(commands.queue.entries[1]);
+  const active = manager.active.get(visible.id), delivered = [];
+  active.session.steerUserMessage = (prompt, attachments) => { delivered.push({ prompt, attachments }); };
+  const payload = { queueId: selected.queueId, runId: active.facade.gen };
+  if (fromDesktop) {
+    // Editing on the computer must not bypass the phone owner's access check.
+    const owner = access.devices.find(entry => entry.id === device.id);
+    owner.permission = 'read';
+    await assert.rejects(manager.command('codex', 'message-queue-steer', { sessionId: visible.id, ...payload }), /Control permission/);
+    owner.permission = 'control';
+  }
+  const result = fromDesktop
+    ? await manager.command('codex', 'message-queue-steer', { sessionId: visible.id, ...payload })
+    : await execute('queue-steer', payload);
+  assert.equal(result.ok, true, result.error);
+  assert.equal(delivered.length, 1);
+  assert.ok(delivered[0].prompt.endsWith(original.payload.prompt));
+  assert.deepEqual(delivered[0].attachments, original.payload.attachments);
+  assert.equal(manager.rawRows(visible).filter(entry => entry.queueId === selected.queueId).length, 1);
+  assert.deepEqual(commands.queue.view(visible.id).map(entry => entry.id), [earlier.queueId]);
+  assert.equal((await execute('queue-steer', payload)).ok, false);
+  runs.finish(); await flushQueue();
+  assert.equal(runs.sent.length, 2); runs.finish(); await flushQueue();
+});
+
+for (const attachmentOnly of [true, false]) test(`phone edits preserve desktop attachment context when display text differs from the prompt (attachmentOnly=${attachmentOnly})`, async context => {
+  const { manager, commands, gateway, access, pair, visible } = fixture(context);
+  const device = access.authenticate(pair().token), runs = queuedRuns(manager, visible.id);
+  await manager.send('codex', { sessionId: visible.id, prompt: 'Current task' });
+  const file = { path: path.join(visible.cwd, 'data.csv'), name: 'data.csv', isImage: false };
+  const suffix = '\n\n[Attachment] ' + file.path;
+  const desktop = await manager.command('codex', 'message-queue-add', { sessionId: visible.id,
+    text: attachmentOnly ? '' : 'Structured card decision with details',
+    displayText: attachmentOnly ? '' : 'Card decision · Approve',
+    prompt: (attachmentOnly ? 'Please review and process these attachments.' : 'Structured card decision with details') + suffix,
+    attachments: [file] });
+  const edited = await commands.execute(device, visible.id, {
+    action: 'queue-edit', requestId: require('node:crypto').randomUUID(), instanceId: gateway.instanceId,
+    queueId: desktop.queueId, expectedText: attachmentOnly ? '' : 'Card decision · Approve', prompt: 'Revised task',
+  }, gateway.instanceId);
+  assert.equal(edited.ok, true, edited.error);
+  assert.equal(commands.queue.entries[0].payload.prompt, 'Revised task' + suffix);
+  assert.deepEqual(commands.queue.entries[0].payload.attachments, [file]);
+  runs.finish(); await flushQueue();
+  assert.ok(runs.sent[1].prompt.endsWith('Revised task' + suffix));
+  runs.finish(); await flushQueue();
+});
+
 test('mobile queue supports remove, stop/pause and explicit resume with desktop visibility', async context => {
   const { manager, commands, gateway, access, pair, visible } = fixture(context);
   const device = access.authenticate(pair().token), runs = queuedRuns(manager, visible.id);
@@ -462,6 +670,32 @@ test('revoked devices cannot execute queued messages or resume them from the des
   assert.throws(() => commands.queue.resume(visible.id), /Control permission/);
   assert.equal((await manager.command('codex', 'remote-queue-remove', { sessionId: visible.id, queueId: result.queueId })).ok, true);
   assert.equal(commands.queue.view(visible.id).length, 0);
+});
+
+test('a paused mobile entry blocks a later desktop entry instead of being skipped', async context => {
+  const { manager, commands, gateway, access, pair, visible } = fixture(context);
+  const credential = pair(), device = access.authenticate(credential.token), runs = queuedRuns(manager, visible.id);
+  await manager.send('codex', { sessionId: visible.id, prompt: 'Original' });
+  const mobile = await commands.execute(device, visible.id, {
+    requestId: require('node:crypto').randomUUID(), instanceId: gateway.instanceId,
+    action: 'send', queue: true, prompt: 'Phone first', expectedSeq: visible.seq,
+  }, gateway.instanceId);
+  await manager.command('codex', 'message-queue-add', {
+    sessionId: visible.id, text: 'Computer later', displayText: 'Computer later',
+    prompt: 'Computer later', attachments: [],
+  });
+  access.revoke(credential.deviceId);
+  runs.finish(); await flushQueue();
+  assert.equal(runs.sent.length, 1);
+  assert.deepEqual(commands.queue.view(visible.id).map(entry => [entry.source, entry.state]), [
+    ['mobile', 'paused'],
+    ['desktop', 'queued'],
+  ]);
+  await manager.command('codex', 'message-queue-remove', { sessionId: visible.id, queueId: mobile.queueId });
+  await flushQueue();
+  assert.equal(runs.sent.length, 2);
+  assert.match(runs.sent[1].prompt, /Computer later/);
+  runs.finish(); await flushQueue();
 });
 
 test('failed queue startup never replays a committed user message and pauses following messages', async context => {
@@ -1325,10 +1559,19 @@ test('every artifact the phone is offered can actually be downloaded', async con
   }
 });
 
-async function stream(gateway, conversationId, token) {
+async function stream(gateway, conversationId, token, headers = {}) {
   const controller = new AbortController();
   const endpoint = conversationId ? `/v1/conversations/${conversationId}/events` : '/v1/conversations/events';
-  const response = await fetch(gateway.url + endpoint, { signal: controller.signal, headers: { Authorization: `Bearer ${token}` } });
+  const base = gateway.transport ? `http://127.0.0.1:${gateway.server.address().port}` : gateway.url;
+  // Fetch rewrites Host to its URL; the helper intentionally uses a different
+  // authority on its authenticated loopback hop.
+  const response = gateway.transport ? await new Promise((resolve, reject) => {
+    const outgoing = http.get(base + endpoint, { signal: controller.signal,
+      headers: { Host: gateway.authority, Authorization: `Bearer ${token}`, ...headers } }, incoming => {
+      resolve({ status: incoming.statusCode, body: require('node:stream').Readable.toWeb(incoming) });
+    });
+    outgoing.on('error', reject);
+  }) : await fetch(base + endpoint, { signal: controller.signal, headers: { Authorization: `Bearer ${token}`, ...headers } });
   assert.equal(response.status, 200);
   const reader = response.body.getReader(), decoder = new TextDecoder();
   let buffer = '';
@@ -1380,7 +1623,8 @@ test('list streams immediately notify desktop creation and deletion and resync a
   const events = await stream(gateway, null, credential.token);
   context.after(() => events.close());
   const initial = await events.next();
-  assert.deepEqual(initial, { ...reader.listSnapshot(device), ...gateway.stamp() });
+  assert.deepEqual(initial, { ...reader.listSnapshot(device), ...gateway.stamp(), conversationList: {
+    ...gateway.connectionInfo(device), ...reader.list(device), ...gateway.stamp() } });
   const created = manager.create('codex', 'allowed', 'Created on desktop');
   const added = await events.next();
   assert.notEqual(added.listVersion, initial.listVersion);
@@ -1400,6 +1644,75 @@ test('list streams immediately notify desktop creation and deletion and resync a
   assert.equal(await reconnected.next(), null);
 });
 
+test('online devices track authenticated IPs and independent subscriptions, then catch up on reconnect', { timeout: 8000 }, async context => {
+  const { gateway, manager, visible, hidden, pair } = fixture(context);
+  const phone = pair(), tablet = pair(), transportToken = 'c'.repeat(64);
+  await gateway.start('127.0.0.1', 0, { address: '100.80.1.2', token: transportToken });
+  const headers = ip => ({ 'X-Camellia-Transport': transportToken, 'X-Camellia-Peer': ip });
+  const first = await stream(gateway, null, phone.token, headers('100.90.1.2'));
+  const detail = await stream(gateway, visible.id, phone.token, headers('100.90.1.2'));
+  const second = await stream(gateway, null, tablet.token, headers('100.90.1.3'));
+  context.after(() => { first.close(); detail.close(); second.close(); });
+  const initial = await first.next(); await detail.next(); await second.next();
+  assert.deepEqual(initial.conversationList.conversations.map(row => row.id), [visible.id]);
+  assert.ok(!JSON.stringify(initial).includes(hidden.id));
+  assert.equal(gateway.onlineDevices.size, 2);
+  assert.equal(gateway.onlineDevices.get(phone.deviceId).ip, '100.90.1.2');
+  assert.equal(gateway.onlineDevices.get(tablet.deviceId).ip, '100.90.1.3');
+  assert.equal(gateway.onlineDevices.get(phone.deviceId).streams.size, 2);
+
+  const runs = queuedRuns(manager, visible.id);
+  await manager.send('codex', { sessionId: visible.id, prompt: 'Started on computer' });
+  assert.equal((await first.next()).conversationList.conversations[0].activity, 'running');
+  assert.equal((await second.next()).conversationList.conversations[0].activity, 'running');
+  runs.finish();
+  assert.equal((await first.next()).conversationList.conversations[0].activity, null);
+  assert.equal((await second.next()).conversationList.conversations[0].activity, null);
+
+  first.close();
+  for (let attempt = 0; gateway.onlineDevices.get(phone.deviceId)?.streams.size !== 1 && attempt < 50; attempt++) await new Promise(resolve => setTimeout(resolve, 10));
+  assert.equal(gateway.onlineDevices.get(phone.deviceId).streams.size, 1, 'Closing the list must retain the device chat subscription');
+  detail.close();
+  for (let attempt = 0; gateway.onlineDevices.has(phone.deviceId) && attempt < 50; attempt++) await new Promise(resolve => setTimeout(resolve, 10));
+  assert.equal(gateway.onlineDevices.has(phone.deviceId), false);
+  assert.equal(gateway.onlineDevices.has(tablet.deviceId), true);
+  const created = manager.create('codex', 'allowed', 'Created while phone offline');
+  assert.ok((await second.next()).conversationList.conversations.some(row => row.id === created.id));
+  const reconnected = await stream(gateway, null, phone.token, headers('100.90.1.4'));
+  context.after(() => reconnected.close());
+  assert.ok((await reconnected.next()).conversationList.conversations.some(row => row.id === created.id));
+  assert.equal(gateway.onlineDevices.get(phone.deviceId).ip, '100.90.1.4');
+  assert.equal(gateway.peerAddresses.get(phone.deviceId), '100.90.1.4');
+  await gateway.stop();
+  assert.equal(gateway.onlineDevices.size, 0);
+});
+
+test('stalled subscribers are removed without retrying writes or disconnecting other devices', { timeout: 8000 }, async context => {
+  const { gateway, manager, pair } = fixture(context);
+  const phone = pair(), tablet = pair();
+  await gateway.start('127.0.0.1', 0);
+  const first = await stream(gateway, null, phone.token, { 'X-Camellia-Peer': '100.99.99.99' });
+  const second = await stream(gateway, null, tablet.token);
+  context.after(() => { first.close(); second.close(); });
+  await first.next(); await second.next();
+  assert.equal(gateway.onlineDevices.get(phone.deviceId).ip, '127.0.0.1', 'Plain listeners must ignore forwarded peer headers');
+  const stale = [...gateway.onlineDevices.get(phone.deviceId).streams][0];
+  stale.blocked = true; stale.blockedAt = Date.now() - 30_000;
+  let writes = 0;
+  stale.response.write = () => { writes++; return false; };
+  gateway.checkStreams();
+  assert.equal(gateway.onlineDevices.has(phone.deviceId), false);
+  assert.equal(gateway.streams.has(stale), false);
+  const created = manager.create('codex', 'allowed', 'After stalled subscriber');
+  assert.ok((await second.next()).conversationList.conversations.some(row => row.id === created.id));
+  assert.equal(writes, 0);
+  first.close(); second.close();
+  for (let attempt = 0; gateway.streams.size && attempt < 50; attempt++) await new Promise(resolve => setTimeout(resolve, 10));
+  assert.equal(gateway.streams.size, 0);
+  gateway.publish();
+  assert.equal(gateway.flushTimer, null, 'No notification work should be scheduled for offline devices');
+});
+
 test('list versions include later pages, exclude unauthorized changes, and suppress duplicate pushes', { timeout: 8000 }, async context => {
   const { manager, gateway, access, reader, hidden, pair } = fixture(context);
   const credential = pair(), device = access.authenticate(credential.token);
@@ -1409,13 +1722,16 @@ test('list versions include later pages, exclude unauthorized changes, and suppr
   context.after(() => events.close());
   const initial = await events.next();
   const connected = [...gateway.streams][0];
-  let writes = 0;
+  let writes = 0, pages = 0;
+  const list = reader.list.bind(reader);
+  reader.list = (...args) => { pages++; return list(...args); };
   const write = connected.response.write.bind(connected.response);
   connected.response.write = (...args) => { writes++; return write(...args); };
   gateway.publish();
   await manager.purge(hidden.id);
   await new Promise(resolve => setTimeout(resolve, 350));
   assert.equal(writes, 0);
+  assert.equal(pages, 0, 'Unchanged versions must not rebuild or sort the pushed list page');
   assert.equal(reader.listSnapshot(device).listVersion, initial.listVersion);
   const later = reader.list(device, 100).conversations[0];
   await manager.purge(later.id);
@@ -2768,4 +3084,44 @@ test('server-side list queries page matching authorized titles and enforce a bou
   assert.deepEqual(result.body.conversations.map(item => item.id), [visible.id]);
   assert.equal((await request(gateway, '/v1/conversations?limit=1001', { token: phone.token })).status, 400);
   assert.equal((await request(gateway, '/v1/conversations?limit=0', { token: phone.token })).status, 400);
+});
+
+test('mobile snapshots expose visualization metadata and serve an isolated card document', async context => {
+  const { gateway, manager, reader, visible, hidden, pair, access } = fixture(context);
+  const phone = pair();
+  const device = access.authenticate(phone.token);
+  const card = manager.visualize.create(visible.id, {
+    title: 'Mobile card', summary: 'Read-only card', mode: 'card', style: 'paper',
+    fragment: '<div id="mobile-card">ready</div>',
+  });
+  manager.visualize.setState(visible.id, card.cardId, { selected: 'mobile' });
+  manager.append(visible, { role: 'tool', text: JSON.stringify({ type: 'gui:tool', id: 'card-tool',
+    name: 'camellia_visualize', status: 'completed',
+    output: JSON.stringify({ ok: true, action: 'create', visualize: card }) }) });
+  manager.append(visible, { role: 'assistant', text: 'Card reply' });
+
+  const snapshot = reader.snapshot(device, visible.id);
+  const row = snapshot.messages.find(message => message.role === 'tool' && message.visualizations);
+  assert.deepEqual(row.visualizations, [{
+    cardId: card.cardId, title: 'Mobile card', summary: 'Read-only card',
+    mode: 'card', style: 'paper', revision: 1,
+  }]);
+
+  await gateway.start('127.0.0.1', 0);
+  const result = await request(gateway,
+    '/v1/conversations/' + visible.id + '/visualizations/' + card.cardId + '?theme=dark',
+    { token: phone.token });
+  assert.equal(result.status, 200);
+  assert.equal(result.body.card.revision, 1);
+  assert.match(result.body.card.html, /data-theme="dark"/);
+  assert.match(result.body.card.html, /Content-Security-Policy/);
+  assert.match(result.body.card.html, /id="mobile-card"/);
+  assert.match(result.body.card.html, /"selected":"mobile"/);
+  assert.match(result.body.card.html, /window\.camelliaVisualize/);
+  assert.equal((await request(gateway,
+    '/v1/conversations/' + hidden.id + '/visualizations/' + card.cardId,
+    { token: phone.token })).status, 404);
+  assert.equal((await request(gateway,
+    '/v1/conversations/' + visible.id + '/visualizations/' + card.cardId + '?theme=sepia',
+    { token: phone.token })).status, 400);
 });

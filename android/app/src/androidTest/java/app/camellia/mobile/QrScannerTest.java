@@ -121,18 +121,14 @@ public class QrScannerTest extends InstrumentationTestCase {
         waitForCamera();
     }
 
-    public void testLandscapeRecreatesCameraWithCorrectPreview() throws Exception {
-        var monitor = getInstrumentation().addMonitor(QrScanActivity.class.getName(), null, false);
-        try {
-            ui(() -> scanner.setRequestedOrientation(android.content.pm.ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE));
-            android.app.Activity replacement = getInstrumentation().waitForMonitorWithTimeout(monitor, 6000);
-            if (replacement != null) scanner = (QrScanActivity) replacement;
-            waitForCamera(); getInstrumentation().waitForIdleSync();
-            ui(() -> {
-                assertEquals(android.content.res.Configuration.ORIENTATION_LANDSCAPE, scanner.getResources().getConfiguration().orientation);
-                assertTrue(scanner.getWindow().getDecorView().getWidth() > scanner.getWindow().getDecorView().getHeight());
-            });
-            testPreviewKeepsSensorAspectAndChromeOutsideCamera();
-        } finally { getInstrumentation().removeMonitor(monitor); }
+    public void testPhoneScannerStaysPortrait() throws Exception {
+        android.util.DisplayMetrics metrics = new android.util.DisplayMetrics();
+        scanner.getWindowManager().getDefaultDisplay().getRealMetrics(metrics);
+        if (!MobileOrientation.isPhoneSize(metrics.widthPixels, metrics.heightPixels, metrics.density)) return;
+        ui(() -> {
+            assertEquals(android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT, scanner.getRequestedOrientation());
+            assertEquals(android.content.res.Configuration.ORIENTATION_PORTRAIT, scanner.getResources().getConfiguration().orientation);
+        });
+        testPreviewKeepsSensorAspectAndChromeOutsideCamera();
     }
 }

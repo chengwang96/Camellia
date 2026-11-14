@@ -196,7 +196,9 @@ function createNetworkSettings({ loadConfig, saveConfig, sessions, applyEnvironm
     // still applies to Kimi.
     const kimiProxy = requested === 'auto' && nextMode === 'system' && kimiDirect;
     // One resolved HTTP proxy is shared by Electron, Node and engine processes.
-    await sessions().defaultSession.setProxy(url ? { mode: 'fixed_servers', proxyRules: url, proxyBypassRules: '<local>;localhost;127.0.0.1;[::1]' } : { mode: 'direct' });
+    // Chromium proxy rules accept scheme://host:port, not a URL path. URL.href
+    // adds a trailing slash, which Chromium rejects with ERR_NO_SUPPORTED_PROXIES.
+    await sessions().defaultSession.setProxy(url ? { mode: 'fixed_servers', proxyRules: new URL(url).origin, proxyBypassRules: '<local>;localhost;127.0.0.1;[::1]' } : { mode: 'direct' });
     applyEnvironment(networkEnvironment(process.env, { mode: nextMode === 'prefer-direct' ? 'auto' : nextMode, url, subscriptionProxy, kimiDirect: kimiProxy }));
     saveConfig({ ...(persist ? { network: { mode: requested } } : {}), downloadProxy: { mode: url ? 'proxy' : 'direct', url } });
     schedule(nextMode === 'system' ? 4000 : 60000);

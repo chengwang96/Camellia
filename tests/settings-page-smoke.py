@@ -71,6 +71,9 @@ with sync_playwright() as playwright:
     expect(page.locator('#pythonCard')).to_be_hidden()
     expect(page.locator('#contextCapacityPanel, #contextProbeDialog')).to_have_count(0)
 
+    # Review defaults are one topic: the heading and its six controls share a
+    # group, so they get one divider instead of a rule under every row.
+    expect(page.locator('#modelsPage > .settings-group[data-settings-group=review-defaults] .setting-row')).to_have_count(7)
     # One model and one reasoning-level menu per engine, aligned in one grid.
     expect(page.locator('#quickSwitchModels .quick-switch-model')).to_have_count(6)
     expect(page.locator('#quickSwitchModels .quick-switch-level')).to_have_count(6)
@@ -141,8 +144,8 @@ with sync_playwright() as playwright:
     # dropped page fails with a useful diff instead of an off-by-one.
     views = page.locator(".settings-nav nav [data-view]").evaluate_all(
         "els => els.map(el => el.dataset.view)")
-    assert views == ["subscriptions", "providers", "usage", "general", "shortcuts", "data", "network", "engines",
-                     "models", "archived", "mobile", "devices"], views
+    assert views == ["subscriptions", "providers", "usage", "general", "shortcuts", "engines", "models", "network",
+                     "mobile", "devices", "data", "archived"], views
     nav = page.locator(".settings-nav nav")
     page.set_viewport_size({"width": 1180, "height": 520})
     assert nav.evaluate("el => el.scrollHeight > el.clientHeight")
@@ -169,6 +172,8 @@ with sync_playwright() as playwright:
     page.locator('[data-view=shortcuts]').click()
     expect(page.locator('#pageTitle')).to_have_text('Keyboard shortcuts')
     expect(page.locator('#shortcutsPage')).to_be_visible()
+    assert page.locator('#shortcutsPage > .settings-group').evaluate_all(
+        "els => els.map(el => el.dataset.settingsGroup)") == ['shortcuts', 'zoom-shortcuts']
     goal = page.locator('[data-shortcut-record=goal]')
     expect(goal).to_contain_text('Ctrl+G')
     expect(page.locator('[data-shortcut-clear=goal]')).to_be_visible()
@@ -244,6 +249,11 @@ with sync_playwright() as playwright:
     expect(page.locator("#pageTitle")).to_have_text("General")
     version_group = page.locator("#generalPage > .settings-group").last
     assert version_group.locator("#version").count() == 1
+    # General follows the task order of the page: display, conversation, quota, tools, shared data.
+    groups = page.locator("#generalPage > .settings-group").evaluate_all(
+        "els => els.map(el => el.dataset.settingsGroup)")
+    assert groups == ["appearance", "interface", "conversation-handoff", "quota-refresh", "workspace-tools",
+                      "shared-resources", "background-routing", "version"], groups
     assert page.evaluate("""() => {
         const version = document.getElementById('version').getBoundingClientRect();
         const skills = document.getElementById('portableSkills').getBoundingClientRect();

@@ -15,9 +15,11 @@ chrome = """(() => {
   window.chromeState = { enabled:true,height:40,zoomFactor:1,theme:'light',label:'Application menu',
     menus:['Application','Engine','Edit','View'].map((label,index)=>({label,index})) };
   window.menuCalls = [];
+  window.captionDims = [];
   window.camelliaWindowChrome = {
     getState: async () => chromeState,
     openMenu: payload => {menuCalls.push(payload);return new Promise(resolve=>window.closeNativeMenu=resolve);},
+    setDimmed: value => {captionDims.push(value);return Promise.resolve({ok:true});},
     onState: callback => {window.chromeChanged=callback;},
     onFocus: callback => {window.focusChrome=callback;},
   };
@@ -61,6 +63,37 @@ with sync_playwright() as p:
         page.evaluate("chromeState.menus=['应用','引擎','编辑','视图'].map((label,index)=>({label,index}));chromeChanged(chromeState)")
         expect(bar.get_by_role('menuitem')).to_have_text(['应用', '引擎', '编辑', '视图'])
         assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
+        # Native caption colors follow every modal backdrop, including custom
+        # masks, and stay dimmed until the last overlapping overlay closes.
+        page.evaluate("document.querySelector('#permMask').classList.add('visible')")
+        page.wait_for_function('captionDims.at(-1) === true')
+        page.evaluate("document.querySelector('#switchDialog').showModal()")
+        page.wait_for_function('captionDims.length === 1')
+        page.evaluate("document.querySelector('#switchDialog').close()")
+        page.wait_for_timeout(20)
+        assert page.evaluate('captionDims') == [True]
+        page.evaluate("document.querySelector('#permMask').classList.remove('visible')")
+        page.wait_for_function('captionDims.at(-1) === false')
+        assert page.evaluate('captionDims') == [True, False]
+        # The embedded discussion surface keeps its dialogs in a shadow root.
+        page.evaluate("""() => {
+          const host = document.createElement('div'); host.id = 'shadowOverlayTest';
+          document.body.append(host);
+          const root = host.attachShadow({mode:'open'});
+          const dialog = document.createElement('dialog'); dialog.id = 'shadowDialog';
+          root.append(dialog); CamelliaNativeOverlay.observe(root); dialog.showModal();
+        }""")
+        page.wait_for_function('captionDims.at(-1) === true')
+        page.evaluate("document.querySelector('#shadowOverlayTest').shadowRoot.getElementById('shadowDialog').close()")
+        page.wait_for_function('captionDims.at(-1) === false')
+        # Panels such as Git confirmation append their dialog lazily.
+        page.evaluate("""() => {
+          const dialog = document.createElement('dialog'); dialog.id = 'dynamicDialog';
+          dialog.className = 'git-confirm-dialog'; document.body.append(dialog); dialog.showModal();
+        }""")
+        page.wait_for_function('captionDims.at(-1) === true')
+        page.evaluate("document.querySelector('#dynamicDialog').remove()")
+        page.wait_for_function('captionDims.at(-1) === false')
         # Browser and embedded content do not get a desktop caption at all.
         page.close()
     # An initial state request can finish after a newer opening/closing event.

@@ -65,6 +65,19 @@ test('native CLI upgrades verify before replacement, retain rollback binary and 
   assert.equal(fs.readdirSync(f.cli).some(name => name.startsWith('.update-')), false);
 });
 
+test('an interrupted update leaves only its own staging directory behind and the next upgrade cleans it', async t => {
+  const f = fixture(t);
+  const stale = path.join(f.cli, '.update-AbC123');
+  fs.mkdirSync(stale);
+  fs.writeFileSync(path.join(stale, 'partial.exe'), 'partial');
+  const untouched = path.join(f.cli, 'manual-backup');
+  fs.mkdirSync(untouched);
+  fs.writeFileSync(path.join(untouched, 'keep.txt'), 'keep');
+  assert.equal((await upgradeAntigravityCli(f)).version, '1.3.5');
+  assert.equal(fs.existsSync(stale), false);
+  assert.equal(fs.existsSync(path.join(untouched, 'keep.txt')), true);
+});
+
 test('corrupt downloads and protocol/version mismatches keep the installed CLI and marker unchanged', async t => {
   const f = fixture(t);
   await assert.rejects(() => upgradeAntigravityCli({ ...f, release: { ...release, sha512: '0'.repeat(128) } }), /checksum mismatch/);

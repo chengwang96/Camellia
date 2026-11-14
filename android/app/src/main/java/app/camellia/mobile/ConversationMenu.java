@@ -64,7 +64,7 @@ final class ConversationMenu {
         }
         Rect visible = new Rect(); anchor.getWindowVisibleDisplayFrame(visible);
         int[] location = new int[2]; anchor.getLocationOnScreen(location);
-        int width = Math.min(dp(anchor, 192), visible.width() - dp(anchor, 24));
+        int width = PopupSurface.menuWidth(context, visible, 192);
         int height = Math.min(dp(anchor, names.length * 56 + 16), visible.height() - dp(anchor, 16));
         int left = Math.max(visible.left + dp(anchor, 12), Math.min(location[0], visible.right - width - dp(anchor, 12)));
         int top = Math.max(visible.top + dp(anchor, 8), Math.min(location[1] + anchor.getHeight(), visible.bottom - height - dp(anchor, 8)));

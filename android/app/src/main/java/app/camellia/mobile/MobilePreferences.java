@@ -28,7 +28,10 @@ final class MobilePreferences {
     static String signature(Context context) { return get(context, "language") + ":" + get(context, "theme"); }
 
     static Context wrap(Context context) {
-        Configuration config = new Configuration(context.getResources().getConfiguration());
+        // Override only preferences. Copying the current configuration also pins
+        // orientation, window bounds and dp sizes to the values at launch, so a
+        // handled rotation keeps rebuilding the portrait layout on a tablet.
+        Configuration config = new Configuration();
         String language = get(context, "language"), theme = get(context, "theme");
         if (!language.equals("system")) config.setLocale(Locale.forLanguageTag(language));
         if (!theme.equals("system")) config.uiMode = (config.uiMode & ~Configuration.UI_MODE_NIGHT_MASK)

@@ -22,6 +22,19 @@ test('Claude autocompact thrashing offers recovery without becoming an overflow 
   assert.equal(contextOverflow({ is_error: true, result: text }), false);
 });
 
+test('cancelled summaries do not offer context recovery', () => {
+  for (const text of ['Compaction canceled', 'Compaction cancelled',
+    'Compaction canceled; the original conversation is retained.',
+    'Failed to start: Compaction canceled', 'Could not resend: Compaction canceled',
+    'Request canceled before sending', 'Canceled', 'Cancelled']) {
+    assert.equal(contextRecoveryText(text), false, text);
+  }
+  for (const text of ['Could not cancel compaction: connection lost',
+    'Compaction failed after request was canceled', 'Compaction summary request limit reached']) {
+    assert.equal(contextRecoveryText(text), true, text);
+  }
+});
+
 // Real provider wordings that mean "this request is over a context limit".
 const overflow = [
   'maximum context length is 8192 tokens',

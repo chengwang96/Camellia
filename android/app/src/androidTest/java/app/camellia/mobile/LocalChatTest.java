@@ -602,14 +602,16 @@ public class LocalChatTest extends InstrumentationTestCase {
         catch (Exception error) { throw new AssertionError(error); }
     }
 
-    public void testHomeEntryBeforeComputers() throws Throwable {
+    public void testHomeEntryBeforeSettings() throws Throwable {
         Activity activity = LocalChatFixture.start(getInstrumentation(), new Intent(getInstrumentation().getTargetContext(), MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
         try {
             ui(() -> {
                 View entry = activity.getWindow().getDecorView().findViewWithTag("localChatEntry"); assertNotNull(entry);
                 android.view.ViewGroup parent = (android.view.ViewGroup) entry.getParent();
-                assertEquals(parent.indexOfChild(entry) + 1, parent.indexOfChild(parent.findViewWithTag("remoteControlEntry")));
-                assertNotNull(parent.findViewWithTag("settingsEntry"));
+                View remote = parent.findViewWithTag("remoteControlEntry");
+                View settings = parent.findViewWithTag("settingsEntry");
+                assertNull(remote); assertNotNull(settings);
+                assertTrue(parent.indexOfChild(entry) < parent.indexOfChild(settings));
             });
         } finally { finishActivity(activity); }
     }

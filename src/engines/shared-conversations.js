@@ -34,6 +34,8 @@ const { viewFor: memoryViewFor, compactView: compactMemoryView, resolveView: res
   statusFor: memoryStatusFor, searchFor: memorySearchFor, remember: memoryRemember } = require('./context-memory');
 const { createSkillRegistry } = require('./portable-skills');
 const { createReviewController } = require('./review-control');
+const { createVisualizeStore } = require('./visualize-store');
+const { embedWorkspaceImages, embedWorkspaceVideos, embedWorkspaceData } = require('./visualize-assets');
 const { retainEvent, isStreamingToolEvent } = require('./tool-history');
 const { appendText } = require('../shared/file-open');
 const { fullAccess } = require('./permission-levels');
@@ -204,7 +206,7 @@ const reportedContextLimit = text => {
 // The logical ID belongs to Camellia. Native IDs and synchronization cursors
 // are private to each engine. Original native histories are never rewritten.
 class SharedConversations {
-  constructor({ dir, skillsDir, portableSkills = false, loadConfig, saveConfig, drivers, onEvent = () => {}, onGoal = () => {}, onStatus = () => {}, prepare = async () => {}, assertAvailable = () => {}, generateTitle = async () => '', summarize, log = () => {}, modelContextWindow = () => undefined, contextRoute = () => '', contextCapacity, conversationModels = () => [], createGoalBridge, webTools, activateSkillInstallation, deactivateSkillInstallation, stopTimeoutMs = 12000 }) {
+  constructor({ dir, skillsDir, portableSkills = false, visualize = true, loadConfig, saveConfig, drivers, onEvent = () => {}, onGoal = () => {}, onStatus = () => {}, prepare = async () => {}, assertAvailable = () => {}, generateTitle = async () => '', summarize, log = () => {}, modelContextWindow = () => undefined, contextRoute = () => '', contextCapacity, conversationModels = () => [], createGoalBridge, webTools, activateSkillInstallation, deactivateSkillInstallation, stopTimeoutMs = 12000 }) {
     Object.assign(this, { dir, loadConfig, saveConfig, drivers, onEvent, onStatus, prepare, assertAvailable, generateTitle, summarize, log, modelContextWindow, contextRoute, contextCapacity, conversationModels, activateSkillInstallation, deactivateSkillInstallation });
     this.runtimeId = randomUUID();
     this.subagentSessions = new Map();
@@ -223,6 +225,8 @@ class SharedConversations {
     this.portableSkills = portableSkills;
     this.skills = createSkillRegistry({ root: skillsDir || path.join(dir, 'skills') });
     this.reviews = createReviewController({ manager: this, dir: path.join(dir, 'reviews'), skills: this.skills, log });
+    this.visualizeEnabled = visualize !== false;
+    this.visualize = createVisualizeStore({ dir: path.join(dir, 'visualize'), log });
     const onLoadError = error => this.recordLoadError(error);
     this.tasks = new ScheduledTasks({ file: path.join(dir, 'tasks', 'state.json'), log,
       onLoadError,
@@ -461,9 +465,12 @@ class SharedConversations {
     const reviewTools = this.portableSkills && c && !c.controlParentId
       ? require('./review-agent-tools') : null;
     const agentReviews = Boolean(reviewTools && this.reviews.settings(c.id).allowAgentReviews);
+    const visualizeTools = this.visualizeEnabled && c && !c.controlParentId
+      ? require('./visualize-tools') : null;
     return [
       ...(this.portableSkills ? require('./skill-tools').tools : []),
       ...(agentReviews ? reviewTools.tools : reviewTools ? [reviewTools.startTool] : []),
+      ...(visualizeTools ? visualizeTools.tools : []),
     ];
   }
 
@@ -473,10 +480,13 @@ class SharedConversations {
       ? require('./review-agent-tools') : null;
     const agentReviews = Boolean(reviewTools && this.reviews.settings(c.id).allowAgentReviews);
     const gated = Boolean(c && !c.controlParentId && this.reviews.settings(c.id).gate);
+    const visualizeTools = this.visualizeEnabled && c && !c.controlParentId
+      ? require('./visualize-tools') : null;
     return [
       ...(this.portableSkills ? [require('./skill-tools').instructions] : []),
       ...(agentReviews ? [reviewTools.instructions] : reviewTools ? [reviewTools.consentInstructions] : []),
       ...(gated ? ['A cross-engine review gate is enabled for this conversation. Do not report Goal completion unless a fresh review returns a pass; a stale, failed, cancelled or missing review is not a pass.'] : []),
+      ...(visualizeTools ? [visualizeTools.instructions] : []),
     ].join('\n');
   }
 
@@ -498,6 +508,7 @@ class SharedConversations {
       if (name.startsWith('camellia_context_')) return this.callContextTool(id, name, args);
       if (name.startsWith('camellia_memory_')) return this.callMemoryTool(id, name, args, active);
       if (name.startsWith('camellia_skill_')) return this.callSkillTool(name, args);
+      if (name === 'camellia_visualize') return this.callVisualizeTool(id, args, active);
       if (name.startsWith('camellia_review_') && name !== 'camellia_review_report')
         return this.callReviewTool(id, name, args, active);
       if (name === 'camellia_review_report') return this.reviews.report(id, args);
@@ -633,6 +644,52 @@ class SharedConversations {
     if (name === 'camellia_skill_resource')
       return { ok: true, ...this.skills.resource(args.name, args.path, args.max_chars) };
     throw new Error('Unknown Camellia skill tool');
+  }
+
+  callVisualizeTool(id, args = {}, active = {}) {
+    if (!this.visualizeEnabled) throw new Error('Interactive visualizations are disabled');
+    if (active.c?.controlParentId || active.c?.controlReviewId || active.scheduledTaskId)
+      throw new Error('Interactive visualizations are available only in ordinary parent conversations');
+    const c = this.get(id);
+    const action = args.action === 'update' ? 'update' : 'create';
+    let embedded = { fragment: args.fragment, assets: [], videos: [], data: [] };
+    if (action === 'create' || args.fragment !== undefined) {
+      const images = embedWorkspaceImages(args.fragment, c.cwd);
+      const videos = embedWorkspaceVideos(images.fragment, c.cwd);
+      const data = embedWorkspaceData(videos.fragment, c.cwd);
+      embedded = { fragment: data.fragment, assets: images.assets, videos: videos.assets, data: data.assets };
+    } else if (args.new_str !== undefined) {
+      const images = embedWorkspaceImages(args.new_str, c.cwd);
+      const videos = embedWorkspaceVideos(images.fragment, c.cwd);
+      const data = embedWorkspaceData(videos.fragment, c.cwd);
+      embedded = { newStr: data.fragment, assets: images.assets, videos: videos.assets, data: data.assets };
+    }
+    const card = action === 'update'
+      ? this.visualize.update(id, args.card_id, {
+        title: args.title,
+        summary: args.summary,
+        mode: args.mode,
+        style: args.style,
+        networkOrigins: args.network_origins,
+        fragment: args.fragment === undefined ? undefined : embedded.fragment,
+        oldStr: args.old_str,
+        newStr: args.new_str === undefined ? undefined : embedded.newStr,
+      })
+      : this.visualize.create(id, {
+        title: args.title,
+        summary: args.summary,
+        mode: args.mode,
+        style: args.style,
+        networkOrigins: args.network_origins,
+        fragment: embedded.fragment,
+      });
+    return { ok: true, action, visualize: {
+      cardId: card.cardId, title: card.title, mode: card.mode,
+      style: card.style, summary: card.summary, revision: card.revision,
+      createdAt: card.createdAt, updatedAt: card.updatedAt,
+      images: embedded.assets, videos: embedded.videos, data: embedded.data,
+      networkOrigins: card.networkOrigins || [], networkApproved: card.networkApproved === true,
+    } };
   }
 
   callReviewTool(id, name, args = {}, active = {}) {
@@ -920,6 +977,7 @@ class SharedConversations {
     await this.historyStore.removeAsync(id);
     for (const name of await fs.promises.readdir(this.dir)) if (name.startsWith(id + '.jsonl.torn-')) await rm(path.join(this.dir, name));
     await rm(path.join(this.dir, 'goals', id + '.json'));
+    await this.visualize.remove(id);
     // Check sharing after the asynchronous cleanup. No yield between this
     // check and unlink: a new fork or attachment must retain its handoffs.
     if (files.size) for (const other of this.items.values()) {
@@ -1229,7 +1287,8 @@ class SharedConversations {
     const compaction = this.switching.get(id)?.compaction || this.active.get(id)?.compaction
       || (['failed', 'cancelled'].includes(last?.outcome) && Number.isSafeInteger(last.boundary)
         && this.historyInfo(c).userSeq <= last.boundary ? { state: last.outcome, engine: last.engine || c.currentEngine,
-        native: last.route === 'native', error: last.error || '' } : null);
+        native: last.route === 'native', error: last.error || '',
+        ...(Number.isFinite(last.startedAt) ? { startedAt: last.startedAt, durationMs: last.totalMs } : {}) } : null);
     return { ok: true, ...c, requestUsage, subagents: this.subagentView(id), activity: this.activity(id), backgroundWork: this.backgroundStatus(id), compaction, live, preferences: prefs, messages, settings: this.settings(engine, id), truncated: false,
       ...(page ? { historyPage: { nextBefore: page.nextBefore, version: page.version } } : {}),
       remoteQueue: this.remoteQueue?.snapshot(id) };
@@ -1390,6 +1449,38 @@ class SharedConversations {
       .sort((a, b) => b.updatedAt - a.updatedAt || a.id.localeCompare(b.id))
       .slice(0, 100);
     return { ok: true, sessions };
+  }
+  listAttachableArtifacts(id, query = '') {
+    if (!id) throw new Error('Choose a conversation first');
+    const c = this.get(id);
+    const term = String(query || '').trim().toLocaleLowerCase().slice(0, 100);
+    const seen = new Set(), artifacts = [];
+    for (const row of this.historyRows(c, { mask: HISTORY_FLAGS.public, reverse: true })) {
+      for (const artifact of Array.isArray(row.artifacts) ? row.artifacts : []) {
+        const raw = typeof artifact === 'string' ? artifact : artifact?.canonicalPath || artifact?.path;
+        if (!raw) continue;
+        const target = path.isAbsolute(raw) ? raw : path.resolve(c.cwd, raw);
+        let stat;
+        try { stat = fs.statSync(target); } catch { continue; }
+        if (!stat.isFile()) continue;
+        let canonical = target;
+        try { canonical = fs.realpathSync.native(target); } catch {}
+        const key = process.platform === 'win32' ? canonical.toLowerCase() : canonical;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        const name = typeof artifact === 'object' && artifact.name ? artifact.name : path.basename(canonical);
+        const kind = typeof artifact === 'object' && artifact.kind ? artifact.kind : previewKind(canonical);
+        const extension = typeof artifact === 'object' && artifact.extension
+          ? artifact.extension : path.extname(canonical).slice(1).toUpperCase();
+        const file = { path: target, canonicalPath: canonical, name, kind, extension,
+          size: stat.size, mtimeMs: stat.mtimeMs };
+        if (term && ![file.name, file.path, file.canonicalPath, file.kind]
+          .some(value => String(value || '').toLocaleLowerCase().includes(term))) continue;
+        artifacts.push(file);
+        if (artifacts.length >= 100) return { ok: true, artifacts };
+      }
+    }
+    return { ok: true, artifacts };
   }
   attachConversation(id) {
     this.get(id);
@@ -2609,7 +2700,8 @@ class SharedConversations {
     try {
       if (a.cancelled || a.finished) throw new Error('Native session recovery canceled');
       if (a.subscriptionOverride) {
-        const event = { type: 'conversation:continued', session_id: c.id, engine, runId: a.facade.gen, eventSeq: ++a.eventSeq };
+        const event = { type: 'conversation:continued', reason: 'subscription-account-switch',
+          session_id: c.id, engine, runId: a.facade.gen, eventSeq: ++a.eventSeq };
         a.events.push(event); this.onEvent(event);
       }
       const prompt = typeof a.nativeFallbackPrompt === 'function' ? a.nativeFallbackPrompt()
@@ -3210,7 +3302,7 @@ class SharedConversations {
     if (!history) for (const row of this.historyRows(c, { mask: HISTORY_FLAGS.public, reverse: true })) {
       if (contextRow(row)) { boundary = row.seq || 0; break; }
     }
-    const diagnostics = { boundary, automatic, triggerReason: trigger?.reason || (history ? 'edited-history' : destination ? 'destination' : 'manual'),
+    const diagnostics = { boundary, startedAt, automatic, triggerReason: trigger?.reason || (history ? 'edited-history' : destination ? 'destination' : 'manual'),
       route: 'pending', requests: 0, retries: 0, chunks: [] };
     const segment = c.segments[engine];
     diagnostics.nativeCompaction = trigger?.nativeCompaction || this.nativeCompactionDecision(c, targetEngine, targetSettings);
@@ -3252,7 +3344,9 @@ class SharedConversations {
     let portableAttempted = false;
     let completed = false;
     let failureMessage = '';
+    let statusClosed = false;
     const status = (text, compaction) => {
+      if (statusClosed || compaction?.state === 'running' && (switching.cancelled || recovery?.cancelled)) return;
       if (compaction?.state === 'running' && !manualFallback) armDeadline();
       if (compaction) compaction = { engine, startedAt, elapsedMs: Date.now() - startedAt, ...compaction };
       switching.compaction = compaction || null;
@@ -3569,8 +3663,9 @@ class SharedConversations {
       catch (error) { this.log('Could not save compaction diagnostics: ' + error.message); }
       finally {
         this.log('context compaction metrics: ' + JSON.stringify({ sessionId: id, engine, ...diagnostics }));
-        this.switching.delete(id);
+        if (this.switching.get(id) === switching) this.switching.delete(id);
         status('', completed ? undefined : { state: switching.cancelled || recovery?.cancelled ? 'cancelled' : 'failed', native: diagnostics.route === 'native', error: failureMessage });
+        statusClosed = true;
         this.publishActivity(id);
       }
     }
@@ -3623,9 +3718,10 @@ class SharedConversations {
         this.save(c);
       } };
   }
-  // Kimi subscription maps use independent ephemeral sessions in parallel;
-  // other engine transports retain their existing serial behavior. No fragment
-  // re-emits a growing rolling summary or redoes completed history.
+  // Subscription engine maps use independent ephemeral sessions in parallel.
+  // A short, bounded burst cuts wall-clock time on large histories; a quota
+  // failure falls back to the existing serial account-recovery path. No
+  // fragment re-emits a growing rolling summary or redoes completed history.
   async summarizeViaEngine({ c, engine, id, settings, units, plan, budget, cap, boundary, diagnostics, switching, recovery, status, maxSummaryChars = Infinity }) {
     diagnostics.transport = 'engine';
     const summarySettings = { ...settings };
@@ -3639,11 +3735,12 @@ class SharedConversations {
       summarySettings.thinkingBudget = 'low';
     diagnostics.thinkingBudget = summarySettings.thinkingBudget || 'default';
     const checkpoint = this.summaryCheckpoint({ c, engine, settings, cacheSettings: summarySettings, units, budget, boundary, maxSummaryChars, diagnostics });
-    let currentBudget = budget, recent = null, concurrency = engine === 'kimi' && settings.connection === 'subscription' ? 4 : 1;
+    let currentBudget = budget, recent = null;
+    let concurrency = settings.connection === 'subscription' ? (['kimi', 'codex'].includes(engine) ? 4 : 3) : 1;
     diagnostics.concurrency = concurrency;
     let progress = {};
     const stopped = () => switching.cancelled || Boolean(switching.timedOut || recovery?.cancelled);
-    const request = async ({ kind, system, user, maxChars }) => {
+    const request = async ({ kind, system, user, maxChars, parallelConcurrency = concurrency }) => {
       if (stopped()) throw new Error('Compaction canceled');
       // Aim below the acceptance limit so a small length overshoot needs no
       // extra model call. This only affects the auxiliary summary turn.
@@ -3687,11 +3784,13 @@ class SharedConversations {
           return { text: result.result, usage: result.usage };
         } catch (error) {
           metric.outcome = 'failed';
-          if (concurrency === 1 && !stopped() && !storageFailure(error) && !attempt?.tools.size && !attempt?.permissions.size
+          if (parallelConcurrency === 1 && !stopped() && !storageFailure(error) && !attempt?.tools.size && !attempt?.permissions.size
               && this.switchCompactionAccount(engine, switching, { is_error: true, result: error.message, codexErrorInfo: error.codexErrorInfo }, status)) {
             summarySettings.subscriptionId = switching.subscriptionId;
             continue;
           }
+          if (parallelConcurrency > 1 && subscriptionFailure({ is_error: true, result: error.message,
+            codexErrorInfo: error.codexErrorInfo }, engine)) error.parallelSummary = true;
           throw error;
         } finally {
           clearTimeout(timer);
@@ -3725,10 +3824,11 @@ class SharedConversations {
     const run = async (source, previous = '') => {
       try { return await execute(source, previous); }
       catch (error) {
-        if (concurrency === 1 || stopped() || subscriptionFailure({ is_error: true, result: error.message }, engine) !== 'quota') throw error;
+        const failure = subscriptionFailure({ is_error: true, result: error.message, codexErrorInfo: error.codexErrorInfo }, engine);
+        if (concurrency === 1 || stopped() || !failure || !error.parallelSummary) throw error;
         concurrency = 1;
         diagnostics.concurrency = 1;
-        diagnostics.serialFallback = 'quota';
+        diagnostics.serialFallback = failure;
         return execute(source, previous);
       }
     };
@@ -3801,6 +3901,47 @@ class SharedConversations {
     switch (action) {
       case 'stop-background-work': return this.stopBackgroundWork(payload);
       case 'subagent-command': return this.subagentCommand(payload.sessionId, payload);
+      case 'message-queue-add': {
+        const id = payload?.sessionId;
+        if (typeof id !== 'string' || !id) throw new Error('Session ID required');
+        const conversation = this.get(id);
+        if (conversation.currentEngine !== engine)
+          throw new Error('This conversation uses another harness. Reopen it or use the top selector to change its harness.');
+        if (!this.remoteQueue) throw new Error('Message queue unavailable');
+        const text = typeof payload.text === 'string' ? payload.text : '';
+        const attachments = payload.attachments === undefined ? [] : payload.attachments;
+        if (!Array.isArray(attachments) || attachments.length > 50) throw new Error('Invalid queued attachments');
+        if (!text.trim() && !attachments.length) throw new Error('Enter a message first');
+        if (text.length > 16_000) throw new Error('Enter a message of at most 16000 characters');
+        const prompt = typeof payload.prompt === 'string' && payload.prompt ? payload.prompt : text;
+        if (prompt.length > 200_000) throw new Error('The message is too large to send');
+        const displayText = typeof payload.displayText === 'string' && payload.displayText ? payload.displayText : text;
+        return this.remoteQueue.addDesktop(id, {
+          text,
+          prompt,
+          displayText,
+          attachments,
+          ...(typeof payload.goalId === 'string' && payload.goalId ? { goalId: payload.goalId } : {}),
+        });
+      }
+      case 'message-queue-remove': {
+        if (typeof payload?.sessionId !== 'string' || typeof payload.queueId !== 'string') throw new Error('Queued message ID required');
+        if (!this.remoteQueue) throw new Error('Message queue unavailable');
+        return { ...this.remoteQueue.remove(payload.sessionId, payload.queueId), state: 'accepted' };
+      }
+      case 'message-queue-edit': {
+        if (typeof payload?.sessionId !== 'string' || typeof payload.queueId !== 'string') throw new Error('Queued message ID required');
+        if (!this.remoteQueue) throw new Error('Message queue unavailable');
+        return { ...(payload.prompt !== undefined || payload.expectedText !== undefined
+          ? this.remoteQueue.edit(payload.sessionId, payload.queueId, payload.prompt, payload.expectedText)
+          : this.remoteQueue.takeDesktop(payload.sessionId, payload.queueId)), state: 'accepted' };
+      }
+      case 'message-queue-steer': {
+        if (typeof payload?.sessionId !== 'string' || typeof payload.queueId !== 'string') throw new Error('Queued message ID required');
+        if (!this.remoteQueue) throw new Error('Message queue unavailable');
+        return { ...await this.remoteQueue.steer(payload.sessionId, payload.queueId, payload.runId, payload.goalId),
+          state: 'accepted' };
+      }
       case 'remote-queue-remove': return this.remoteQueue?.remove(payload.sessionId, payload.queueId) || { ok: false, error: 'Remote queue unavailable' };
       case 'remote-queue-resume': return this.remoteQueue?.resume(payload.sessionId) || { ok: false, error: 'Remote queue unavailable' };
       case 'send': {
@@ -3813,6 +3954,13 @@ class SharedConversations {
       case 'steer': return this.steer(engine, payload);
       case 'get-live': return this.live(engine, payload?.sessionId);
       case 'get-settings': return this.settings(engine, payload?.sessionId);
+      case 'diagnostic': {
+        // Renderer states that decide whether a live turn appears cannot be
+        // inspected from here; keep their anomalies in the application log.
+        const message = String(payload?.message || '').replace(/\s+/g, ' ').slice(0, 400);
+        if (message) this.log('renderer: ' + message);
+        return { ok: true };
+      }
       case 'context-snapshot': return this.contextSnapshot(engine, payload);
       case 'context-events': return this.contextEvents(engine, payload);
       case 'context-node': return this.contextNode(engine, payload);
@@ -3849,6 +3997,20 @@ class SharedConversations {
         return { ...removed, ...(deactivations.length ? { deactivations } : {}) };
       }
       case 'skill-doctor': return { ok: true, ...this.skills.doctor() };
+      case 'visualize-get': {
+        this.get(payload?.sessionId);
+        return { ok: true, card: this.visualize.get(payload.sessionId, payload?.cardId) };
+      }
+      case 'visualize-state': {
+        this.get(payload?.sessionId);
+        return { ok: true, ...this.visualize.setState(payload?.sessionId, payload?.cardId,
+          payload?.state, { clear: payload?.clear === true }) };
+      }
+      case 'visualize-network': {
+        this.get(payload?.sessionId);
+        return { ok: true, card: this.visualize.setNetworkApproval(payload?.sessionId,
+          payload?.cardId, payload?.approved === true) };
+      }
       case 'skill-load': {
         const skill = this.skills.load(payload?.name);
         return { ok: true, name: skill.name, description: skill.description,
@@ -3869,6 +4031,7 @@ class SharedConversations {
       case 'review-cancel': return this.reviews.cancel(payload?.reviewId);
       case 'review-list': return { ok: true, reviews: this.reviews.list(payload?.sessionId) };
       case 'list-attachable-conversations': return this.listAttachableConversations(payload?.query, payload?.excludeId);
+      case 'list-attachable-artifacts': return this.listAttachableArtifacts(payload?.sessionId, payload?.query);
       case 'attach-conversation': return this.attachConversation(payload?.sessionId);
       case 'discard-conversation-attachment': return this.discardConversationAttachment(payload?.path);
       case 'save-settings': return this.saveSettings(engine, payload || {});
@@ -3933,10 +4096,10 @@ class SharedConversations {
         if (!a || a.facade.gen !== payload.runId || !a.permissions.has(payload.requestId)) return { ok: false };
         const request = a.permissions.get(payload.requestId);
         const ok = Boolean(a.session?.answerPermission(payload.requestId, payload.allow, payload.input, payload.message, payload.optionId));
+        let responseSeq;
         if (ok) {
           a.permissions.delete(payload.requestId);
           const response = { requestId: payload.requestId, runId: a.facade.gen, allow: payload.allow === true };
-          let responseSeq;
           if (request.questions?.length) {
             response.questions = structuredClone(request.questions);
             if (response.allow) response.answers = Object.fromEntries(request.questions.map(question => [question.id,
@@ -3955,7 +4118,10 @@ class SharedConversations {
           this.onEvent(event);
           this.publishActivity(a.c.id);
         }
-        return { ok };
+        // The durable transcript sequence lets the answering window key its
+        // answered card before the approval event arrives (the IPC reply and
+        // the broadcast can be delivered in either order).
+        return { ok, ...(responseSeq !== undefined ? { responseSeq } : {}) };
       }
       case 'task-list': return { ok: true, tasks: payload?.sessionId ? this.tasks.list(payload.sessionId) : [] };
       case 'task-cancel-all': {

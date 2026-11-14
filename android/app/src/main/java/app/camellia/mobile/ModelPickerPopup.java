@@ -48,6 +48,8 @@ final class ModelPickerPopup {
     private View backdropSource;
     private int heightLimit, modelHeight;
     private int popupLeft, popupBottom;
+    private int updateOffsetY;
+    private int requestedTop;
 
     ModelPickerPopup(Context context, boolean chinese, int background, int surface, int ink, int muted, int accent,
             List<LocalChatConfig.Route> routes, LocalChatConfig.Route selected, String level, Listener listener) {
@@ -73,17 +75,21 @@ final class ModelPickerPopup {
 
     @android.annotation.SuppressLint("RtlHardcoded")
     void show(View anchor) {
-        Rect visible = new Rect(); anchor.getWindowVisibleDisplayFrame(visible);
+        Rect visible = PopupSurface.visibleFrame(anchor);
         int[] location = new int[2]; anchor.getLocationOnScreen(location);
-        int width = Math.max(1, Math.min(dp(320), visible.width() - dp(24)));
-        int left = Math.max(visible.left + dp(12), Math.min(location[0], visible.right - width - dp(12)));
-        popupBottom = Math.min(visible.bottom - dp(8), Math.max(visible.top + dp(64), location[1] - dp(10)));
-        heightLimit = Math.max(1, popupBottom - visible.top - dp(8));
-        popupLeft = left;
+        int width = PopupSurface.modelMenuWidth(context, visible);
+        int anchorCenter = location[0] + anchor.getWidth() / 2;
+        popupLeft = PopupSurface.sheetLeft(anchorCenter, width, visible.left, visible.right, dp(PopupSurface.BOTTOM_SHEET_GUTTER_DP));
+        popupBottom = visible.bottom - dp(PopupSurface.BOTTOM_SHEET_BOTTOM_GAP_DP);
+        heightLimit = PopupSurface.menuHeightLimit(context, visible);
         popup.setWidth(width); models();
         backdropSource = anchor.getRootView();
-        modelSurface.capture(backdropSource, left, popupBottom - modelHeight, width, modelHeight);
-        popup.showAtLocation(anchor, Gravity.TOP | Gravity.LEFT, left, popupBottom - modelHeight);
+        modelSurface.capture(backdropSource, popupLeft, popupBottom - modelHeight, width, modelHeight);
+        requestedTop = popupBottom - modelHeight;
+        updateOffsetY = 0;
+        popup.showAtLocation(anchor, Gravity.TOP | Gravity.LEFT, popupLeft, popupBottom - modelHeight);
+        modelSurface.setAlpha(0f);
+        panel.post(() -> settleInitialPosition(0));
     }
 
     void dismiss() {
@@ -120,7 +126,14 @@ final class ModelPickerPopup {
         PopupSurface layer = new PopupSurface(context, background);
         ScrollView viewport = new ScrollView(context); viewport.setVerticalScrollBarEnabled(false); viewport.addView(body);
         viewport.setPadding(dp(12), dp(14), dp(12), dp(10)); viewport.setClipToPadding(false);
-        layer.addView(viewport, new FrameLayout.LayoutParams(-1, -1)); return layer;
+        layer.addView(viewport, new FrameLayout.LayoutParams(-1, -1));
+        View fade = PopupSurface.scrollFade(context, background);
+        fade.setVisibility(View.GONE);
+        layer.addView(fade, new FrameLayout.LayoutParams(-1, dp(30), Gravity.BOTTOM));
+        Runnable update = () -> fade.setVisibility(viewport.canScrollVertically(1) ? View.VISIBLE : View.GONE);
+        viewport.setOnScrollChangeListener((view, scrollX, scrollY, oldScrollX, oldScrollY) -> update.run());
+        layer.post(update);
+        return layer;
     }
 
     private int height(View layer) {
@@ -131,7 +144,7 @@ final class ModelPickerPopup {
 
     private void resize(int height) {
         popup.setHeight(height);
-        if (popup.isShowing()) popup.update(popupLeft, popupBottom - height, popup.getWidth(), height);
+        if (popup.isShowing()) popup.update(popupLeft, popupBottom - height - updateOffsetY, popup.getWidth(), height);
     }
 
     private void reveal(View layer) {
@@ -155,6 +168,7 @@ final class ModelPickerPopup {
             return;
         }
         LinearLayout body = column();
+        addGrip(body);
         TextView caption = text(tr("选择模型", "Choose a model"), Palette.TEXT_TINY, muted); caption.setPadding(dp(16), dp(2), dp(16), dp(10)); body.addView(caption);
         for (LocalChatConfig.Route route : routes) {
             String host = URI.create(route.baseUrl).getHost();
@@ -176,6 +190,7 @@ final class ModelPickerPopup {
     private void thinking() {
         if (thinkingSurface != null) return;
         LinearLayout body = column();
+        addGrip(body);
         body.addView(row(tr("思考等级", "Thinking level"), selected == null ? tr("未选择模型", "No model selected") : selected.displayName(), "down", false, "thinkingBack", this::models));
         divider(body);
         boolean supported = LocalChatThinking.supported(selected);
@@ -209,5 +224,34 @@ final class ModelPickerPopup {
         thinkingSurface.setElevation(dp(6)); panel.addView(thinkingSurface, params);
         resize(totalHeight); reveal(thinkingSurface);
         thinkingSurface.findViewWithTag("thinkingBack").requestFocus();
+    }
+
+    private void addGrip(LinearLayout body) {
+        View grip = PopupSurface.grip(context);
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(dp(36), dp(4));
+        params.gravity = Gravity.CENTER_HORIZONTAL;
+        params.bottomMargin = dp(8);
+        body.addView(grip, params);
+    }
+
+    private void settleInitialPosition(int attempt) {
+        if (!popup.isShowing()) return;
+        int[] location = new int[2];
+        panel.getLocationOnScreen(location);
+        int error = location[1] + panel.getHeight() - popupBottom;
+        if (Math.abs(error) > 1 && attempt < 3) {
+            requestedTop -= error;
+            popup.update(popupLeft, requestedTop, popup.getWidth(), panel.getHeight());
+            panel.post(() -> settleInitialPosition(attempt + 1));
+            return;
+        }
+        updateOffsetY = location[1] - requestedTop;
+        if (ValueAnimator.areAnimatorsEnabled()) {
+            modelSurface.setTranslationY(dp(18));
+            modelSurface.animate().alpha(1f).translationY(0f).setDuration(180).start();
+        } else {
+            modelSurface.setAlpha(1f);
+            modelSurface.setTranslationY(0f);
+        }
     }
 }

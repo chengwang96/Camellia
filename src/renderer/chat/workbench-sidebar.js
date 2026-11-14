@@ -802,7 +802,10 @@ function createClaudeSidebar({ $, context, contextBusy, canChangeContext, canRea
       // A list refresh must not undo navigation made while it was in flight.
       if (context.sessionId !== id) return;
       if (neighbor && sessionHistory.some(entry => entry.id === neighbor.id)) await openHistorySession(neighbor.id);
-      if (context.sessionId !== neighbor?.id) await newSession(session.workspaceId || null);
+      // The neighbor load can be superseded by a conversation the user opened
+      // meanwhile. Only fall back to a draft while the archived conversation
+      // is still shown (or its failed neighbor load left the page empty).
+      if (context.sessionId === id || context.sessionId == null) await newSession(session.workspaceId || null);
       setStatus('Session archived');
     } catch (error) { setStatus(error.message); }
   }
@@ -816,13 +819,15 @@ function createClaudeSidebar({ $, context, contextBusy, canChangeContext, canRea
       await loadSessionHistory();
       // Archiving the open conversation continues with its neighbor. When the
       // workspace has no conversation left, its new-session page opens instead;
-      // standalone conversations reuse the standalone section.
-      if (wasOpen) {
+      // standalone conversations reuse the standalone section. A conversation
+      // the user opened while the archive was in flight wins over this
+      // continuation, which must not replace it with a fresh draft.
+      if (wasOpen && context.sessionId === s.id) {
         // A neighbor still in the list opens here; a shared conversation owned
         // by another engine still switches engines instead of opening a draft.
         const openable = neighbor && sessionHistory.some((entry) => entry.id === neighbor.id);
         if (openable) await openHistorySession(neighbor.id);
-        if (context.sessionId !== neighbor?.id) await newSession(s.workspaceId || null);
+        if (context.sessionId === s.id || context.sessionId == null) await newSession(s.workspaceId || null);
       }
       setStatus("Session archived");
     } catch (err) { setStatus(err.message); }
@@ -861,10 +866,10 @@ function createClaudeSidebar({ $, context, contextBusy, canChangeContext, canRea
       noteLocalDelete(s.id);
       closeDeleteDialog();
       await loadSessionHistory();
-      if (wasOpen) {
+      if (wasOpen && context.sessionId === s.id) {
         const openable = neighbor && sessionHistory.some((entry) => entry.id === neighbor.id);
         if (openable) await openHistorySession(neighbor.id);
-        if (context.sessionId !== neighbor?.id) await newSession(s.workspaceId || null);
+        if (context.sessionId === s.id || context.sessionId == null) await newSession(s.workspaceId || null);
       }
       setStatus("Conversation deleted");
     } catch (err) {
@@ -1041,11 +1046,6 @@ function createClaudeSidebar({ $, context, contextBusy, canChangeContext, canRea
   return {
     load: loadSessionHistory, render: renderSessionSidebar, updateLabel: updateWorkspaceLabel, metaOp: runMetaOp,
     markReplyRead, renameDiscussion, archivedChanged,
-    openCurrentActions: anchor => {
-      const session = sessionHistory.find(item => item.id === context.sessionId);
-      const item = [...sessionList.querySelectorAll('.session-item')].find(item => item.dataset.sid === context.sessionId);
-      if (session && item) openSessionActions(anchor, item, session);
-    },
     get sessions() { return sessionHistory; }, get workspaces() { return workspaces; },
   };
 }

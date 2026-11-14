@@ -37,6 +37,7 @@ button.completion-label:hover { color: var(--dsw-alias-label-secondary); }
 .has-completion .execution-process { margin: 0 0 14px; border: 0; border-radius: 0; background: transparent; }
 .has-completion .execution-process > summary { display: none; }
 .has-completion .execution-process-body { padding: 0; }
+.has-completion .execution-process-collapse { margin-top: 2px; border-top: 0; border-radius: 8px; }
 .turn-usage { display: inline-flex; min-width: 0; }
 .message-actions .turn-usage-trigger {
   display: inline-flex; align-items: center; justify-content: flex-start; gap: 5px;

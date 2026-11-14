@@ -11,6 +11,10 @@ window.CamelliaConversationNavigator = (() => {
     const value = String(text || '').replace(/\s+/g, ' ').trim();
     return value.length > 480 ? value.slice(0, 479).trimEnd() + '…' : value;
   };
+  const answerSummary = text => {
+    const value = String(text || '').replace(/\s+/g, ' ').trim();
+    return value.length > 220 ? value.slice(0, 219).trimEnd() + '…' : value;
+  };
 
   function create({ rail, scroll, chat, main, enabled = true }) {
     if (!rail || !scroll || !chat || !main) return null;
@@ -26,6 +30,9 @@ window.CamelliaConversationNavigator = (() => {
     let activeFrame = 0;
     let previewIndex = -1;
     const MAX_VISIBLE_MARKERS = 20;
+    const RAIL_LEFT = 12;
+    // Left offset, the widest hover marker, and breathing room before the text.
+    const MIN_RAIL_GUTTER = RAIL_LEFT + 28;
     const preview = document.createElement('div');
     preview.className = 'conversation-preview';
     preview.id = 'conversationPreview';
@@ -40,6 +47,19 @@ window.CamelliaConversationNavigator = (() => {
     const markerLabel = (turn, index) => translate('Jump to turn {0}: {1}')
       .replace('{0}', String(index + 1)).replace('{1}', promptOf(turn));
     const turns = () => [...chat.querySelectorAll('.msg-user')];
+    const answerOf = turn => {
+      for (let row = turn.nextElementSibling; row && !row.classList.contains('msg-user'); row = row.nextElementSibling) {
+        if (!row.classList.contains('turn')) continue;
+        const body = row.querySelector('.turn-body');
+        if (!body) continue;
+        const text = [...body.children]
+          .filter(element => element.classList.contains('md'))
+          .map(element => element.innerText || element.textContent)
+          .join('\n\n');
+        if (text.trim()) return text;
+      }
+      return '';
+    };
 
     function hidePreview() {
       previewIndex = -1;
@@ -64,6 +84,13 @@ window.CamelliaConversationNavigator = (() => {
         body.className = 'conversation-preview-text';
         body.textContent = previewSummary(turn.messageData?.text || translate('Attachments'));
         preview.replaceChildren(meta, body);
+        const answer = answerOf(turn);
+        if (answer) {
+          const reply = document.createElement('div');
+          reply.className = 'conversation-preview-answer';
+          reply.textContent = answerSummary(answer);
+          preview.append(reply);
+        }
       }
       const mainBox = main.getBoundingClientRect(), markerBox = button.getBoundingClientRect();
       const width = preview.offsetWidth, height = preview.offsetHeight;
@@ -82,7 +109,7 @@ window.CamelliaConversationNavigator = (() => {
       if (rail.hidden) return;
       const mainBox = main.getBoundingClientRect();
       const scrollBox = scroll.getBoundingClientRect();
-      rail.style.left = '2px';
+      rail.style.left = RAIL_LEFT + 'px';
       rail.style.top = Math.max(0, Math.round(scrollBox.top - mainBox.top + 26)) + 'px';
       rail.style.height = Math.max(80, Math.round(scrollBox.height - 52)) + 'px';
     }
@@ -91,7 +118,7 @@ window.CamelliaConversationNavigator = (() => {
       const gutter = chat.getBoundingClientRect().left - main.getBoundingClientRect().left;
       const available = turns().length > 1 && innerWidth > 760
         && !chat.querySelector('.empty-state')
-        && gutter >= 22
+        && gutter >= MIN_RAIL_GUTTER
         && scroll.scrollHeight > scroll.clientHeight + 24;
       rail.hidden = !isEnabled || !available;
       rail.setAttribute('aria-hidden', String(rail.hidden));

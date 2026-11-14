@@ -20,6 +20,10 @@ bridge += r"""(() => {
       {id:'older',title:'Electron migration',engine:'codex',cwd:'D:/Code/Electron',updatedAt:2},
       {id:'other',title:'Python notes',engine:'claude',cwd:'D:/Code/Python',updatedAt:1},
     ].filter(item => !request.payload.query || item.title.toLowerCase().includes(request.payload.query.toLowerCase()))};
+    if (request.action === 'list-attachable-artifacts') return {ok:true,artifacts:[
+      {path:'D:/Code/current/report.pdf',name:'report.pdf',kind:'pdf',extension:'PDF',size:2048},
+      {path:'D:/Code/current/preview.png',name:'preview.png',kind:'image',extension:'PNG',size:4096},
+    ]};
     if (request.action === 'attach-conversation') { window.attachCount = (window.attachCount || 0) + 1;
       return {ok:true,attachment:{path:'C:/Camellia/older.md',name:'Electron migration.md',isImage:false,kind:'conversation',sourceSessionId:'older'}}; }
     if (request.action === 'send') { window.sentPayload = request.payload; return {ok:true,sessionId:'new-conversation',userSeq:1,runId:10}; }
@@ -34,21 +38,46 @@ with sync_playwright() as playwright:
     errors = []
     page.on('pageerror', lambda error: errors.append(str(error)))
     page.add_init_script(bridge)
-    page.goto((repo / 'src/renderer/chat/workbench.html').as_uri() + '?harness=codex&new=1', wait_until='networkidle')
+    page.goto((repo / 'src/renderer/chat/workbench.html').as_uri() + '?harness=codex&conversation=shared-fixture', wait_until='networkidle')
     page.wait_for_function('uiReady')
     page.locator('#attachBtn').click()
     expect(page.locator('.attach-pop')).to_be_visible()
     expect(page.locator('.attach-pop')).to_contain_text('Files')
+    expect(page.locator('.attach-pop')).to_contain_text('Artifacts')
     expect(page.locator('.attach-pop')).to_contain_text('Conversation')
     page.locator('.attach-option', has_text='Files').click()
     expect(page.locator('#attachRow .attchip')).to_contain_text('notes.txt')
     page.locator('#attachRow .attchip-x').click()
-    page.locator('#attachBtn').click()
-    page.locator('.attach-option', has_text='Conversation').click()
-    page.locator('.attach-picker-search').fill('Electron')
-    expect(page.locator('.attach-conversation-option')).to_have_count(1)
+    # /attach opens the current-artifact source first.
+    page.locator('#input').fill('/attach')
+    expect(page.locator('.slash-pop')).to_contain_text('/attach')
+    page.locator('.slash-pop .slash-row', has_text='/attach').click()
+    expect(page.locator('.attach-source-tab.active')).to_contain_text('This conversation')
+    expect(page.locator('.attach-source-tabs')).to_contain_text('All conversations')
+    expect(page.locator('.attach-artifact-option')).to_have_count(2)
+    page.locator('.attach-picker-search').fill('report')
+    expect(page.locator('.attach-picker-search-clear')).to_be_visible()
+    input_style = page.locator('.attach-picker-search').evaluate(
+        "el => { const style = getComputedStyle(el); return {outline: style.outlineStyle, shadow: style.boxShadow}; }")
+    assert input_style['outline'] == 'none', input_style
+    assert input_style['shadow'] == 'none', input_style
+    search_style = page.locator('.attach-picker-search-shell').evaluate(
+        "el => { const style = getComputedStyle(el); return {outline: style.outlineStyle, shadow: style.boxShadow}; }")
+    assert search_style['outline'] == 'none', search_style
+    assert search_style['shadow'] != 'none', search_style
+    expect(page.locator('.attach-artifact-option')).to_have_count(1)
     preview = repo / 'dist/ui-preview'
     preview.mkdir(parents=True, exist_ok=True)
+    page.screenshot(path=str(preview / 'attachment-sources.png'), animations='disabled')
+    page.locator('.attach-artifact-option').click()
+    expect(page.locator('#attachRow .attchip')).to_contain_text('report.pdf')
+    page.locator('#attachRow .attchip-x').click()
+
+    page.locator('#input').fill('/attach')
+    page.locator('.slash-pop .slash-row', has_text='/attach').click()
+    page.locator('.attach-source-tab', has_text='All conversations').click()
+    page.locator('.attach-picker-search').fill('Electron')
+    expect(page.locator('.attach-conversation-option')).to_have_count(1)
     page.screenshot(path=str(preview / 'conversation-picker.png'), animations='disabled')
     page.locator('.attach-conversation-option').click()
     expect(page.locator('#attachRow .attchip')).to_contain_text('Electron migration.md')

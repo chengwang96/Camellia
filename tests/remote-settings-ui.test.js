@@ -29,8 +29,10 @@ test('settings navigation offers CLI devices directly below mobile access', () =
   const html = fs.readFileSync(path.join(__dirname, '../src/renderer/settings/api-settings.html'), 'utf8');
   const nav = /<nav[\s\S]*?<\/nav>/.exec(html)[0];
   const order = [...nav.matchAll(/data-view="([a-z]+)"/g)].map(match => match[1]);
-  assert.equal(order.at(-2), 'mobile');
-  assert.equal(order.at(-1), 'devices');
+  const mobileIndex = order.indexOf('mobile');
+  assert.ok(mobileIndex >= 0);
+  assert.equal(order[mobileIndex - 1], 'network');
+  assert.equal(order[mobileIndex + 1], 'devices');
   assert.match(nav, /<button data-view="devices" data-i18n>/);
   assert.match(html, /<section id="devicesPage" class="page" hidden>[\s\S]*?<div id="cliDevicesRoot"><\/div>/);
   assert.match(html, /<link rel="stylesheet" href="\.\.\/devices\/devices\.css">/);

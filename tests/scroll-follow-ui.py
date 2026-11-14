@@ -119,6 +119,12 @@ with sync_playwright() as playwright:
 
         # Drag the native scrollbar thumb, rather than synthesizing a DOM
         # scroll, to cover users who browse history with the scrollbar.
+        # The workbench hides its scrollbar; expose it in this fixture so the
+        # gesture actually reaches a native thumb instead of empty padding.
+        page.add_style_tag(content='''
+          #chatScroll { scrollbar-width: auto; }
+          #chatScroll::-webkit-scrollbar { width: 8px; height: 8px; }
+        ''')
         page.evaluate('scrollToLatest()')
         settled(page)
         bounds = page.locator('#chatScroll').bounding_box()

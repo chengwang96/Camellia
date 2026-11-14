@@ -17,7 +17,8 @@ const engineAvatar = engine => '<div class="turn-avatar engine-mark" data-engine
 let chatAvatar = engineAvatar(harnessId);
 const chatApi = Object.fromEntries(['Send', 'Steer', 'Cancel', 'GetSettings', 'SaveSettings', 'ControlRespond', 'Find',
   'ListSessions', 'LoadSession', 'ForkSession', 'RenameSession', 'ArchiveSession', 'DeleteSession', 'MetaOp',
-  'GoalGet', 'GoalStart', 'GoalPause', 'GoalResume', 'GoalComplete', 'GoalClear'].map(action => [
+  'GoalGet', 'GoalStart', 'GoalPause', 'GoalResume', 'GoalComplete', 'GoalClear', 'VisualizeGet',
+  'MessageQueueAdd', 'MessageQueueEdit', 'MessageQueueSteer'].map(action => [
   action[0].toLowerCase() + action.slice(1), (payload, engine = harnessId) =>
     window.dshDesktop.conversationCommand({ engine, action: action.replace(/[A-Z]/g, (c, i) => (i ? '-' : '') + c.toLowerCase()), payload }),
 ]));

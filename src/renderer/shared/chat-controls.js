@@ -122,6 +122,33 @@
     return card;
   }
 
+  // An expanded process buries its own summary above the viewport, so the
+  // disclosure carries a second collapse control next to where the reader
+  // ends up after scanning dozens of tool calls.
+  const collapseChevron = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="m7 14 5-5 5 5"/></svg>';
+  function executionProcess() {
+    const el = document.createElement('details');
+    el.className = 'execution-process';
+    el.innerHTML = '<summary><span data-i18n>Execution process</span><span class="execution-process-count" data-i18n></span></summary><div class="execution-process-body"></div>';
+    const collapse = document.createElement('button');
+    collapse.type = 'button'; collapse.className = 'execution-process-collapse';
+    collapse.innerHTML = collapseChevron + 'Collapse';
+    collapse.dataset.i18n = ''; collapse.dataset.i18nAttrs = 'aria-label title';
+    collapse.setAttribute('aria-label', 'Collapse execution process');
+    collapse.title = 'Collapse execution process';
+    collapse.addEventListener('click', () => {
+      el.open = false;
+      // After folding, show the header again instead of leaving the viewport
+      // adrift in the content below, and keep keyboard focus on a visible
+      // control instead of letting the hidden button drop it on the body.
+      const header = el.closest('.turn')?.querySelector('.completion-label') || el.querySelector('summary');
+      header?.scrollIntoView({ block: 'nearest' });
+      header?.focus?.({ preventScroll: true });
+    });
+    el.append(collapse);
+    return el;
+  }
+
   function renderAttachments(row, files, { preview, remove, collapsible = false } = {}) {
     const previous = row.querySelector('.attach-overflow');
     const previousPaths = new Set(Array.from(row.querySelectorAll('.attchip'), chip => chip.title));
@@ -203,5 +230,5 @@
     }
     return fields;
   }
-  window.CamelliaChatControls = { isImagePath, attachmentGlyph, fileUrl, makeToolCard, renderAttachments, questionFields, resizeQuestionFields };
+  window.CamelliaChatControls = { isImagePath, attachmentGlyph, fileUrl, makeToolCard, executionProcess, renderAttachments, questionFields, resizeQuestionFields };
 })();

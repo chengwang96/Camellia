@@ -47,7 +47,8 @@ public class RemoteRichControlsTest extends InstrumentationTestCase {
         getInstrumentation().addMonitor(monitor);
         try {
             ui(() -> {
-                set("credentials", new JSONObject().put("address", "http://100.64.0.1:43129").put("computerName", "Test computer"));
+                set("credentials", new JSONObject().put("address", "http://100.64.0.1:43129").put("computerName", "Test computer")
+                    .put("token", "a".repeat(43)));
                 var list = MainActivity.class.getDeclaredMethod("listScreen"); list.setAccessible(true); list.invoke(activity);
                 set("canDiscussions", true); set("allowIndependent", true);
                 set("availableWorkspaces", new JSONArray().put(new JSONObject().put("id", "test-workspace").put("name", "Camellia")));

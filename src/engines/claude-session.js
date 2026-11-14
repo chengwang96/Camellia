@@ -8,6 +8,22 @@ const { claudeEditBoundary } = require('./native-edit-boundary');
 const { BackgroundTaskMonitor } = require('./background-task-monitor');
 const TERMINAL_TASK_STATES = new Set(['completed', 'failed', 'stopped']);
 
+// The CLI writes synthetic user turns for native notifications (an unfinished
+// background shell, a finished task). Each of those is a turn of its own, not
+// the request the app just sent.
+function taskNotification(obj) {
+  const origin = obj.origin?.kind || obj.turnOrigin || '';
+  return /^task[-_]notification$/.test(origin) || /^\s*<task-notification>/.test(contentText(obj.message?.content));
+}
+
+// A result with no model tokens cannot be a reply to the current prompt: the
+// CLI short-circuits a turn it will not run and reports zero usage for it.
+function zeroUsage(usage) {
+  const keys = ['input_tokens', 'output_tokens', 'cache_read_input_tokens', 'cache_creation_input_tokens'];
+  return Boolean(usage) && typeof usage === 'object' && keys.some(key => key in usage)
+    && keys.every(key => !Number(usage[key]));
+}
+
 // Owns one CLI process. Application state stays in main; the callbacks below
 // also make process failures and fragmented output testable without Electron.
 class ClaudeSession {
@@ -23,6 +39,7 @@ class ClaudeSession {
     this.watchdog = null;
     this.cancelTimer = null;
     this.cancelled = false;
+    this.nativeTurns = 0;
     this.stdoutBuf = '';
     this.stdoutDecoder = new StringDecoder('utf8');
     this.stderrDecoder = new StringDecoder('utf8');
@@ -130,6 +147,15 @@ class ClaudeSession {
   complete(obj) {
     if (!this.running) return;
     if (!this.compaction && !this.cancelled && obj.subtype === 'success' && !obj.is_error && !this.turnHasActivity && !String(obj.result || '').trim()) {
+      // A resumed CLI closes out native notification turns it injected itself
+      // (for example an unfinished background shell) before it starts the
+      // prompt just written. That acknowledgement carries no model tokens and
+      // is not this turn's reply; the requested turn reports its own result.
+      if (this.nativeTurns > 0 && zeroUsage(obj.usage)) {
+        this.nativeTurns--;
+        this.log('claude: ignored a zero-token result for a native notification turn');
+        return;
+      }
       obj = { ...obj, subtype: 'empty_response', is_error: true, result: 'Claude returned no reply or tool activity.' };
     }
     this.running = false;
@@ -157,11 +183,10 @@ class ClaudeSession {
   // Adopt that turn so its events reach a live run instead of being discarded.
   adoptBackgroundTurn(obj) {
     if (this.running || this.cancelled || this.dead) return false;
-    const origin = obj.origin?.kind || obj.turnOrigin || '';
-    if (!/^task[-_]notification$/.test(origin)
-        && !/^\s*<task-notification>/.test(contentText(obj.message?.content))) return false;
+    if (!taskNotification(obj)) return false;
     this.running = true;
     this.turnHasActivity = false;
+    this.nativeTurns = 0;
     this.subagents.begin(); this.agentCalls.clear();
     const taskId = obj.origin?.task_id || obj.task_id
       || /<task-id>\s*([^<]+?)\s*<\/task-id>/i.exec(contentText(obj.message?.content))?.[1];
@@ -284,7 +309,12 @@ class ClaudeSession {
     if (this.compaction) return;
     // The notification itself is forwarded below so the run records the
     // native trigger; the events after it belong to the adopted turn.
-    if (obj.type === 'user') this.adoptBackgroundTurn(obj);
+    if (obj.type === 'user' && !this.adoptBackgroundTurn(obj) && this.running && taskNotification(obj)) {
+      // The notification becomes a native turn ahead of the requested one. Its
+      // zero-token result must not end the turn the user just started.
+      this.nativeTurns++;
+      this.log('claude: native task notification queued inside an active turn');
+    }
     if (obj.parent_tool_use_id || obj.agent_id) {
       const id = this.subagents.resolve(obj.agent_id || this.childTools.get(obj.parent_tool_use_id));
       if (id && this.children.has(id)) {
@@ -393,6 +423,7 @@ class ClaudeSession {
       content.push({ type: 'image', source: { type: 'base64', media_type, data: require('node:fs').readFileSync(file.path).toString('base64') } });
     }
     this.turnHasActivity = false;
+    this.nativeTurns = 0;
     this.cancelled = false;
     this.running = true;
     if (!this.initialized) {

@@ -5,6 +5,7 @@ import android.app.AlertDialog;
 import android.content.res.Configuration;
 import android.graphics.Color;
 import android.graphics.Typeface;
+import android.graphics.drawable.ColorDrawable;
 import android.graphics.drawable.GradientDrawable;
 import android.graphics.drawable.RippleDrawable;
 import android.content.res.ColorStateList;
@@ -14,6 +15,7 @@ import android.os.Looper;
 import android.text.InputType;
 import android.view.Gravity;
 import android.view.View;
+import android.view.ViewGroup;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.LinearLayout;
@@ -49,6 +51,7 @@ public final class MainActivity extends Activity {
         InlineImageGallery.permissionResult(this, requestCode, grantResults);
     }
     private final ExecutorService worker = Executors.newFixedThreadPool(2);
+    private final ExecutorService eventWorker = Executors.newSingleThreadExecutor();
     private final ExecutorService commandWorker = Executors.newFixedThreadPool(2);
     private final ExecutorService urgentWorker = Executors.newSingleThreadExecutor();
     private final java.util.Set<String> commandRequests = new java.util.HashSet<>();
@@ -59,6 +62,9 @@ public final class MainActivity extends Activity {
     private long historyBytes;
     private ComputerStore store;
     private RemoteListCache listCache;
+    private final java.util.function.Function<String, RemoteApi> remoteClientFactory = address -> new RemoteApi(this, address);
+    private final RemoteConversationSync conversationSync = new RemoteConversationSync(address -> remoteClientFactory.apply(address));
+    private long conversationListRevision;
     private final RemotePrefetch prefetch = new RemotePrefetch();
     private final ArrayList<View> prefetchRows = new ArrayList<>();
     private boolean prefetchViewportPosted;
@@ -74,8 +80,10 @@ public final class MainActivity extends Activity {
     private boolean canCommandReceipts, canStopStart, canStopBackgroundWork, canIncremental;
     private LinearLayout backgroundWorkBar;
     private TextView backgroundWorkLabel, backgroundWorkStop;
+    private TextView workSummaryBar;
+    private LinearLayout workInline;
     private boolean canListQuery;
-    private String capabilityAddress = "", remoteListQuery = "";
+    private String capabilityAddress = "", capabilityToken = "", remoteListQuery = "";
     private JSONObject remotePreparation;
     private Future<?> listRefreshJob;
     private JSONObject listRefreshSnapshot;
@@ -102,6 +110,16 @@ public final class MainActivity extends Activity {
     private TextView status, headerConnection;
     private ChatStatusLine workStatus;
     private boolean reconnecting, connectionBlocked;
+    private boolean destinationSwitch;
+    private volatile boolean homeRefreshBusy;
+    private long homeRefreshAt;
+    private boolean homeRunningExpanded;
+    private ConversationSidebar detailSidebar;
+    private int sidebarScrollRestore = -1;
+    private boolean splitDetail;
+    private WorkbenchNavigation workbenchNavigation;
+    private volatile boolean sidebarRefreshBusy;
+    private long sidebarRefreshAt;
     private JSONArray discussionGroups = new JSONArray();
     private boolean moreDiscussions;
     private boolean canDiscussions;
@@ -118,12 +136,17 @@ public final class MainActivity extends Activity {
     private Bundle pairingDraft;
     private String conversationId;
     private String conversationTitle = "";
+    private String detailReturn = "list";
     private Long nextBefore;
     private boolean historyDetached;
     private String historyInstance = "";
     private boolean olderLoading;
     private int nextOffset;
     private final LinkedHashMap<String, JSONObject> conversations = new LinkedHashMap<>();
+    private final LinkedHashMap<String, JSONObject> archivedConversations = new LinkedHashMap<>();
+    private boolean archivedLoaded, archivedLoading;
+    private int archivedNextOffset = -1;
+    private String conversationFilter = "all";
     private final LinkedHashMap<String, Boolean> collapsedGroups = new LinkedHashMap<>();
     private Button older, latest;
     private String instance = "";
@@ -142,6 +165,8 @@ public final class MainActivity extends Activity {
     private LinearLayout approvals;
     private LinearLayout automationBar;
     private LinearLayout queueBar;
+    private LinearLayout queueSheetPanel;
+    private android.app.Dialog queueDialog;
     private JSONArray remoteQueue = new JSONArray();
     private boolean canQueue;
     private long queueVersion = -1;
@@ -153,6 +178,7 @@ public final class MainActivity extends Activity {
     private String approvalSignature = "";
     private android.app.AlertDialog remoteApprovalDialog;
     private String remoteApprovalKey = "";
+    private VisualizationDialog visualizationDialog;
     private boolean networkScreen;
     private android.app.Dialog computerDialog;
     private android.net.Uri cameraImageUri;
@@ -182,7 +208,7 @@ public final class MainActivity extends Activity {
     private android.widget.HorizontalScrollView imageStrip;
     private ImageButton attachButton;
     private TextView modelButton;
-    private ImageButton permissionButton;
+    private PermissionTool permissionButton;
     private JSONObject remoteSettings;
     private RemoteSettingsPopup settingsPopup;
     private String screen = "home", networkReturn = "settings";
@@ -191,11 +217,9 @@ public final class MainActivity extends Activity {
     private final LinkedHashMap<String, String> computerStates = new LinkedHashMap<>();
     private final java.util.Set<RemoteApi> statusClients = java.util.concurrent.ConcurrentHashMap.newKeySet();
     private final java.util.function.Function<String, RemoteApi> statusClientFactory = RemoteApi::new;
+    private final java.util.function.Function<String, RemoteApi> homeClientFactory = RemoteApi::new;
     private boolean loginLaunched;
     private final ExecutorService networkWorker = Executors.newSingleThreadExecutor();
-    private RemoteEntryGate remoteEntryGate;
-    private RemoteEntryGate.State remoteEntryState = RemoteEntryGate.State.CONNECTING;
-    private LinearLayout remoteEntryCard;
     // The settings index's Mobile access row, kept so its state label can be
     // refreshed when the reader comes back from that page rather than only when
     // the index is rebuilt.
@@ -207,13 +231,6 @@ public final class MainActivity extends Activity {
     // shared with every screen and filtered per screen, so it cannot be the only
     // place this page's answer appears.
     private TextView networkStatusBanner;
-    private TextView remoteEntryLabel;
-    private View remoteEntryArrow, remoteEntrySpinner, remoteEntryRetry;
-    // The way out of the two states whose label sends the reader to Mobile
-    // access. Held as an AtomicReference because `renderRemoteEntry` is a state
-    // renderer that can run before the button exists, and a plain field would
-    // have to be nulled and re-checked on every screen rebuild.
-    private final java.util.concurrent.atomic.AtomicReference<View> remoteEntryOpen = new java.util.concurrent.atomic.AtomicReference<>();
 
     private String tr(String zh, String en) { return chinese ? zh : en; }
     private int dp(float value) { return Math.round(value * getResources().getDisplayMetrics().density); }
@@ -256,18 +273,9 @@ public final class MainActivity extends Activity {
 
     @Override public void onCreate(Bundle saved) {
         super.onCreate(saved);
+        MobileOrientation.lockPhonePortrait(this);
         composerAttachments = AttachmentMaintenance.protect(this);
         EmbeddedNetwork.initialize(getApplicationContext());
-        remoteEntryGate = new RemoteEntryGate(networkWorker, () -> {
-            if (!EmbeddedNetwork.online()) return RemoteEntryGate.State.OFFLINE;
-            if (!EmbeddedNetwork.enabled()) return RemoteEntryGate.State.READY;
-            JSONObject state = new JSONObject(EmbeddedNetwork.node().status());
-            if (!EmbeddedNetwork.online()) return RemoteEntryGate.State.OFFLINE;
-            String phase = state.optString("state");
-            if (phase.equals("Running")) return RemoteEntryGate.State.READY;
-            if (phase.equals("NeedsLogin") || phase.equals("NeedsMachineAuth") || !state.optString("loginUrl").isEmpty()) return RemoteEntryGate.State.SIGN_IN;
-            return RemoteEntryGate.State.CONNECTING;
-        }, this::renderRemoteEntry);
         preferenceSignature = MobilePreferences.signature(this);
         chinese = getResources().getConfiguration().getLocales().get(0).getLanguage().equals("zh");
         boolean dark = (getResources().getConfiguration().uiMode & Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES;
@@ -289,6 +297,7 @@ public final class MainActivity extends Activity {
         if (saved != null && credentials.has("token")) {
             conversationId = saved.getString("conversationId");
             conversationTitle = saved.getString("conversationTitle", "");
+            detailReturn = saved.getString("detailReturn", "list");
         }
         String restored = saved == null ? "home" : saved.getString("screen", "home");
         if (saved != null) {
@@ -322,11 +331,12 @@ public final class MainActivity extends Activity {
                 syncReplyRead(displayedConversation);
             }
             updateControls();
+            refreshDetailSidebar();
             return;
         }
         if (networkScreen) { refreshNetwork(false); return; }
         if (screen.equals("computers")) { refreshComputers(); return; }
-        if (screen.equals("home")) { refreshHomeNetwork(); return; }
+        if (screen.equals("home")) { startConversationSync(); refreshHomeConversations(); return; }
         // Coming back from Mobile access, which is where the mode is actually
         // changed. Without this the row kept whatever it said when the index
         // was built, so toggling Tailscale off and back left it claiming to be
@@ -344,7 +354,7 @@ public final class MainActivity extends Activity {
     private void networkRouteChanged() {
         if (!networkActive()) return;
         if (EmbeddedNetwork.online()) resumePendingCommands();
-        if (screen.equals("home")) { refreshHomeNetwork(); return; }
+        if (screen.equals("home")) { conversationSync.stop(); startConversationSync(); refreshHomeConversations(); return; }
         // These two report the network state on a row, and a route change flips
         // it without rebuilding the page.
         if (screen.equals("settings")) { refreshMobileAccessRow(); return; }
@@ -358,8 +368,21 @@ public final class MainActivity extends Activity {
         }
         if (screen.equals("computers")) refreshComputers();
         else if (credentials.has("token")) {
-            if (screen.equals("detail")) connectEvents(); else loadList(false);
+            if (screen.equals("detail")) {
+                connectEvents();
+                refreshDetailSidebar();
+            } else loadList(false);
         }
+    }
+
+    @Override public void onConfigurationChanged(android.content.res.Configuration configuration) {
+        super.onConfigurationChanged(configuration);
+        if (screen.equals("detail")) {
+            rebuildDetailForConfiguration();
+        } else if (screen.equals("list") && scroll != null && content != null) {
+            renderConversations();
+        }
+        updateNavigationWidth();
     }
 
     @Override protected void onPause() {
@@ -392,7 +415,6 @@ public final class MainActivity extends Activity {
         locationConsent.cancel();
         if (pages != null) pages.finishTransition();
         foreground = false;
-        remoteEntryGate.stop();
         handler.removeCallbacks(prefetchViewportUpdate); prefetchViewportPosted = false;
         prefetch.cancel();
         if (!backgroundConnection || !RemoteKeepAliveService.active() || isFinishing() || isChangingConfigurations()) {
@@ -413,6 +435,7 @@ public final class MainActivity extends Activity {
     @Override protected void onDestroy() {
         if (connectionTest != null) { connectionTest.close(); connectionTest = null; }
         stopNetwork();
+        conversationSync.close();
         closeCommandClients();
         if (pages != null) { pages.finishTransition(); pages = null; }
         releasePageViews();
@@ -422,13 +445,14 @@ public final class MainActivity extends Activity {
         InlineImageGallery.close(this);
         if (listCache != null) listCache.flush();
         prefetch.close();
-        worker.shutdownNow(); commandWorker.shutdownNow(); urgentWorker.shutdownNow(); statusWorker.shutdownNow(); networkWorker.shutdownNow(); super.onDestroy();
+        worker.shutdownNow(); eventWorker.shutdownNow(); commandWorker.shutdownNow(); urgentWorker.shutdownNow(); statusWorker.shutdownNow(); networkWorker.shutdownNow(); super.onDestroy();
     }
 
     @Override protected void onSaveInstanceState(Bundle saved) {
         super.onSaveInstanceState(saved);
         artifactDownloads.save(saved);
         saved.putString("screen", screen); saved.putString("networkReturn", networkReturn);
+        saved.putString("detailReturn", detailReturn);
         if (screen.equals("pair")) rememberPairingDraft();
         saved.putBundle("pairingDraft", pairingDraft);
         saved.putBoolean("pendingScannedPairing", pendingScannedPairing);
@@ -436,11 +460,11 @@ public final class MainActivity extends Activity {
     }
 
     private void stopNetwork() {
+        conversationSync.stop();
         if (subtaskPage != null) { subtaskPage.dismiss(); subtaskPage = null; }
         replyReadSync.reset();
         if (computerPicker != null) { computerPicker.dismiss(); computerPicker = null; }
         setPairingBusy(false);
-        if (remoteEntryGate != null) remoteEntryGate.stop();
         handler.removeCallbacks(prefetchViewportUpdate); prefetchViewportPosted = false;
         prefetch.cancel();
         olderLoading = false;
@@ -466,7 +490,7 @@ public final class MainActivity extends Activity {
         stopNetwork();
         connectionBlocked = false;
         updateControls();
-        api = new RemoteApi(this, credentials.optString("address"));
+        api = remoteClientFactory.apply(credentials.optString("address"));
         return api;
     }
 
@@ -503,35 +527,18 @@ public final class MainActivity extends Activity {
     private Button button(String label, Runnable action, boolean primary) {
         Button button = new Button(this); button.setText(label); button.setAllCaps(false); button.setTextSize(Palette.TEXT_BODY);
         button.setTextColor(enabledColors(primary ? Color.WHITE : ink, muted));
-        button.setBackground(new RippleDrawable(ColorStateList.valueOf((accent & 0x00ffffff) | 0x22000000), capsule(primary ? accent : surface), capsule(Color.WHITE)));
-        button.setBackgroundTintList(enabledColors(primary ? accent : surface, surface));
-        button.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL)); button.setStateListAnimator(null);
+        GradientDrawable enabledFace = capsule(primary ? accent : surface);
+        enabledFace.setStroke(dp(1), primary ? accent : Palette.of(this).cardBorder);
+        GradientDrawable disabledFace = capsule(surface);
+        disabledFace.setStroke(dp(1), Palette.of(this).cardBorder);
+        android.graphics.drawable.StateListDrawable faces = new android.graphics.drawable.StateListDrawable();
+        faces.addState(new int[]{-android.R.attr.state_enabled}, disabledFace);
+        faces.addState(new int[]{}, enabledFace);
+        button.setBackground(new RippleDrawable(ColorStateList.valueOf((accent & 0x00ffffff) | 0x22000000), faces, capsule(Color.WHITE)));
+        SurfaceElevation.apply(button, primary ? 2 : 1);
+        button.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
         button.setMinHeight(dp(48)); button.setPadding(dp(14), dp(8), dp(14), dp(8));
         LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, -2); params.setMargins(0, dp(8), 0, dp(8)); button.setLayoutParams(params);
-        button.setOnClickListener(view -> action.run()); return button;
-    }
-
-    /**
-     * The home screen's way out of a state whose label points somewhere else.
-     *
-     * <p>Not {@code button(…, true)}. A filled accent bar in the middle of the
-     * home screen outranks the two cards it sits between, and this page's job is
-     * to offer a choice between ways in — it is not a call to action. The two
-     * cards' own action lines are accent-coloured text with no plate under them,
-     * so this matches them: same colour, same weight, no fill. It is a full-width
-     * row only because the label is a sentence and would otherwise wrap badly.
-     */
-    private Button homeEscape(String label, Runnable action) {
-        Button button = new Button(this); button.setText(label); button.setAllCaps(false);
-        button.setTextSize(Palette.TEXT_INPUT);
-        button.setTextColor(accent);
-        button.setBackground(new RippleDrawable(ColorStateList.valueOf(Palette.RIPPLE_ON_PAGE), null, null));
-        button.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL)); button.setStateListAnimator(null);
-        button.setMinHeight(dp(48)); button.setPadding(dp(14), dp(8), dp(14), dp(8));
-        button.setGravity(android.view.Gravity.CENTER);
-        button.setBackgroundTintList(android.content.res.ColorStateList.valueOf(Color.TRANSPARENT));
-        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, -2);
-        params.setMargins(0, dp(2), 0, dp(16)); button.setLayoutParams(params);
         button.setOnClickListener(view -> action.run()); return button;
     }
 
@@ -540,53 +547,128 @@ public final class MainActivity extends Activity {
         if (!screen.equals("detail")) composerAttachments.replace();
         reconnecting = false; connectionBlocked = false;
         boolean settingsPage = screen.equals("settings") || screen.equals("network") || screen.equals("pair");
+        boolean showNavigation = screen.equals("home") || screen.equals("list") || screen.equals("computers") || screen.equals("settings");
         int bottomPadding = screen.equals("list") || screen.equals("detail") ? chatStyle.dockBottomPadding() : dp(24);
+        if (showNavigation) bottomPadding = dp(8);
+        final int pageBottomPadding = bottomPadding;
         SettingsStyle settingsStyle = new SettingsStyle(this);
         int pageBackground = settingsPage || screen.equals("computers") ? settingsStyle.background : background;
-        root = column(); root.setBackgroundColor(background); root.setPadding(dp(22), dp(12), dp(22), bottomPadding);
+        splitDetail = screen.equals("detail") && MobileLayout.useDetailSplit(getResources().getConfiguration());
+        root = column(); root.setBackground(Palette.of(this).pageBackground());
+        root.setPadding(dp(16), dp(10), dp(16), bottomPadding);
         root.setBackgroundColor(pageBackground); getWindow().setStatusBarColor(pageBackground); getWindow().setNavigationBarColor(pageBackground);
         root.setClipToPadding(false);
         if (screen.equals("list") || screen.equals("detail")) { root.setFocusableInTouchMode(true); root.requestFocus(); }
-        if (settingsPage) settingsStyle.pagePadding(root);
+        View page = root;
+        LinearLayout split = null;
+        if (splitDetail) {
+            split = new LinearLayout(this);
+            split.setOrientation(LinearLayout.HORIZONTAL);
+            split.setTag("detailSplitLayout");
+            split.setBackground(Palette.of(this).pageBackground());
+            split.setClipChildren(false);
+            split.setClipToPadding(false);
+            detailSidebar = new ConversationSidebar(this, chinese, detailSidebarItems(), new ConversationSidebar.Listener() {
+                @Override public void open(ConversationSidebar.Item item) { openSidebarConversation(item); }
+                @Override public void all() { navigateSessions(); }
+                @Override public void refresh() { sidebarRefreshAt = 0; refreshDetailSidebar(); }
+            });
+            int restoreSidebarScroll = sidebarScrollRestore;
+            sidebarScrollRestore = -1;
+            if (restoreSidebarScroll > 0) detailSidebar.restoreScroll(restoreSidebarScroll);
+            int sidebarWidth = dp(MobileLayout.detailSidebarWidthDp(getResources().getConfiguration().screenWidthDp));
+            split.addView(detailSidebar, new LinearLayout.LayoutParams(sidebarWidth, -1));
+            View divider = new View(this);
+            divider.setBackgroundColor(Palette.of(this).separator);
+            split.addView(divider, new LinearLayout.LayoutParams(Math.max(1, dp(1)), -1));
+            split.addView(root, new LinearLayout.LayoutParams(0, -1, 1));
+            page = split;
+        } else {
+            sidebarScrollRestore = -1;
+        }
+        if (settingsPage) settingsStyle.pagePadding(root, showNavigation ? 8 : 20);
+        else if (splitDetail) {
+            LinearLayout splitPage = split;
+            ConversationSidebar sidebar = detailSidebar;
+            LinearLayout pane = root;
+            splitPage.setOnApplyWindowInsetsListener((view, insets) -> {
+                sidebar.setPadding(dp(12) + insets.getSystemWindowInsetLeft(), dp(8) + insets.getSystemWindowInsetTop(),
+                    dp(10), dp(10) + insets.getSystemWindowInsetBottom());
+                pane.setPadding(dp(16), dp(10) + insets.getSystemWindowInsetTop(),
+                    dp(16) + insets.getSystemWindowInsetRight(), pageBottomPadding + insets.getSystemWindowInsetBottom());
+                return insets;
+            });
+        }
         else root.setOnApplyWindowInsetsListener((view, insets) -> {
-            view.setPadding(dp(18) + insets.getSystemWindowInsetLeft(), dp(12) + insets.getSystemWindowInsetTop(), dp(18) + insets.getSystemWindowInsetRight(), bottomPadding + insets.getSystemWindowInsetBottom());
+            view.setPadding(dp(16) + insets.getSystemWindowInsetLeft(), dp(10) + insets.getSystemWindowInsetTop(), dp(16) + insets.getSystemWindowInsetRight(), pageBottomPadding + insets.getSystemWindowInsetBottom());
             return insets;
         });
         if (pages == null) pages = new PageTransitions(this);
         int depth = screen.equals("home") ? 0 : screen.equals("computers") || screen.equals("settings") ? 1
             : screen.equals("detail") || (screen.equals("network") && networkReturn.equals("pair")) ? 3 : 2;
-        pages.show(root, screen, depth); root.requestApplyInsets();
+        pages.show(page, screen, depth, destinationSwitch); page.requestApplyInsets();
         if (settingsPage) {
             root.addView(settingsStyle.header(title, tr("返回上一级", "Back"), this::onBackPressed));
         } else if (screen.equals("computers")) {
-            LinearLayout header = settingsStyle.header(title, tr("返回上一级", "Back"), this::onBackPressed);
-            header.findViewWithTag("settingsBack").setTag("pageBack");
+            LinearLayout header = settingsStyle.topLevelHeader(title);
             header.findViewWithTag("settingsTitle").setTag("remoteControlTitle"); root.addView(header);
         } else if (screen.equals("list") || screen.equals("detail")) {
-            LinearLayout header = new LinearLayout(this); header.setGravity(Gravity.CENTER_VERTICAL); header.setPadding(0, 0, 0, dp(18));
+            LinearLayout header = new LinearLayout(this); header.setGravity(Gravity.CENTER_VERTICAL); header.setPadding(0, 0, 0, dp(12));
             header.setClipChildren(false); header.setClipToPadding(false);
-            header.addView(chatStyle.backButton(tr("返回上一级", "Back"), this::onBackPressed), new LinearLayout.LayoutParams(dp(48), dp(48)));
-            LinearLayout titles = column(); titles.setPadding(dp(10), 0, 0, 0);
-            TextView pageTitle = text(screen.equals("detail") ? conversationTitle : tr("会话列表", "Conversations"), Palette.TEXT_CARD, ink);
+            boolean detail = screen.equals("detail");
+            if (detail) {
+                header.addView(chatStyle.backButton(tr("返回上一级", "Back"), this::onBackPressed),
+                    new LinearLayout.LayoutParams(dp(48), dp(48)));
+            }
+            boolean paired = credentials.has("token");
+            LinearLayout titles = column(); titles.setPadding(detail ? dp(8) : 0, 0, 0, 0);
+            TextView pageTitle = text(detail ? conversationTitle : tr("会话", "Conversations"),
+                detail ? Palette.TEXT_ROW : Palette.TEXT_HERO, ink);
             pageTitle.setTag("pageTitle"); pageTitle.setMaxLines(1); pageTitle.setEllipsize(android.text.TextUtils.TruncateAt.END);
             pageTitle.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL)); titles.addView(pageTitle);
             LinearLayout computer = new LinearLayout(this); computer.setGravity(Gravity.CENTER_VERTICAL);
-            ImageView icon = new ImageView(this); icon.setImageDrawable(new LineIcon("computer", muted)); computer.addView(icon, new LinearLayout.LayoutParams(dp(14), dp(14)));
-            TextView name = text(computerName(credentials), Palette.TEXT_SMALL, muted); name.setTag("headerComputerName"); name.setPadding(dp(6), 0, 0, 0);
+            ImageView icon = new ImageView(this);
+            icon.setImageDrawable(new LineIcon("computer", muted));
+            computer.addView(icon, new LinearLayout.LayoutParams(dp(14), dp(14)));
+            TextView name = text(paired ? computerName(credentials) : tr("尚未连接电脑", "No computer connected"),
+                Palette.TEXT_SMALL, muted);
+            name.setTag("headerComputerName"); name.setPadding(dp(6), 0, 0, 0);
             name.setMaxLines(1); name.setEllipsize(android.text.TextUtils.TruncateAt.END);
             computer.addView(name, new LinearLayout.LayoutParams(0, -2, 1));
-            headerConnection = text("", Palette.TEXT_SMALL, muted); headerConnection.setTag("headerConnectionState");
-            headerConnection.setSingleLine(true); headerConnection.setMaxWidth(dp(112)); headerConnection.setEllipsize(android.text.TextUtils.TruncateAt.END);
-            headerConnection.setPadding(dp(6), 0, dp(6), 0); headerConnection.setVisibility(View.GONE);
-            computer.addView(headerConnection); titles.addView(computer);
-            header.addView(titles, new LinearLayout.LayoutParams(0, -2, 1)); root.addView(header);
-            if (screen.equals("list")) {
-                ImageButton search = lineButton("search", tr("搜索会话", "Search conversations"), this::showConversationSearch);
-                search.setTag("remoteSearchButton"); header.addView(search, new LinearLayout.LayoutParams(dp(48), dp(48)));
+            if (paired) {
+                headerConnection = text("", Palette.TEXT_SMALL, muted); headerConnection.setTag("headerConnectionState");
+                headerConnection.setSingleLine(true); headerConnection.setMaxWidth(dp(112)); headerConnection.setEllipsize(android.text.TextUtils.TruncateAt.END);
+                headerConnection.setPadding(dp(6), 0, dp(6), 0); headerConnection.setVisibility(View.GONE);
+                computer.addView(headerConnection);
             }
-            ImageButton switcher = lineButton("switch-computer", tr("切换电脑", "Switch computer"), () -> showComputerPicker());
-            switcher.setTag("remoteComputerPicker");
-            header.addView(switcher, new LinearLayout.LayoutParams(dp(48), dp(48)));
+            titles.addView(computer);
+            header.addView(titles, new LinearLayout.LayoutParams(0, -2, 1)); root.addView(header);
+            ImageButton search = null, switcher = null;
+            if (screen.equals("list") && paired) {
+                search = lineButton("search", tr("搜索会话", "Search conversations"), this::showConversationSearch);
+                search.setTag("remoteSearchButton");
+            }
+            if (paired || detail) {
+                switcher = lineButton("switch-computer", tr("切换电脑", "Switch computer"), () -> showComputerPicker());
+                switcher.setTag("remoteComputerPicker");
+            }
+            if (search != null && switcher != null) {
+                LinearLayout actions = new LinearLayout(this);
+                actions.setOrientation(LinearLayout.HORIZONTAL);
+                actions.setGravity(Gravity.CENTER_VERTICAL);
+                actions.setTag("remoteHeaderActions");
+                actions.setBackground(chatStyle.capsule(Palette.of(this).card));
+                actions.setClipToOutline(true);
+                actions.addView(search, new LinearLayout.LayoutParams(dp(48), dp(48)));
+                actions.addView(switcher, new LinearLayout.LayoutParams(dp(48), dp(48)));
+                header.addView(actions, new LinearLayout.LayoutParams(dp(96), dp(48)));
+            } else if (switcher != null) {
+                header.addView(switcher, new LinearLayout.LayoutParams(dp(48), dp(48)));
+            } else {
+                ImageButton manage = lineButton("computer", tr("管理电脑", "Manage computers"), this::navigateComputers);
+                manage.setTag("sessionsManageComputers");
+                header.addView(manage, new LinearLayout.LayoutParams(dp(48), dp(48)));
+            }
         } else {
         LinearLayout brand = new LinearLayout(this); brand.setGravity(Gravity.CENTER_VERTICAL); brand.setPadding(0, dp(4), 0, dp(12));
         brand.setClipChildren(false); brand.setClipToPadding(false);
@@ -637,12 +719,47 @@ public final class MainActivity extends Activity {
             root.addView(viewport, new LinearLayout.LayoutParams(-1, 0, 1));
         } else root.addView(scroll, new LinearLayout.LayoutParams(-1, 0, 1));
         content = column(); content.setPadding(0, 0, 0, dp(16)); scroll.addView(content);
-        if (settingsPage) { content.setPadding(0, dp(12), 0, dp(16)); scroll.setVerticalScrollBarEnabled(false); }
+        if (settingsPage) { content.setPadding(0, dp(4), 0, dp(16)); scroll.setVerticalScrollBarEnabled(false); }
         root.addView(status);
+        if (showNavigation) {
+            String navigationSelection = screen.equals("list") ? "sessions" : screen;
+            workbenchNavigation = new WorkbenchNavigation(this, navigationSelection,
+                this::navigateHome, this::navigateSessions, this::navigateComputers, this::openSettingsPage);
+            LinearLayout.LayoutParams navigationParams = new LinearLayout.LayoutParams(navigationWidth(), dp(64));
+            navigationParams.gravity = Gravity.CENTER_HORIZONTAL;
+            navigationParams.setMargins(0, dp(8), 0, 0);
+            root.addView(workbenchNavigation, navigationParams);
+        }
+    }
+
+    private int navigationWidth() {
+        return Math.min(dp(440), Math.max(dp(300),
+            Math.round(getResources().getDisplayMetrics().widthPixels * .78f)));
+    }
+
+    private void updateNavigationWidth() {
+        if (workbenchNavigation == null) return;
+        ViewGroup.LayoutParams params = workbenchNavigation.getLayoutParams();
+        if (!(params instanceof LinearLayout.LayoutParams)) return;
+        LinearLayout.LayoutParams updated = (LinearLayout.LayoutParams) params;
+        int width = navigationWidth();
+        if (updated.width == width) return;
+        updated.width = width;
+        workbenchNavigation.setLayoutParams(updated);
     }
 
     private ImageButton lineButton(String icon, String label, Runnable action) {
         return chatStyle.lineButton(icon, label, action);
+    }
+
+    private RippleDrawable accentActionBackground() {
+        GradientDrawable face = new GradientDrawable();
+        face.setColor(Color.argb(20, Color.red(accent), Color.green(accent), Color.blue(accent)));
+        face.setCornerRadius(dp(999));
+        GradientDrawable mask = new GradientDrawable();
+        mask.setColor(Color.WHITE);
+        mask.setCornerRadius(dp(999));
+        return new RippleDrawable(ColorStateList.valueOf(Palette.RIPPLE_ON_CARD), face, mask);
     }
 
     private LinearLayout bottomBar(String tag) {
@@ -689,142 +806,359 @@ public final class MainActivity extends Activity {
         return computer.optString("computerName", tr("我的电脑", "My computer"));
     }
 
+    private void navigateHome() {
+        if (!screen.equals("home")) switchDestination(this::homeScreen);
+    }
+
+    private void navigateSessions() {
+        switchDestination(() -> {
+            if (!credentials.has("token")) {
+                if (!screen.equals("list")) listScreen();
+                return;
+            }
+            if (!screen.equals("list")) {
+                listScreen();
+                loadList(false);
+            } else if (scroll != null) {
+                scroll.scrollTo(0, 0);
+            }
+        });
+    }
+
+    private void navigateComputers() {
+        switchDestination(() -> {
+            if (!screen.equals("computers")) {
+                computersScreen();
+                refreshComputers();
+            } else {
+                refreshComputers();
+            }
+        });
+    }
+
+    private void openSettingsPage() {
+        if (!screen.equals("settings")) switchDestination(this::settingsScreen);
+    }
+
+    private void switchDestination(Runnable action) {
+        destinationSwitch = true;
+        try { action.run(); }
+        finally { destinationSwitch = false; }
+    }
+
     private void homeScreen() {
         stopNetwork(); screen = "home"; networkScreen = false; conversationId = null;
+        renderHomeContent();
+        if (foreground) { startConversationSync(); refreshHomeConversations(); }
+    }
+
+    private void renderHomeContent() {
         shell("", "");
-        TextView heading = text(tr("开始工作", "Start working"), Palette.TEXT_HERO, ink);
-        heading.setPadding(0, dp(12), 0, dp(6)); content.addView(heading);
-        TextView description = text(tr("选择一种方式，继续你的工作。", "Choose how you want to continue."), Palette.TEXT_BODY, muted);
-        description.setPadding(0, 0, 0, dp(18)); content.addView(description);
-        homeCard("phone", tr("本地聊天", "Local chat"), tr("手机直连 API，在本地工作区中继续会话。", "Connect directly to your API. Keep workspaces and chats on this phone."),
-            tr("进入本地聊天", "Open local chat"), "localChatEntry", () -> {
-                startActivity(new android.content.Intent(this, LocalChatActivity.class)); PageTransitions.openActivity(this);
-            });
-        remoteEntryCard = homeCard("computer", tr("远程控制", "Remote control"), tr("连接你的电脑，查看会话并继续远程工作。", "Connect to your computers and continue working remotely."),
-            tr("正在连接网络…", "Connecting to network…"), "remoteControlEntry", () -> {
-                if (remoteEntryState != RemoteEntryGate.State.READY) return;
-                if (!EmbeddedNetwork.online()) { refreshHomeNetwork(); return; }
-                computersScreen(); refreshComputers();
-            });
-        remoteEntryLabel = remoteEntryCard.findViewWithTag("remoteControlEntryAction");
-        remoteEntryArrow = remoteEntryCard.findViewWithTag("remoteControlEntryArrow");
-        LinearLayout remoteFooter = (LinearLayout) remoteEntryLabel.getParent(); remoteFooter.setGravity(Gravity.CENTER_VERTICAL);
-        remoteEntrySpinner = new LoadingIndicator(this); remoteEntrySpinner.setTag("remoteEntryLoading");
-        remoteFooter.addView(remoteEntrySpinner, new LinearLayout.LayoutParams(dp(20), dp(20)));
-        remoteEntryRetry = button(tr("重试连接", "Retry connection"), this::refreshHomeNetwork, false); remoteEntryRetry.setTag("remoteEntryRetry");
-        LinearLayout.LayoutParams retryParams = new LinearLayout.LayoutParams(-1, -2); retryParams.bottomMargin = dp(16);
-        content.addView(remoteEntryRetry, retryParams);
-
-        // Shown only for the two states whose label sends the reader to Mobile
-        // access. See `homeEscape` for why it is not a filled button.
-        Button open = homeEscape(tr("前往手机访问", "Open Mobile access"), this::showNetwork);
-        open.setTag("remoteEntryOpen");
-        open.setVisibility(View.GONE);
-        LinearLayout.LayoutParams openParams = new LinearLayout.LayoutParams(-1, -2); openParams.bottomMargin = dp(16);
-        content.addView(open, openParams);
-        remoteEntryOpen.set(open);
-        renderRemoteEntry(RemoteEntryGate.State.CONNECTING);
-        LinearLayout settings = new LinearLayout(this); settings.setGravity(Gravity.CENTER_VERTICAL); settings.setPadding(dp(18), dp(14), dp(18), dp(14));
-        // The same corner as the two cards above it. It used to take `rounded()`,
-        // which is the 12dp block radius, so on one screen the entry into the
-        // settings read as a squarer, smaller thing than the entries beside it.
-        GradientDrawable settingsFace = new GradientDrawable(); settingsFace.setColor(surface);
-        settingsFace.setCornerRadius(dp(Palette.RADIUS_HOME_CARD));
-        settings.setBackground(new RippleDrawable(ColorStateList.valueOf(Palette.RIPPLE_HOME_CARD), settingsFace, rounded(Color.WHITE)));
-        settings.setTag("settingsEntry"); settings.setFocusable(true);
-        ImageView icon = new ImageView(this); icon.setImageDrawable(new LineIcon("settings", muted)); settings.addView(icon, new LinearLayout.LayoutParams(dp(24), dp(24)));
-        LinearLayout labels = column(); labels.setPadding(dp(14), 0, 0, 0);
-        labels.addView(text(tr("设置", "Settings"), Palette.TEXT_ROW, ink)); labels.addView(text(tr("供应商与 Key、通用、已归档、手机访问", "Providers & keys, general, archived, mobile access"), Palette.TEXT_SMALL, muted));
-        settings.addView(labels, new LinearLayout.LayoutParams(0, -2, 1));
-        ImageView settingsArrow = new ImageView(this); settingsArrow.setImageDrawable(new LineIcon("right", muted));
-        settingsArrow.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
-        settings.addView(settingsArrow, new LinearLayout.LayoutParams(dp(18), dp(18)));
-        settings.setOnClickListener(view -> settingsScreen()); content.addView(settings);
+        JSONArray cached = homeCachedConversations();
+        TextView heading = text(tr("继续工作", "Continue working"), Palette.TEXT_HERO, ink);
+        heading.setPadding(0, dp(8), 0, cached.length() > 0 ? dp(12) : dp(5)); content.addView(heading);
+        if (cached.length() == 0) {
+            TextView description = text(tr("本地聊天和远程电脑，从这里继续。",
+                "Continue with local chat or a remote computer."), Palette.TEXT_BODY, muted);
+            description.setPadding(0, 0, 0, dp(14)); description.setTag("homeEmptyHint"); content.addView(description);
+        }
+        java.util.Set<String> shown = new java.util.LinkedHashSet<>();
+        renderHomeRunning(cached, shown);
+        renderHomeRecent(cached, shown);
+        renderHomeShortcuts();
         status.setVisibility(View.GONE);
-        if (foreground) refreshHomeNetwork();
     }
 
-    private void refreshHomeNetwork() {
-        if (!foreground || !screen.equals("home")) return;
-        if (!EmbeddedNetwork.enabled()) {
-            remoteEntryGate.stop();
-            renderRemoteEntry(EmbeddedNetwork.online() ? RemoteEntryGate.State.READY : RemoteEntryGate.State.OFFLINE);
-        } else remoteEntryGate.start();
+    private JSONArray homeCachedConversations() {
+        if (!credentials.has("token") || listCache == null) return new JSONArray();
+        JSONObject cached = listCache.get(credentials);
+        JSONArray rows = cached == null ? null : cached.optJSONArray("conversations");
+        return rows == null ? new JSONArray() : rows;
     }
 
-    private void renderRemoteEntry(RemoteEntryGate.State state) {
-        if (!screen.equals("home") || remoteEntryCard == null) return;
-        remoteEntryState = state;
-        boolean ready = state == RemoteEntryGate.State.READY;
-        String label = switch (state) {
-            case READY -> tr("进入远程控制", "Open remote control");
-            case CONNECTING -> tr("正在连接网络…", "Connecting to network…");
-            case OFFLINE -> tr("网络已断开，等待联网", "Offline · waiting for network");
-            case SIGN_IN -> tr("请先在「设置 → 手机访问」登录或授权设备", "Sign in or authorize this device in Settings → Mobile access");
-            case TIMED_OUT -> tr("连接超时，请重试或在「设置 → 手机访问」检查", "Connection timed out · retry, or check Settings → Mobile access");
-            case FAILED -> tr("网络初始化失败，请重试", "Network initialization failed · retry");
-        };
-        remoteEntryCard.setEnabled(ready); remoteEntryCard.setClickable(ready);
-        remoteEntryCard.setContentDescription(tr("远程控制。", "Remote control. ") + label);
-        if (!label.contentEquals(remoteEntryLabel.getText())) remoteEntryLabel.setText(label);
-        remoteEntryLabel.setTextColor(ready ? accent : muted);
-        remoteEntryLabel.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
-        remoteEntryArrow.setVisibility(ready ? View.VISIBLE : View.GONE);
-        remoteEntrySpinner.setVisibility(state == RemoteEntryGate.State.CONNECTING ? View.VISIBLE : View.GONE);
-        remoteEntryRetry.setVisibility(state == RemoteEntryGate.State.FAILED || state == RemoteEntryGate.State.OFFLINE ? View.VISIBLE : View.GONE);
-        // SIGN_IN and TIMED_OUT both say the next step is in Mobile access, and
-        // until now neither showed a way there: the card is disabled (so tapping
-        // it does nothing) and the retry button was hidden, which left a page
-        // telling the reader to go somewhere with no way to go.
-        //
-        // TIMED_OUT is not given its own retry next to the shared one — two
-        // buttons reading "Retry connection" on one screen is worse than one
-        // button that goes where the label already pointed. FAILED and OFFLINE
-        // keep the retry, because nothing in their labels suggests a page.
-        View open = remoteEntryOpen.get();
-        if (open != null) open.setVisibility(state == RemoteEntryGate.State.SIGN_IN || state == RemoteEntryGate.State.TIMED_OUT ? View.VISIBLE : View.GONE);
+    private int renderHomeRunning(JSONArray cached, java.util.Set<String> shown) {
+        ArrayList<JSONObject> active = new ArrayList<>();
+        for (int index = 0; index < cached.length(); index++) {
+            JSONObject conversation = cached.optJSONObject(index);
+            if (conversation != null && homeConversationActive(conversation)) active.add(conversation);
+        }
+        if (active.isEmpty()) return 0;
+        LinearLayout section = new LinearLayout(this);
+        section.setTag("homeRunningSection");
+        section.setGravity(Gravity.CENTER_VERTICAL);
+        section.setPadding(0, dp(2), 0, dp(2));
+        TextView label = text(tr("运行中", "Running"), Palette.TEXT_CARD, ink);
+        label.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        section.addView(label, new LinearLayout.LayoutParams(0, -2, 1));
+        if (active.size() > 3) {
+            TextView toggle = text(homeRunningExpanded ? tr("收起", "Collapse")
+                    : tr("展开全部 " + active.size(), "Show all " + active.size()),
+                Palette.TEXT_SMALL, accent);
+            toggle.setGravity(Gravity.CENTER);
+            toggle.setMinHeight(dp(48));
+            toggle.setPadding(dp(12), 0, dp(2), 0);
+            toggle.setTag("homeRunningToggle");
+            toggle.setOnClickListener(view -> {
+                homeRunningExpanded = !homeRunningExpanded;
+                homeScreen();
+            });
+            section.addView(toggle);
+        }
+        content.addView(section);
+        int count = homeRunningExpanded ? active.size() : Math.min(3, active.size());
+        for (int index = 0; index < count; index++) {
+            JSONObject conversation = active.get(index);
+            String id = conversation.optString("id");
+            shown.add(id);
+            content.addView(homeConversationRow(conversation, true,
+                "homeActive:" + id, "homeActiveStatus:" + id));
+        }
+        return active.size();
     }
 
-    private LinearLayout homeCard(String iconName, String title, String description, String action, String tag, Runnable click) {
-        LinearLayout card = column(); card.setPadding(dp(18), dp(16), dp(18), dp(16));
-        GradientDrawable outline = rounded(background); outline.setCornerRadius(dp(Palette.RADIUS_HOME_CARD));
-        outline.setStroke(dp(1), Palette.of(this).homeCardEdge());
-        card.setBackground(new RippleDrawable(ColorStateList.valueOf(Palette.RIPPLE_HOME_CARD), outline, null)); card.setTag(tag); card.setFocusable(true);
-        card.setContentDescription(title + ". " + description); card.setOnClickListener(view -> click.run());
-        ImageView icon = new ImageView(this); icon.setImageDrawable(new LineIcon(iconName, accent)); icon.setPadding(dp(7), dp(7), dp(7), dp(7)); icon.setBackground(rounded(surface));
-        card.addView(icon, new LinearLayout.LayoutParams(dp(36), dp(36)));
-        TextView name = text(title, Palette.TEXT_CARD, ink); name.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL)); name.setPadding(0, dp(10), 0, dp(4)); card.addView(name);
-        TextView copy = text(description, Palette.TEXT_NOTE, muted); copy.setPadding(0, 0, 0, 0); copy.setLineSpacing(dp(2), 1); card.addView(copy);
-        LinearLayout footer = new LinearLayout(this); footer.setPadding(0, dp(10), 0, 0);
-        TextView actionLabel = text(action, Palette.TEXT_INPUT, accent); actionLabel.setTag(tag + "Action");
-        TextView arrow = text("↗", Palette.TEXT_DISPLAY, accent); arrow.setTag(tag + "Arrow");
-        footer.addView(actionLabel, new LinearLayout.LayoutParams(0, -2, 1)); footer.addView(arrow); card.addView(footer);
-        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, -2); params.setMargins(0, 0, 0, dp(16)); content.addView(card, params);
-        return card;
+    private boolean homeConversationActive(JSONObject conversation) {
+        String state = conversation.optString("activity");
+        return state.equals("running") || state.equals("permission") || state.equals("question")
+            || RemoteWorkStatus.backgroundCount(conversation) > 0;
+    }
+
+    private ConversationRow homeConversationRow(JSONObject conversation, boolean active, String tag, String statusTag) {
+        Palette palette = Palette.of(this);
+        String state = conversation.optString("activity");
+        int statusColor = state.equals("running") ? palette.success
+            : state.equals("permission") || state.equals("question") ? palette.warning
+            : RemoteWorkStatus.backgroundCount(conversation) > 0 ? palette.accent : palette.muted;
+        String indicator = active ? activity(conversation) : "";
+        return new ConversationRow(this, chatStyle, false, conversationEngine(conversation),
+            conversation.optString("title"), conversationMeta(conversation), indicator, statusColor,
+            conversationTime(conversation), tag, statusTag, () -> {
+                conversationId = conversation.optString("id");
+                conversationTitle = conversation.optString("title");
+                detailReturn = "home";
+                detailScreen();
+                connectEvents();
+            }, () -> {});
+    }
+
+    private void renderHomeRecent(JSONArray cached, java.util.Set<String> shown) {
+        boolean available = false;
+        for (int index = 0; index < cached.length(); index++) {
+            JSONObject conversation = cached.optJSONObject(index);
+            if (conversation != null && !homeConversationActive(conversation)
+                && !shown.contains(conversation.optString("id"))) { available = true; break; }
+        }
+        if (!available) return;
+        LinearLayout section = new LinearLayout(this);
+        section.setTag("homeRecentSection");
+        section.setGravity(Gravity.CENTER_VERTICAL);
+        section.setPadding(0, dp(12), 0, dp(2));
+        TextView label = text(tr("最近", "Recent"), Palette.TEXT_CARD, ink);
+        label.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        section.addView(label, new LinearLayout.LayoutParams(0, -2, 1));
+        TextView all = text(tr("查看全部", "View all"), Palette.TEXT_SMALL, accent);
+        all.setGravity(Gravity.CENTER); all.setMinHeight(dp(48)); all.setPadding(dp(12), 0, dp(2), 0); all.setTag("homeRecentAll");
+        all.setOnClickListener(view -> navigateSessions());
+        section.addView(all);
+        content.addView(section);
+        int added = 0;
+        for (int index = 0; index < cached.length() && added < 3; index++) {
+            JSONObject conversation = cached.optJSONObject(index);
+            if (conversation == null) continue;
+            String id = conversation.optString("id");
+            if (id.isEmpty() || shown.contains(id) || homeConversationActive(conversation)) continue;
+            shown.add(id); added++;
+            content.addView(homeConversationRow(conversation, false,
+                "homeRecent:" + id, "homeRecentStatus:" + id));
+        }
+    }
+
+    private void renderHomeShortcuts() {
+        Palette palette = Palette.of(this);
+        LinearLayout group = column();
+        GradientDrawable face = rounded(palette.card);
+        face.setCornerRadius(dp(Palette.RADIUS_HOME_CARD));
+        face.setStroke(dp(1), palette.homeCardEdge());
+        group.setBackground(face);
+        group.setClipToOutline(true);
+        group.setElevation(dp(1));
+        if (android.os.Build.VERSION.SDK_INT >= 28) {
+            group.setOutlineAmbientShadowColor(0x10000000); group.setOutlineSpotShadowColor(0x1c000000);
+        }
+        group.setTag("homeShortcuts");
+        LinearLayout.LayoutParams groupParams = new LinearLayout.LayoutParams(-1, -2);
+        groupParams.setMargins(0, dp(10), 0, dp(10));
+        content.addView(group, groupParams);
+
+        homeShortcut(group, "phone", tr("本地聊天", "Local chat"),
+            tr("手机直连 · 本地工作区", "On this phone · local workspace"), "localChatEntry", () -> {
+                startActivity(new android.content.Intent(this, LocalChatActivity.class));
+                PageTransitions.openActivity(this);
+            });
+        settingsShortcut(group, palette);
+    }
+
+    private LinearLayout homeShortcut(LinearLayout group, String iconName, String title, String description,
+                                      String tag, Runnable click) {
+        if (group.getChildCount() > 0) group.addView(shortcutDivider());
+        LinearLayout row = new LinearLayout(this); row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setMinimumHeight(dp(64)); row.setPadding(dp(14), dp(9), dp(12), dp(9));
+        row.setTag(tag); row.setFocusable(true);
+        row.setBackground(new RippleDrawable(ColorStateList.valueOf(Palette.RIPPLE_ON_CARD), null, new ColorDrawable(Color.WHITE)));
+        row.setContentDescription(title);
+        row.setOnClickListener(view -> click.run());
+        ImageView icon = new ImageView(this); icon.setImageDrawable(new LineIcon(iconName, accent));
+        icon.setPadding(dp(9), dp(9), dp(9), dp(9)); icon.setBackground(accentActionBackground());
+        icon.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+        LinearLayout.LayoutParams iconParams = new LinearLayout.LayoutParams(dp(34), dp(34)); iconParams.setMarginEnd(dp(12));
+        row.addView(icon, iconParams);
+        LinearLayout labels = column();
+        TextView name = text(title, Palette.TEXT_ROW, ink);
+        name.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        labels.addView(name);
+        TextView note = text(description, Palette.TEXT_SMALL, muted);
+        note.setSingleLine(true); note.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        note.setPadding(0, dp(1), 0, 0); note.setTag(tag + "Action");
+        labels.addView(note);
+        row.addView(labels, new LinearLayout.LayoutParams(0, -2, 1));
+        LinearLayout tail = new LinearLayout(this); tail.setGravity(Gravity.CENTER_VERTICAL);
+        TextView arrow = text("›", Palette.TEXT_CARD, accent);
+        arrow.setTag(tag + "Arrow"); arrow.setGravity(Gravity.CENTER); arrow.setPadding(dp(5), 0, 0, 0);
+        tail.addView(arrow, new LinearLayout.LayoutParams(dp(18), dp(48)));
+        row.addView(tail);
+        group.addView(row, new LinearLayout.LayoutParams(-1, -2));
+        return row;
+    }
+
+    private void settingsShortcut(LinearLayout group, Palette palette) {
+        if (group.getChildCount() > 0) group.addView(shortcutDivider());
+        LinearLayout row = new LinearLayout(this); row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setMinimumHeight(dp(64)); row.setPadding(dp(14), dp(9), dp(12), dp(9));
+        row.setTag("settingsEntry"); row.setFocusable(true);
+        row.setBackground(new RippleDrawable(ColorStateList.valueOf(Palette.RIPPLE_ON_CARD), null, new ColorDrawable(Color.WHITE)));
+        row.setContentDescription(tr("设置", "Settings"));
+        row.setOnClickListener(view -> openSettingsPage());
+        ImageView icon = new ImageView(this); icon.setImageDrawable(new LineIcon("settings", muted));
+        icon.setPadding(dp(9), dp(9), dp(9), dp(9)); icon.setBackground(rounded(palette.controlFill));
+        icon.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+        LinearLayout.LayoutParams iconParams = new LinearLayout.LayoutParams(dp(34), dp(34)); iconParams.setMarginEnd(dp(12));
+        row.addView(icon, iconParams);
+        LinearLayout labels = column();
+        labels.addView(text(tr("设置", "Settings"), Palette.TEXT_ROW, ink));
+        TextView note = text(tr("模型、连接、语言与诊断", "Models, connection, language and diagnostics"), Palette.TEXT_SMALL, muted);
+        note.setSingleLine(true); note.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        labels.addView(note);
+        row.addView(labels, new LinearLayout.LayoutParams(0, -2, 1));
+        ImageView arrow = new ImageView(this); arrow.setTag("settingsEntryArrow"); arrow.setImageDrawable(new LineIcon("right", muted));
+        arrow.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+        LinearLayout.LayoutParams arrowParams = new LinearLayout.LayoutParams(dp(18), dp(18));
+        arrowParams.setMarginStart(dp(8));
+        row.addView(arrow, arrowParams);
+        group.addView(row, new LinearLayout.LayoutParams(-1, -2));
+    }
+
+    private View shortcutDivider() {
+        View line = new View(this);
+        line.setBackgroundColor(Palette.of(this).divider);
+        line.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, Math.max(1, dp(1) / 2));
+        params.setMargins(dp(60), 0, dp(14), 0);
+        line.setLayoutParams(params);
+        return line;
+    }
+
+    private void refreshHomeConversations() {
+        if (!foreground || !screen.equals("home") || homeRefreshBusy || !credentials.has("token")
+                || !EmbeddedNetwork.online() || listCache == null) return;
+        long now = android.os.SystemClock.elapsedRealtime();
+        if (now - homeRefreshAt < 5_000) return;
+        homeRefreshAt = now;
+        homeRefreshBusy = true;
+        int ticket = generation;
+        long revision = conversationListRevision;
+        JSONObject snapshot;
+        JSONObject before;
+        try {
+            snapshot = new JSONObject(credentials.toString());
+            before = listCache.get(snapshot);
+        } catch (Exception error) {
+            homeRefreshBusy = false;
+            return;
+        }
+        String token = snapshot.optString("token");
+        RemoteApi request = homeClientFactory.apply(snapshot.optString("address"));
+        worker.submit(() -> {
+            try {
+                JSONObject page = request.json("/v1/conversations?offset=0", token, null);
+                deliver(ticket, () -> {
+                    // A slow pull must not overwrite a newer pushed state.
+                    if (revision != conversationListRevision || !screen.equals("home")) return;
+                    JSONArray rows = page.optJSONArray("conversations");
+                    if (rows == null) return;
+                    JSONArray workspaces = page.optJSONArray("workspaces");
+                    if (workspaces == null) workspaces = before == null ? null : before.optJSONArray("workspaces");
+                    if (workspaces == null) workspaces = new JSONArray();
+                    boolean independent = page.has("includeUnassigned")
+                        ? page.optBoolean("includeUnassigned") : before != null && before.optBoolean("includeUnassigned");
+                    listCache.put(snapshot, rows, page.optInt("nextOffset", -1), workspaces, independent);
+                    conversationListRevision++;
+                    JSONObject after = listCache.get(snapshot);
+                    boolean changed = before == null ? after != null : after != null && !before.toString().equals(after.toString());
+                    if (!changed) return;
+                    int position = scroll == null ? 0 : scroll.getScrollY();
+                    renderHomeContent();
+                    if (scroll != null) scroll.post(() -> scroll.scrollTo(0, position));
+                });
+            } catch (Exception ignored) {
+                // Keep the cached list; the next home resume will retry.
+            } finally {
+                homeRefreshBusy = false;
+                request.cancel();
+            }
+        });
     }
 
     private void settingsScreen() {
         stopNetwork(); screen = "settings"; networkScreen = false; conversationId = null;
         shell(tr("设置", "Settings"), "");
         SettingsStyle settingsStyle = new SettingsStyle(this);
-        LinearLayout preferences = settingsStyle.group(content, "");
-        LinearLayout data = null;
-        for (String section : new String[]{"providers", "general", "archived"}) {
-            String label = section.equals("providers") ? tr("供应商与 Key", "Providers & keys") : section.equals("general") ? tr("通用", "General") : tr("已归档", "Archived");
-            if (section.equals("archived")) data = settingsStyle.group(content, tr("数据与连接", "Data & connection"));
-            String icon = section.equals("providers") ? "key" : section.equals("general") ? "settings" : "archive";
-            settingsStyle.row(section.equals("archived") ? data : preferences, icon, label, "", "settings:" + section, () -> {
-                startActivity(new android.content.Intent(this, SettingsActivity.class).putExtra("section", section)); PageTransitions.openActivity(this);
+        int computers = 0;
+        try { computers = store.all().size(); } catch (Exception ignored) { }
+        LinearLayout summary = settingsStyle.group(content, tr("账户与连接", "Account & connection"));
+        settingsStyle.row(summary, "key", tr("模型服务", "Model services"),
+            tr("API、订阅与 Key", "APIs & keys"), "settings:summaryModels", () -> openSettingsSection("providers"));
+        settingsStyle.row(summary, "computer", tr("远程电脑", "Remote computers"),
+            tr(computers + " 台已配对", computers + " paired"), "settings:summaryComputers", () -> {
+                navigateComputers();
             });
-        }
-        // Mobile access is the one row here that leads somewhere whose state
-        // the reader cannot see from here, so it says which mode it is in. Only
-        // the mode: whether the node is actually up needs a live query, and this
-        // page has no business starting one just to fill in a label.
-        settingsStyle.row(data, "phone", tr("手机访问", "Mobile access"), mobileAccessState(), "settings:network", this::showNetwork);
-        settingsStyle.row(data, "settings", tr("本机名称", "This phone name"), MobilePreferences.deviceName(this), "settings:deviceName", this::editDeviceName);
-        settingsRowMobileAccess = (LinearLayout) data.findViewWithTag("settings:network");
+        settingsStyle.row(summary, "phone", tr("手机访问", "Mobile access"), mobileAccessState(), "settings:network", this::showNetwork);
+        settingsRowMobileAccess = (LinearLayout) summary.findViewWithTag("settings:network");
+
+        LinearLayout application = settingsStyle.group(content, tr("应用与权限", "Application & permissions"));
+        settingsStyle.row(application, "settings", tr("通用与外观", "General & appearance"), "", "settings:general",
+            () -> openSettingsSection("general"));
+        settingsStyle.row(application, "phone", tr("本机名称", "Phone name"), MobilePreferences.deviceName(this),
+            "settings:deviceName", this::editDeviceName);
+        settingsStyle.info(application, tr("会话权限", "Conversation permissions"),
+            tr("模型、思考等级和权限在会话内调整，沿用电脑端授权范围。", "Model, thinking level and permissions are adjusted inside a conversation within the desktop's authorized scope."));
+
+        LinearLayout data = settingsStyle.group(content, tr("数据与诊断", "Data & diagnostics"));
+        settingsStyle.row(data, "archive", tr("已归档", "Archived"), "", "settings:archived",
+            () -> openSettingsSection("archived"));
+        settingsStyle.row(data, "computer", tr("连接稳定性", "Connection stability"), "", "settings:diagnostics", () -> {
+            navigateComputers();
+        });
+
+        LinearLayout about = settingsStyle.group(content, tr("关于", "About"));
+        String version;
+        try { version = getPackageManager().getPackageInfo(getPackageName(), 0).versionName; }
+        catch (Exception ignored) { version = ""; }
+        settingsStyle.valueRow(about, "file", tr("Camellia 版本", "Version"), version, "settings:about");
         status.setVisibility(View.GONE);
+    }
+
+    private void openSettingsSection(String section) {
+        startActivity(new android.content.Intent(this, SettingsActivity.class).putExtra("section", section));
+        PageTransitions.openActivity(this);
     }
 
     /**
@@ -898,11 +1232,12 @@ public final class MainActivity extends Activity {
     private void computersScreen() {
         stopNetwork(); screen = "computers"; networkScreen = false; conversationId = null;
         clearHistory(); conversations.clear();
-        shell(tr("远程控制", "Remote control"), "");
+        shell(tr("电脑与连接", "Computers & connections"), "");
         root.setClipChildren(false);
         SettingsStyle style = new SettingsStyle(this);
-        TextView introduction = text(tr("选择一台电脑，继续工作。", "Choose a computer to continue."), Palette.TEXT_INPUT, style.secondary);
-        introduction.setPadding(dp(2), dp(4), dp(2), dp(20)); content.addView(introduction);
+        TextView introduction = text(tr("管理配对与连接；打开一台电脑会进入它的会话。",
+            "Manage pairing and connections. Open a computer to see its conversations."), Palette.TEXT_BODY, style.secondary);
+        introduction.setPadding(dp(2), dp(2), dp(2), dp(12)); content.addView(introduction);
         LinearLayout group = style.group(content, tr("我的电脑", "My computers")); group.setTag("computerList");
         status.setVisibility(View.GONE);
         try {
@@ -967,7 +1302,7 @@ public final class MainActivity extends Activity {
             persistDraft();
             canCreate = false; canCreateWorkspace = false; canImage = false; availableWorkspaces = new JSONArray();
             stopNetwork(); store.save(computer); credentials = store.load();
-            if (credentials.has("token")) { listScreen(); loadList(false); }
+            if (credentials.has("token")) switchDestination(() -> { listScreen(); loadList(false); });
             else pairScreen();
         } catch (Exception error) { reportError("无法读取电脑凭据，请重试。", "Could not load computer credentials. Try again.", error); }
     }
@@ -1060,7 +1395,8 @@ public final class MainActivity extends Activity {
         heading.setPadding(dp(13), 0, 0, 0);
         if (android.os.Build.VERSION.SDK_INT >= 28) heading.setAccessibilityHeading(true);
         header.addView(heading, new LinearLayout.LayoutParams(0, -2, 1));
-        ImageButton close = chatStyle.lineButton("close", tr("关闭", "Close"), () -> { if (computerDialog != null) computerDialog.dismiss(); });
+        ImageButton close = chatStyle.composerToolButton("close", tr("关闭", "Close"), muted,
+            () -> { if (computerDialog != null) computerDialog.dismiss(); });
         close.setImageDrawable(new LineIcon("close", muted)); close.setTag("sheetClose");
         header.addView(close, new LinearLayout.LayoutParams(dp(40), dp(40))); panel.addView(header);
         TextView subtitle = text(description, Palette.TEXT_NOTE, muted); subtitle.setPadding(0, dp(10), 0, description.isEmpty() ? dp(10) : dp(16));
@@ -1126,7 +1462,7 @@ public final class MainActivity extends Activity {
         stopNetwork(); int ticket = generation;
         try {
             var computers = store.all();
-            ((RefreshScrollView) scroll).setRefreshing(!computers.isEmpty());
+            ((RefreshScrollView) scroll).setRefreshing(false);
             setStatusNotice(computers.isEmpty() ? tr("尚未添加电脑", "No computers added") : tr("正在检查电脑状态…", "Checking computers…"));
             int[] remaining = {computers.size()};
             for (JSONObject computer : computers) {
@@ -1261,7 +1597,7 @@ public final class MainActivity extends Activity {
                     () -> { if (!selected) openComputer(computer); }));
             }
             computerPicker = new ComputerPickerPopup(root.findViewWithTag("remoteComputerPicker"), chatStyle, chinese, entries,
-                this::addComputer, () -> { persistDraft(); computersScreen(); refreshComputers(); });
+                this::addComputer, () -> { persistDraft(); navigateComputers(); });
             ComputerPickerPopup picker = computerPicker;
             int ticket = generation;
             for (JSONObject computer : computers) statusWorker.submit(() -> {
@@ -1430,14 +1766,32 @@ public final class MainActivity extends Activity {
         screen = "list";
         networkScreen = false;
         stopNetwork(); conversationId = null; clearHistory(); conversations.clear(); nextOffset = -1;
+        archivedConversations.clear(); archivedLoaded = false; archivedLoading = false; archivedNextOffset = -1;
         canCreate = false; canCreateWorkspace = false; canArchive = false; canManageConversations = false;
         canDiscussions = false;
         selectingConversations = false; selectedConversations.clear();
+        conversationFilter = "all";
         availableWorkspaces = new JSONArray(); allowIndependent = false;
         listEventsUnavailable = false;
         listLoaded = false; listLoadFailed = false;
         shell("", "");
         root.setClipChildren(false);
+        if (!credentials.has("token")) {
+            status.setVisibility(View.GONE);
+            ChatEmptyState empty = new ChatEmptyState(this, chatStyle, "computer",
+                tr("尚未连接电脑", "No computer connected"),
+                tr("会话按电脑分开显示。先在「电脑」页配对或选择一台，再回来查看它的会话。",
+                    "Conversations are grouped by computer. Pair or choose one in Computers, then return here to browse its sessions."));
+            empty.addAction(tr("管理电脑", "Manage computers"), "sessionsEmptyManageComputers", this::navigateComputers);
+            if (credentials.has("claim")) {
+                empty.addAction(tr("继续配对", "Resume pairing"), "sessionsEmptyResumePairing", () -> {
+                    pairScreen();
+                    waitForApproval();
+                });
+            }
+            content.addView(empty);
+            return;
+        }
         chatStyle.dockStatus(status);
         status.setSingleLine(true); status.setMinLines(1); status.setEllipsize(android.text.TextUtils.TruncateAt.END);
         status.setVisibility(View.GONE);
@@ -1453,7 +1807,8 @@ public final class MainActivity extends Activity {
         searchInput.setHint(tr("搜索会话", "Search conversations")); searchInput.setContentDescription(tr("搜索会话", "Search conversations")); searchInput.setBackgroundColor(Color.TRANSPARENT);
         searchInput.setPadding(dp(2), dp(12), dp(8), dp(12)); searchInput.setMinHeight(dp(48));
         searchBar.addView(searchInput, new LinearLayout.LayoutParams(0, -2, 1));
-        ImageButton close = lineButton("close", tr("关闭搜索", "Close search"), this::closeConversationSearch);
+        ImageButton close = chatStyle.composerToolButton("close", tr("关闭搜索", "Close search"), muted,
+            this::closeConversationSearch);
         close.setTag("remoteSearchClose"); searchBar.addView(close, new LinearLayout.LayoutParams(dp(48), dp(48)));
         searchInput.setOnEditorActionListener((view, action, event) -> {
             if (action != android.view.inputmethod.EditorInfo.IME_ACTION_SEARCH) return false;
@@ -1552,6 +1907,77 @@ public final class MainActivity extends Activity {
         return low;
     }
 
+    static boolean matchesConversationFilter(String filter, String activity) {
+        if (activity == null) return filter == null || filter.equals("all");
+        return switch (filter == null ? "all" : filter) {
+            case "running" -> activity.equals("running");
+            case "waiting" -> activity.equals("permission") || activity.equals("question");
+            default -> true;
+        };
+    }
+
+    private boolean matchesConversationFilter(JSONObject conversation) {
+        return matchesConversationFilter(conversationFilter, conversation);
+    }
+
+    static boolean matchesConversationFilter(String filter, JSONObject conversation) {
+        filter = filter == null || filter.equals("files") ? "all" : filter;
+        if (filter.equals("archived")) return conversation.optLong("archivedAt", 0) > 0;
+        return matchesConversationFilter(filter, conversation.optString("activity"));
+    }
+
+    private void addConversationFilters() {
+        LinearLayout filters = new LinearLayout(this);
+        filters.setOrientation(LinearLayout.VERTICAL);
+        filters.setTag("conversationFilters");
+        if (conversationFilter.equals("files")) conversationFilter = "all";
+        LinearLayout row = conversationFilterRow();
+        addConversationFilter(row, "all", tr("全部", "All"));
+        addConversationFilter(row, "running", tr("运行中", "Running"));
+        addConversationFilter(row, "waiting", tr("等待处理", "Waiting"));
+        addConversationFilter(row, "archived", tr("已归档", "Archived"));
+        filters.addView(row, new LinearLayout.LayoutParams(-1, -2));
+        filters.setPadding(0, 0, 0, dp(8));
+        content.addView(filters, new LinearLayout.LayoutParams(-1, -2));
+    }
+
+    private LinearLayout conversationFilterRow() {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        return row;
+    }
+
+    private void addConversationFilter(LinearLayout row, String value, String label) {
+        boolean active = conversationFilter.equals(value);
+        TextView chip = new TextView(this);
+        chip.setText(label);
+        chip.setTextSize(Palette.TEXT_SMALL);
+        chip.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        chip.setTextColor(active ? accent : muted);
+        chip.setGravity(Gravity.CENTER);
+        chip.setMinHeight(dp(48));
+        chip.setMinimumWidth(dp(48));
+        chip.setPadding(dp(12), dp(8), dp(12), dp(8));
+        chip.setTag("sessionFilter:" + value);
+        chip.setFocusable(true);
+        GradientDrawable face = active
+            ? chatStyle.capsule(Color.argb(24, Color.red(accent), Color.green(accent), Color.blue(accent)))
+            : null;
+        chip.setBackground(new RippleDrawable(ColorStateList.valueOf(Palette.RIPPLE_ON_PAGE),
+            face, chatStyle.capsule(Color.WHITE)));
+        chip.setElevation(0);
+        chip.setOnClickListener(view -> {
+            if (!conversationFilter.equals(value)) {
+                conversationFilter = value;
+                if (value.equals("archived") && !archivedLoaded) loadArchived(false);
+                renderConversations();
+            }
+        });
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-2, -2);
+        params.setMarginEnd(dp(4));
+        row.addView(chip, params);
+    }
+
     private void renderConversations() {
         if (conversationPopup != null) conversationPopup.dismiss();
         int position = scroll.getScrollY();
@@ -1568,35 +1994,54 @@ public final class MainActivity extends Activity {
             actions.addView(delete, new LinearLayout.LayoutParams(0, -2, 1)); content.addView(actions);
         }
         if (credentials.has("pendingCreate")) content.addView(button(tr("查询操作结果 / 重试", "Check operation / retry"), this::retryCreate, false));
-        LinkedHashMap<String, ArrayList<JSONObject>> groups = new LinkedHashMap<>();
         String query = searchInput == null ? "" : searchInput.getText().toString().trim().toLowerCase(Locale.ROOT);
-        if (query.isEmpty()) for (int index = 0; index < availableWorkspaces.length(); index++) {
+        boolean filtered = !conversationFilter.equals("all");
+        boolean archivedFilter = conversationFilter.equals("archived");
+        if (archivedFilter && !archivedLoaded && !archivedLoading) loadArchived(false);
+        if (!selectingConversations && query.isEmpty()) addConversationFilters();
+        LinkedHashMap<String, ArrayList<JSONObject>> groups = new LinkedHashMap<>();
+        if (query.isEmpty() && !filtered) for (int index = 0; index < availableWorkspaces.length(); index++) {
             JSONObject workspace = availableWorkspaces.optJSONObject(index); if (workspace != null) groups.put(workspace.optString("id"), new ArrayList<>());
         }
-        for (JSONObject conversation : conversations.values()) {
+        int visibleConversations = 0;
+        java.util.Collection<JSONObject> source = archivedFilter ? archivedConversations.values() : conversations.values();
+        for (JSONObject conversation : source) {
             if (!query.isEmpty() && !conversation.optString("title").toLowerCase(Locale.ROOT).contains(query)) continue;
+            if (!matchesConversationFilter(conversation)) continue;
+            visibleConversations++;
             String workspace = conversation.isNull("workspaceId") ? "" : conversation.optString("workspaceId");
             groups.computeIfAbsent(workspace, key -> new ArrayList<>()).add(conversation);
         }
         ArrayList<JSONObject> independent = groups.remove("");
-        if (independent != null || allowIndependent && query.isEmpty()) groups.put("", independent == null ? new ArrayList<>() : independent);
+        if (independent != null || allowIndependent && query.isEmpty() && !filtered) groups.put("", independent == null ? new ArrayList<>() : independent);
         boolean matchingDiscussion = false;
-        if (canDiscussions) for (int index = 0; index < discussionGroups.length(); index++) {
+        if (canDiscussions && !filtered) for (int index = 0; index < discussionGroups.length(); index++) {
             JSONObject discussion = discussionGroups.optJSONObject(index);
             if (discussion != null && discussion.optString("title").toLowerCase(Locale.ROOT).contains(query)) { matchingDiscussion = true; break; }
         }
-        boolean hasContent = !conversations.isEmpty() || availableWorkspaces.length() > 0 || matchingDiscussion || canDiscussions && moreDiscussions;
-        if (!hasContent && !listLoaded) {
+        boolean hasContent = visibleConversations > 0 || !filtered && availableWorkspaces.length() > 0 || matchingDiscussion || !filtered && canDiscussions && moreDiscussions;
+        boolean dataLoaded = archivedFilter ? archivedLoaded : listLoaded;
+        if (!hasContent && !dataLoaded) {
             content.addView(new ChatEmptyState(this, chatStyle, "computer",
-                listLoadFailed ? tr("暂时无法读取会话", "Could not load conversations") : tr("正在同步会话…", "Syncing conversations…"),
-                listLoadFailed ? tr("请检查连接后重试。", "Check your connection and try again.") : tr("连接电脑后，将显示授权范围内的工作区与会话。", "Your authorized workspaces and conversations will appear after connecting."),
-                listLoadFailed ? tr("重新同步", "Retry sync") : "", listLoadFailed ? () -> loadList(false) : null));
+                listLoadFailed && !archivedFilter ? tr("暂时无法读取会话", "Could not load conversations")
+                    : archivedFilter ? tr("正在读取已归档会话…", "Loading archived conversations…") : tr("正在同步会话…", "Syncing conversations…"),
+                listLoadFailed && !archivedFilter ? tr("请检查连接后重试。", "Check your connection and try again.")
+                    : archivedFilter ? tr("归档会话只在你主动打开此筛选时读取。", "Archived conversations are read only when you open this filter.")
+                    : tr("连接电脑后，将显示授权范围内的工作区与会话。", "Your authorized workspaces and conversations will appear after connecting."),
+                listLoadFailed && !archivedFilter ? tr("重新同步", "Retry sync") : "",
+                listLoadFailed && !archivedFilter ? () -> loadList(false) : null));
             layoutConversationList(true, position); return;
         }
         if (!query.isEmpty() && groups.values().stream().allMatch(java.util.List::isEmpty) && !matchingDiscussion) {
             content.addView(new ChatEmptyState(this, chatStyle, "search", tr("没有找到会话", "No conversations found"),
                 tr("试试更短的关键词，或清除搜索查看全部会话。", "Try a shorter keyword, or clear the search to see all conversations."),
                 tr("清除搜索", "Clear search"), () -> searchInput.setText("")));
+            layoutConversationList(true, position); return;
+        }
+        if (filtered && visibleConversations == 0 && !matchingDiscussion && dataLoaded) {
+            content.addView(new ChatEmptyState(this, chatStyle, "sessions", archivedFilter ? tr("没有已归档会话", "No archived conversations") : tr("没有符合筛选的会话", "No matching conversations"),
+                archivedFilter ? tr("归档后仍可在这里找到会话。", "Archived conversations remain available here.") : tr("清除筛选，查看全部会话。", "Clear the filter to see all conversations."),
+                tr("查看全部", "Show all"), () -> { conversationFilter = "all"; renderConversations(); }));
             layoutConversationList(true, position); return;
         }
         if (!hasContent) {
@@ -1613,12 +2058,13 @@ public final class MainActivity extends Activity {
                 welcome.getChildAt(index).setEnabled(!commandBusy && !credentials.has("pendingCreate"));
             content.addView(welcome); layoutConversationList(true, position); return;
         }
-        if (availableWorkspaces.length() > 0 || canCreateWorkspace) {
+        if (!filtered && (availableWorkspaces.length() > 0 || canCreateWorkspace)) {
             LinearLayout workspaceHeader = chatStyle.workspaceHeader(availableWorkspaces.length() == 0 ? tr("新建工作区", "New workspace") : tr("工作区", "Workspaces"),
                 tr("新建工作区", "New workspace"), "remoteNewWorkspace", this::createWorkspace);
             View create = workspaceHeader.findViewWithTag("remoteNewWorkspace");
             create.setVisibility(canCreateWorkspace ? View.VISIBLE : View.GONE);
             create.setEnabled(!commandBusy && !credentials.has("pendingCreate")); content.addView(workspaceHeader);
+            workspaceHeader.setPadding(0, dp(4), 0, dp(2));
         }
         for (var entry : groups.entrySet()) {
             String workspace = entry.getKey(); ArrayList<JSONObject> entries = entry.getValue();
@@ -1630,7 +2076,7 @@ public final class MainActivity extends Activity {
             String key = credentials.optString("address") + "/" + workspace;
             boolean collapsed = collapsedGroups.computeIfAbsent(key, value -> getPreferences(MODE_PRIVATE).getBoolean("collapsed:" + value, false));
             LinearLayout group = column();
-            LinearLayout.LayoutParams groupParams = new LinearLayout.LayoutParams(-1, -2); groupParams.setMargins(0, dp(12), 0, dp(4)); group.setLayoutParams(groupParams);
+            LinearLayout.LayoutParams groupParams = new LinearLayout.LayoutParams(-1, -2); groupParams.setMargins(0, dp(6), 0, dp(2)); group.setLayoutParams(groupParams);
             LinearLayout groupHeader = new LinearLayout(this); groupHeader.setGravity(Gravity.CENTER_VERTICAL);
             if (!workspace.isEmpty()) {
                 ImageView folder = new ImageView(this); folder.setImageDrawable(new LineIcon("folder", ink)); folder.setPadding(dp(2), 0, dp(10), 0);
@@ -1647,10 +2093,10 @@ public final class MainActivity extends Activity {
                 renderConversations();
             });
             groupHeader.addView(heading, new LinearLayout.LayoutParams(0, -2, 1));
-            ImageButton create = lineButton("new", workspace.isEmpty()
+            ImageButton create = chatStyle.composerToolButton("new", workspace.isEmpty()
                 ? tr("新建独立会话", "New independent conversation")
                 : tr("新建会话：", "New conversation: ") + name,
-                () -> createConversation(workspace.isEmpty() ? null : workspace));
+                accent, () -> createConversation(workspace.isEmpty() ? null : workspace));
             create.setTag(workspace.isEmpty() ? "newStandalone" : "newWorkspace:" + workspace);
             create.setVisibility(canCreate && (!workspace.isEmpty() || allowIndependent) ? View.VISIBLE : View.GONE);
             create.setEnabled(!commandBusy && !credentials.has("pendingCreate"));
@@ -1664,8 +2110,9 @@ public final class MainActivity extends Activity {
             }
             content.addView(group);
         }
-        if (query.isEmpty() || matchingDiscussion) renderDiscussionSection(query);
-        if (nextOffset >= 0) content.addView(button(tr("加载更多会话", "Load more conversations"), () -> loadList(true), false));
+        if (!filtered && (query.isEmpty() || matchingDiscussion)) renderDiscussionSection(query);
+        if (archivedFilter && archivedNextOffset >= 0) content.addView(button(tr("加载更多归档会话", "Load more archived conversations"), () -> loadArchived(true), false));
+        else if (!archivedFilter && nextOffset >= 0) content.addView(button(tr("加载更多会话", "Load more conversations"), () -> loadList(true), false));
         layoutConversationList(false, position);
     }
 
@@ -1691,7 +2138,8 @@ public final class MainActivity extends Activity {
         heading.setContentDescription(label + " · " + discussionGroups.length() + " · " + (collapsed ? tr("展开", "Expand") : tr("折叠", "Collapse")));
         heading.setOnClickListener(view -> { collapsedGroups.put(key, !collapsed); getPreferences(MODE_PRIVATE).edit().putBoolean("collapsed:" + key, !collapsed).apply(); renderConversations(); });
         header.addView(heading, new LinearLayout.LayoutParams(0, -2, 1));
-        ImageButton create = lineButton("new", tr("新建讨论群", "New discussion"), () -> openDiscussion(null, true, false));
+        ImageButton create = chatStyle.composerToolButton("new", tr("新建讨论群", "New discussion"), accent,
+            () -> openDiscussion(null, true, false));
         create.setTag("newDiscussion"); header.addView(create, new LinearLayout.LayoutParams(dp(48), dp(48))); section.addView(header);
         boolean found = false;
         for (int i = 0; i < discussionGroups.length(); i++) {
@@ -1721,6 +2169,7 @@ public final class MainActivity extends Activity {
     private View conversationCard(JSONObject conversation) {
         String title = conversation.optString("title");
         String state = conversation.optString("activity", "");
+        boolean archived = conversation.optLong("archivedAt", 0) > 0 || conversationFilter.equals("archived");
         boolean unread = replies().unread(credentials, conversation);
         boolean working = state.equals("running") || state.equals("permission") || state.equals("question");
         // Work that outlives its reply still belongs in the state column: it is
@@ -1729,19 +2178,212 @@ public final class MainActivity extends Activity {
         String indicator = working || RemoteWorkStatus.backgroundCount(conversation) > 0 ? activity(conversation) : "";
         if (unread) indicator += (indicator.isEmpty() ? "" : " · ") + tr("新消息", "New reply");
         if (conversation.optBoolean("pinned")) indicator += (indicator.isEmpty() ? "" : " · ") + tr("已置顶", "Pinned");
+        if (archived) indicator = tr("已归档", "Archived");
+        Palette statusPalette = Palette.of(this);
+        int statusColor = archived ? statusPalette.muted
+            : state.equals("running") ? statusPalette.success
+            : state.equals("permission") || state.equals("question") ? statusPalette.warning
+            : state.equals("failed") || state.equals("error") ? statusPalette.error
+            : RemoteWorkStatus.backgroundCount(conversation) > 0 || unread ? statusPalette.accent : statusPalette.muted;
+        String meta = conversationMeta(conversation);
+        String time = conversationTime(conversation);
         ConversationRow card = new ConversationRow(this, chatStyle, !conversation.isNull("workspaceId") && !conversation.optString("workspaceId").isEmpty(),
-            title, indicator, "conversation:" + conversation.optString("id"), "conversationStatus:" + conversation.optString("id"),
+            conversationEngine(conversation), title, meta, indicator, statusColor, time,
+            "conversation:" + conversation.optString("id"), "conversationStatus:" + conversation.optString("id"),
             () -> {
                 String id = conversation.optString("id");
                 if (selectingConversations) {
                     if (!selectedConversations.add(id)) selectedConversations.remove(id);
                     renderConversations();
-                } else { conversationId = id; conversationTitle = title; detailScreen(); connectEvents(); }
-            }, () -> conversationMenu(conversation));
+                } else if (archived) restoreArchivedConversation(conversation);
+                else { conversationId = id; conversationTitle = title; detailReturn = "list"; detailScreen(); connectEvents(); }
+            }, () -> { if (archived) restoreArchivedConversation(conversation); else conversationMenu(conversation); });
         card.setContentDescription(title + " · " + activity(conversation) + (unread ? " · " + tr("新消息", "New reply") : ""));
         card.selection(selectingConversations, selectedConversations.contains(conversation.optString("id")));
-        prefetchRows.add(card);
+        if (!archived) prefetchRows.add(card);
         return card;
+    }
+
+    private String conversationMeta(JSONObject conversation) {
+        java.util.ArrayList<String> parts = new java.util.ArrayList<>();
+        String engine = RemoteEngines.label(conversationEngine(conversation));
+        if (!engine.isEmpty()) parts.add(engine);
+        JSONObject file = conversation.optJSONObject("filePreview");
+        if (file != null) {
+            String name = file.optString("name");
+            int count = Math.max(1, file.optInt("count", 1));
+            if (!name.isEmpty()) parts.add(name + (count > 1 ? " +" + (count - 1) : ""));
+        }
+        return String.join(" · ", parts);
+    }
+
+    private String conversationEngine(JSONObject conversation) {
+        String engine = conversation.optString("engine", "");
+        if (engine.isEmpty() || engine.equals("null")) engine = conversation.optString("currentEngine", "");
+        return engine.equals("null") ? "" : engine;
+    }
+
+    private String conversationTime(JSONObject conversation) {
+        long at = conversation.optLong("archivedAt", 0);
+        if (at <= 0) at = conversation.optLong("updatedAt", 0);
+        if (at <= 0) return "";
+        long delta = Math.max(0, System.currentTimeMillis() - at);
+        long minutes = delta / 60_000L;
+        if (minutes < 1) return tr("刚刚", "now");
+        if (minutes < 60) return tr(minutes + " 分", minutes + "m");
+        long hours = minutes / 60;
+        if (hours < 24) return tr(hours + " 小时", hours + "h");
+        long days = hours / 24;
+        if (days < 7) return tr(days + " 天", days + "d");
+        return new java.text.SimpleDateFormat("M/d", java.util.Locale.getDefault()).format(new java.util.Date(at));
+    }
+
+    private java.util.List<ConversationSidebar.Item> detailSidebarItems() {
+        LinkedHashMap<String, JSONObject> merged = new LinkedHashMap<>();
+        JSONObject cached = listCache == null ? null : listCache.get(credentials);
+        JSONArray rows = cached == null ? null : cached.optJSONArray("conversations");
+        if (rows != null) for (int index = 0; index < rows.length(); index++) {
+            JSONObject conversation = rows.optJSONObject(index);
+            String id = conversation == null ? "" : conversation.optString("id");
+            if (!id.isEmpty() && conversation.optLong("archivedAt", 0) <= 0) {
+                merged.put(id, conversation);
+            }
+        }
+        for (JSONObject conversation : conversations.values()) {
+            String id = conversation.optString("id");
+            if (!id.isEmpty() && conversation.optLong("archivedAt", 0) <= 0 && !merged.containsKey(id)) {
+                merged.put(id, conversation);
+            }
+        }
+        ArrayList<ConversationSidebar.Item> items = new ArrayList<>();
+        boolean currentSeen = false;
+        for (JSONObject conversation : merged.values()) {
+            if (items.size() == 40) break;
+            String id = conversation.optString("id");
+            if (id.isEmpty()) continue;
+            boolean selected = id.equals(conversationId);
+            currentSeen |= selected;
+            items.add(sidebarItem(conversation, selected));
+        }
+        if (!currentSeen && conversationId != null && !conversationId.isEmpty()) {
+            try {
+                JSONObject current = new JSONObject().put("id", conversationId)
+                    .put("title", conversationTitle)
+                    .put("engine", displayedConversation != null
+                        && conversationId.equals(displayedConversation.optString("id"))
+                        ? conversationEngine(displayedConversation) : "");
+                items.add(0, sidebarItem(current, true));
+            } catch (Exception ignored) {
+                // A missing synthetic row is safer than hiding the rest of the sidebar.
+            }
+        }
+        return items;
+    }
+
+    private ConversationSidebar.Item sidebarItem(JSONObject conversation, boolean selected) {
+        String state = conversation.optString("activity");
+        boolean running = state.equals("running");
+        boolean waiting = state.equals("permission") || state.equals("question");
+        int background = RemoteWorkStatus.backgroundCount(conversation);
+        boolean active = running || waiting || background > 0;
+        Palette palette = Palette.of(this);
+        int color = running ? palette.success
+            : waiting ? palette.warning
+            : background > 0 ? (RemoteWorkStatus.backgroundUnknown(conversation) ? palette.warning : palette.accent)
+            : 0;
+        String status = active ? activity(conversation) : conversationMeta(conversation);
+        String time = conversationTime(conversation);
+        String detail = status.isEmpty() ? time : time.isEmpty() ? status : status + " · " + time;
+        if (detail.isEmpty()) detail = tr("空闲", "Idle");
+        String title = conversation.optString("title");
+        if (title.isEmpty()) title = tr("未命名会话", "Untitled conversation");
+        boolean unread = conversation.optLong("lastReplyAt", 0) > conversation.optLong("replyReadAt", 0);
+        return new ConversationSidebar.Item(conversation.optString("id"), title,
+            conversationEngine(conversation), detail, color, selected, unread);
+    }
+
+    private void openSidebarConversation(ConversationSidebar.Item item) {
+        if (item == null || item.id.isEmpty() || item.id.equals(conversationId)) return;
+        persistDraft();
+        sidebarScrollRestore = detailSidebar == null ? -1 : detailSidebar.scrollY();
+        conversationId = item.id;
+        conversationTitle = item.title;
+        detailScreen();
+        connectEvents();
+    }
+
+    private void refreshDetailSidebar() {
+        if (detailSidebar == null || !screen.equals("detail") || !foreground || sidebarRefreshBusy
+                || !credentials.has("token") || !EmbeddedNetwork.online() || listCache == null) return;
+        long now = android.os.SystemClock.elapsedRealtime();
+        if (now - sidebarRefreshAt < 5_000) return;
+        sidebarRefreshAt = now;
+        sidebarRefreshBusy = true;
+        int ticket = generation;
+        long revision = conversationListRevision;
+        JSONObject snapshot;
+        JSONObject before;
+        try {
+            snapshot = new JSONObject(credentials.toString());
+            before = listCache.get(snapshot);
+        } catch (Exception error) {
+            sidebarRefreshBusy = false;
+            return;
+        }
+        String token = snapshot.optString("token");
+        RemoteApi request = homeClientFactory.apply(snapshot.optString("address"));
+        worker.submit(() -> {
+            try {
+                JSONObject page = request.json("/v1/conversations?offset=0", token, null);
+                deliver(ticket, () -> {
+                    if (revision != conversationListRevision || !screen.equals("detail")) return;
+                    JSONArray rows = page.optJSONArray("conversations");
+                    if (rows == null) return;
+                    JSONArray workspaces = page.optJSONArray("workspaces");
+                    if (workspaces == null) workspaces = before == null ? null : before.optJSONArray("workspaces");
+                    if (workspaces == null) workspaces = new JSONArray();
+                    boolean independent = page.has("includeUnassigned")
+                        ? page.optBoolean("includeUnassigned") : before != null && before.optBoolean("includeUnassigned");
+                    listCache.put(snapshot, rows, page.optInt("nextOffset", -1), workspaces, independent);
+                    conversationListRevision++;
+                    JSONObject after = listCache.get(snapshot);
+                    boolean changed = before == null ? after != null : after != null && !before.toString().equals(after.toString());
+                    if (!changed) return;
+                    if (screen.equals("detail") && detailSidebar != null) {
+                        detailSidebar.update(detailSidebarItems());
+                    }
+                });
+            } catch (Exception ignored) {
+                // The cached sidebar remains usable while the next open retries.
+            } finally {
+                sidebarRefreshBusy = false;
+                request.cancel();
+            }
+        });
+    }
+
+    private void restoreArchivedConversation(JSONObject conversation) {
+        if (!canManageConversations || commandBusy || credentials.has("pendingCreate")) {
+            setStatusNotice(tr("恢复归档需要控制权限，并等待当前操作完成。", "Restoring an archived conversation requires control permission and no pending action."));
+            return;
+        }
+        String id = conversation.optString("id");
+        new CamelliaDialog.Builder(this).setTitle(tr("恢复会话？", "Restore conversation?"))
+            .setMessage(tr("会话会回到正常的会话列表。", "The conversation will return to the normal list."))
+            .setNegativeButton(tr("取消", "Cancel"), null)
+            .setPositiveButton(tr("恢复", "Restore"), (dialog, which) -> {
+                try {
+                    JSONObject payload = command("restore").put("conversationId", id)
+                        .put("expectedSeq", conversation.optLong("seq"));
+                    JSONObject saved = new JSONObject(credentials.toString()).put("pendingCreate", payload);
+                    store.save(saved); credentials = saved;
+                    archivedConversations.remove(id);
+                    renderConversations();
+                    retryCreate();
+                } catch (Exception error) {
+                    reportError("无法保存恢复请求", "Could not save restore action", error);
+                }
+            }).show();
     }
 
     private void conversationMenu(JSONObject conversation) {
@@ -1879,6 +2521,47 @@ public final class MainActivity extends Activity {
         });
     }
 
+    private void loadArchived(boolean append) {
+        if (archivedLoading || !credentials.has("token") || !networkActive()) {
+            archivedLoaded = true;
+            renderConversations();
+            return;
+        }
+        archivedLoading = true;
+        setStatusNotice(tr("正在读取已归档会话…", "Loading archived conversations…"));
+        RemoteApi client = api == null ? begin() : api;
+        int ticket = generation;
+        String token = credentials.optString("token");
+        int offset = append ? Math.max(0, archivedNextOffset) : 0;
+        worker.submit(() -> {
+            try {
+                JSONObject page = client.json("/v1/archived?offset=" + offset, token, null);
+                JSONArray rows = page.optJSONArray("conversations");
+                if (ticket != generation) return;
+                deliver(ticket, () -> {
+                    archivedLoading = false;
+                    archivedLoaded = true;
+                    if (!append) archivedConversations.clear();
+                    for (int index = 0; rows != null && index < rows.length(); index++) {
+                        JSONObject conversation = rows.optJSONObject(index);
+                        if (conversation != null && !conversation.optString("id").isEmpty())
+                            archivedConversations.put(conversation.optString("id"), conversation);
+                    }
+                    archivedNextOffset = page.optInt("nextOffset", -1);
+                    setStatusNotice("");
+                    renderConversations();
+                });
+            } catch (Exception error) {
+                deliver(ticket, () -> {
+                    archivedLoading = false;
+                    archivedLoaded = true;
+                    showFailure(error, true);
+                    renderConversations();
+                });
+            }
+        });
+    }
+
     private JSONObject listInfo(RemoteApi client, String token, JSONObject page) throws IOException {
         JSONObject info = page.has("protocol") ? page : client.json("/v1/status", token, null);
         if (info.optInt("protocol") != 1) throw new IOException("Unsupported protocol");
@@ -1909,6 +2592,7 @@ public final class MainActivity extends Activity {
         canStopBackgroundWork = capabilities.contains("\"stop-background-work\"");
         canIncremental = capabilities.contains("\"incremental-snapshots\"");
         canListQuery = capabilities.contains("\"list-query\""); capabilityAddress = credentials.optString("address");
+        capabilityToken = credentials.optString("token");
         canDiscussions = info.optString("permission").equals("control") && capabilities.contains("\"discussions\"");
         discussionGroups = canDiscussions ? info.optJSONArray("discussionGroups") : null;
         if (discussionGroups == null) discussionGroups = new JSONArray();
@@ -2069,7 +2753,8 @@ public final class MainActivity extends Activity {
                         } else if (result.optBoolean("ok") && workspaceCreation && result.optJSONObject("workspace") != null) {
                             loadList(false);
                         } else if (result.optBoolean("ok") && conversation != null) {
-                            conversationId = conversation.getString("id"); conversationTitle = conversation.optString("title"); detailScreen(); connectEvents();
+                            conversationId = conversation.getString("id"); conversationTitle = conversation.optString("title");
+                            detailReturn = "list"; detailScreen(); connectEvents();
                         } else { renderConversations(); setStatusNotice(tr("操作未确认成功，请先在电脑核对。", "Operation not confirmed. Check the desktop before retrying.") + " " + result.optString("error")); }
                     } catch (Exception error) { reportError("无法保存结果，请重试同一请求。", "Could not save result. Retry the same request.", error); }
                 });
@@ -2116,36 +2801,36 @@ public final class MainActivity extends Activity {
         // rows stay reachable.
         int limit = ChatAttachments.remoteCount(canAttachments, canFileAttachments, canMultiImage);
         boolean images = sendable && (canImage || canFileAttachments) && selectedImages.size() + selectedDocuments.size() < limit;
-        boolean configurable = sendable && remoteSettings != null && remoteSettings.optBoolean("editable");
         imageConversation = conversationId; imageComputer = credentials.optString("address");
         AttachSheet sheet = new AttachSheet(this);
         LinearLayout panel = sheet.panel();
         android.app.Dialog dialog = createComputerDialog(panel);
         sheet.header(panel, "plus", tr("添加内容", "Add"), tr("关闭", "Close"), () -> dialog.dismiss());
-        sheet.note(panel, canAttachments ? ChatAttachments.limits(chinese, true)
-            : canFileAttachments ? tr("当前电脑最多 9 个附件 · 合计 8 MiB；更新电脑端可提高限额。", "This desktop supports 9 attachments · 8 MiB total; update it for higher limits.")
-            : tr("更新并重启电脑端后，可发送文档及最多 20 个附件。", "Update and restart the desktop for documents and up to 20 attachments."));
+        sheet.sectionLabel(panel, tr("从手机添加", "From this phone"));
         sheet.tiles(panel, java.util.Arrays.asList(
             new AttachSheet.Tile("camera", tr("拍照", "Camera"), "imageCamera", images, () -> { dialog.dismiss(); openCamera(); }),
             new AttachSheet.Tile("image", tr("照片", "Photos"), "imageGallery", images, () -> { dialog.dismiss(); openGallery(); }),
             new AttachSheet.Tile("file", tr("文件", "Files"), "remoteDocumentPicker", sendable && (canAttachments || canFileAttachments) && selectedImages.size() + selectedDocuments.size() < limit, () -> { dialog.dismiss(); openDocuments(); })));
-        sheet.note(panel, tr("文件支持 PDF、Word、Excel、PPT、文本等常见格式。", "Files support PDF, Word, Excel, PowerPoint, text and other common document formats."));
-        String level = remoteSettings == null ? "ask" : remoteSettings.optString("permissionMode");
-        LinearLayout group = sheet.group(panel, "");
-        sheet.row(group, "shield", tr("安全级别", "Safety level"),
-            tr("控制电脑执行工具操作前的确认方式", "Controls how tool actions are confirmed on your computer"),
-            RemoteSettingsPopup.permissionLabel(level, chinese), "attachPermission", configurable, () -> { dialog.dismiss(); showRemoteSettings(true); });
+        sheet.note(panel, (canAttachments ? ChatAttachments.limits(chinese, true)
+            : canFileAttachments ? tr("当前电脑最多 9 个附件 · 合计 8 MiB；更新电脑端可提高限额。", "This desktop supports 9 attachments · 8 MiB total; update it for higher limits.")
+            : tr("更新并重启电脑端后，可发送最多 20 个附件。", "Update and restart the desktop for up to 20 attachments."))
+            + " " + tr("支持 PDF、Word、Excel、PPT 和文本。", "PDF, Word, Excel, PowerPoint and text."));
+        LinearLayout group = sheet.group(panel, tr("附件选项", "Attachment options"));
         sheet.row(group, "folder", tr("查看产物", "Files"),
-            tr("列出会话中的文件并下载到手机", "List this chat's files and save them to your phone"),
+            tr("查看并下载会话产物", "Review and download files"),
             "", "attachArtifacts", sendable, () -> {
                 dialog.dismiss();
                 artifactDownloads.show(credentials.optString("address"), credentials.optString("token"), conversationId);
             });
-        if (!images) {
-            String reason = !canImage && !canFileAttachments ? tr("添加图片需要更新并重启电脑端。", "Images require an updated and restarted desktop.")
-                : selectedImages.size() + selectedDocuments.size() >= limit ? (canAttachments ? tr("最多添加 20 个附件。", "Add up to 20 attachments.") : canFileAttachments ? tr("当前电脑最多 9 个附件，请更新电脑端提高限额。", "This desktop supports up to 9 attachments; update it for higher limits.") : canMultiImage ? tr("旧版电脑端最多 9 张图片，请更新电脑端。", "This desktop supports up to 9 images; update it.")
-                    : tr("多图发送需要更新并重启电脑端。", "Multiple images require an updated and restarted desktop."))
-                : tr("连接电脑后可添加图片。", "Connect to your computer to add images.");
+        if (!images && sendable) {
+            String reason = selectedImages.size() + selectedDocuments.size() >= limit
+                ? (canAttachments ? tr("最多添加 20 个附件。", "Add up to 20 attachments.")
+                    : canFileAttachments ? tr("当前电脑最多 9 个附件，请更新电脑端提高限额。", "This desktop supports up to 9 attachments; update it for higher limits.")
+                    : canMultiImage ? tr("旧版电脑端最多 9 张图片，请更新电脑端。", "This desktop supports up to 9 images; update it.")
+                    : tr("当前电脑端不具备图片附件能力。", "This desktop does not support image attachments."))
+                : !canImage && !canFileAttachments
+                    ? tr("当前电脑端不具备图片附件能力。", "This desktop does not support image attachments.")
+                    : tr("连接电脑后可添加图片。", "Connect to your computer to add images.");
             sheet.note(panel, reason);
         }
         showComputerDialog(dialog);
@@ -2275,7 +2960,7 @@ public final class MainActivity extends Activity {
         int limit = Math.max(100, conversations.size());
         long syncedCursor = listCursor;
         String syncedInstance = listInstance;
-        job = worker.submit(() -> {
+        job = eventWorker.submit(() -> {
             boolean[] received = { false };
             boolean[] streamOpened = { false };
             Exception failure = null;
@@ -2313,6 +2998,20 @@ public final class MainActivity extends Activity {
 
     private void scheduleListRefresh(RemoteApi client, int ticket, JSONObject snapshot) {
         if (ticket != generation || !screen.equals("list")) return;
+        JSONObject page = snapshot.optJSONObject("conversationList");
+        JSONArray rows = page == null ? null : page.optJSONArray("conversations");
+        boolean searching = searchInput != null && !searchInput.getText().toString().trim().isEmpty();
+        if (!listRefreshBusy && rows != null && !searching
+                && (page.optInt("nextOffset", -1) < 0 || rows.length() >= conversations.size())) {
+            listRefreshSnapshot = null;
+            updateCapabilities(page);
+            listCursor = page.optLong("cursor", -1);
+            remoteListQuery = "";
+            applyConversationPage(page, false);
+            cacheConversations();
+            listConnected();
+            return;
+        }
         listRefreshSnapshot = snapshot;
         if (!listRefreshBusy) {
             listRefreshBusy = true;
@@ -2385,7 +3084,12 @@ public final class MainActivity extends Activity {
                 .put("delivery", outgoingMessage.optBoolean("uncertain") ? "unconfirmed" : "preparing"); }
             catch (Exception ignored) { outgoingMessage = null; }
         }
+        buildDetailContent(false);
+    }
+
+    private void buildDetailContent(boolean preserveLiveState) {
         shell(conversationTitle, tr("电脑执行 · 手机查看", "Runs on your computer · Read on your phone"));
+        ((ChatScrollView) scroll).setFollowBottomOnLayout(true);
         root.setClipChildren(false);
         scroll.setVerticalScrollBarEnabled(false);
         older = button(tr("加载更早消息", "Load earlier messages"), this::loadOlder, false); older.setEnabled(false);
@@ -2395,13 +3099,12 @@ public final class MainActivity extends Activity {
             tr("描述任务，继续电脑上的工作。", "Describe a task to continue on this computer."));
         remoteEmptyState.setVisibility(View.GONE); content.addView(remoteEmptyState);
         messages = column(); content.addView(messages);
-        approvals = column(); content.addView(approvals); approvalSignature = "";
+        workInline = column(); workInline.setVisibility(View.GONE); content.addView(workInline);
+        approvals = column(); workInline.addView(approvals); approvalSignature = "";
         // Goal and scheduled-task state sits directly above the composer, where
         // it is visible while typing but never covers the transcript.
         automationBar = column(); automationBar.setTag("remoteAutomation");
-        automationBar.setVisibility(View.GONE); content.addView(automationBar);
-        queueBar = column(); queueBar.setTag("remoteMessageQueue");
-        queueBar.setVisibility(View.GONE); content.addView(queueBar);
+        automationBar.setVisibility(View.GONE); workInline.addView(automationBar);
         LinearLayout composerBar = bottomBar("composerBar");
         boolean stackBackgroundControls = getResources().getConfiguration().screenWidthDp < 360 || getResources().getConfiguration().fontScale > 1.15f;
         backgroundWorkBar = new LinearLayout(this); backgroundWorkBar.setOrientation(stackBackgroundControls ? LinearLayout.VERTICAL : LinearLayout.HORIZONTAL);
@@ -2414,15 +3117,40 @@ public final class MainActivity extends Activity {
         backgroundWorkBar.addView(backgroundWorkLabel, new LinearLayout.LayoutParams(stackBackgroundControls ? -1 : 0, -2, stackBackgroundControls ? 0 : 1));
         backgroundWorkStop = text(tr("停止后台任务", "Stop background tasks"), Palette.TEXT_NOTE, ink);
         backgroundWorkStop.setTag("remoteBackgroundStop"); backgroundWorkStop.setGravity(Gravity.CENTER);
-        backgroundWorkStop.setMinHeight(dp(40)); backgroundWorkStop.setPadding(dp(8), 0, dp(8), 0);
-        backgroundWorkStop.setBackground(interactive(surface)); backgroundWorkStop.setFocusable(true);
+        backgroundWorkStop.setMinHeight(dp(48)); backgroundWorkStop.setPadding(dp(12), 0, dp(12), 0);
+        GradientDrawable stopFace = chatStyle.capsule(Color.argb(16, Color.red(Palette.of(this).error),
+            Color.green(Palette.of(this).error), Color.blue(Palette.of(this).error)));
+        backgroundWorkStop.setBackground(new RippleDrawable(ColorStateList.valueOf(Palette.RIPPLE_ON_CARD),
+            stopFace, capsule(Color.WHITE)));
+        backgroundWorkStop.setTextColor(Palette.of(this).error);
+        backgroundWorkStop.setFocusable(true);
         backgroundWorkStop.setContentDescription(tr("停止后台任务", "Stop background tasks"));
         backgroundWorkStop.setOnClickListener(view -> stopBackgroundWork());
         LinearLayout.LayoutParams stopBackgroundParams = new LinearLayout.LayoutParams(-2, -2); stopBackgroundParams.gravity = Gravity.END;
         backgroundWorkBar.addView(backgroundWorkStop, stopBackgroundParams);
-        LinearLayout dock = (LinearLayout) composerBar.getParent();
         LinearLayout.LayoutParams backgroundParams = new LinearLayout.LayoutParams(-1, -2); backgroundParams.setMargins(0, 0, 0, dp(6));
-        dock.addView(backgroundWorkBar, dock.indexOfChild(composerBar), backgroundParams);
+        workInline.addView(backgroundWorkBar, backgroundParams);
+        workSummaryBar = text("", Palette.TEXT_SMALL, muted);
+        workSummaryBar.setTag("remoteWorkSummary");
+        workSummaryBar.setGravity(Gravity.CENTER_VERTICAL);
+        workSummaryBar.setSingleLine(true);
+        workSummaryBar.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        workSummaryBar.setMinHeight(dp(48));
+        workSummaryBar.setPadding(dp(12), 0, dp(10), 0);
+        workSummaryBar.setBackground(new RippleDrawable(ColorStateList.valueOf(Palette.RIPPLE_ON_CARD),
+            capsule(Palette.of(this).controlFill), capsule(Color.WHITE)));
+        workSummaryBar.setFocusable(true);
+        workSummaryBar.setVisibility(View.GONE);
+        workSummaryBar.setOnClickListener(view -> showWorkSheet());
+        LinearLayout.LayoutParams summaryParams = new LinearLayout.LayoutParams(-2, -2);
+        summaryParams.gravity = Gravity.START;
+        summaryParams.setMargins(0, 0, 0, dp(4));
+        LinearLayout dock = (LinearLayout) composerBar.getParent();
+        dock.addView(workSummaryBar, dock.indexOfChild(composerBar), summaryParams);
+        queueBar = column(); queueBar.setTag("remoteMessageQueue");
+        queueBar.setVisibility(View.GONE);
+        LinearLayout.LayoutParams queueParams = new LinearLayout.LayoutParams(-1, -2);
+        dock.addView(queueBar, dock.indexOfChild(composerBar), queueParams);
         latest = button(tr("回到最新消息", "Back to latest messages"), this::loadLatest, false);
         latest.setTag("remoteLatestMessages"); latest.setVisibility(View.GONE);
         latest.setBackgroundColor(Color.TRANSPARENT); latest.setTextSize(Palette.TEXT_SMALL); composerBar.addView(latest);
@@ -2432,13 +3160,16 @@ public final class MainActivity extends Activity {
         modelButton = chatComposer.model; modelButton.setTag("remoteModelPicker");
         sendButton = chatComposer.send; stopButton = chatComposer.stop;
         sendButton.setTag("remoteSend"); stopButton.setTag("remoteStop");
-        attachButton = lineButton("plus", tr("添加附件", "Add attachments"), this::pickImage); attachButton.setTag("remoteAttach");
+        attachButton = chatStyle.composerToolButton("plus", tr("添加附件", "Add attachments"), accent, this::pickImage); attachButton.setTag("remoteAttach");
         imageStrip = new android.widget.HorizontalScrollView(this); imageStrip.setHorizontalScrollBarEnabled(false);
         imageTray = new LinearLayout(this); imageTray.setOrientation(LinearLayout.HORIZONTAL);
         imageStrip.addView(imageTray); composerBar.addView(imageStrip, 0, new LinearLayout.LayoutParams(-1, -2)); renderImage();
         chatComposer.addTool(attachButton);
-        permissionButton = lineButton("shield", tr("安全级别", "Safety level"), () -> showRemoteSettings(true)); permissionButton.setTag("remotePermissionPicker");
-        chatComposer.addTool(permissionButton);
+        boolean expandedPermission = MobileLayout.useExpandedComposerControls(getResources().getConfiguration());
+        permissionButton = new PermissionTool(this, chatStyle, chinese, expandedPermission,
+            () -> showRemoteSettings(true));
+        permissionButton.setTag("remotePermissionPicker");
+        chatComposer.addTool(permissionButton, expandedPermission ? -2 : 48);
         composer.addTextChangedListener(new android.text.TextWatcher() {
             @Override public void beforeTextChanged(CharSequence text, int start, int count, int after) {}
             @Override public void onTextChanged(CharSequence text, int start, int before, int count) {
@@ -2459,9 +3190,21 @@ public final class MainActivity extends Activity {
             long edit = savedDraftEdit();
             if (edit > 0) editingSeq = edit;
         }
-        renderMessages(null);
-        showPrefetchedConversation();
+        renderMessages(preserveLiveState ? lastLive : null);
+        if (!preserveLiveState) showPrefetchedConversation();
         updateControls();
+        // The background list stream supplies the fresh sidebar. Starting a
+        // separate pull here would immediately be invalidated by connectEvents.
+    }
+
+    private void rebuildDetailForConfiguration() {
+        persistDraft();
+        boolean stayAtBottom = scroll != null && scroll.getChildCount() > 0
+            && scroll.getChildAt(0).getHeight() - scroll.getHeight() - scroll.getScrollY() < dp(120);
+        int previousScroll = scroll == null ? 0 : scroll.getScrollY();
+        initialMessageScroll = false;
+        buildDetailContent(true);
+        positionMessages(stayAtBottom ? Integer.MAX_VALUE : previousScroll);
     }
 
     // Unsent text is kept per conversation in the encrypted computer profile so
@@ -2518,8 +3261,16 @@ public final class MainActivity extends Activity {
     private void connectEvents() {
         if (!networkActive()) return;
         RemoteApi client = begin(); int ticket = generation;
+        startConversationSync();
         updateWorkStatus();
         String token = credentials.optString("token");
+        if (capabilityAddress.equals(credentials.optString("address")) && capabilityToken.equals(token)) {
+            // Capabilities only select the wire format. Fresh permission and
+            // command state still come from the initial conversation snapshot.
+            client.incremental(canIncremental);
+            stream(client, ticket, 0);
+            return;
+        }
         job = worker.submit(() -> {
             try {
                 JSONObject info = client.json("/v1/status", token, null);
@@ -2528,11 +3279,40 @@ public final class MainActivity extends Activity {
         });
     }
 
+    private void startConversationSync() {
+        if (!networkActive() || !EmbeddedNetwork.online() || !credentials.has("token")
+                || !(screen.equals("home") || screen.equals("detail"))) return;
+        int ticket = generation;
+        JSONObject target;
+        try { target = new JSONObject(credentials.toString()); }
+        catch (Exception error) { return; }
+        conversationSync.start(target.optString("address"), target.optString("token"), page -> deliver(ticket, () -> {
+            if (listCache == null || !(screen.equals("home") || screen.equals("detail"))) return;
+            JSONArray rows = page.optJSONArray("conversations");
+            if (rows == null) return;
+            if (page.optInt("protocol") == 1) updateCapabilities(page);
+            conversationListRevision++;
+            JSONObject cached = listCache.get(target);
+            JSONArray workspaces = page.optJSONArray("workspaces");
+            if (workspaces == null) workspaces = cached == null ? new JSONArray() : cached.optJSONArray("workspaces");
+            boolean independent = page.has("includeUnassigned") ? page.optBoolean("includeUnassigned")
+                : cached != null && cached.optBoolean("includeUnassigned");
+            listCache.put(target, rows, page.optInt("nextOffset", -1), workspaces, independent);
+            JSONObject updated = listCache.get(target);
+            if (cached != null && updated != null && cached.toString().equals(updated.toString())) return;
+            if (screen.equals("home")) {
+                int position = scroll == null ? 0 : scroll.getScrollY();
+                renderHomeContent();
+                if (scroll != null) scroll.post(() -> scroll.scrollTo(0, position));
+            } else if (detailSidebar != null) detailSidebar.update(detailSidebarItems());
+        }));
+    }
+
     private void stream(RemoteApi client, int ticket, int attempt) {
         if (!networkActive() || ticket != generation) return;
         replyReadSync.retry();
         String id = conversationId, token = credentials.optString("token");
-        job = worker.submit(() -> {
+        job = eventWorker.submit(() -> {
             boolean[] received = { false };
             Exception failure = null;
             try {
@@ -2541,6 +3321,13 @@ public final class MainActivity extends Activity {
             final Exception error = failure;
             int nextAttempt = received[0] ? 0 : Math.min(attempt + 1, 5);
             deliver(ticket, () -> {
+                if (!received[0] && error instanceof RemoteApi.Failure && ((RemoteApi.Failure) error).status == 400 && client.incremental()) {
+                    // The desktop may have been downgraded since the cached
+                    // capability was read. Retry the legacy stream once.
+                    client.incremental(false); canIncremental = false; capabilityAddress = ""; capabilityToken = "";
+                    stream(client, ticket, 0);
+                    return;
+                }
                 if (error instanceof RemoteApi.Failure && (((RemoteApi.Failure) error).status == 401 || ((RemoteApi.Failure) error).status == 403 || ((RemoteApi.Failure) error).status == 404)) {
                     connected = false; updateControls();
                     showFailure(error, true); return;
@@ -2685,6 +3472,7 @@ public final class MainActivity extends Activity {
         int position = scroll.getScrollY();
         java.util.HashSet<String> retained = new java.util.HashSet<>();
         JSONArray pendingProcess = new JSONArray();
+        JSONArray pendingVisualizations = new JSONArray();
         long turn = 0;
         pendingMessageViews.clear();
         java.util.Set<Long> earlierSubtaskTurns = new java.util.TreeSet<>();
@@ -2700,10 +3488,14 @@ public final class MainActivity extends Activity {
                 retained.add("compaction:live"); addCompaction("compaction:live", remoteCompaction); showCompaction = false;
             }
             String role = row.optString("role");
-            if (role.equals("user")) { pendingProcess = new JSONArray(); turn = row.optLong("seq"); }
+            if (role.equals("user")) {
+                pendingProcess = new JSONArray(); pendingVisualizations = new JSONArray(); turn = row.optLong("seq");
+            }
             if (role.equals("tool")) {
                 JSONArray process = row.optJSONArray("process");
                 if (process != null) for (int index = 0; index < process.length(); index++) pendingProcess.put(process.opt(index));
+                JSONArray visualizations = row.optJSONArray("visualizations");
+                if (visualizations != null) for (int index = 0; index < visualizations.length(); index++) pendingVisualizations.put(visualizations.opt(index));
                 continue;
             }
             String label = role.equals("user") ? tr("你", "You") : role.equals("assistant") ? "Camellia" : tr("提示", "Notice");
@@ -2712,10 +3504,13 @@ public final class MainActivity extends Activity {
             if (compaction != null) { addCompaction(key, compaction); continue; }
             JSONArray process = row.optJSONArray("process");
             if (role.equals("assistant") && (process == null || process.length() == 0)) process = pendingProcess;
+            JSONArray visualizations = row.optJSONArray("visualizations");
+            if (role.equals("assistant") && (visualizations == null || visualizations.length() == 0)) visualizations = pendingVisualizations;
             addMessage(key, label, row.optString("text"), role.equals("user"), row.optBoolean("textTruncated"), process, false,
-                "turn:" + turn, row.optLong("at"), row.optLong("seq"), row.optJSONObject("turnDetails"), row.optJSONArray("attachedFiles"));
+                "turn:" + turn, row.optLong("at"), row.optLong("seq"), row.optJSONObject("turnDetails"),
+                row.optJSONArray("attachedFiles"), visualizations);
             if (role.equals("user")) addSubtasks(turn, retained);
-            if (role.equals("assistant")) pendingProcess = new JSONArray();
+            if (role.equals("assistant")) { pendingProcess = new JSONArray(); pendingVisualizations = new JSONArray(); }
         }
         if (showCompaction) { retained.add("compaction:live"); addCompaction("compaction:live", remoteCompaction); }
         if (live != null) {
@@ -2726,7 +3521,8 @@ public final class MainActivity extends Activity {
             if (live.optInt("pendingApprovals") > 0 && !controlAllowed) pendingMessageViews.add(text(tr("有待处理授权，请回到电脑处理。", "Approval is pending. Respond on the computer."), Palette.TEXT_NOTE, accent));
         } else if (pendingProcess.length() > 0) {
             retained.add("pendingProcess");
-            addMessage("pendingProcess", "", "", false, false, pendingProcess, false, "turn:" + turn, 0, 0);
+            addMessage("pendingProcess", "", "", false, false, pendingProcess, false, "turn:" + turn, 0, 0,
+                null, null, pendingVisualizations);
         }
         if (!historyDetached) renderOutgoing(retained);
         java.util.Iterator<java.util.Map.Entry<String, ReplyMessage>> replies = replyMessages.entrySet().iterator();
@@ -2985,10 +3781,13 @@ public final class MainActivity extends Activity {
     private void addMessage(String key, String label, String value, boolean user, boolean truncated, JSONArray process, boolean live, String turn, long at, long seq, JSONObject details) {
         JSONArray attachments = key.startsWith("outgoing:") && outgoingMessage != null
             ? outgoingAttachments(outgoingMessage.optJSONObject("payload")) : null;
-        addMessage(key, label, value, user, truncated, process, live, turn, at, seq, details, attachments);
+        addMessage(key, label, value, user, truncated, process, live, turn, at, seq, details, attachments, null);
     }
     private void addMessage(String key, String label, String value, boolean user, boolean truncated, JSONArray process, boolean live, String turn, long at, long seq, JSONObject details, JSONArray attachments) {
-        if (!user) { addReply(key, value, truncated, process, live, turn, at, seq, label.equals("Camellia"), details); return; }
+        addMessage(key, label, value, user, truncated, process, live, turn, at, seq, details, attachments, null);
+    }
+    private void addMessage(String key, String label, String value, boolean user, boolean truncated, JSONArray process, boolean live, String turn, long at, long seq, JSONObject details, JSONArray attachments, JSONArray visualizations) {
+        if (!user) { addReply(key, value, truncated, process, live, turn, at, seq, label.equals("Camellia"), details, visualizations); return; }
         long latestUserSeq = -1;
         for (JSONObject row : history.values()) if (row.optString("role").equals("user")) latestUserSeq = row.optLong("seq");
         boolean editable = !live && !truncated && seq > 0 && seq == latestUserSeq;
@@ -3016,11 +3815,12 @@ public final class MainActivity extends Activity {
     }
 
     private static final class ReplyMessage {
-        LinearLayout block, wrapper, artifacts;
+        LinearLayout block, wrapper, artifacts, visualizations;
         StreamingMarkdownView body;
         ExecutionProcessView process;
         TextView waiting, truncated;
         String turn, artifactText = "";
+        String visualizationSignature = "";
         long at, run, imageSeq = -1;
     }
     private MarkdownView replyMarkdown(boolean live, boolean assistant, long seq) {
@@ -3028,7 +3828,7 @@ public final class MainActivity extends Activity {
             ? inlineImageFactory.apply(seq) : null;
         return new MarkdownView(this, ink, muted, surface, accent, loader);
     }
-    private void addReply(String key, String value, boolean truncated, JSONArray process, boolean live, String turn, long at, long seq, boolean assistant, JSONObject details) {
+    private void addReply(String key, String value, boolean truncated, JSONArray process, boolean live, String turn, long at, long seq, boolean assistant, JSONObject details, JSONArray visualizations) {
         long run = live && lastLive != null ? lastLive.optLong("runId") : 0;
         ReplyMessage binding = replyMessages.get(key);
         if (binding != null && live && binding.run != run) { binding.body.dispose(); replyMessages.remove(key); binding = null; }
@@ -3048,6 +3848,7 @@ public final class MainActivity extends Activity {
             binding.imageSeq = live || !assistant ? -1 : seq;
             binding.body = new StreamingMarkdownView(this, replyMarkdown(live, assistant, seq), new MarkdownScrollAnchor(target, () -> scroll == target && screen.equals("detail") && pendingScrollView != target));
             binding.block.addView(binding.body); binding.artifacts = column(); binding.block.addView(binding.artifacts);
+            binding.visualizations = column(); binding.block.addView(binding.visualizations);
             ReplyMessage owner = binding;
             binding.wrapper = chatStyle.messageWithFooter(binding.block, false, owner.body::source, at, chinese);
             binding.at = at;
@@ -3058,7 +3859,8 @@ public final class MainActivity extends Activity {
             binding.body.imageLoader(inlineImageFactory.apply(imageSeq));
             binding.imageSeq = imageSeq;
         }
-        binding.run = run; binding.process.update(process, live, new TurnDetails(details));
+        int processFiles = ArtifactReferences.paths(value).size();
+        binding.run = run; binding.process.update(process, live, new TurnDetails(details), processFiles);
         TurnUsage.bind(binding.wrapper, live ? null : details, chinese);
         binding.truncated.setVisibility(truncated ? View.VISIBLE : View.GONE);
         binding.waiting.setVisibility(live && value.isEmpty() && (process == null || process.length() == 0) ? View.VISIBLE : View.GONE);
@@ -3076,8 +3878,70 @@ public final class MainActivity extends Activity {
             }
         }
         if (!live) binding.artifactText = value;
+        String visualizationKey = visualizations == null ? "" : visualizations.toString();
+        if (!live && !visualizationKey.equals(binding.visualizationSignature)) {
+            binding.visualizations.removeAllViews();
+            if (visualizations != null && visualizations.length() > 0) {
+                RemoteVisualizationsView cards = new RemoteVisualizationsView(this, chatStyle, visualizations, chinese,
+                    this::openVisualization);
+                LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, -2);
+                params.topMargin = dp(8);
+                binding.visualizations.addView(cards, params);
+            }
+            binding.visualizationSignature = visualizationKey;
+        }
+        binding.visualizations.setVisibility(!live && visualizations != null && visualizations.length() > 0
+            ? View.VISIBLE : View.GONE);
         replyMessages.put(key, binding); renderedMessages.put(key, binding.wrapper); pendingMessageViews.add(binding.wrapper);
     }
+
+    private void openVisualization(JSONObject card) {
+        if (card == null || !networkActive() || conversationId == null || !credentials.has("token")) return;
+        String cardId = card.optString("cardId");
+        if (!cardId.matches("[0-9a-f-]{36}")) return;
+        String title = card.optString("title", tr("交互卡片", "Interactive card"));
+        String token = credentials.optString("token"), address = credentials.optString("address");
+        String ownerConversation = conversationId;
+        int ticket = generation;
+        boolean dark = (getResources().getConfiguration().uiMode & android.content.res.Configuration.UI_MODE_NIGHT_MASK)
+            == android.content.res.Configuration.UI_MODE_NIGHT_YES;
+        if (visualizationDialog != null) { visualizationDialog.dismiss(); visualizationDialog = null; }
+        VisualizationDialog dialog = new VisualizationDialog(this, title, chinese);
+        RemoteApi client = new RemoteApi(this, address);
+        dialog.setOnDismissListener(ignored -> {
+            if (visualizationDialog == dialog) visualizationDialog = null;
+            client.cancel();
+        });
+        dialog.show();
+        visualizationDialog = dialog;
+        String path = "/v1/conversations/" + ownerConversation + "/visualizations/" + cardId
+            + "?theme=" + (dark ? "dark" : "light");
+        networkWorker.submit(() -> {
+            try {
+                JSONObject response = client.json(path, token, null, 24 * 1024 * 1024);
+                JSONObject loaded = response.optJSONObject("card");
+                String html = loaded == null ? "" : loaded.optString("html");
+                if (html.isEmpty()) throw new java.io.IOException("Visualization document is empty");
+                viewHandler.post(() -> {
+                    if (ticket != generation || !ownerConversation.equals(conversationId) || !networkActive()) {
+                        dialog.dismiss();
+                    } else if (visualizationDialog == dialog) {
+                        dialog.load(html);
+                    }
+                });
+            } catch (Exception error) {
+                viewHandler.post(() -> {
+                    if (visualizationDialog != dialog) return;
+                    dialog.dismiss();
+                    if (ticket == generation && ownerConversation.equals(conversationId))
+                        reportError("无法加载交互卡片，请检查电脑连接。", "Could not load the interactive card. Check the computer connection.", error);
+                });
+            } finally {
+                client.cancel();
+            }
+        });
+    }
+
     private void disposeMessageViews() {
         for (ReplyMessage binding : replyMessages.values()) binding.body.dispose();
         replyMessages.clear(); renderedMessages.clear(); renderedText.clear(); pendingMessageViews.clear();
@@ -3093,15 +3957,19 @@ public final class MainActivity extends Activity {
         if (settingsPopup != null) { settingsPopup.dismiss(); settingsPopup = null; }
         if (computerPicker != null) { computerPicker.dismiss(); computerPicker = null; }
         if (computerDialog != null) { computerDialog.dismiss(); computerDialog = null; }
+        if (queueDialog != null) { queueDialog.dismiss(); queueDialog = null; }
+        queueSheetPanel = null;
         if (remoteApprovalDialog != null) { remoteApprovalDialog.dismiss(); remoteApprovalDialog = null; }
+        if (visualizationDialog != null) { visualizationDialog.dismiss(); visualizationDialog = null; }
         remoteApprovalKey = ""; locationConsent.cancel();
         messages = null; older = null; latest = null; remoteEmptyState = null;
         composer = null; chatComposer = null; sendButton = null; stopButton = null;
-        retryMessage = null; approvals = null; automationBar = null; queueBar = null;
+        retryMessage = null; approvals = null; automationBar = null; queueBar = null; workInline = null;
+        backgroundWorkBar = null; backgroundWorkLabel = null; backgroundWorkStop = null; workSummaryBar = null;
         imageTray = null; imageStrip = null; attachButton = null; modelButton = null; permissionButton = null;
         addressInput = null; portInput = null; nameInput = null; codeInput = null; pairButton = null; scanButton = null;
-        handler.removeCallbacks(searchRemote); searchInput = null; searchBar = null; remoteEntryCard = null; remoteEntryLabel = null;
-        remoteEntryArrow = null; remoteEntrySpinner = null; remoteEntryRetry = null;
+        handler.removeCallbacks(searchRemote); searchInput = null; searchBar = null;
+        detailSidebar = null; splitDetail = false; workbenchNavigation = null;
         root = null; content = null; scroll = null; status = null; headerConnection = null;
     }
 
@@ -3383,9 +4251,7 @@ public final class MainActivity extends Activity {
         if (permissionButton != null) {
             String level = remoteSettings == null ? "ask" : remoteSettings.optString("permissionMode");
             boolean permissionsEditable = configurable && remoteSettings.optBoolean("editable");
-            permissionButton.setEnabled(permissionsEditable); permissionButton.setAlpha(permissionsEditable ? 1f : .45f);
-            permissionButton.setContentDescription(tr("安全级别：", "Safety level: ") + RemoteSettingsPopup.permissionLabel(level, chinese));
-            permissionButton.setImageDrawable(new LineIcon("shield", level.equals("full") ? Palette.PERMISSION_STRICT : ink));
+            permissionButton.level(level, permissionsEditable);
         }
         String composed = composer == null ? "" : composer.getText().toString().trim();
         // A bare "/find" is a valid request: it lists the files produced most
@@ -3418,6 +4284,7 @@ public final class MainActivity extends Activity {
             if (child instanceof Button) child.setEnabled(available && !pending);
         }
         renderQueue();
+        refreshWorkSummaryBar();
     }
 
     private boolean remoteBusy() {
@@ -3438,6 +4305,214 @@ public final class MainActivity extends Activity {
         boolean available = connected && controlAllowed && !commandBusy && pendingCommand() == null && !stopping
             && RemoteWorkStatus.stoppableBackgroundTasks(displayedConversation).length() > 0;
         backgroundWorkStop.setEnabled(available); backgroundWorkStop.setAlpha(available ? 1f : .45f);
+        refreshWorkSummaryBar();
+    }
+
+    private void refreshWorkSummaryBar() {
+        if (workSummaryBar == null || !screen.equals("detail")) return;
+        JSONArray approvalRows = lastLive == null ? null : lastLive.optJSONArray("approvals");
+        int approvalsCount = approvalRows == null ? 0 : approvalRows.length();
+        int backgroundCount = RemoteWorkStatus.backgroundCount(displayedConversation);
+        int queueCount = remoteQueue.length();
+        boolean automation = automationBar != null && automationBar.getVisibility() == View.VISIBLE && automationBar.getChildCount() > 0;
+        JSONObject pending = pendingCommand();
+        boolean failed = pending != null && (pending.optBoolean("uncertain") || pending.optBoolean("timedOut"));
+        if (outgoingMessage != null) {
+            String delivery = outgoingMessage.optString("delivery");
+            failed |= delivery.equals("failed") || delivery.equals("unconfirmed");
+        }
+        Palette palette = Palette.of(this);
+        String text = "";
+        int color = palette.muted;
+        boolean actionable = approvalsCount > 0 || failed || automation || backgroundCount > 0 || queueCount > 0;
+        if (!actionable) {
+            workSummaryBar.setVisibility(View.GONE);
+            return;
+        }
+        String priority = workPriority(approvalsCount, failed, automation, backgroundCount, queueCount);
+        if (priority.equals("approvals")) {
+            text = tr("待处理 " + approvalsCount, "Needs attention " + approvalsCount);
+            color = palette.warning;
+        } else if (priority.equals("failed")) {
+            text = tr("发送未确认", "Send unconfirmed");
+            color = palette.error;
+        } else if (priority.equals("automation")) {
+            text = tr("目标/任务", "Goal/tasks");
+            color = palette.accent;
+        } else if (priority.equals("background")) {
+            text = tr("后台 " + backgroundCount, "Background " + backgroundCount);
+            color = palette.accent;
+        } else if (priority.equals("queue")) {
+            text = tr("排队 " + queueCount, "Queued " + queueCount);
+            color = palette.accent;
+        }
+        workSummaryBar.setVisibility(text.isEmpty() ? View.GONE : View.VISIBLE);
+        if (text.isEmpty()) return;
+        boolean detailsAvailable = approvalsCount > 0 || queueCount > 0 || automation || backgroundCount > 0 || failed;
+        workSummaryBar.setText(text + (detailsAvailable ? "  ›" : ""));
+        workSummaryBar.setClickable(detailsAvailable);
+        workSummaryBar.setOnClickListener(detailsAvailable ? view -> showWorkSheet() : null);
+        workSummaryBar.setTextColor(color);
+    }
+
+    static String workPriority(int approvals, boolean failed, boolean automation, int background, int queue) {
+        if (approvals > 0) return "approvals";
+        if (failed) return "failed";
+        if (automation) return "automation";
+        if (background > 0) return "background";
+        if (queue > 0) return "queue";
+        return "none";
+    }
+
+    private void revealWorkView(View target) {
+        if (target == null || scroll == null || content == null) return;
+        if (workInline != null) workInline.setVisibility(View.VISIBLE);
+        android.graphics.Rect bounds = new android.graphics.Rect();
+        target.getDrawingRect(bounds);
+        content.offsetDescendantRectToMyCoords(target, bounds);
+        scroll.smoothScrollTo(0, Math.max(0, bounds.top - dp(12)));
+    }
+
+    private void showWorkSheet() {
+        if (!screen.equals("detail")) return;
+        SettingsStyle style = new SettingsStyle(this);
+        android.app.Dialog dialog = new android.app.Dialog(this);
+        LinearLayout panel = column();
+        style.sheetPanel(panel);
+        panel.setTag("workSheet");
+        TextView heading = text(tr("工作状态", "Work status"), Palette.TEXT_TITLE, ink);
+        heading.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        panel.addView(heading);
+        JSONArray approvalRows = lastLive == null ? null : lastLive.optJSONArray("approvals");
+        int backgroundCount = RemoteWorkStatus.backgroundCount(displayedConversation);
+        boolean added = false;
+        if (approvalRows != null && approvalRows.length() > 0) {
+            added = true;
+            panel.addView(sheetSection(tr("等待你处理", "Needs attention")));
+            for (int index = 0; index < approvalRows.length(); index++) {
+                JSONObject request = approvalRows.optJSONObject(index);
+                if (request == null) continue;
+                TextView title = text(request.optString("toolName"), Palette.TEXT_ROW_STRONG, ink);
+                title.setPadding(0, dp(8), 0, dp(2)); panel.addView(title);
+                TextView details = text(request.optString("details"), Palette.TEXT_SMALL, muted);
+                details.setMaxLines(4); details.setEllipsize(android.text.TextUtils.TruncateAt.END);
+                panel.addView(details);
+                boolean questions = request.optJSONArray("questions") != null && request.optJSONArray("questions").length() > 0;
+                if (questions) {
+                    TextView answer = style.label(tr("需要在会话中回答问题", "Answer this in the conversation"), Palette.TEXT_NOTE, accent);
+                    answer.setPadding(0, dp(8), 0, dp(4));
+                    answer.setFocusable(true);
+                    answer.setOnClickListener(view -> { dialog.dismiss(); revealWorkView(approvals); });
+                    panel.addView(answer);
+                } else {
+                    LinearLayout actions = new LinearLayout(this);
+                    actions.setPadding(0, dp(6), 0, 0);
+                    Button deny = button(tr("拒绝", "Deny"), () -> submitSheetApproval(request, false, dialog), false);
+                    Button allow = button(tr("允许一次", "Allow once"), () -> submitSheetApproval(request, true, dialog), true);
+                    actions.addView(deny, new LinearLayout.LayoutParams(0, -2, 1));
+                    LinearLayout.LayoutParams allowParams = new LinearLayout.LayoutParams(0, -2, 1);
+                    allowParams.setMarginStart(dp(8));
+                    actions.addView(allow, allowParams);
+                    panel.addView(actions);
+                }
+            }
+        }
+        JSONObject pending = pendingCommand();
+        boolean failed = pending != null && (pending.optBoolean("uncertain") || pending.optBoolean("timedOut"));
+        if (failed) {
+            added = true;
+            panel.addView(sheetSection(tr("发送未确认", "Send unconfirmed")));
+            TextView note = text(tr("连接中断或操作超时。先查询同一请求，避免重复发送。", "The connection failed or the action timed out. Check the same request before retrying."),
+                Palette.TEXT_SMALL, Palette.of(this).error);
+            note.setPadding(0, dp(6), 0, dp(8)); panel.addView(note);
+            Button retry = button(tr("重新查询", "Check again"), () -> { dialog.dismiss(); retryCommand(); }, false);
+            panel.addView(retry);
+        }
+        JSONObject automation = lastLive == null ? null : lastLive.optJSONObject("automation");
+        JSONObject goal = automation == null ? null : automation.optJSONObject("goal");
+        JSONArray tasks = automation == null ? null : automation.optJSONArray("tasks");
+        if (goal != null || tasks != null && tasks.length() > 0) {
+            added = true;
+            panel.addView(sheetSection(tr("目标与任务", "Goal and tasks")));
+            if (goal != null && !goal.optString("objective").isEmpty()) panel.addView(text(goal.optString("objective"), Palette.TEXT_NOTE, ink));
+            if (tasks != null && tasks.length() > 0) {
+                TextView count = text(tr("定时任务 " + tasks.length(), "Scheduled tasks " + tasks.length()), Palette.TEXT_SMALL, muted);
+                count.setPadding(0, dp(6), 0, dp(6)); panel.addView(count);
+            }
+            TextView open = style.label(tr("打开目标与任务详情", "Open goal and task details"), Palette.TEXT_NOTE, accent);
+            open.setPadding(0, dp(6), 0, dp(4)); open.setFocusable(true);
+            open.setOnClickListener(view -> { dialog.dismiss(); revealWorkView(automationBar); });
+            panel.addView(open);
+        }
+        if (RemoteWorkStatus.backgroundCount(displayedConversation) > 0) {
+            added = true;
+            panel.addView(sheetSection(tr("后台任务", "Background tasks")));
+            TextView count = text(tr(backgroundCount + " 个后台任务正在运行", backgroundCount + " background tasks are running"), Palette.TEXT_SMALL, muted);
+            count.setPadding(0, dp(6), 0, dp(8)); panel.addView(count);
+            Button stop = button(tr("停止后台任务", "Stop background tasks"), () -> {
+                dialog.dismiss();
+                stopBackgroundWork();
+            }, false);
+            panel.addView(stop);
+        }
+        if (remoteQueue.length() > 0) {
+            added = true;
+            panel.addView(sheetSection(tr("排队消息", "Queued messages")));
+            for (int index = 0; index < Math.min(3, remoteQueue.length()); index++) {
+                JSONObject entry = remoteQueue.optJSONObject(index);
+                if (entry == null) continue;
+                String value = entry.optString("text");
+                TextView row = text((index + 1) + ". " + (value.isEmpty() ? tr("附件消息", "Attachment message") : value),
+                    Palette.TEXT_SMALL, muted);
+                row.setSingleLine(true); row.setEllipsize(android.text.TextUtils.TruncateAt.END);
+                row.setPadding(0, dp(5), 0, dp(5)); panel.addView(row);
+            }
+            TextView open = style.label(tr("管理发送队列", "Manage queued messages"), Palette.TEXT_NOTE, accent);
+            open.setPadding(0, dp(6), 0, dp(4)); open.setFocusable(true);
+            open.setOnClickListener(view -> { dialog.dismiss(); showQueueSheet(); });
+            panel.addView(open);
+        }
+        if (!added) {
+            TextView note = text(tr("当前没有需要处理的工作。", "Nothing needs attention right now."), Palette.TEXT_SMALL, muted);
+            note.setPadding(0, dp(10), 0, dp(12)); panel.addView(note);
+        }
+        Button close = button(tr("关闭", "Close"), dialog::dismiss, false);
+        close.setTag("workSheetClose");
+        LinearLayout.LayoutParams closeParams = new LinearLayout.LayoutParams(-1, -2);
+        closeParams.topMargin = dp(12); panel.addView(close, closeParams);
+        dialog.setContentView(panel);
+        style.sheetWindow(dialog.getWindow(), panel);
+        dialog.show();
+    }
+
+    private TextView sheetSection(String label) {
+        TextView section = text(label, Palette.TEXT_SMALL, muted);
+        section.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        section.setPadding(0, dp(16), 0, dp(3));
+        return section;
+    }
+
+    private void submitSheetApproval(JSONObject request, boolean allow, android.app.Dialog sheet) {
+        if (!connected || !controlAllowed || commandBusy || lastLive == null || pendingCommand() != null) return;
+        long runId = lastLive.optLong("runId");
+        String server = instance;
+        String target = conversationId;
+        String title = allow ? tr("允许此操作？", "Allow this operation?") : tr("拒绝此操作？", "Deny this operation?");
+        new CamelliaDialog.Builder(this).setTitle(title)
+            .setMessage(request.optString("toolName") + "\n" + request.optString("details"))
+            .setNegativeButton(tr("取消", "Cancel"), null)
+            .setPositiveButton(allow ? tr("允许一次", "Allow once") : tr("拒绝", "Deny"), (dialog, which) -> {
+                if (!target.equals(conversationId) || !server.equals(instance) || lastLive == null
+                    || lastLive.optLong("runId") != runId || !connected || commandBusy || pendingCommand() != null) return;
+                try {
+                    submitCommand(command("approve").put("instanceId", server).put("runId", runId)
+                        .put("approvalId", request.getString("requestId"))
+                        .put("fingerprint", request.getString("fingerprint")).put("allow", allow));
+                    sheet.dismiss();
+                } catch (Exception error) {
+                    reportError("无法保存审批操作。", "Could not save approval.", error);
+                }
+            }).show();
     }
 
     private void stopBackgroundWork() {
@@ -3462,88 +4537,339 @@ public final class MainActivity extends Activity {
         if (signature.equals(queueSignature)) return;
         queueSignature = signature;
         queueBar.removeAllViews(); queueBar.setVisibility(remoteQueue.length() == 0 ? View.GONE : View.VISIBLE);
-        if (remoteQueue.length() == 0) return;
-        LinearLayout card = automationCard(); queueBar.addView(card);
-        card.setPadding(dp(12), dp(12), dp(12), dp(12));
-        LinearLayout heading = new LinearLayout(this); heading.setGravity(Gravity.CENTER_VERTICAL);
-        heading.setPadding(dp(4), 0, dp(4), dp(10));
-        TextView title = text(tr("待发送", "Queued messages"), Palette.TEXT_BODY, ink);
-        title.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
-        title.setSingleLine(true); title.setEllipsize(android.text.TextUtils.TruncateAt.END);
-        heading.addView(title, new LinearLayout.LayoutParams(0, -2, 1));
-        TextView count = text(String.valueOf(remoteQueue.length()), Palette.TEXT_SMALL, accent);
-        count.setGravity(Gravity.CENTER); count.setMinWidth(dp(28));
-        count.setPadding(dp(8), dp(4), dp(8), dp(4)); count.setBackground(chatStyle.capsule(background));
-        LinearLayout.LayoutParams countParams = new LinearLayout.LayoutParams(-2, -2); countParams.setMargins(dp(8), 0, 0, 0);
-        heading.addView(count, countParams);
-        boolean paused = false;
-        for (int i = 0; i < remoteQueue.length(); i++) {
-            JSONObject entry = remoteQueue.optJSONObject(i);
-            if (entry != null && (entry.optString("state").equals("paused") || entry.optString("state").equals("failed"))) paused = true;
+        if (remoteQueue.length() == 0) {
+            dismissQueueSheet();
+            refreshWorkSummaryBar();
+            return;
         }
+        JSONObject first = remoteQueue.optJSONObject(0);
+        boolean failed = queueHasState("failed");
+        boolean paused = !failed && queueHasState("paused");
+        boolean starting = first != null && first.optString("state").equals("starting");
+        Palette palette = Palette.of(this);
+        int titleColor = failed ? palette.error : paused ? palette.warning : starting ? accent : ink;
+        String count = tr(remoteQueue.length() + " 条", remoteQueue.length() + " queued");
+        String title = starting ? tr("正在发送 · " + count, "Sending · " + remoteQueue.length())
+            : failed ? tr("队列发送失败 · " + count, "Queue failed · " + remoteQueue.length())
+            : paused ? tr("队列已暂停 · " + count, "Queue paused · " + remoteQueue.length())
+            : tr("待发送 · " + count, "Queued · " + remoteQueue.length());
+        String preview = first == null ? "" : queuePreview(first);
+
+        LinearLayout tray = new LinearLayout(this);
+        tray.setGravity(Gravity.CENTER_VERTICAL);
+        tray.setMinimumHeight(dp(60));
+        tray.setPadding(dp(12), dp(8), dp(10), dp(8));
+        tray.setTag("remoteQueueTray");
+        tray.setFocusable(true);
+        tray.setContentDescription(title + "。" + tr("下一条：", "Next: ") + preview + tr("。点按管理", ". Tap to manage."));
+        GradientDrawable trayFace = rounded(surface);
+        trayFace.setStroke(dp(1), Palette.of(this).cardBorder);
+        tray.setBackground(new RippleDrawable(ColorStateList.valueOf(Palette.RIPPLE_ON_CARD), trayFace, rounded(Color.WHITE)));
+        tray.setElevation(dp(1));
+        if (android.os.Build.VERSION.SDK_INT >= 28) {
+            tray.setOutlineAmbientShadowColor(0x10000000); tray.setOutlineSpotShadowColor(0x1c000000);
+        }
+        tray.setOnClickListener(view -> showQueueSheet());
+
+        ImageView icon = new ImageView(this);
+        icon.setImageDrawable(new LineIcon("select", accent));
+        icon.setPadding(dp(9), dp(9), dp(9), dp(9));
+        icon.setBackground(accentActionBackground());
+        icon.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+        LinearLayout.LayoutParams iconParams = new LinearLayout.LayoutParams(dp(34), dp(34));
+        iconParams.setMarginEnd(dp(11));
+        tray.addView(icon, iconParams);
+
+        LinearLayout copy = column();
+        TextView heading = text(title, Palette.TEXT_BODY, titleColor);
+        heading.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        heading.setSingleLine(true); heading.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        copy.addView(heading);
+        TextView next = text(preview, Palette.TEXT_SMALL, muted);
+        next.setTag("remoteQueueTrayPreview");
+        next.setSingleLine(true); next.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        next.setPadding(0, dp(1), 0, 0);
+        copy.addView(next);
+        tray.addView(copy, new LinearLayout.LayoutParams(0, -2, 1));
+
+        TextView manage = text(tr("管理", "Manage"), Palette.TEXT_SMALL, accent);
+        manage.setTag("remoteQueueManage");
+        manage.setGravity(Gravity.CENTER); manage.setMinHeight(dp(48));
+        manage.setPadding(dp(12), 0, dp(12), 0); manage.setBackground(accentActionBackground());
+        manage.setFocusable(true); manage.setOnClickListener(view -> showQueueSheet());
+        tray.addView(manage);
+
+        LinearLayout.LayoutParams trayParams = new LinearLayout.LayoutParams(-1, -2);
+        trayParams.setMargins(dp(8), dp(4), dp(8), dp(8));
+        queueBar.addView(tray, trayParams);
+        refreshQueueSheet();
+        refreshWorkSummaryBar();
+    }
+
+    private boolean queueHasState(String wanted) {
+        for (int index = 0; index < remoteQueue.length(); index++) {
+            JSONObject entry = remoteQueue.optJSONObject(index);
+            if (entry != null && wanted.equals(entry.optString("state"))) return true;
+        }
+        return false;
+    }
+
+    private String queuePreview(JSONObject entry) {
+        String text = entry.optString("text").replace('\n', ' ').trim();
+        if (text.isEmpty()) text = tr("附件消息", "Attachment message");
+        JSONArray files = entry.optJSONArray("attachments");
+        if (files != null && files.length() > 0) text += tr(" · 附件 " + files.length(), " · " + files.length() + " attachments");
+        return queueSourceLabel(entry) + " · " + text;
+    }
+
+    private String queueSourceLabel(JSONObject entry) {
+        return entry.optString("source").equals("desktop") ? tr("电脑", "Computer") : tr("手机", "Mobile");
+    }
+
+    private String queueStateLabel(JSONObject entry) {
+        String state = entry.optString("state");
+        if (state.equals("starting")) return tr("正在发送", "Sending");
+        if (state.equals("failed")) return tr("发送失败", "Failed");
+        if (state.equals("paused")) return tr("已暂停", "Paused");
+        return lastLive == null && queueSteeringGoalId.isEmpty()
+            ? tr("下一条发送", "Next to send") : tr("等待当前任务结束", "Waiting for the current task");
+    }
+
+    private void showQueueSheet() {
+        if (!screen.equals("detail") || remoteQueue.length() == 0) return;
+        if (queueDialog != null && queueDialog.isShowing()) { refreshQueueSheet(); return; }
+        queueDialog = new android.app.Dialog(this);
+        queueSheetPanel = column();
+        queueDialog.setContentView(queueSheetPanel);
+        populateQueueSheet();
+        queueDialog.setOnDismissListener(dialog -> { queueDialog = null; queueSheetPanel = null; });
+        queueDialog.show();
+        new SettingsStyle(this).sheetWindow(queueDialog.getWindow(), queueSheetPanel);
+    }
+
+    private void refreshQueueSheet() {
+        if (queueDialog == null || !queueDialog.isShowing() || queueSheetPanel == null) return;
+        populateQueueSheet();
+        new SettingsStyle(this).sheetWindow(queueDialog.getWindow(), queueSheetPanel);
+    }
+
+    private void populateQueueSheet() {
+        if (queueSheetPanel == null) return;
+        SettingsStyle style = new SettingsStyle(this);
+        queueSheetPanel.removeAllViews();
+        style.sheetPanel(queueSheetPanel);
+        queueSheetPanel.setTag("queueSheet");
+
+        LinearLayout header = new LinearLayout(this); header.setGravity(Gravity.CENTER_VERTICAL);
+        TextView title = text(tr("发送队列", "Send queue"), Palette.TEXT_TITLE, ink);
+        title.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        if (android.os.Build.VERSION.SDK_INT >= 28) title.setAccessibilityHeading(true);
+        header.addView(title, new LinearLayout.LayoutParams(0, -2, 1));
+        ImageButton close = chatStyle.composerToolButton("close", tr("关闭", "Close"), muted, this::dismissQueueSheet);
+        close.setTag("queueSheetClose");
+        header.addView(close, new LinearLayout.LayoutParams(dp(48), dp(48)));
+        queueSheetPanel.addView(header);
+
+        boolean failed = queueHasState("failed");
+        boolean paused = failed || queueHasState("paused");
+        boolean enabled = connected && controlAllowed && !commandBusy && pendingCommand() == null;
+        TextView summary = text(paused
+                ? tr("队列已暂停。检查内容后再继续。", "The queue is paused. Review it before continuing.")
+                : lastLive != null || !queueSteeringGoalId.isEmpty()
+                    ? tr("当前任务结束后按顺序发送；“插入任务”会立即发给正在执行的任务。", "Messages send in order after this task. Insert delivers one to the current task now.")
+                    : tr("当前没有可插入的任务，队列会在连接就绪后继续。", "No task can accept an insert now. The queue continues when the connection is ready."),
+            Palette.TEXT_SMALL, paused ? Palette.of(this).warning : muted);
+        summary.setPadding(0, dp(4), 0, dp(8));
+        queueSheetPanel.addView(summary);
+
         if (paused) {
-            Button resume = button(tr("继续队列", "Resume queue"), () -> queueCommand("queue-resume", null), false);
-            resume.setTag("remoteQueueResume"); resume.setEnabled(enabled); heading.addView(resume);
+            String error = queueErrorMessage();
+            if (!error.isEmpty()) {
+                TextView reason = text(error, Palette.TEXT_SMALL, Palette.of(this).error);
+                reason.setPadding(dp(12), dp(9), dp(12), dp(9));
+                reason.setBackground(rounded(Palette.of(this).controlFill));
+                reason.setTag("remoteQueueError");
+                queueSheetPanel.addView(reason);
+            }
+            TextView resume = queueSheetButton(tr("继续队列", "Resume queue"), true, false, enabled,
+                () -> { dismissQueueSheet(); queueCommand("queue-resume", null); });
+            resume.setTag("remoteQueueResume");
+            LinearLayout.LayoutParams resumeParams = new LinearLayout.LayoutParams(-1, dp(44));
+            resumeParams.setMargins(0, dp(8), 0, 0);
+            queueSheetPanel.addView(resume, resumeParams);
         }
-        card.addView(heading);
-        android.widget.ScrollView queued = new android.widget.ScrollView(this) {
+
+        android.widget.ScrollView list = new android.widget.ScrollView(this) {
             @Override protected void onMeasure(int widthSpec, int heightSpec) {
-                int limit = dp(200);
-                if (View.MeasureSpec.getMode(heightSpec) != View.MeasureSpec.UNSPECIFIED) limit = Math.min(limit, View.MeasureSpec.getSize(heightSpec));
+                int limit = dp(getResources().getConfiguration().fontScale > 1.15f ? 260 : 320);
+                if (View.MeasureSpec.getMode(heightSpec) != View.MeasureSpec.UNSPECIFIED) {
+                    limit = Math.min(limit, View.MeasureSpec.getSize(heightSpec));
+                }
                 super.onMeasure(widthSpec, View.MeasureSpec.makeMeasureSpec(limit, View.MeasureSpec.AT_MOST));
             }
         };
-        queued.setVerticalScrollBarEnabled(false);
-        LinearLayout rows = column(); queued.addView(rows);
-        card.addView(queued, new LinearLayout.LayoutParams(-1, -2));
-        for (int i = 0; i < remoteQueue.length(); i++) {
-            JSONObject entry = remoteQueue.optJSONObject(i); if (entry == null) continue;
-            String id = entry.optString("id"), state = entry.optString("state");
-            LinearLayout row = new LinearLayout(this); row.setGravity(Gravity.TOP); row.setTag("remoteQueue:" + id);
-            row.setPadding(dp(12), dp(12), dp(12), dp(12)); row.setBackground(rounded(background));
-            LinearLayout.LayoutParams rowParams = new LinearLayout.LayoutParams(-1, -2);
-            rowParams.setMargins(0, i == 0 ? 0 : dp(8), 0, 0);
-            TextView position = text(String.valueOf(i + 1), Palette.TEXT_SMALL, muted);
-            position.setGravity(Gravity.CENTER); position.setBackground(chatStyle.capsule(surface));
-            LinearLayout.LayoutParams positionParams = new LinearLayout.LayoutParams(dp(28), dp(28));
-            positionParams.setMargins(0, dp(2), dp(10), 0); row.addView(position, positionParams);
-            LinearLayout body = column(); body.setPadding(0, dp(2), 0, 0);
-            JSONArray files = entry.optJSONArray("attachments");
-            String preview = entry.optString("text");
-            if (preview.trim().isEmpty()) preview = tr("附件消息", "Attachment message");
-            TextView prompt = text(preview, Palette.TEXT_BODY, ink);
-            prompt.setTag("remoteQueuePrompt:" + id); prompt.setMaxLines(3);
-            prompt.setEllipsize(android.text.TextUtils.TruncateAt.END); prompt.setLineSpacing(dp(3), 1); body.addView(prompt);
-            String label = state.equals("starting") ? tr("正在发送", "Sending") : state.equals("failed") ? tr("发送失败 · 请检查后继续", "Failed · review before resuming")
-                : state.equals("paused") ? tr("已暂停", "Paused") : tr("等待当前任务结束", "Waiting for the current task");
-            if (files != null && files.length() > 0) label += tr(" · 附件 ", " · Attachments: ") + files.length();
-            TextView detail = text(label, Palette.TEXT_SMALL, state.equals("starting") ? accent : state.equals("failed") ? Palette.of(this).error : muted);
-            detail.setTag("remoteQueueState:" + id); detail.setPadding(0, dp(6), 0, 0); body.addView(detail);
-            LinearLayout actions = new LinearLayout(this);
-            Button edit = button(tr("重新编辑", "Edit"), () -> showQueueEditor(id, entry.optString("text"), entry.optString("text")), false);
-            edit.setTag("remoteQueueEdit:" + id); edit.setEnabled(enabled && !state.equals("starting"));
-            edit.setTextSize(Palette.TEXT_SMALL); edit.setMinWidth(0);
-            edit.setSingleLine(true); edit.setPadding(dp(4), 0, dp(4), 0);
-            LinearLayout.LayoutParams editParams = new LinearLayout.LayoutParams(0, dp(48), 1); editParams.setMargins(0, dp(4), dp(6), 0);
-            actions.addView(edit, editParams);
-            Button steer = button(tr("插队", "Send now"), () -> queueCommand("queue-steer", id), false);
-            steer.setTag("remoteQueueSteer:" + id); steer.setEnabled(enabled && !state.equals("starting") && (lastLive != null || !queueSteeringGoalId.isEmpty()));
-            steer.setTextSize(Palette.TEXT_SMALL); steer.setMinWidth(0);
-            steer.setSingleLine(true); steer.setPadding(dp(4), 0, dp(4), 0);
-            steer.setContentDescription(tr("插队到当前回复", "Send as an instruction to the current reply"));
-            LinearLayout.LayoutParams steerParams = new LinearLayout.LayoutParams(0, dp(48), 1); steerParams.setMargins(0, dp(4), 0, 0);
-            actions.addView(steer, steerParams); body.addView(actions);
-            if (!entry.optString("error").isEmpty()) {
-                body.setOnClickListener(view -> new CamelliaDialog.Builder(this).setTitle(tr("队列已暂停", "Queue paused"))
-                    .setMessage(entry.optString("error")).setPositiveButton(tr("知道了", "OK"), null).show());
-            }
-            row.addView(body, new LinearLayout.LayoutParams(0, -2, 1));
-            ImageButton remove = lineButton("close", tr("移出队列", "Remove from queue"), () -> queueCommand("queue-remove", id));
-            remove.setTag("remoteQueueRemove:" + id); remove.setEnabled(enabled && !state.equals("starting"));
-            remove.setImageDrawable(new LineIcon("close", muted)); remove.setAlpha(remove.isEnabled() ? 1f : .4f);
-            LinearLayout.LayoutParams removeParams = new LinearLayout.LayoutParams(dp(48), dp(48));
-            removeParams.setMargins(dp(8), 0, 0, 0); row.addView(remove, removeParams); rows.addView(row, rowParams);
+        list.setVerticalScrollBarEnabled(false);
+        list.setTag("remoteQueueList");
+        LinearLayout rows = column();
+        for (int index = 0; index < remoteQueue.length(); index++) {
+            JSONObject entry = remoteQueue.optJSONObject(index);
+            if (entry != null) rows.addView(queueSheetItem(entry, index, enabled));
         }
+        list.addView(rows);
+        LinearLayout.LayoutParams listParams = new LinearLayout.LayoutParams(-1, -2);
+        listParams.setMargins(0, dp(paused ? 10 : 2), 0, 0);
+        queueSheetPanel.addView(list, listParams);
+    }
+
+    private String queueErrorMessage() {
+        for (int index = 0; index < remoteQueue.length(); index++) {
+            String error = remoteQueue.optJSONObject(index) == null ? "" : remoteQueue.optJSONObject(index).optString("error");
+            if (!error.isEmpty()) return error;
+        }
+        return "";
+    }
+
+    private LinearLayout queueSheetItem(JSONObject entry, int index, boolean enabled) {
+        String id = entry.optString("id"), state = entry.optString("state");
+        boolean starting = state.equals("starting");
+        boolean canSteer = enabled && !starting && !queueHasState("paused") && !queueHasState("failed")
+            && (lastLive != null || !queueSteeringGoalId.isEmpty());
+        LinearLayout item = column();
+        item.setTag("remoteQueue:" + id);
+        item.setPadding(dp(16), dp(13), dp(14), dp(8));
+        GradientDrawable face = rounded(Palette.of(this).surface);
+        face.setStroke(dp(1), Palette.of(this).cardBorder);
+        item.setBackground(face);
+        LinearLayout.LayoutParams itemParams = new LinearLayout.LayoutParams(-1, -2);
+        itemParams.setMargins(0, index == 0 ? 0 : dp(10), 0, 0);
+        item.setLayoutParams(itemParams);
+
+        LinearLayout head = new LinearLayout(this); head.setGravity(Gravity.CENTER_VERTICAL);
+        TextView position = text(String.valueOf(index + 1), Palette.TEXT_SMALL, accent);
+        position.setGravity(Gravity.CENTER);
+        position.setBackground(accentActionBackground());
+        LinearLayout.LayoutParams positionParams = new LinearLayout.LayoutParams(dp(28), dp(28));
+        positionParams.setMarginEnd(dp(9));
+        head.addView(position, positionParams);
+        TextView status = text(queueSourceLabel(entry) + " · " + queueStateLabel(entry), Palette.TEXT_SMALL,
+            state.equals("failed") ? Palette.of(this).error : state.equals("paused") ? Palette.of(this).warning
+                : state.equals("starting") ? accent : muted);
+        status.setTag("remoteQueueState:" + id);
+        status.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        head.addView(status, new LinearLayout.LayoutParams(0, -2, 1));
+        JSONArray files = entry.optJSONArray("attachments");
+        if (files != null && files.length() > 0) {
+            TextView count = text(files.length() + tr(" 个附件", " files"), Palette.TEXT_TINY, muted);
+            count.setGravity(Gravity.CENTER); count.setPadding(dp(8), dp(3), dp(8), dp(3));
+            count.setBackground(chatStyle.capsule(Palette.of(this).controlFill));
+            head.addView(count);
+        }
+        item.addView(head);
+
+        String promptText = entry.optString("text").trim();
+        if (promptText.isEmpty()) promptText = tr("附件消息", "Attachment message");
+        TextView prompt = text(promptText, Palette.TEXT_BODY, ink);
+        prompt.setTag("remoteQueuePrompt:" + id);
+        prompt.setMaxLines(5); prompt.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        prompt.setPadding(0, dp(7), 0, 0); prompt.setLineSpacing(dp(3), 1);
+        item.addView(prompt);
+
+        if (files != null && files.length() > 0) {
+            TextView names = text(queueAttachmentNames(files), Palette.TEXT_SMALL, muted);
+            names.setTag("remoteQueueAttachments:" + id);
+            names.setPadding(0, dp(5), 0, 0);
+            names.setSingleLine(true); names.setEllipsize(android.text.TextUtils.TruncateAt.END);
+            item.addView(names);
+        }
+        String error = entry.optString("error");
+        if (!error.isEmpty()) {
+            TextView detail = text(error, Palette.TEXT_SMALL, Palette.of(this).error);
+            detail.setPadding(0, dp(6), 0, 0); detail.setMaxLines(2);
+            detail.setEllipsize(android.text.TextUtils.TruncateAt.END);
+            item.addView(detail);
+        }
+
+        LinearLayout actions = new LinearLayout(this);
+        actions.setGravity(Gravity.END);
+        actions.setClipChildren(false); actions.setClipToPadding(false);
+        actions.setPadding(0, dp(2), 0, 0);
+        TextView edit = queueSheetAction(tr("编辑", "Edit"), 0, enabled && !starting,
+            () -> { dismissQueueSheet(); showQueueEditor(id, entry.optString("text"), entry.optString("text")); });
+        edit.setTag("remoteQueueEdit:" + id);
+        LinearLayout.LayoutParams editParams = new LinearLayout.LayoutParams(-2, dp(48));
+        actions.addView(edit, editParams);
+
+        String steerLabel = queueSteeringGoalId.isEmpty() ? tr("插入任务", "Insert") : tr("发给目标", "To goal");
+        TextView steer = queueSheetAction(steerLabel, 1, canSteer,
+            () -> { dismissQueueSheet(); queueCommand("queue-steer", id); });
+        steer.setTag("remoteQueueSteer:" + id);
+        steer.setContentDescription(tr("插入当前任务", "Send into the current task"));
+        LinearLayout.LayoutParams steerParams = new LinearLayout.LayoutParams(-2, dp(48));
+        steerParams.setMarginStart(dp(4));
+        actions.addView(steer, steerParams);
+
+        TextView remove = queueSheetAction(tr("移出", "Remove"), 2, enabled && !starting,
+            () -> { dismissQueueSheet(); queueCommand("queue-remove", id); });
+        remove.setTag("remoteQueueRemove:" + id);
+        LinearLayout.LayoutParams removeParams = new LinearLayout.LayoutParams(-2, dp(48));
+        removeParams.setMarginStart(dp(4));
+        actions.addView(remove, removeParams);
+        item.addView(actions);
+        return item;
+    }
+
+    private String queueAttachmentNames(JSONArray files) {
+        StringBuilder names = new StringBuilder();
+        for (int index = 0; index < Math.min(2, files.length()); index++) {
+            JSONObject file = files.optJSONObject(index);
+            if (file == null) continue;
+            if (names.length() > 0) names.append(" · ");
+            names.append(file.optString("name", tr("附件", "File")));
+        }
+        if (files.length() > 2) names.append(" +").append(files.length() - 2);
+        return names.toString();
+    }
+
+    private TextView queueSheetButton(String label, boolean accentAction, boolean destructive, boolean enabled, Runnable action) {
+        Palette palette = Palette.of(this);
+        TextView button = text(label, Palette.TEXT_SMALL, destructive ? palette.error : accentAction ? accent : ink);
+        button.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        if (!enabled) button.setTextColor(muted);
+        int fill = destructive && enabled
+            ? Color.argb(16, Color.red(palette.error), Color.green(palette.error), Color.blue(palette.error))
+            : accentAction && enabled ? Color.argb(22, Color.red(accent), Color.green(accent), Color.blue(accent))
+            : palette.controlFill;
+        GradientDrawable face = rounded(fill);
+        button.setBackground(new RippleDrawable(ColorStateList.valueOf(Palette.RIPPLE_ON_CARD), face, rounded(Color.WHITE)));
+        button.setMinWidth(0); button.setMinHeight(dp(48)); button.setPadding(dp(3), 0, dp(3), 0);
+        button.setSingleLine(true); button.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        button.setGravity(Gravity.CENTER); button.setFocusable(true);
+        button.setEnabled(enabled); button.setAlpha(enabled ? 1f : .5f);
+        button.setOnClickListener(view -> { if (enabled) action.run(); });
+        return button;
+    }
+
+    private TextView queueSheetAction(String label, int kind, boolean enabled, Runnable action) {
+        Palette palette = Palette.of(this);
+        int color = kind == 2 ? palette.error : kind == 1 ? accent : ink;
+        TextView button = text(label, Palette.TEXT_SMALL, enabled ? color : muted);
+        button.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        GradientDrawable face = rounded(kind == 1 && enabled
+            ? Color.argb(22, Color.red(accent), Color.green(accent), Color.blue(accent))
+            : Color.TRANSPARENT);
+        button.setBackground(new RippleDrawable(ColorStateList.valueOf(Palette.RIPPLE_ON_CARD), face,
+            rounded(Color.WHITE)));
+        button.setMinWidth(0); button.setMinHeight(dp(48)); button.setPadding(dp(12), 0, dp(12), 0);
+        button.setSingleLine(true); button.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        button.setGravity(Gravity.CENTER); button.setFocusable(true);
+        button.setEnabled(enabled); button.setAlpha(enabled ? 1f : .5f);
+        button.setOnClickListener(view -> { if (enabled) action.run(); });
+        return button;
+    }
+
+    private void dismissQueueSheet() {
+        if (queueDialog != null) queueDialog.dismiss();
+        queueDialog = null; queueSheetPanel = null;
     }
 
     private void queueCommand(String action, String id) {
@@ -3568,9 +4894,10 @@ public final class MainActivity extends Activity {
         editor.setGravity(Gravity.TOP); editor.setMinLines(3); editor.setMaxLines(10);
         editor.setInputType(android.text.InputType.TYPE_CLASS_TEXT | android.text.InputType.TYPE_TEXT_FLAG_MULTI_LINE | android.text.InputType.TYPE_TEXT_FLAG_CAP_SENTENCES);
         editor.setFilters(new android.text.InputFilter[]{new android.text.InputFilter.LengthFilter(16000)});
+        SettingsField field = new SettingsField(editor);
         CamelliaDialog dialog = new CamelliaDialog.Builder(this).setTitle(tr("重新编辑", "Edit"))
-            .setMessage(tr("保存后保留原来的排队位置和附件。", "Saving keeps this message's queue position and attachments."))
-            .setView(editor).setPositiveButton(tr("保存", "Save"), null)
+            .setMessage(tr("保存后保留消息原来的设备归属、排队位置和附件。", "Saving keeps this message's source, queue position and attachments."))
+            .setView(field).setPositiveButton(tr("保存", "Save"), null)
             .setNegativeButton(tr("取消", "Cancel"), null).show();
         dialog.getButton(android.app.AlertDialog.BUTTON_POSITIVE).setOnClickListener(view -> {
             if (editor.getText().toString().trim().isEmpty()) { editor.setError(tr("请输入消息", "Enter a message")); return; }
@@ -3641,8 +4968,11 @@ public final class MainActivity extends Activity {
     // resuming reuse the existing goal-control and task-control commands.
     private LinearLayout automationCard() {
         LinearLayout card = column();
-        card.setBackground(rounded(surface));
+        GradientDrawable face = rounded(surface);
+        face.setStroke(dp(1), Palette.of(this).cardBorder);
+        card.setBackground(face);
         card.setClipToOutline(true);
+        SurfaceElevation.apply(card, 1);
         LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, -2);
         params.setMargins(dp(8), dp(4), dp(8), dp(4));
         card.setLayoutParams(params);
@@ -3677,6 +5007,7 @@ public final class MainActivity extends Activity {
                 if (task != null) automationBar.addView(automationTask(task));
             }
         }
+        refreshWorkSummaryBar();
     }
 
     private View automationCard(JSONObject goal) {
@@ -3706,10 +5037,10 @@ public final class MainActivity extends Activity {
         // Paused and blocked goals resume from the same saved goal. Older hosts
         // can also report a disarmed goal with phase=active.
         if (phase.equals("active") || phase.equals("paused") || phase.equals("blocked")) {
-            TextView toggle = text(running ? tr("暂停", "Pause") : tr("恢复", "Resume"), Palette.TEXT_NOTE, ink);
-            toggle.setTag("remoteGoalToggle"); toggle.setMinHeight(dp(40));
+            TextView toggle = text(running ? tr("暂停", "Pause") : tr("恢复", "Resume"), Palette.TEXT_NOTE, accent);
+            toggle.setTag("remoteGoalToggle"); toggle.setMinHeight(dp(48));
             toggle.setGravity(Gravity.CENTER); toggle.setPadding(dp(10), dp(6), dp(10), dp(6));
-            toggle.setBackground(interactive(surface)); toggle.setFocusable(true);
+            toggle.setBackground(accentActionBackground()); toggle.setFocusable(true);
             toggle.setContentDescription((running ? tr("暂停目标：", "Pause goal: ") : tr("恢复目标：", "Resume goal: ")) + goal.optString("objective", ""));
             toggle.setOnClickListener(view -> submitAutomation("goal-control", running ? "pause" : "resume", null));
             row.addView(toggle, new LinearLayout.LayoutParams(-2, -2));
@@ -3754,10 +5085,10 @@ public final class MainActivity extends Activity {
         }
         if (status.equals("scheduled") || status.equals("running") || status.equals("paused")) {
             boolean pause = !status.equals("paused");
-            TextView toggle = text(pause ? tr("暂停", "Pause") : tr("恢复", "Resume"), Palette.TEXT_NOTE, ink);
-            toggle.setTag("remoteTaskToggle"); toggle.setMinHeight(dp(40));
+            TextView toggle = text(pause ? tr("暂停", "Pause") : tr("恢复", "Resume"), Palette.TEXT_NOTE, accent);
+            toggle.setTag("remoteTaskToggle"); toggle.setMinHeight(dp(48));
             toggle.setGravity(Gravity.CENTER); toggle.setPadding(dp(10), dp(6), dp(10), dp(6));
-            toggle.setBackground(interactive(surface)); toggle.setFocusable(true);
+            toggle.setBackground(accentActionBackground()); toggle.setFocusable(true);
             toggle.setContentDescription((pause ? tr("暂停任务：", "Pause task: ") : tr("恢复任务：", "Resume task: ")) + task.optString("instruction", ""));
             String id = task.optString("id");
             toggle.setOnClickListener(view -> submitAutomation("task-control", pause ? "pause" : "resume", id));
@@ -3825,6 +5156,7 @@ public final class MainActivity extends Activity {
                 }, allow));
             }
         }
+        refreshWorkSummaryBar();
     }
 
     private void notifyApprovalRequests() {
@@ -3873,7 +5205,8 @@ public final class MainActivity extends Activity {
             viewHandler.post(() -> scroll.fullScroll(View.FOCUS_DOWN));
         }
         updateControls();
-        if (stop) retryPendingCommand(pending, true, true); else retryCommand();
+        commandCheckDeadline = android.os.SystemClock.elapsedRealtime() + COMMAND_CONFIRM_TIMEOUT_MS;
+        if (stop) retryPendingCommand(pending, true, true); else retryCommand(false);
     }
 
     private JSONObject pendingCommand() { return RemotePendingCommands.get(credentials, conversationId, false); }
@@ -4320,11 +5653,16 @@ public final class MainActivity extends Activity {
         }
         if (screen.equals("list") && searchBar != null && searchBar.getVisibility() == View.VISIBLE) { closeConversationSearch(); return; }
         if (networkScreen) { leaveNetwork(); return; }
-        if (screen.equals("detail")) { persistDraft(); listScreen(); loadList(false); }
-        else if (screen.equals("list") || screen.equals("pair")) {
+        if (screen.equals("detail")) {
+            persistDraft();
+            if ("home".equals(detailReturn)) homeScreen();
+            else { listScreen(); loadList(false); }
+        }
+        else if (screen.equals("pair")) {
             pendingScannedPairing = false; pairingDraft = null;
             computersScreen(); refreshComputers();
         }
+        else if (screen.equals("list")) homeScreen();
         else if (!screen.equals("home")) homeScreen();
         else super.onBackPressed();
     }

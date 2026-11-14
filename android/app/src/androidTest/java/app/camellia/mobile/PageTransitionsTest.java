@@ -36,7 +36,7 @@ public class PageTransitionsTest extends InstrumentationTestCase {
         } finally { getInstrumentation().runOnMainSync(activity::finish); }
     }
 
-    public void testComputerAndRapidBackThroughConversation() throws Exception {
+    public void testComputerOpensSessionsAndBackReturnsHome() throws Exception {
         JSONObject computer = new JSONObject().put("address", "http://100.80.1.2:43127")
             .put("token", "a".repeat(43)).put("deviceId", "animation-test");
         new ComputerStore(encrypted).save(computer);
@@ -44,9 +44,14 @@ public class PageTransitionsTest extends InstrumentationTestCase {
         try {
             getInstrumentation().runOnMainSync(() -> {
                 PageTransitions pages = pages(activity);
-                activity.getWindow().getDecorView().findViewWithTag("remoteControlEntry").performClick();
+                activity.getWindow().getDecorView().findViewWithTag("nav:computers").performClick();
                 activity.getWindow().getDecorView().findViewWithTag("computer:" + computer.optString("address")).performClick();
-                invoke(activity, "stopNetwork"); assertPush(pages);
+                invoke(activity, "stopNetwork");
+                assertEquals("Choosing a computer switches the Sessions destination without a push",
+                    1, pages.getChildCount());
+                assertEquals(0f, pages.getChildAt(0).getTranslationX());
+                assertNull("The paired Sessions destination must not show a back button",
+                    activity.getWindow().getDecorView().findViewWithTag("pageBack"));
                 invoke(activity, "detailScreen"); assertPush(pages);
                 activity.onBackPressed(); invoke(activity, "stopNetwork"); assertPop(pages);
                 activity.onBackPressed(); invoke(activity, "stopNetwork"); assertPop(pages);
@@ -87,6 +92,34 @@ public class PageTransitionsTest extends InstrumentationTestCase {
         } finally {
             getInstrumentation().removeMonitor(monitor);
             if (local != null) getInstrumentation().runOnMainSync(local::finish);
+            getInstrumentation().runOnMainSync(activity::finish);
+        }
+    }
+
+    public void testBottomDestinationSwitchIsInstantAndKeepsNavGeometry() {
+        MainActivity activity = launch();
+        try {
+            int[] before = new int[2];
+            getInstrumentation().runOnMainSync(() -> {
+                View nav = activity.getWindow().getDecorView().findViewWithTag("workbenchNav");
+                assertNotNull(nav);
+                nav.getLocationOnScreen(before);
+                activity.getWindow().getDecorView().findViewWithTag("nav:settings").performClick();
+                PageTransitions pages = pages(activity);
+                assertEquals("A bottom-bar switch must not create a sliding snapshot", 1, pages.getChildCount());
+                assertEquals(0f, pages.getChildAt(0).getTranslationX());
+            });
+            getInstrumentation().waitForIdleSync();
+            getInstrumentation().runOnMainSync(() -> {
+                PageTransitions pages = pages(activity);
+                View nav = pages.getChildAt(0).findViewWithTag("workbenchNav");
+                assertNotNull(nav);
+                int[] after = new int[2];
+                nav.getLocationOnScreen(after);
+                assertEquals(before[0], after[0]);
+                assertEquals(before[1], after[1]);
+            });
+        } finally {
             getInstrumentation().runOnMainSync(activity::finish);
         }
     }

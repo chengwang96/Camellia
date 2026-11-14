@@ -57,15 +57,15 @@ public class LocalImageComposerTest extends InstrumentationTestCase {
                 View decor = dialog(activity).getWindow().getDecorView();
                 assertNotNull("The source sheet must match the remote one", decor.findViewWithTag("localImageGallery"));
                 assertNotNull(decor.findViewWithTag("localImageCamera"));
-                // The "+" sheet follows the attachment reference: square tiles on
-                // top and the capability rows underneath, sharing one header.
+                // The "+" sheet keeps the source actions in one grouped surface,
+                // with capability rows underneath and one shared header.
                 ViewGroup tiles = (ViewGroup) decor.findViewWithTag("attachTiles");
                 assertNotNull("The tiles row must sit above the capability rows", tiles);
                 assertEquals(3, tiles.getChildCount());
                 assertNotNull(decor.findViewWithTag("localDocumentPicker"));
                 for (int index = 0; index < tiles.getChildCount(); index++) {
                     View tile = tiles.getChildAt(index);
-                    assertTrue("Tiles must be equal-width cards", tile.getLayoutParams().width == 0);
+                    assertTrue("Source actions must share equal-width columns", tile.getLayoutParams().width == 0);
                     assertEquals(dp(activity, 96), tile.getLayoutParams().height);
                 }
                 assertNotNull("The capability rows must include web search", decor.findViewWithTag("localAttachTools"));

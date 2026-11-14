@@ -187,16 +187,32 @@ public class MobileLayoutRefinementTest extends InstrumentationTestCase {
             }
         });
         ui(() -> root().findViewWithTag("turnUsage").performClick());
+        final int expectedSheetWidth = new SettingsStyle(activity).sheetWidth();
+        ui(() -> {
+            android.app.AlertDialog dialog = usageDialog();
+            assertTrue(dialog.isShowing());
+            assertEquals("The usage sheet must get its final width before the first frame",
+                expectedSheetWidth, dialog.getWindow().getAttributes().width);
+        });
+        getInstrumentation().waitForIdleSync();
+        android.os.SystemClock.sleep(250);
         getInstrumentation().waitForIdleSync(); screenshot("design-turn-usage-sheet");
         ui(() -> {
-            TextView button = root().findViewWithTag("turnUsage");
-            var dialogField = button.getClass().getDeclaredField("dialog"); dialogField.setAccessible(true);
-            android.app.AlertDialog dialog = (android.app.AlertDialog) dialogField.get(button);
+            android.app.AlertDialog dialog = usageDialog();
             assertTrue(dialog.isShowing()); assertNotNull(dialog.getWindow().getDecorView().findViewWithTag("turnUsagePanel"));
+            assertEquals("Settling the height must not resize or recenter the sheet",
+                expectedSheetWidth, dialog.getWindow().getAttributes().width);
             dialog.dismiss();
             @SuppressWarnings("unchecked") java.util.Map<Long, JSONObject> history = (java.util.Map<Long, JSONObject>) field("history");
             history.get(2L).remove("turnDetails"); render(null); assertNull(root().findViewWithTag("turnUsage"));
         });
+    }
+
+    private android.app.AlertDialog usageDialog() throws Exception {
+        TextView button = root().findViewWithTag("turnUsage");
+        var dialogField = button.getClass().getDeclaredField("dialog");
+        dialogField.setAccessible(true);
+        return (android.app.AlertDialog) dialogField.get(button);
     }
 
     private int statusHeight(TextView status) {

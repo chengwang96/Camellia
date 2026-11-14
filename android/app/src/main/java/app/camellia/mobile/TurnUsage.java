@@ -47,7 +47,9 @@ final class TurnUsage {
 
     private static void show(UsageButton anchor, TurnDetails details, boolean chinese) {
         SettingsStyle style = new SettingsStyle(anchor.getContext());
-        LinearLayout panel = new LinearLayout(anchor.getContext()); style.sheetPanel(panel); panel.setTag("turnUsagePanel");
+        LinearLayout panel = new LinearLayout(anchor.getContext());
+        panel.setOrientation(LinearLayout.VERTICAL);
+        panel.setTag("turnUsagePanel");
         TextView title = style.label(chinese ? "本轮用量" : "Turn usage", Palette.TEXT_TITLE, style.ink); panel.addView(title);
         TextView total = style.label(TurnDetails.tokens(details.displayTotal()), Palette.TEXT_ROW, style.secondary);
         total.setPadding(0, style.dp(8), 0, style.dp(16)); panel.addView(total);
@@ -74,11 +76,11 @@ final class TurnUsage {
         if (output != null) row(rows, style, chinese ? "输出" : "Output", TurnDetails.tokens(output));
         if (details.cost != null) row(rows, style, chinese ? "费用" : "Cost", String.format(Locale.US, "$%.4f", details.cost));
         panel.addView(scroll, new LinearLayout.LayoutParams(-1, -2, 1));
-        TextView close = style.label(chinese ? "关闭" : "Close", Palette.TEXT_INPUT, style.ink);
-        close.setGravity(Gravity.CENTER); close.setMinHeight(style.dp(48)); close.setFocusable(true); panel.addView(close);
-        AlertDialog dialog = new AlertDialog.Builder(anchor.getContext()).setView(panel).create(); anchor.dialog = dialog;
-        close.setOnClickListener(view -> dialog.dismiss()); dialog.setOnDismissListener(ignored -> anchor.dialog = null);
-        dialog.show(); style.sheetWindow(dialog.getWindow(), panel);
+        AlertDialog dialog = new CamelliaDialog.Builder(anchor.getContext()).setView(panel)
+            .setNegativeButton(chinese ? "关闭" : "Close", null).create();
+        anchor.dialog = dialog;
+        dialog.setOnDismissListener(ignored -> anchor.dialog = null);
+        dialog.show();
     }
 
     private static void row(LinearLayout parent, SettingsStyle style, String name, String value) {

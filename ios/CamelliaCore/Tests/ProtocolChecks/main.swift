@@ -849,6 +849,9 @@ do {
     checkEqual(transcript.canQueue, true, "a queue field turns the feature on")
     checkEqual(transcript.queue.count, 1, "the queued message is kept")
     checkEqual(transcript.queue.first?.attachmentCount ?? -1, 2, "the attachment count is read")
+    checkEqual(transcript.queue.first?.source, "mobile", "legacy entries retain mobile ownership")
+    let desktopEntry = RemoteQueueEntry(JSONObject(dictionary: ["id": "desktop", "source": "desktop", "text": "From computer"]))
+    checkEqual(desktopEntry.source, "desktop", "mixed queue entries retain computer ownership")
     checkEqual(transcript.queueVersion, 10, "the queue revision is kept")
 
     // A snapshot from a desktop that has not caught up must not restore entries
@@ -6674,6 +6677,33 @@ do {
     let delta = RemoteSnapshot(JSONObject(dictionary: ["instanceId": "A", "cursor": 2, "historyVersion": "unchanged", "live": ["runId": 1, "text": "ab"]]))
     check(SnapshotCoalescer.replaceable(delta, after: first), "ordinary incremental text updates still coalesce")
 } catch { failures.append("incremental snapshots: \(error)") }
+
+do {
+    let notification = RemoteSnapshot(JSONObject(dictionary: [
+        "listVersion": "updated", "instanceId": "desktop", "cursor": 9,
+        "conversationList": ["instanceId": "desktop", "cursor": 9,
+            "conversations": [["id": uuid, "title": "Finished on desktop", "activity": "idle"]],
+            "workspaces": [], "includeUnassigned": true, "nextOffset": NSNull()]
+    ]))
+    checkEqual(notification.conversationList?.conversations.first?.id, uuid,
+               "background list notifications carry the authorized current page")
+    checkEqual(notification.conversationList?.cursor, 9,
+               "pushed pages preserve the desktop cursor")
+    check(notification.conversationList?.isLast == true,
+          "pushed lists retain an explicit end of pagination")
+    check(RemoteSnapshot(JSONObject(dictionary: ["listVersion": "legacy"])).conversationList == nil,
+          "older desktop invalidations remain compatible")
+    let full = RemoteListPage(JSONObject(dictionary: ["protocol": 1, "permission": "control",
+        "engines": ["codex"], "conversations": [["id": uuid]], "nextOffset": NSNull()]))
+    let prefix = RemoteListPage(JSONObject(dictionary: ["protocol": 1, "permission": "control",
+        "engines": ["codex"], "conversations": [["id": uuid]], "nextOffset": 1]))
+    check(full.coversVisibleList(count: 150, searching: false), "a complete pushed list can shrink after deletions")
+    check(prefix.coversVisibleList(count: 1, searching: false), "a covering pushed prefix avoids a refetch")
+    check(!prefix.coversVisibleList(count: 150, searching: false), "a pushed prefix cannot discard loaded later pages")
+    check(!full.coversVisibleList(count: 1, searching: true), "search results still fetch their own range")
+    check(notification.conversationList?.coversVisibleList(count: 1, searching: false) == false,
+          "incomplete metadata falls back to the existing list fetch")
+}
 
 do {
     let query = RemoteListQuery(query: "  中文 + & /REPORT  ", limit: 1500)

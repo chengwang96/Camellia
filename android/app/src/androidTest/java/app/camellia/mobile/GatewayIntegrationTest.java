@@ -425,10 +425,30 @@ public class GatewayIntegrationTest extends InstrumentationTestCase {
             getInstrumentation().runOnMainSync(() -> {
                 try {
                     var screen = MainActivity.class.getDeclaredMethod("listScreen"); screen.setAccessible(true); screen.invoke(activity);
+                } catch (Exception error) { throw new AssertionError(error); }
+            });
+            // Home owns a silent list subscription too. Switch the fixture to
+            // legacy mode only after leaving Home, rather than counting every
+            // subscription as a visible-list screen entry.
+            advanceListFixture(credential.getString("token"), "legacy");
+            getInstrumentation().runOnMainSync(() -> {
+                try {
                     var load = MainActivity.class.getDeclaredMethod("loadList", boolean.class); load.setAccessible(true); load.invoke(activity, false);
                 } catch (Exception error) { throw new AssertionError(error); }
             });
             awaitConversationCount(activity, 1);
+            var fallback = MainActivity.class.getDeclaredField("listEventsUnavailable"); fallback.setAccessible(true);
+            var polling = new java.util.concurrent.atomic.AtomicBoolean();
+            long deadline = android.os.SystemClock.uptimeMillis() + 5000;
+            do {
+                getInstrumentation().runOnMainSync(() -> {
+                    try { polling.set(fallback.getBoolean(activity)); }
+                    catch (Exception error) { throw new AssertionError(error); }
+                });
+                if (polling.get()) break;
+                android.os.SystemClock.sleep(50);
+            } while (android.os.SystemClock.uptimeMillis() < deadline);
+            assertTrue("An unsupported list endpoint must switch to polling", polling.get());
             advanceListFixture(credential.getString("token"), "add");
             awaitConversationCount(activity, 2, 22_000);
             getInstrumentation().runOnMainSync(() -> {
@@ -439,6 +459,7 @@ public class GatewayIntegrationTest extends InstrumentationTestCase {
         } finally {
             getInstrumentation().runOnMainSync(activity::finish);
             getInstrumentation().waitForIdleSync(); encrypted.clear();
+            advanceListFixture(credential.getString("token"), "current");
         }
     }
 
@@ -452,7 +473,7 @@ public class GatewayIntegrationTest extends InstrumentationTestCase {
             getInstrumentation().getTargetContext(), MainActivity.class).addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK));
         try {
             getInstrumentation().waitForIdleSync();
-            getInstrumentation().runOnMainSync(() -> activity.getWindow().getDecorView().findViewWithTag("remoteControlEntry").performClick());
+            getInstrumentation().runOnMainSync(() -> activity.getWindow().getDecorView().findViewWithTag("nav:computers").performClick());
             awaitComputerState(activity, address, "Connected|已连接");
             var scroll = MainActivity.class.getDeclaredField("scroll"); scroll.setAccessible(true);
             getInstrumentation().runOnMainSync(() -> {

@@ -22,7 +22,6 @@ body:has(.review-dialog[open]) .app { opacity: .52; }
 .review-close { display: grid; place-items: center; width: 30px; height: 30px; padding: 0; border: 0; border-radius: 8px; background: transparent; color: var(--dsw-alias-label-secondary); cursor: pointer; }
 .review-close:hover { background: var(--dsw-alias-interactive-bg-hover); color: var(--dsw-alias-label-primary); }
 .review-note { margin: 0 22px 16px; color: var(--dsw-alias-label-secondary); font: var(--f-xs-13); line-height: 1.55; }
-.review-agent-hint { margin: -8px 22px 0; color: var(--dsw-alias-label-tertiary); font: var(--f-xxxs-11); line-height: 1.45; }
 .review-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; padding: 0 22px; }
 .review-fields label { display: grid; gap: 5px; min-width: 0; color: var(--dsw-alias-label-secondary); font: var(--f-xxs-12); }
 .review-fields label > span { color: var(--dsw-alias-label-secondary); }
@@ -51,4 +50,4 @@ body:has(.review-dialog[open]) .app { opacity: .52; }
 .review-finding-location { color: var(--dsw-alias-label-secondary); font: var(--f-xxxs-11); }
 .review-finding p { margin: 3px 0; }
 .review-finding-recommendation { color: var(--dsw-alias-label-secondary); }
-@media (max-width: 560px) { .review-fields { grid-template-columns: 1fr; } .review-focus { grid-column: auto; } .review-dialog-header { padding-right: 16px; padding-left: 16px; } .review-note, .review-agent-hint { margin-right: 16px; margin-left: 16px; } .review-fields { padding-right: 16px; padding-left: 16px; } .review-advanced { margin-right: 16px; margin-left: 16px; } .review-status, .review-report { margin-right: 16px; margin-left: 16px; } .review-actions { padding-right: 16px; padding-left: 16px; } }
+@media (max-width: 560px) { .review-fields { grid-template-columns: 1fr; } .review-focus { grid-column: auto; } .review-dialog-header { padding-right: 16px; padding-left: 16px; } .review-note { margin-right: 16px; margin-left: 16px; } .review-fields { padding-right: 16px; padding-left: 16px; } .review-advanced { margin-right: 16px; margin-left: 16px; } .review-status, .review-report { margin-right: 16px; margin-left: 16px; } .review-actions { padding-right: 16px; padding-left: 16px; } }

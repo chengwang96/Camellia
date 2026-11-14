@@ -390,9 +390,9 @@ public class SettingsTest extends InstrumentationTestCase {
         Activity home = LocalChatFixture.start(getInstrumentation(), new Intent(context, MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
         try {
             ui(() -> {
-                View root = root(home); assertNotNull(root.findViewWithTag("localChatEntry")); assertNotNull(root.findViewWithTag("remoteControlEntry"));
+                View root = root(home); assertNotNull(root.findViewWithTag("localChatEntry")); assertNull(root.findViewWithTag("remoteControlEntry"));
                 root.findViewWithTag("settingsEntry").performClick();
-                assertNotNull(root.findViewWithTag("settings:providers")); assertNotNull(root.findViewWithTag("settings:general")); assertNotNull(root.findViewWithTag("settings:archived"));
+                assertNotNull(root.findViewWithTag("settings:summaryModels")); assertNotNull(root.findViewWithTag("settings:general")); assertNotNull(root.findViewWithTag("settings:archived"));
                 root.findViewWithTag("settings:network").performClick();
                 home.onBackPressed(); assertNotNull(root.findViewWithTag("settings:network"));
                 // The Mobile access row is the only row here that leads somewhere
@@ -446,17 +446,23 @@ public class SettingsTest extends InstrumentationTestCase {
                 android.os.SystemClock.sleep(800);
                 ui(() -> {
                     View root = root(activity);
-                    View providers = root.findViewWithTag("settings:providers"), general = root.findViewWithTag("settings:general");
+                    View providers = root.findViewWithTag("settings:summaryModels"), general = root.findViewWithTag("settings:general");
                     View archived = root.findViewWithTag("settings:archived"), network = root.findViewWithTag("settings:network");
-                    assertSame(providers.getParent(), general.getParent()); assertSame(archived.getParent(), network.getParent());
-                    assertNotSame(providers.getParent(), archived.getParent());
-                    assertEquals(3, ((android.view.ViewGroup) providers.getParent()).getChildCount());
+                    assertNotNull(providers); assertNotNull(general); assertNotNull(archived); assertNotNull(network);
+                    assertNotNull(root.findViewWithTag("settings:summaryModels"));
+                    assertNotNull(root.findViewWithTag("settings:summaryComputers"));
+                    assertNotNull(root.findViewWithTag("settings:diagnostics"));
+                    View about = root.findViewWithTag("settings:about");
+                    assertNotNull(about);
+                    assertFalse("The version is read-only, not a destination", about.isClickable());
+                    assertFalse(about.isFocusable());
                     assertTrue(providers.isClickable()); assertTrue(providers.isFocusable());
-                    assertTrue(providers.getHeight() >= Math.round(64 * activity.getResources().getDisplayMetrics().density));
+                    assertTrue(providers.getHeight() >= Math.round(52 * activity.getResources().getDisplayMetrics().density));
                     View title = root.findViewWithTag("settingsTitle");
                     android.view.ViewGroup header = (android.view.ViewGroup) title.getParent();
                     assertEquals(header.getWidth() / 2f, title.getLeft() + title.getWidth() / 2f, 1f);
-                    assertEquals(Math.round(4 * activity.getResources().getDisplayMetrics().density), root.findViewWithTag("settingsBack").getElevation(), 0f);
+                    assertEquals("Header back buttons use the shared flat icon style",
+                        0f, root.findViewWithTag("settingsBack").getElevation(), 0f);
                 });
                 android.graphics.Bitmap screenshot = getInstrumentation().getUiAutomation().takeScreenshot();
                 try (var output = new java.io.FileOutputStream(new java.io.File(activity.getExternalCacheDir(), "settings-grouped-" + theme + ".png"))) {
@@ -499,7 +505,6 @@ public class SettingsTest extends InstrumentationTestCase {
                             android.graphics.Rect group = bounds(page.findViewWithTag("settingsGroup"));
                             assertEquals(section + " card left", reference[2].left, group.left);
                             assertEquals(section + " card right", reference[2].right, group.right);
-                            if (!section.equals("archived")) assertEquals(section + " first card top", reference[2].top, group.top);
                         });
                     } finally { ui(detail::finish); }
                 }

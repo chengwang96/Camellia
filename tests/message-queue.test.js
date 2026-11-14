@@ -11,10 +11,10 @@ const markup = fs.readFileSync(path.join(__dirname, '../src/renderer/chat/workbe
 
 test('active conversations queue by default and retain an explicit queue shortcut', () => {
   assert.match(markup, /id="messageQueue"/);
-  assert.match(source, /if \(active && !queuedMessage\) \{[\s\S]*?if \(input.value.trim\(\) \|\| attachments.length\) \{ queueComposerMessage\(\); return; \}/);
+  assert.match(source, /if \(active && !queuedMessage\) \{[\s\S]*?if \(input.value.trim\(\) \|\| attachments.length\) \{ void queueComposerMessage\(\); return; \}/);
   assert.match(source, /e.key === 'Enter' && e.altKey[\s\S]*queueComposerMessage\(\)/);
-  assert.match(source, /messageQueue\.push\(\{ text, attachments: queuedAttachments \}\)/);
-  assert.match(source, /function queueComposerMessage\(\) \{[\s\S]*?followRunOutput = true;\s*maybeScroll\(true\);/);
+  assert.match(source, /messageQueue\.push\(queued\)/);
+  assert.match(source, /async function queueComposerMessage\(\) \{[\s\S]*?followRunOutput = true;\s*maybeScroll\(true\);/);
 });
 
 test('queued messages drain after result and shared activity completion', () => {
@@ -72,7 +72,7 @@ function queueEditorHarness(overrides = {}) {
     ...overrides,
   });
   state.saveDraft = () => state.writeUi('draft:session', { text: state.input.value, attachments: state.attachments });
-  vm.runInContext(source.slice(source.indexOf('  function editQueuedMessage('), source.indexOf('  function queueComposerMessage(')), state);
+  vm.runInContext(source.slice(source.indexOf('  function editQueuedMessage('), source.indexOf('  async function queueComposerMessage(')), state);
   return state;
 }
 
@@ -105,7 +105,7 @@ test('composer queues while a send is preparing or compacting context', async ()
   assert.equal(state.status, 'Message queued · 1 waiting');
 });
 
-test('queueing stays unavailable without a pending send or while the session changes', () => {
+test('queueing stays unavailable without a pending send or while the session changes', async () => {
   for (const overrides of [
     { sending: true, pendingConversationSend: () => null },
     { sending: false, loadingSession: true },
@@ -119,7 +119,7 @@ test('queueing stays unavailable without a pending send or while the session cha
     });
     state.messageQueue = [];
     assert.equal(state.canQueueComposerMessage(), false);
-    assert.equal(state.queueComposerMessage(), false);
+    assert.equal(await state.queueComposerMessage(), false);
     assert.equal(state.messageQueue.length, 0);
     assert.equal(state.input.value, 'Not queued');
   }

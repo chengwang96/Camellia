@@ -44,6 +44,8 @@ with sync_playwright() as playwright:
         process.locator('summary').focus()
         page.keyboard.press('Enter')
         expect(process).to_have_attribute('open', '')
+        expect(process.locator('.execution-process-collapse')).to_be_visible()
+        expect(process.locator('.execution-process-collapse')).to_contain_text('Collapse')
         expect(process.locator('.md')).to_have_text('First progress')
         process.locator('.tool-head').click()
         page.evaluate("emit({type:'gui:tool',id:'first',status:'completed',output:'Read succeeded'})")
@@ -63,9 +65,18 @@ with sync_playwright() as playwright:
         expect(process.locator('.execution-process-count')).to_have_text('2 tool calls')
         page.evaluate("changeLanguage('zh-CN')")
         expect(process.locator('summary')).to_contain_text('执行过程')
+        expect(process.locator('.execution-process-collapse')).to_contain_text('收起')
         page.screenshot(path=str(preview / f'execution-process-{theme}.png'))
         turn.locator('button.completion-label').click()
         expect(process.locator('.md')).to_have_text(['First progress', 'Latest progress'])
+        # The footer control folds a long expanded process without scrolling
+        # back to the summary, and keeps the completion toggle in sync.
+        collapse = process.locator('.execution-process-collapse')
+        expect(collapse).to_be_visible()
+        collapse.click()
+        expect(process).not_to_have_attribute('open', '')
+        expect(turn.locator('button.completion-label')).to_have_attribute('aria-expanded', 'false')
+        expect(collapse).to_be_hidden()
         page.evaluate("""() => {
           emit({type:'conversation:started',prompt:'Interrupted inspection',userSeq:4});
           text(0, 'Still inspecting');

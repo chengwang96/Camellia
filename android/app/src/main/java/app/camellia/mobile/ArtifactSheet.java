@@ -59,9 +59,11 @@ final class ArtifactSheet extends Dialog {
         TextView button = text(value, Palette.TEXT_ROW, primary ? style.card : style.ink); button.setGravity(Gravity.CENTER);
         button.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL)); button.setPadding(dp(16), dp(14), dp(16), dp(14));
         button.setMinHeight(dp(52)); button.setFocusable(true);
+        GradientDrawable face = rounded(primary ? style.ink : style.card, Palette.RADIUS_DIALOG_ACTION);
+        face.setStroke(dp(1), primary ? style.ink : style.palette().cardBorder);
         button.setBackground(new RippleDrawable(ColorStateList.valueOf(style.divider),
-            rounded(primary ? style.ink : style.card, Palette.RADIUS_DIALOG_ACTION),
-            rounded(Color.WHITE, Palette.RADIUS_DIALOG_ACTION)));
+            face, rounded(Color.WHITE, Palette.RADIUS_DIALOG_ACTION)));
+        SurfaceElevation.apply(button, primary ? 2 : 1);
         button.setOnClickListener(view -> action.run());
         button.setAccessibilityDelegate(new View.AccessibilityDelegate() {
             @Override public void onInitializeAccessibilityNodeInfo(View host, android.view.accessibility.AccessibilityNodeInfo info) {

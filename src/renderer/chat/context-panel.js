@@ -9,6 +9,7 @@ window.createContextPanel = ({ context, getEngine, onOpen, setStatus, openConver
   if (!panel || !body || !toggle || !close) return null;
 
   const t = value => window.CamelliaI18n?.t(value) || value;
+  const NODE_PREVIEW_LIMIT = 5;
   const categoryLabel = id => ({
     instructions: t('Instructions'), conversation: t('Conversation'), 'tool-calls': t('Tool calls'),
     'tool-results': t('Tool results'), attachments: t('Attachments'), compaction: t('Compaction'),
@@ -65,6 +66,7 @@ window.createContextPanel = ({ context, getEngine, onOpen, setStatus, openConver
   let requestEpoch = 0;
   let refreshTimer = null;
   const expanded = new Set();
+  const expandedLists = new Set();
   const contents = new Map();
   const pendingNodes = new Set();
   const expandedBlocks = new Set();
@@ -106,6 +108,7 @@ window.createContextPanel = ({ context, getEngine, onOpen, setStatus, openConver
     loading = Boolean(context.sessionId);
     error = '';
     expanded.clear();
+    expandedLists.clear();
     contents.clear();
     pendingNodes.clear();
     expandedBlocks.clear();
@@ -327,8 +330,11 @@ window.createContextPanel = ({ context, getEngine, onOpen, setStatus, openConver
     head.append(el('h3', '', t('Request contents')), el('span', 'ctx-muted', countLabel(snapshot.nodes.length, 'item', 'items')));
     section.append(head);
     const list = el('div', 'ctx-nodes');
-    for (const node of snapshot.nodes) {
+    const listKey = 'nodes:' + snapshot.conversationId + ':' + snapshot.turnSeq;
+    const showAll = expandedLists.has(listKey);
+    for (const [index, node] of snapshot.nodes.entries()) {
       const row = el('div', 'ctx-node');
+      if (index >= NODE_PREVIEW_LIMIT) row.hidden = !showAll;
       const trigger = el('button', 'ctx-node-trigger');
       trigger.type = 'button';
       trigger.disabled = !node.expandable;
@@ -355,6 +361,23 @@ window.createContextPanel = ({ context, getEngine, onOpen, setStatus, openConver
       list.append(row);
     }
     section.append(list);
+    const hiddenCount = snapshot.nodes.length - NODE_PREVIEW_LIMIT;
+    if (hiddenCount > 0) {
+      const more = button('', () => {}, 'ctx-list-more');
+      const syncMore = () => {
+        const expandedAll = expandedLists.has(listKey);
+        more.textContent = expandedAll ? t('Show fewer items')
+          : t('Show {0} more items').replace('{0}', String(hiddenCount));
+        more.setAttribute('aria-expanded', String(expandedAll));
+        for (const [index, row] of [...list.children].entries()) row.hidden = index >= NODE_PREVIEW_LIMIT && !expandedAll;
+      };
+      more.onclick = () => {
+        if (expandedLists.has(listKey)) expandedLists.delete(listKey); else expandedLists.add(listKey);
+        syncMore();
+      };
+      syncMore();
+      section.append(more);
+    }
     body.append(section);
   }
 

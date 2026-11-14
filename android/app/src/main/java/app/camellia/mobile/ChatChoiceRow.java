@@ -18,20 +18,29 @@ final class ChatChoiceRow extends LinearLayout {
     ChatChoiceRow(Context context, boolean chinese, int ink, int muted,
                   String title, String description, String icon, boolean selected, String tag, Runnable action) {
         super(context);
-        setGravity(Gravity.CENTER_VERTICAL); setPadding(dp(16), dp(14), dp(14), dp(14)); setMinimumHeight(dp(64));
+        Palette palette = Palette.of(context);
+        setGravity(Gravity.CENTER_VERTICAL); setPadding(dp(14), dp(9), dp(12), dp(9)); setMinimumHeight(dp(54));
         setTag(tag); setFocusable(true); setSelected(selected);
+        GradientDrawable face = new GradientDrawable();
+        face.setColor(selected ? palette.controlFill : Color.TRANSPARENT);
+        face.setCornerRadius(dp(Palette.RADIUS_FIELD));
         GradientDrawable mask = new GradientDrawable(); mask.setColor(Color.WHITE); mask.setCornerRadius(dp(Palette.RADIUS_FIELD));
-        setBackground(new RippleDrawable(ColorStateList.valueOf((ink & 0xffffff) | 0x18000000), null, mask));
+        setBackground(new RippleDrawable(ColorStateList.valueOf((ink & 0xffffff) | 0x18000000), face, mask));
+        setClipToOutline(true);
+        setLayoutParams(new LayoutParams(-1, -2));
         LinearLayout words = new LinearLayout(context); words.setOrientation(VERTICAL);
         TextView name = label(title, Palette.TEXT_ROW_STRONG, ink); name.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
         name.setSingleLine(true); words.addView(name);
         if (!description.isEmpty()) {
-            TextView detail = label(description, Palette.TEXT_SMALL, muted); detail.setMaxLines(3); detail.setPadding(0, dp(5), 0, 0); words.addView(detail);
+            TextView detail = label(description, Palette.TEXT_SMALL, muted); detail.setMaxLines(3); detail.setPadding(0, dp(3), 0, 0); words.addView(detail);
         }
         addView(words, new LayoutParams(0, -2, 1));
         if (selected) {
-            TextView check = label("✓", Palette.TEXT_TICK, ink); check.setGravity(Gravity.CENTER);
-            check.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO); addView(check, new LayoutParams(dp(32), dp(32)));
+            SelectionMark check = new SelectionMark(context, true);
+            check.setChecked(true);
+            LayoutParams checkParams = new LayoutParams(dp(22), dp(22));
+            checkParams.setMarginStart(dp(10));
+            addView(check, checkParams);
         } else if (icon != null) {
             ImageView arrow = new ImageView(context); arrow.setImageDrawable(new LineIcon(icon, muted));
             arrow.setPadding(dp(4), dp(4), dp(4), dp(4)); arrow.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);

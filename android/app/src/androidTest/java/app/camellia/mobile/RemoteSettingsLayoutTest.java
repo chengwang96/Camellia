@@ -2,10 +2,13 @@ package app.camellia.mobile;
 
 import android.app.Activity;
 import android.content.Intent;
+import android.graphics.Bitmap;
+import android.graphics.Rect;
 import android.test.InstrumentationTestCase;
 import android.view.Gravity;
 import android.view.View;
 import android.widget.FrameLayout;
+import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.PopupWindow;
 import android.widget.ScrollView;
@@ -15,7 +18,9 @@ import org.json.JSONObject;
 
 public class RemoteSettingsLayoutTest extends InstrumentationTestCase {
     private Activity activity;
+    private FrameLayout fixture;
     private View anchor;
+    private EditText imeProbe;
     private RemoteSettingsPopup selector;
 
     @Override protected void setUp() throws Exception {
@@ -23,11 +28,14 @@ public class RemoteSettingsLayoutTest extends InstrumentationTestCase {
         activity = getInstrumentation().startActivitySync(new Intent(getInstrumentation().getTargetContext(), MainActivity.class)
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
         getInstrumentation().runOnMainSync(() -> {
-            FrameLayout fixture = new FrameLayout(activity);
+            fixture = new FrameLayout(activity);
             TextView button = new TextView(activity); button.setText("Models");
             FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(200, 100, Gravity.BOTTOM | Gravity.RIGHT);
             params.bottomMargin = 40; fixture.addView(button, params);
             anchor = button; activity.setContentView(fixture);
+            imeProbe = new EditText(activity); imeProbe.setTag("imeProbe");
+            FrameLayout.LayoutParams probe = new FrameLayout.LayoutParams(160, 48, Gravity.TOP | Gravity.LEFT);
+            probe.topMargin = 40; fixture.addView(imeProbe, probe);
         });
         getInstrumentation().waitForIdleSync();
     }
@@ -166,5 +174,110 @@ public class RemoteSettingsLayoutTest extends InstrumentationTestCase {
             assertTrue(scroll.canScrollVertically(-1));
         });
         click("remoteThinkingSettings"); assertFitsContent();
+    }
+
+    public void testLongModelListKeepsContextVisibleOnPhoneAndTablet() throws Exception {
+        open(40, false);
+        getInstrumentation().waitForIdleSync();
+        android.os.SystemClock.sleep(400);
+        getInstrumentation().waitForIdleSync();
+        getInstrumentation().runOnMainSync(() -> {
+            PopupWindow popup = (PopupWindow) field("popup");
+            Rect visible = new Rect();
+            anchor.getWindowVisibleDisplayFrame(visible);
+            int expected = PopupSurface.menuHeightLimit(activity, visible);
+            assertEquals(expected, ((Integer) field("heightLimit")).intValue());
+            assertEquals(PopupSurface.modelMenuWidth(activity, visible), popup.getWidth());
+            assertTrue(popup.getHeight() <= expected);
+            assertTrue("A long model list must leave conversation context visible",
+                popup.getHeight() < Math.round(visible.height() * .62f));
+            View fade = popup.getContentView().findViewWithTag("glassScrollFade");
+            assertNotNull(fade);
+            assertEquals("A clipped list needs a cue that it can keep scrolling",
+                View.VISIBLE, fade.getVisibility());
+
+            float density = activity.getResources().getDisplayMetrics().density;
+            Rect tablet = new Rect(0, 0, Math.round(900 * density), Math.round(1200 * density));
+            int tabletLimit = PopupSurface.menuHeightLimit(activity, tablet);
+            assertTrue(tabletLimit <= Math.round(400 * density));
+            assertTrue("A tablet menu must not use half the screen either",
+                tabletLimit < tablet.height() / 2);
+        });
+        Bitmap image = getInstrumentation().getUiAutomation().takeScreenshot();
+        assertNotNull(image);
+        try (var output = new java.io.FileOutputStream(new java.io.File(
+                activity.getExternalCacheDir(), "remote-model-compact.png"))) {
+            image.compress(Bitmap.CompressFormat.PNG, 100, output);
+        } finally {
+            image.recycle();
+        }
+        getInstrumentation().runOnMainSync(() -> {
+            ScrollView scroll = (ScrollView) field("scroll");
+            scroll.setSmoothScrollingEnabled(false);
+            scroll.fullScroll(View.FOCUS_DOWN);
+        });
+        getInstrumentation().waitForIdleSync();
+        getInstrumentation().runOnMainSync(() -> {
+            PopupWindow popup = (PopupWindow) field("popup");
+            View fade = popup.getContentView().findViewWithTag("glassScrollFade");
+            assertEquals("The fade must disappear at the end of the list", View.GONE, fade.getVisibility());
+        });
+    }
+
+    public void testModelMenuStaysAboveTheKeyboard() throws Exception {
+        getInstrumentation().runOnMainSync(() -> {
+            activity.getWindow().setSoftInputMode(android.view.WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
+            imeProbe.requestFocus();
+            android.view.inputmethod.InputMethodManager keyboard =
+                (android.view.inputmethod.InputMethodManager) activity.getSystemService(Activity.INPUT_METHOD_SERVICE);
+            keyboard.showSoftInput(imeProbe, android.view.inputmethod.InputMethodManager.SHOW_FORCED);
+        });
+        int screenHeight = activity.getResources().getDisplayMetrics().heightPixels;
+        boolean keyboardVisible = false;
+        for (int attempt = 0; attempt < 30 && !keyboardVisible; attempt++) {
+            android.os.SystemClock.sleep(100);
+            getInstrumentation().waitForIdleSync();
+            int[] height = new int[1];
+            getInstrumentation().runOnMainSync(() -> {
+                Rect visible = PopupSurface.visibleFrame(anchor);
+                height[0] = visible.height();
+            });
+            keyboardVisible = height[0] < screenHeight - Math.round(140 * activity.getResources().getDisplayMetrics().density);
+        }
+        if (!keyboardVisible) {
+            getInstrumentation().runOnMainSync(() -> {
+                android.view.inputmethod.InputMethodManager keyboard =
+                    (android.view.inputmethod.InputMethodManager) activity.getSystemService(Activity.INPUT_METHOD_SERVICE);
+                keyboard.hideSoftInputFromWindow(imeProbe.getWindowToken(), 0);
+            });
+            return;
+        }
+        try {
+            open(40, false);
+            getInstrumentation().runOnMainSync(() -> {
+                PopupWindow popup = (PopupWindow) field("popup");
+                Rect visible = PopupSurface.visibleFrame(anchor);
+                int limit = PopupSurface.menuHeightLimit(activity, visible);
+                assertTrue(popup.getHeight() <= limit);
+                int[] location = new int[2];
+                popup.getContentView().getLocationOnScreen(location);
+                assertTrue("The model menu must remain above the IME",
+                    location[1] + popup.getHeight() <= visible.bottom);
+            });
+            Bitmap image = getInstrumentation().getUiAutomation().takeScreenshot();
+            assertNotNull(image);
+            try (var output = new java.io.FileOutputStream(new java.io.File(
+                    activity.getExternalCacheDir(), "remote-model-keyboard.png"))) {
+                image.compress(Bitmap.CompressFormat.PNG, 100, output);
+            } finally {
+                image.recycle();
+            }
+        } finally {
+            getInstrumentation().runOnMainSync(() -> {
+                android.view.inputmethod.InputMethodManager keyboard =
+                    (android.view.inputmethod.InputMethodManager) activity.getSystemService(Activity.INPUT_METHOD_SERVICE);
+                keyboard.hideSoftInputFromWindow(imeProbe.getWindowToken(), 0);
+            });
+        }
     }
 }

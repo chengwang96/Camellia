@@ -235,7 +235,9 @@ window.CamelliaGitPanel = { create({ context, getCwd, setStatus, fileViewer, clo
     openButton.append(changeIcon, el('span', 'git-change-label', t('{0} changed item(s)').replace('{0}', status.files.length)));
     statsNodes(openButton, status);
     if (status.statsTruncated) {
-      const partial = el('span', 'git-stats-partial', '…'); partial.title = t('Line counts exclude collapsed untracked folders.'); openButton.append(partial);
+      const caveat = t('Line counts exclude collapsed untracked folders.');
+      openButton.title = caveat;
+      openButton.setAttribute('aria-description', caveat);
     }
     openButton.onclick = () => openChanges(); row.append(openButton);
     const menuButton = commandButton('', () => more(menuButton), 'git-change-menu', 'git:menu');

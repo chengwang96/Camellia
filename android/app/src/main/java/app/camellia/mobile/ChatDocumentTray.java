@@ -20,7 +20,8 @@ final class ChatDocumentTray {
             label.setTextSize(Palette.TEXT_NOTE); label.setMaxLines(2); label.setMaxWidth(dp(context, 150)); label.setPadding(dp(context, 8), 0, dp(context, 4), 0);
             label.setEllipsize(android.text.TextUtils.TruncateAt.MIDDLE); chip.addView(label);
             if (remover != null) {
-                ImageButton remove = style.lineButton("close", (chinese ? "移除文件 " : "Remove file ") + document.optString("name"), () -> remover.remove(position));
+                ImageButton remove = style.composerToolButton("close", (chinese ? "移除文件 " : "Remove file ") + document.optString("name"),
+                    style.muted, () -> remover.remove(position));
                 chip.addView(remove, new LinearLayout.LayoutParams(dp(context, 40), dp(context, 40)));
             }
             chip.setTag("document:" + document.optString("name"));

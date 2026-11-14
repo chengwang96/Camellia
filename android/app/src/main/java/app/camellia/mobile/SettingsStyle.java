@@ -45,10 +45,14 @@ final class SettingsStyle {
 
     /** Keep the index and subpages inset even before Android dispatches window insets. */
     void pagePadding(View page) {
-        page.setPadding(dp(22), dp(12), dp(22), dp(24));
+        pagePadding(page, 20);
+    }
+
+    void pagePadding(View page, int bottomDp) {
+        page.setPadding(dp(16), dp(6), dp(16), dp(bottomDp));
         page.setOnApplyWindowInsetsListener((view, insets) -> {
-            view.setPadding(dp(22) + insets.getSystemWindowInsetLeft(), dp(12) + insets.getSystemWindowInsetTop(),
-                dp(22) + insets.getSystemWindowInsetRight(), dp(24) + insets.getSystemWindowInsetBottom());
+            view.setPadding(dp(16) + insets.getSystemWindowInsetLeft(), dp(6) + insets.getSystemWindowInsetTop(),
+                dp(16) + insets.getSystemWindowInsetRight(), dp(bottomDp) + insets.getSystemWindowInsetBottom());
             return insets;
         });
     }
@@ -81,7 +85,8 @@ final class SettingsStyle {
 
     void sheetPanel(LinearLayout panel) {
         panel.setOrientation(LinearLayout.VERTICAL); panel.setPadding(dp(18), dp(14), dp(18), dp(18));
-        GradientDrawable shape = new GradientDrawable(); shape.setColor(background); shape.setCornerRadius(dp(Palette.RADIUS_SHEET)); panel.setBackground(shape);
+        GradientDrawable shape = new GradientDrawable(); shape.setColor(background); shape.setCornerRadius(dp(Palette.RADIUS_SHEET));
+        shape.setStroke(dp(1), palette.cardBorder); panel.setBackground(shape);
         View handle = new View(context); handle.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
         GradientDrawable gripShape = new GradientDrawable(); gripShape.setColor(divider); gripShape.setCornerRadius(dp(Palette.RADIUS_GRIP)); handle.setBackground(gripShape);
         LinearLayout.LayoutParams grip = new LinearLayout.LayoutParams(dp(36), dp(4));
@@ -94,19 +99,35 @@ final class SettingsStyle {
         window.addFlags(android.view.WindowManager.LayoutParams.FLAG_DIM_BEHIND); window.setDimAmount(.28f);
         window.setGravity(Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL);
         window.setSoftInputMode(android.view.WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
-        var attributes = window.getAttributes(); attributes.y = dp(12); window.setAttributes(attributes);
+        int width = sheetWidth();
+        // Lock the final width before the first frame. The old post-show resize
+        // changed both width and height after the sheet was already centered,
+        // which made the panel visibly jump sideways as it opened.
+        var attributes = window.getAttributes();
+        attributes.y = dp(12);
+        attributes.width = width;
+        attributes.height = android.view.ViewGroup.LayoutParams.WRAP_CONTENT;
+        window.setAttributes(attributes);
         Runnable resize = () -> {
             View decor = window.peekDecorView();
             if (decor == null || decor.getWindowToken() == null) return;
             android.graphics.Rect visible = new android.graphics.Rect(); decor.getWindowVisibleDisplayFrame(visible);
             int available = visible.height() > 0 ? visible.height() : context.getResources().getDisplayMetrics().heightPixels;
-            int width = Math.min(dp(560), context.getResources().getDisplayMetrics().widthPixels - dp(24));
             int limit = Math.max(dp(160), available - dp(32));
             panel.measure(View.MeasureSpec.makeMeasureSpec(width, View.MeasureSpec.EXACTLY), View.MeasureSpec.makeMeasureSpec(limit, View.MeasureSpec.AT_MOST));
-            window.setLayout(width, Math.min(limit, panel.getMeasuredHeight()));
+            int height = Math.min(limit, panel.getMeasuredHeight());
+            var updated = window.getAttributes();
+            if (updated.height != height) {
+                updated.height = height;
+                window.setAttributes(updated);
+            }
         };
         panel.setOnApplyWindowInsetsListener((view, insets) -> { view.post(resize); return insets; });
         panel.post(resize);
+    }
+
+    int sheetWidth() {
+        return Math.min(dp(560), context.getResources().getDisplayMetrics().widthPixels - dp(24));
     }
 
     GradientDrawable cardBackground() {
@@ -117,7 +138,7 @@ final class SettingsStyle {
     LinearLayout header(String title, String backLabel, Runnable back) {
         LinearLayout header = new LinearLayout(context); header.setGravity(Gravity.CENTER_VERTICAL);
         header.setClipChildren(false); header.setClipToPadding(false);
-        header.setPadding(0, dp(4), 0, dp(16));
+        header.setPadding(0, dp(2), 0, dp(8));
         ImageButton button = new ChatStyle(context).backButton(backLabel, back); button.setTag("settingsBack");
         header.addView(button, new LinearLayout.LayoutParams(dp(48), dp(48)));
         TextView heading = new TextView(context); heading.setText(title); heading.setTextSize(Palette.TEXT_TITLE); heading.setTextColor(ink);
@@ -129,16 +150,37 @@ final class SettingsStyle {
         return header;
     }
 
+    LinearLayout topLevelHeader(String title) {
+        LinearLayout header = new LinearLayout(context);
+        header.setGravity(Gravity.CENTER_VERTICAL);
+        header.setPadding(0, dp(2), 0, dp(8));
+        TextView heading = new TextView(context);
+        heading.setText(title);
+        heading.setTextSize(Palette.TEXT_HERO);
+        heading.setTextColor(ink);
+        heading.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        heading.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
+        heading.setPadding(dp(8), dp(8), dp(8), dp(8));
+        heading.setTag("settingsTitle");
+        if (android.os.Build.VERSION.SDK_INT >= 28) heading.setAccessibilityHeading(true);
+        header.addView(heading, new LinearLayout.LayoutParams(0, -2, 1));
+        return header;
+    }
+
     LinearLayout group(LinearLayout parent, String label) {
         if (!label.isEmpty()) {
             TextView title = new TextView(context); title.setText(label); title.setTextSize(Palette.TEXT_NOTE); title.setTextColor(secondary);
-            title.setPadding(dp(16), dp(12), dp(16), dp(10));
+            title.setPadding(dp(4), dp(6), dp(4), dp(2));
             if (android.os.Build.VERSION.SDK_INT >= 28) title.setAccessibilityHeading(true);
             parent.addView(title);
         }
         LinearLayout group = new LinearLayout(context); group.setOrientation(LinearLayout.VERTICAL);
         group.setBackground(cardBackground()); group.setClipToOutline(true); group.setTag("settingsGroup");
-        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, -2); params.setMargins(0, 0, 0, dp(14)); parent.addView(group, params);
+        group.setElevation(dp(1));
+        if (android.os.Build.VERSION.SDK_INT >= 28) {
+            group.setOutlineAmbientShadowColor(0x10000000); group.setOutlineSpotShadowColor(0x1c000000);
+        }
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, -2); params.setMargins(0, 0, 0, dp(4)); parent.addView(group, params);
         return group;
     }
 
@@ -155,7 +197,7 @@ final class SettingsStyle {
         for (int index = 0; index < values.length; index++) {
             String value = values[index]; boolean active = value.equals(selected);
             LinearLayout button = new LinearLayout(context); button.setOrientation(LinearLayout.VERTICAL);
-            button.setGravity(Gravity.CENTER); button.setMinimumHeight(dp(80)); button.setPadding(dp(4), dp(12), dp(4), dp(12));
+            button.setGravity(Gravity.CENTER); button.setMinimumHeight(dp(68)); button.setPadding(dp(4), dp(10), dp(4), dp(10));
             button.setTag("appearance:" + value); button.setSelected(active); button.setFocusable(true);
             button.setContentDescription(labels[index]);
             button.setAccessibilityDelegate(new View.AccessibilityDelegate() {
@@ -168,6 +210,10 @@ final class SettingsStyle {
             face.setStroke(dp(1), active ? palette.selectedBorder : palette.cardBorder);
             button.setBackground(new RippleDrawable(ColorStateList.valueOf(Palette.RIPPLE_ON_CARD), face,
                 round(Color.WHITE, Palette.RADIUS_SETTINGS_CARD)));
+            button.setElevation(dp(1));
+            if (android.os.Build.VERSION.SDK_INT >= 28) {
+                button.setOutlineAmbientShadowColor(0x10000000); button.setOutlineSpotShadowColor(0x1c000000);
+            }
             ImageView icon = new ImageView(context); icon.setImageDrawable(new LineIcon(icons[index], ink));
             icon.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
             button.addView(icon, new LinearLayout.LayoutParams(dp(20), dp(20)));
@@ -184,17 +230,17 @@ final class SettingsStyle {
     void row(LinearLayout group, String iconName, String title, String value, String tag, Runnable action) {
         if (group.getChildCount() > 0) {
             View line = new View(context); line.setBackgroundColor(divider); line.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
-            LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, Math.max(1, dp(1) / 2)); params.setMargins(dp(52), 0, dp(16), 0); group.addView(line, params);
+            LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, Math.max(1, dp(1) / 2)); params.setMargins(dp(46), 0, dp(14), 0); group.addView(line, params);
         }
-        LinearLayout row = new LinearLayout(context); row.setGravity(Gravity.CENTER_VERTICAL); row.setMinimumHeight(dp(64));
-        row.setPadding(dp(16), dp(14), dp(14), dp(14)); row.setTag(tag); row.setFocusable(true);
+        LinearLayout row = new LinearLayout(context); row.setGravity(Gravity.CENTER_VERTICAL); row.setMinimumHeight(dp(56));
+        row.setPadding(dp(14), dp(10), dp(12), dp(10)); row.setTag(tag); row.setFocusable(true);
         row.setBackground(new RippleDrawable(ColorStateList.valueOf(Palette.RIPPLE_ON_CARD), null, new android.graphics.drawable.ColorDrawable(Color.WHITE)));
         row.setContentDescription(value.isEmpty() ? title : title + ", " + value);
         row.setOnClickListener(view -> action.run());
         ImageView icon = new ImageView(context); icon.setImageDrawable(new LineIcon(iconName, ink)); icon.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
-        row.addView(icon, new LinearLayout.LayoutParams(dp(23), dp(23)));
+        row.addView(icon, new LinearLayout.LayoutParams(dp(21), dp(21)));
         TextView label = new TextView(context); label.setText(title); label.setTextColor(ink); label.setTextSize(Palette.TEXT_ROW_STRONG);
-        label.setPadding(dp(13), 0, dp(8), 0); label.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+        label.setPadding(dp(11), 0, dp(8), 0); label.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
         label.setTag(ROW_TITLE);
         row.addView(label, new LinearLayout.LayoutParams(0, -2, 1));
         if (!value.isEmpty()) {
@@ -204,6 +250,42 @@ final class SettingsStyle {
         }
         ImageView arrow = new ImageView(context); arrow.setImageDrawable(new LineIcon("right", secondary)); arrow.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
         LinearLayout.LayoutParams arrowParams = new LinearLayout.LayoutParams(dp(18), dp(18)); arrowParams.setMarginStart(dp(8)); row.addView(arrow, arrowParams);
+        group.addView(row, new LinearLayout.LayoutParams(-1, -2));
+    }
+
+    /** A settings row that reports a value and has no destination. */
+    void valueRow(LinearLayout group, String iconName, String title, String value, String tag) {
+        if (group.getChildCount() > 0) {
+            View line = new View(context);
+            line.setBackgroundColor(divider);
+            line.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+            LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, Math.max(1, dp(1) / 2));
+            params.setMargins(dp(46), 0, dp(14), 0);
+            group.addView(line, params);
+        }
+        LinearLayout row = new LinearLayout(context);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setMinimumHeight(dp(56));
+        row.setPadding(dp(14), dp(10), dp(12), dp(10));
+        row.setTag(tag);
+        row.setContentDescription(value.isEmpty() ? title : title + ", " + value);
+        ImageView icon = new ImageView(context);
+        icon.setImageDrawable(new LineIcon(iconName, ink));
+        icon.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+        row.addView(icon, new LinearLayout.LayoutParams(dp(21), dp(21)));
+        TextView label = new TextView(context);
+        label.setText(title);
+        label.setTextColor(ink);
+        label.setTextSize(Palette.TEXT_ROW_STRONG);
+        label.setPadding(dp(11), 0, dp(8), 0);
+        label.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+        label.setTag(ROW_TITLE);
+        row.addView(label, new LinearLayout.LayoutParams(0, -2, 1));
+        if (!value.isEmpty()) {
+            TextView current = valueView();
+            current.setText(value);
+            row.addView(current);
+        }
         group.addView(row, new LinearLayout.LayoutParams(-1, -2));
     }
 
@@ -223,7 +305,7 @@ final class SettingsStyle {
      */
     private TextView valueView() {
         TextView current = new TextView(context);
-        current.setTextSize(Palette.TEXT_BODY); current.setTextColor(secondary);
+        current.setTextSize(Palette.TEXT_SMALL); current.setTextColor(secondary);
         current.setMaxWidth(dp(100)); current.setGravity(Gravity.END);
         current.setMaxLines(1); current.setEllipsize(android.text.TextUtils.TruncateAt.END);
         current.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
@@ -289,7 +371,7 @@ final class SettingsStyle {
     private LinearLayout detailRow(LinearLayout group, String title, String description, int titleColor) {
         separator(group);
         LinearLayout row = new LinearLayout(context); row.setGravity(Gravity.CENTER_VERTICAL);
-        row.setMinimumHeight(dp(64)); row.setPadding(dp(16), dp(14), dp(14), dp(14));
+        row.setMinimumHeight(dp(56)); row.setPadding(dp(14), dp(10), dp(12), dp(10));
         LinearLayout copy = new LinearLayout(context); copy.setOrientation(LinearLayout.VERTICAL);
         TextView heading = new TextView(context); heading.setText(title); heading.setTextSize(Palette.TEXT_ROW_STRONG); heading.setTextColor(titleColor); copy.addView(heading);
         if (!description.isEmpty()) {
@@ -323,7 +405,7 @@ final class SettingsStyle {
             params.setMargins(dp(52), 0, dp(16), 0); group.addView(line, params);
         }
         LinearLayout row = new LinearLayout(context); row.setGravity(Gravity.CENTER_VERTICAL);
-        row.setMinimumHeight(dp(64)); row.setPadding(dp(16), dp(14), dp(14), dp(14));
+        row.setMinimumHeight(dp(56)); row.setPadding(dp(14), dp(10), dp(12), dp(10));
         row.setTag(tag); row.setFocusable(true);
         row.setBackground(new RippleDrawable(ColorStateList.valueOf(Palette.RIPPLE_ON_CARD), null, new android.graphics.drawable.ColorDrawable(Color.WHITE)));
         row.setContentDescription(title + ", " + choice);
@@ -380,17 +462,7 @@ final class SettingsStyle {
             block.addView(hint);
         }
         if (action != null && actionLabel != null && !actionLabel.isEmpty()) {
-            TextView button = new TextView(context); button.setText(actionLabel); button.setTextColor(ink);
-            button.setTextSize(Palette.TEXT_INPUT); button.setGravity(Gravity.CENTER);
-            button.setMinHeight(dp(48)); button.setPadding(dp(20), dp(10), dp(20), dp(10));
-            // `capsule()` belongs to ChatStyle, which carries a different
-            // palette. The button on these pages is a filled field, so it is
-            // built from this class's own field colour rather than borrowed.
-            GradientDrawable face = new GradientDrawable();
-            face.setColor(field); face.setCornerRadius(dp(Palette.RADIUS_FIELD));
-            button.setBackground(new RippleDrawable(ColorStateList.valueOf(Palette.RIPPLE_ON_PAGE), face, face));
-            button.setFocusable(true); button.setTag("settingsEmptyAction");
-            button.setOnClickListener(view -> action.run());
+            TextView button = secondaryButton(actionLabel, "settingsEmptyAction", action);
             LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-2, -2);
             params.topMargin = dp(20); block.addView(button, params);
         }
@@ -447,14 +519,7 @@ final class SettingsStyle {
         hint.setTextSize(Palette.TEXT_BODY); hint.setGravity(Gravity.CENTER); hint.setLineSpacing(dp(4), 1);
         block.addView(hint);
         if (action != null && actionLabel != null && !actionLabel.isEmpty()) {
-            TextView button = new TextView(context); button.setText(actionLabel); button.setTextColor(ink);
-            button.setTextSize(Palette.TEXT_INPUT); button.setGravity(Gravity.CENTER);
-            button.setMinHeight(dp(48)); button.setPadding(dp(20), dp(10), dp(20), dp(10));
-            GradientDrawable face = new GradientDrawable();
-            face.setColor(field); face.setCornerRadius(dp(Palette.RADIUS_FIELD));
-            button.setBackground(new RippleDrawable(ColorStateList.valueOf(Palette.RIPPLE_ON_CARD), face, face));
-            button.setFocusable(true); button.setTag("settingsBlockedAction");
-            button.setOnClickListener(view -> action.run());
+            TextView button = secondaryButton(actionLabel, "settingsBlockedAction", action);
             LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-2, -2);
             params.topMargin = dp(20); block.addView(button, params);
         }
@@ -478,11 +543,28 @@ final class SettingsStyle {
         bar.setBackground(track.getConstantState().newDrawable().mutate()); bar.setClipToOutline(true); return bar;
     }
 
-    /** Shared neutral selection for native checkboxes and radio buttons. */
-    void selection(android.widget.CompoundButton control) {
-        control.setButtonTintList(new ColorStateList(new int[][]{
-            {-android.R.attr.state_enabled}, {android.R.attr.state_checked}, {}
-        }, new int[]{(ink & 0xffffff) | 0x73000000, ink, palette.selectedBorder}));
+    void raised(View view, int elevationDp) {
+        SurfaceElevation.apply(view, elevationDp);
+    }
+
+    TextView secondaryButton(String label, String tag, Runnable action) {
+        TextView button = new TextView(context);
+        button.setText(label);
+        button.setTextColor(ink);
+        button.setTextSize(Palette.TEXT_INPUT);
+        button.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        button.setGravity(Gravity.CENTER);
+        button.setMinHeight(dp(48));
+        button.setPadding(dp(20), dp(10), dp(20), dp(10));
+        GradientDrawable face = round(card, Palette.RADIUS_CAPSULE);
+        face.setStroke(dp(1), palette.cardBorder);
+        button.setBackground(new RippleDrawable(ColorStateList.valueOf(Palette.RIPPLE_ON_PAGE),
+            face, round(Color.WHITE, Palette.RADIUS_CAPSULE)));
+        SurfaceElevation.apply(button, 1);
+        button.setFocusable(true);
+        button.setTag(tag);
+        button.setOnClickListener(view -> action.run());
+        return button;
     }
 
     void action(LinearLayout group, String title, String description, String tag, boolean destructive, Runnable action) {

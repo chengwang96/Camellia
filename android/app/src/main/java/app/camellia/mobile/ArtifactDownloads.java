@@ -237,11 +237,11 @@ final class ArtifactDownloads {
         TextView bytes = sheet.text("", Palette.TEXT_NOTE, sheet.style.secondary); bytes.setPadding(0, style.dp(12), 0, 0); card.addView(bytes);
         TextView detail = sheet.text("", Palette.TEXT_BODY, sheet.style.secondary); detail.setTag("downloadDetail");
         detail.setPadding(style.dp(16), style.dp(8), style.dp(16), style.dp(18)); sheet.content.addView(detail);
-        TextView notifications = sheet.action(tr("开启下载通知", "Enable download notifications"), false, this::notificationSettings);
-        notifications.setTag("downloadNotificationSettings"); notifications.setVisibility(View.GONE); sheet.content.addView(notifications);
-        TextView background = sheet.action(tr("在后台继续", "Continue in background"), true, sheet::dismiss); sheet.actions.addView(background);
-        TextView cancel = sheet.action(tr("取消下载", "Cancel download"), false, () -> ArtifactDownloadService.cancel(activity));
-        LinearLayout.LayoutParams space = new LinearLayout.LayoutParams(-1, -2); space.topMargin = style.dp(10); sheet.actions.addView(cancel, space);
+        TextView primary = sheet.action(tr("在后台继续", "Continue in background"), true, () -> {});
+        primary.setTag("downloadBackground"); sheet.actions.addView(primary);
+        TextView secondary = sheet.action(tr("取消下载", "Cancel download"), false, () -> {});
+        secondary.setTag("downloadCancel");
+        LinearLayout.LayoutParams space = new LinearLayout.LayoutParams(-1, -2); space.topMargin = style.dp(10); sheet.actions.addView(secondary, space);
         sheet.setOnDismissListener(ignored -> handler.removeCallbacksAndMessages(null)); sheet.show();
         handler.post(new Runnable() {
             @Override public void run() {
@@ -254,19 +254,27 @@ final class ArtifactDownloads {
                 detail.setText(state.active() ? (notificationsEnabled
                     ? tr("可切换应用或锁屏。通知栏可查看进度；网络中断需重新下载。", "Switch apps or lock your phone. Track progress in notifications; a network interruption requires downloading again.")
                     : tr("可切换应用或锁屏；网络中断需重新下载。", "Switch apps or lock your phone; a network interruption requires downloading again.")) : state.detail);
-                notifications.setVisibility(state.active() && !notificationsEnabled ? View.VISIBLE : View.GONE);
-                background.setText(state.active() ? tr("在后台继续", "Continue in background") : tr("完成", "Done"));
-                cancel.setVisibility(state.active() ? View.VISIBLE : View.GONE);
+                boolean complete = "complete".equals(state.phase) && state.destination != null;
+                if (state.active()) {
+                    primary.setText(tr("在后台继续", "Continue in background")); primary.setTag("downloadBackground");
+                    primary.setOnClickListener(view -> sheet.dismiss());
+                    secondary.setText(tr("取消下载", "Cancel download")); secondary.setTag("downloadCancel");
+                    secondary.setVisibility(View.VISIBLE); secondary.setOnClickListener(view -> ArtifactDownloadService.cancel(activity));
+                } else if (complete) {
+                    primary.setText(tr("打开", "Open")); primary.setTag("downloadOpen");
+                    primary.setOnClickListener(view -> {
+                        if (ArtifactOpen.open(activity, state.destination, state.name, chinese)) sheet.dismiss();
+                    });
+                    secondary.setText(tr("完成", "Done")); secondary.setTag("downloadDone");
+                    secondary.setVisibility(View.VISIBLE); secondary.setOnClickListener(view -> sheet.dismiss());
+                } else {
+                    primary.setText(tr("完成", "Done")); primary.setTag("downloadDone");
+                    primary.setOnClickListener(view -> sheet.dismiss());
+                    secondary.setVisibility(View.GONE);
+                }
                 handler.postDelayed(this, 500);
             }
         });
-    }
-
-    private void notificationSettings() {
-        try {
-            activity.startActivity(new Intent(android.provider.Settings.ACTION_APP_NOTIFICATION_SETTINGS)
-                .putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, activity.getPackageName()));
-        } catch (Exception error) { toast(tr("无法打开通知设置。", "Cannot open notification settings.")); }
     }
 
     private void cleanup(Uri destination) {

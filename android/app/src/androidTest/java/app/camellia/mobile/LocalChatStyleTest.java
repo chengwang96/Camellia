@@ -51,11 +51,11 @@ public class LocalChatStyleTest extends InstrumentationTestCase {
                 assertTrue(root.findViewWithTag("localWorkspaceMenu:" + workspaceId) instanceof ImageButton);
                 assertTrue(root.findViewWithTag("localAdd:" + workspaceId) instanceof ImageButton);
                 assertTrue(root.findViewWithTag("localBack") instanceof ImageButton);
-                assertEquals(dp(4), root.findViewWithTag("localBack").getElevation(), 0f);
-                assertNotNull(root.findViewWithTag("localBack").getStateListAnimator());
+                assertEquals(0f, root.findViewWithTag("localBack").getElevation(), 0f);
+                assertNull(root.findViewWithTag("localBack").getStateListAnimator());
                 assertTrue(root.findViewWithTag("localNewStandalone") instanceof ImageButton);
                 View row = root.findViewWithTag("localConversation:" + conversationId);
-                assertEquals(dp(32), row.getPaddingLeft());
+                assertEquals(dp(14), row.getPaddingLeft());
                 View bar = root.findViewWithTag("localSearchBar"), status = root.findViewWithTag("localStatus");
                 assertDockInsets(bar, status);
                 assertFalse(((ViewGroup) bar.getParent()).getClipChildren());

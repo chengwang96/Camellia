@@ -8,9 +8,11 @@ import android.content.ContentValues;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageManager;
+import android.content.res.ColorStateList;
 import android.graphics.Bitmap;
 import android.graphics.Color;
 import android.graphics.drawable.GradientDrawable;
+import android.graphics.drawable.RippleDrawable;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Environment;
@@ -174,7 +176,8 @@ final class InlineImageGallery {
         final Dialog dialog;
         final ImageView image, incoming;
         final LinearLayout top, bottom;
-        final TextView counter, status, share, save;
+        final TextView counter, status;
+        final ImageButton share, save;
         final Set<InlineImageView> requested = Collections.newSetFromMap(new IdentityHashMap<>());
         int position, direction;
         float startX, startY;
@@ -196,11 +199,12 @@ final class InlineImageGallery {
             counter.setGravity(Gravity.CENTER); top.addView(counter, new LinearLayout.LayoutParams(0, dp(48), 1));
             View spacer = new View(activity); top.addView(spacer, new LinearLayout.LayoutParams(dp(48), dp(48)));
             FrameLayout.LayoutParams topParams = new FrameLayout.LayoutParams(-1, -2, Gravity.TOP); addView(top, topParams);
-            bottom = new LinearLayout(activity); bottom.setGravity(Gravity.CENTER);
-            share = action("inlineImageGalleryShare", tr(activity, "分享", "Share"));
-            save = action("inlineImageGallerySave", tr(activity, "保存到相册", "Save to Photos"));
+            bottom = new LinearLayout(activity); bottom.setGravity(Gravity.END | Gravity.CENTER_VERTICAL);
+            share = action("inlineImageGalleryShare", "share", tr(activity, "分享图片", "Share image"));
+            save = action("inlineImageGallerySave", "download", tr(activity, "保存到相册", "Save to Photos"));
             bottom.addView(share, actionParams()); bottom.addView(save, actionParams());
-            FrameLayout.LayoutParams bottomParams = new FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM); addView(bottom, bottomParams);
+            FrameLayout.LayoutParams bottomParams = new FrameLayout.LayoutParams(-2, -2, Gravity.BOTTOM | Gravity.END);
+            addView(bottom, bottomParams);
             share.setOnClickListener(view -> { InlineImageView current = current(); InlineImageGallery.share(activity, current.bitmap(), current.alt()); });
             save.setOnClickListener(view -> { InlineImageView current = current(); InlineImageGallery.save(activity, current.bitmap(), current.alt()); });
             image.setOnTouchListener((view, event) -> touch(event));
@@ -227,19 +231,32 @@ final class InlineImageGallery {
 
         void applySafeInsets(int topInset, int bottomInset) {
             top.setPadding(dp(8), topInset + dp(8), dp(8), dp(4));
-            bottom.setPadding(dp(8), dp(8), dp(8), bottomInset + dp(16));
+            bottom.setPadding(dp(8), dp(8), dp(16), bottomInset + dp(16));
             image.setPadding(0, topInset + dp(64), 0, bottomInset + dp(80));
             incoming.setPadding(0, topInset + dp(64), 0, bottomInset + dp(80));
         }
 
-        private TextView action(String tag, String label) {
-            TextView view = new TextView(activity); view.setTag(tag); view.setText(label); view.setTextColor(Color.WHITE); view.setTextSize(16);
-            view.setGravity(Gravity.CENTER); view.setMinHeight(dp(48)); view.setFocusable(true);
-            GradientDrawable background = new GradientDrawable(); background.setColor(0xff262629); background.setCornerRadius(dp(14)); view.setBackground(background); return view;
+        private ImageButton action(String tag, String icon, String label) {
+            ImageButton view = new ImageButton(activity);
+            view.setTag(tag);
+            view.setImageDrawable(new LineIcon(icon, Color.WHITE));
+            view.setContentDescription(label);
+            view.setTooltipText(label);
+            view.setScaleType(ImageView.ScaleType.CENTER);
+            view.setPadding(dp(12), dp(12), dp(12), dp(12));
+            view.setMinimumWidth(dp(48)); view.setMinimumHeight(dp(48)); view.setFocusable(true);
+            GradientDrawable face = new GradientDrawable();
+            face.setColor(0xff262629); face.setCornerRadius(dp(999));
+            GradientDrawable mask = new GradientDrawable();
+            mask.setColor(Color.WHITE); mask.setCornerRadius(dp(999));
+            view.setBackground(new RippleDrawable(ColorStateList.valueOf(0x33ffffff), face, mask));
+            return view;
         }
 
         private LinearLayout.LayoutParams actionParams() {
-            LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(0, dp(52), 1); params.setMargins(dp(4), 0, dp(4), 0); return params;
+            LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(dp(48), dp(48));
+            params.setMarginStart(dp(8));
+            return params;
         }
 
         InlineImageView current() { return images.get(position); }

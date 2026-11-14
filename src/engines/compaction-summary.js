@@ -61,6 +61,7 @@ async function runSummaryPipeline({ units, previous = '', budget, request, onPro
   if (typeof request !== 'function') throw new Error('Compaction summaries need a request function');
   let current = budget, requests = 0, shrinks = 0;
   let failure = null;
+  let inFlight = 1;
   const partials = new Map();
 
   // The pools below are per nesting level, and an overflowing fragment starts a
@@ -119,7 +120,7 @@ async function runSummaryPipeline({ units, previous = '', budget, request, onPro
       if (++requests > maxRequests) throw new Error('Compaction summary request limit reached');
       sequence = requests;
       onProgress({ ...metric, stage: 'running', request: sequence });
-      answer = await request({ kind, system, user, maxChars, maxTokens });
+      answer = await request({ kind, system, user, maxChars, maxTokens, parallelConcurrency: inFlight });
       checkActive();
     }
     finally { release(); }
@@ -188,6 +189,7 @@ async function runSummaryPipeline({ units, previous = '', budget, request, onPro
       if (next.done) break;
       initial.push(next.value);
     }
+    inFlight = Math.max(inFlight, initial.length);
     if (!planned) progress('map', 0, initial.length);
     let cursor = 0;
     const nextTask = () => {
@@ -249,6 +251,7 @@ async function runSummaryPipeline({ units, previous = '', budget, request, onPro
     const batches = packSummaries(normalized, inputLimit);
     progress('reduce', 0, batches.length - Number(replacing));
     const merged = new Array(batches.length);
+    inFlight = Math.max(inFlight, Math.min(concurrency, batches.length));
     // Merge batches are independent, so they run in the same worker pool as the
     // map stage instead of adding one provider round trip after another.
     const completed = () => {

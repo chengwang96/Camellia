@@ -6,12 +6,18 @@ const { RemoteAccess } = require('./access');
 const { RemoteReadModel } = require('./read-model');
 const { RemoteGateway } = require('./gateway');
 const { RemoteCommands } = require('./commands');
+const { RemoteMessageQueue } = require('./message-queue');
 
 function createRemoteService({ dataDir, manager, networkFactory, apiRoutes = null, apiImport = null, nativeSettings = null, management = null, desktopRestart = null, getDiscussions = null,
   preferences = () => ({}), setComputerName = () => '' }) {
   let gateway = null, access = null, network = null, busy = false, enabled = false, closed = false;
   let startupChecked = false, monitor = null, attachmentMaintenance = null, retryDelay = 1000, retryAt = 0;
   let recovering = null, diagnosing = false;
+  const messageQueue = new RemoteMessageQueue({
+    file: path.join(dataDir, 'remote', 'message-queue.json'),
+    manager,
+  });
+  manager.remoteQueue = messageQueue;
   const attachmentReferences = () => ({
     references: [gateway?.commands?.queue.entries || [], ...(gateway?.commands?.pendingAttachments.values() || []),
       ...(gateway?.discussions?.pendingAttachments.values() || [])],
@@ -21,7 +27,7 @@ function createRemoteService({ dataDir, manager, networkFactory, apiRoutes = nul
   function initialize() {
     if (gateway) return;
     access = new RemoteAccess({ file: path.join(dataDir, 'remote', 'devices.json'), onRevoke: id => gateway.revoke(id) });
-    const commands = new RemoteCommands({ file: path.join(dataDir, 'remote', 'commands.json'), reader, access,
+    const commands = new RemoteCommands({ file: path.join(dataDir, 'remote', 'commands.json'), reader, access, queue: messageQueue,
       publish: () => { gateway.publish(); attachmentMaintenance?.markDirty(); } });
     const discussions = getDiscussions ? new (require('./discussions').RemoteDiscussions)({
       file: path.join(dataDir, 'remote', 'discussion-commands.json'), getService: getDiscussions, access,

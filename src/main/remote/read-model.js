@@ -31,6 +31,53 @@ function text(value) {
   const source = typeof value === 'string' ? value : '';
   return { text: source.slice(-TEXT_LIMIT), textTruncated: source.length > TEXT_LIMIT };
 }
+const VISUALIZATION_STYLES = new Set(['whale', 'editorial', 'paper', 'sketch', 'terminal']);
+const VISUALIZATION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+function visualizationValue(value, depth = 0) {
+  if (depth > 6 || value == null) return null;
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (!trimmed.startsWith('{')) return null;
+    try { return visualizationValue(JSON.parse(trimmed), depth + 1); }
+    catch { return null; }
+  }
+  if (typeof value !== 'object') return null;
+  if (value.ok !== false && value.visualize) return value.visualize;
+  if (typeof value.output === 'string') {
+    const card = visualizationValue(value.output, depth + 1);
+    if (card) return card;
+  }
+  if (Array.isArray(value.content)) {
+    for (const item of value.content) {
+      const card = visualizationValue(item?.text ?? item?.structuredContent ?? item, depth + 1);
+      if (card) return card;
+    }
+  }
+  if (value.structuredContent) return visualizationValue(value.structuredContent, depth + 1);
+  return null;
+}
+function visualizationsFromProcess(process) {
+  const cards = new Map();
+  for (const entry of Array.isArray(process) ? process : []) {
+    if (!entry || entry.type !== 'tool' || !/(?:^|__)camellia_visualize$/.test(String(entry.title || ''))) continue;
+    const card = visualizationValue(entry.text);
+    if (!card || !VISUALIZATION_ID.test(String(card.cardId || ''))) continue;
+    const title = String(card.title || '').trim().slice(0, 120);
+    if (!title) continue;
+    const revision = Number.isSafeInteger(card.revision) && card.revision > 0 ? card.revision : 1;
+    const current = cards.get(card.cardId);
+    if (current && current.revision > revision) continue;
+    cards.set(card.cardId, {
+      cardId: card.cardId,
+      title,
+      summary: String(card.summary || '').slice(0, 500),
+      mode: card.mode === 'wide' ? 'wide' : 'card',
+      style: VISUALIZATION_STYLES.has(card.style) ? card.style : 'whale',
+      revision,
+    });
+  }
+  return [...cards.values()];
+}
 function compactionView(value) {
   if (!value || !['running', 'completed', 'failed', 'cancelled'].includes(value.state)) return null;
   const result = { state: value.state, native: value.native === true };
@@ -68,9 +115,11 @@ function message(row) {
   const compaction = row.role === 'notice' && row.compaction
     ? compactionView({ ...row.compaction, state: row.compaction.state || 'completed', engine: row.engine, seq: row.seq }) : null;
   const turnDetails = mobileTurnDetails(row);
+  const visualizations = visualizationsFromProcess(process);
   return { seq: row.seq, role: row.role, engine: row.engine, at: row.at, ...text(value), ...(compaction ? { compaction } : {}),
     ...(turnDetails ? { turnDetails } : {}),
-    ...(process.length ? { process } : {}), ...(attachedFiles.length ? { attachedFiles } : {}) };
+    ...(process.length ? { process } : {}), ...(visualizations.length ? { visualizations } : {}),
+    ...(attachedFiles.length ? { attachedFiles } : {}) };
 }
 
 function mobileGoal(goal, rows, info) {
@@ -203,7 +252,8 @@ class RemoteReadModel {
       for (const row of source) {
         if (messages.length === 200) { older = true; break; }
         const selected = message(this.manager.withRequestUsage?.(conversation, row) || row);
-        size += selected.text.length + JSON.stringify(selected.process || []).length;
+        size += selected.text.length + JSON.stringify(selected.process || []).length
+          + JSON.stringify(selected.visualizations || []).length;
         if (messages.length && size > 1024 * 1024) { older = true; break; }
         messages.unshift(selected);
       }
@@ -235,7 +285,7 @@ class RemoteReadModel {
       compaction,
       ...(pressure ? { context: { used: Math.max(0, Math.round(pressure.used)), cap: pressure.cap, source: pressure.source,
         compacting: compaction?.state === 'running', compactionState: compaction?.state || '' } } : {}),
-      ...(this.manager.remoteQueue ? this.manager.remoteQueue.snapshot(id) : {}),
+      ...(this.manager.remoteQueue ? this.manager.remoteQueue.snapshot(id, { redactAttachments: true }) : {}),
       queueSteering: device.permission === 'control' && goal?.id && goal.armed && goal.phase === 'active'
         ? { goalId: goal.id } : null,
       automation: { goal: mobileGoal(goal, transcript, info),

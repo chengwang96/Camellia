@@ -1,7 +1,7 @@
 dialog.tailnet-diagnostics { width: min(700px, calc(100vw - 32px)); max-width: none; max-height: calc(100dvh - 48px); margin: auto; padding: 24px; overflow: auto; border: 1px solid var(--dsw-alias-border-l2); border-radius: 14px; background: var(--dsw-alias-bg-base); color: var(--dsw-alias-label-primary); }
 dialog.tailnet-diagnostics[open] { display: flex; flex-direction: column; }
 .tailnet-diagnostics > :not(.diagnostic-table) { flex: 0 0 auto; }
-dialog.tailnet-diagnostics::backdrop { background: rgb(0 0 0 / 35%); }
+dialog.tailnet-diagnostics::backdrop { background: var(--dsw-alias-bg-mask-1); }
 .tailnet-diagnostics h2 { margin: 0 0 12px; font: var(--f-m-18); overflow-wrap: anywhere; }
 .tailnet-diagnostics .diagnostic-hint { margin: 10px 0; color: var(--dsw-alias-label-tertiary); font: var(--f-xxs-12); overflow-wrap: anywhere; }
 .tailnet-diagnostics .diagnostic-status { margin: 16px 0 6px; font-weight: 600; }

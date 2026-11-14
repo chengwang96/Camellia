@@ -55,7 +55,8 @@ public class ComputerSelectionTest extends InstrumentationTestCase {
             assertNotNull(panel.findViewWithTag("manageConnectionTest"));
             dialog.dismiss(); row.performClick();
             assertEquals("list", field("screen")); assertEquals(first.getString("address"), ((JSONObject) field("credentials")).getString("address"));
-            activity.onBackPressed(); assertEquals("computers", field("screen"));
+            activity.onBackPressed(); assertEquals("home", field("screen"));
+            root().findViewWithTag("nav:computers").performClick(); assertEquals("computers", field("screen"));
             root().findViewWithTag("addComputer").performClick();
             assertEquals("pair", field("screen")); assertEquals(2, computers.all().size());
         });

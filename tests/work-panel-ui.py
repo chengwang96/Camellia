@@ -64,7 +64,7 @@ def exercise_design(browser, theme, language, width, height):
     children = [finished, child, waiting]
     page.evaluate('tasks => deliverChild(tasks)', children)
     expect(page.locator('#workPanel')).to_be_hidden()
-    for selector in ('#conversationActions', '#workPanelToggle'):
+    for selector in ('#reviewToggle', '#contextToggle', '#workPanelToggle'):
         metrics = page.locator(selector).evaluate('''node => {
           const button = getComputedStyle(node), icon = getComputedStyle(node.querySelector('svg'));
           return {width:button.width, height:button.height, radius:button.borderRadius,
@@ -365,9 +365,6 @@ with sync_playwright() as p:
         output.mkdir(parents=True, exist_ok=True)
         page.screenshot(path=str(output / f'work-panel-{theme}.png'), animations='disabled')
         page.locator('#workPanelClose').click()
-        page.locator('#conversationActions').click()
-        expect(page.locator('.action-menu')).to_be_visible()
-        assert page.locator('.action-menu').bounding_box()['width'] <= 260
         assert not errors, errors
         page.close()
     for theme, language, width, height in [

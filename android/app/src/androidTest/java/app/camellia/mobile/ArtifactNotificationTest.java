@@ -4,8 +4,8 @@ import android.app.Activity;
 import android.app.Instrumentation;
 import android.app.NotificationManager;
 import android.content.Intent;
+import android.net.Uri;
 import android.os.Bundle;
-import android.provider.Settings;
 import android.test.InstrumentationTestCase;
 import android.view.View;
 import android.widget.TextView;
@@ -71,7 +71,7 @@ public class ArtifactNotificationTest extends InstrumentationTestCase {
         choose(); assertPicker(2);
     }
 
-    public void testNotificationSettingsOnlyOpenAfterExplicitTap() throws Exception {
+    public void testProgressDoesNotOfferNotificationSettings() throws Exception {
         onMain(() -> {
             stateField.set(null, new ArtifactDownloadService.State("report.pdf", "test", 1024, 4096, "running", ""));
             downloads.showProgress();
@@ -82,30 +82,76 @@ public class ArtifactNotificationTest extends InstrumentationTestCase {
             ArtifactSheet sheet = (ArtifactSheet) field.get(downloads);
             View root = sheet.getWindow().getDecorView();
             View settings = root.findViewWithTag("downloadNotificationSettings");
-            assertNotNull(settings);
+            assertNull("The progress sheet must not offer an Enable download notifications action", settings);
             assertEquals("Opening progress must not request permission or open settings", 0, launches.size());
             boolean enabled = activity.getSystemService(NotificationManager.class).areNotificationsEnabled();
-            assertEquals(enabled ? View.GONE : View.VISIBLE, settings.getVisibility());
             String detail = ((TextView) root.findViewWithTag("downloadDetail")).getText().toString();
             assertEquals(enabled, detail.contains("notifications") || detail.contains("通知栏"));
-            if (!enabled) {
-                assertTrue(settings.performClick());
-                assertEquals(1, launches.size());
-                assertEquals(Settings.ACTION_APP_NOTIFICATION_SETTINGS, launches.get(0).getAction());
-                assertEquals(activity.getPackageName(), launches.get(0).getStringExtra(Settings.EXTRA_APP_PACKAGE));
-                assertTrue("Opening settings must leave the download running", ArtifactDownloadService.snapshot().active());
-            }
+            assertTrue("Opening progress must leave the download running", ArtifactDownloadService.snapshot().active());
             stateField.set(null, new ArtifactDownloadService.State("report.pdf", "test", 4096, 4096, "complete", "Saved."));
         });
-        // The progress sheet refreshes every 500ms, including after returning from settings.
+        // The progress sheet refreshes every 500ms as the download completes.
         android.os.SystemClock.sleep(650);
         onMain(() -> {
             var field = ArtifactDownloads.class.getDeclaredField("dialog"); field.setAccessible(true);
             ArtifactSheet sheet = (ArtifactSheet) field.get(downloads);
             View root = sheet.getWindow().getDecorView();
-            assertEquals(View.GONE, root.findViewWithTag("downloadNotificationSettings").getVisibility());
+            assertNull(root.findViewWithTag("downloadNotificationSettings"));
             assertEquals("Saved.", ((TextView) root.findViewWithTag("downloadDetail")).getText().toString());
         });
+    }
+
+    public void testCompletedDownloadOffersSystemDefaultOpen() throws Exception {
+        Uri destination = Uri.parse("content://app.camellia.mobile.test.document/report-1");
+        onMain(() -> {
+            stateField.set(null, new ArtifactDownloadService.State("report.pdf", "test", 4096, 4096,
+                "complete", "Saved.", destination));
+            downloads.showProgress();
+        });
+        getInstrumentation().waitForIdleSync();
+        android.os.SystemClock.sleep(650);
+        onMain(() -> {
+            try {
+                var field = ArtifactDownloads.class.getDeclaredField("dialog");
+                field.setAccessible(true);
+                ArtifactSheet sheet = (ArtifactSheet) field.get(downloads);
+                View root = sheet.getWindow().getDecorView();
+                View open = root.findViewWithTag("downloadOpen");
+                View done = root.findViewWithTag("downloadDone");
+                assertNotNull("Completed downloads need an Open action", open);
+                assertNotNull("Completed downloads keep a separate Done action", done);
+                assertTrue(open.performClick());
+            } catch (Exception error) {
+                throw new AssertionError(error);
+            }
+        });
+        getInstrumentation().waitForIdleSync();
+        onMain(() -> {
+            assertEquals(1, launches.size());
+            Intent intent = launches.get(0);
+            assertEquals(Intent.ACTION_VIEW, intent.getAction());
+            assertEquals(destination, intent.getData());
+            assertEquals("application/pdf", intent.getType());
+            assertTrue((intent.getFlags() & Intent.FLAG_GRANT_READ_URI_PERMISSION) != 0);
+        });
+    }
+
+    public void testSystemOpenFallbackKeepsTheDownloadedUri() throws Exception {
+        Uri destination = Uri.parse("content://app.camellia.mobile.test.document/report-1");
+        List<Intent> attempts = new ArrayList<>();
+        Activity opener = new Activity() {
+            @Override public void startActivity(Intent intent) {
+                attempts.add(new Intent(intent));
+                if (attempts.size() == 1) throw new android.content.ActivityNotFoundException();
+            }
+        };
+        onMain(() -> assertTrue(ArtifactOpen.open(opener, destination, "report.pdf", false)));
+        assertEquals(2, attempts.size());
+        Intent fallback = attempts.get(1);
+        assertEquals(destination, fallback.getData());
+        assertEquals("*/*", fallback.getType());
+        assertEquals(destination, fallback.getClipData().getItemAt(0).getUri());
+        assertTrue((fallback.getFlags() & Intent.FLAG_GRANT_READ_URI_PERMISSION) != 0);
     }
 
     private Activity startActivity() {

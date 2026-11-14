@@ -21,6 +21,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
   // when child work reports more tokens.
   const requestTurns = new Map();
   let currentRunId = null;
+  let droppedRunReport = '';
   let acceptSessionEvents = false;
   let restoringRun = true;
   let switchingEngine = false;
@@ -44,9 +45,12 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
   let lastCallUsage = null;   // usage of the latest single API call in the turn
   let contextUsage = null;
   let attachments = [];       // [{ path, name, isImage }]
+  let cardActionDraft = null;
   let messageQueue = [];
   let messageQueuePaused = false;
   let remoteMessageQueue = [], remoteQueueVersion = -1;
+  let unifiedQueueAvailable = false;
+  let migratingQueue = false;
   const conversationQueues = new Map();
   let drainingQueue = false;
   let openPops = [];          // currently open popover elements
@@ -111,9 +115,36 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
   const accountFamily = id => accountModels.find(model => model.id === id
     || model.modelIds && Object.values(model.modelIds).includes(id)) || null;
   let uiReady = false, sending = false, settingsLoadSeq = 0;
-  const pendingConversationSends = new Map();
-  function pendingConversationSend() { return pendingConversationSends.get(context.sessionId); }
   const uiPrefix = 'camellia-chat-';
+  const pendingConversationSends = new Map();
+  const latestConversationSends = new Map();
+  function pendingConversationSend() { return pendingConversationSends.get(context.sessionId); }
+  // A send can spend minutes compacting before its user row is committed. Keep
+  // the optimistic message locally so reloading or switching conversations does
+  // not hide it while the request is still being accepted.
+  function newSendId() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 8); }
+  function savePendingSend(sendContext) {
+    if (!sendContext.sessionId || sendContext.editSeq) return;
+    try {
+      localStorage.setItem(uiPrefix + 'pending-send:' + sendContext.sessionId, JSON.stringify({
+        id: sendContext.id, text: sendContext.text, displayText: sendContext.displayText,
+        attachments: sendContext.attachments || [],
+        at: sendContext.at, baselineSeq: sendContext.baselineSeq }));
+    } catch {}
+  }
+  function persistedPendingSend(sessionId) {
+    const saved = readUi('pending-send:' + sessionId);
+    if (!saved?.id || !Number.isFinite(saved.at)) return null;
+    return { ...saved, text: typeof saved.text === 'string' ? saved.text : '',
+      displayText: typeof saved.displayText === 'string' ? saved.displayText : undefined,
+      attachments: Array.isArray(saved.attachments) ? saved.attachments : [], sessionId };
+  }
+  function clearPendingSend(sessionId, id) {
+    if (!sessionId) return;
+    const saved = readUi('pending-send:' + sessionId);
+    if (saved && id && saved.id !== id) return;
+    try { localStorage.removeItem(uiPrefix + 'pending-send:' + sessionId); } catch {}
+  }
   const cleanupReferenceIdentities = { draft: '', queue: '' };
   const draftKey = (id = context.sessionId, workspace = context.workspaceId) => id || 'new:' + (workspace || 'standalone');
   function readUi(key) {
@@ -165,6 +196,10 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     messageQueuePaused = messageQueue.length > 0 && readUi('queue-paused:' + key) === true;
     if (context.sessionId) conversationQueues.set(key, messageQueue);
     renderMessageQueue();
+    if (typeof unifiedQueueAvailable !== 'undefined' && unifiedQueueAvailable && context.sessionId
+        && typeof migrateLocalQueueToUnified === 'function') {
+      queueMicrotask(() => { void migrateLocalQueueToUnified(); });
+    }
   }
   window.addEventListener('beforeunload', saveDraft);
   let scrollSaveTimer;
@@ -698,7 +733,9 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     if (!replayingLiveSnapshot && followRunOutput && !userScrollActive && (was || running)) scrollToLatest();
   }
   new ResizeObserver(() => {
-    if (!replayingLiveSnapshot && running && followRunOutput && !userScrollActive) scrollToLatest();
+    // History media can finish loading after the reply and entry scroll have
+    // settled. Keep the reader's follow intent across those layout changes.
+    if (!replayingLiveSnapshot && followRunOutput && !userScrollActive) scrollToLatest();
   }).observe(chat);
 
   function clearEmpty() {
@@ -1232,53 +1269,103 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     saveDraft(); updateSendEnabled();
   }
 
+  function queuedRows() {
+    const local = messageQueue.map((message, index) => ({
+      message, local: true, source: 'desktop', at: Number(message.at) || 0,
+      order: Number(message.at) || 0, index,
+    }));
+    const unified = remoteMessageQueue.map((message, index) => ({
+      message, local: false, source: message.source === 'desktop' ? 'desktop' : 'mobile',
+      at: Number(message.at) || 0, order: Number(message.order) || Number(message.at) || 0, index,
+    }));
+    return [...local, ...unified].sort((first, second) =>
+      first.order - second.order || first.at - second.at || first.index - second.index);
+  }
+
   function renderMessageQueue() {
     const list = $('messageQueue');
-    list.hidden = messageQueue.length === 0 && remoteMessageQueue.length === 0;
-    list.replaceChildren(...messageQueue.map((message, index) => {
+    const t = window.CamelliaI18n.t;
+    const rows = queuedRows();
+    list.hidden = rows.length === 0;
+    list.replaceChildren(...rows.map(({ message, local, source }, index) => {
       const row = document.createElement('div');
       row.className = 'queue-item';
+      row.dataset.source = source;
       const label = document.createElement('span');
       label.className = 'queue-index';
-      label.textContent = window.CamelliaI18n.t('Queued') + ' ' + (index + 1);
+      label.textContent = t(source === 'mobile' ? 'Mobile queued' : local ? 'Queued' : 'Computer queued') + ' ' + (index + 1);
       const text = document.createElement('span');
       text.className = 'queue-text';
-      text.textContent = message.text || message.attachments.map(item => item.name).join(', ');
+      const attachments = Array.isArray(message.attachments) ? message.attachments : [];
+      text.textContent = message.text || attachments.map(item => item.name).join(', ');
+      text.title = message.error || attachments.map(item => item.name).join(', ');
+      row.append(label, text);
+
+      if (!local && message.state && (source === 'mobile' || message.state !== 'queued')) {
+        const state = document.createElement('span');
+        state.className = 'queue-index';
+        state.textContent = t(message.state === 'starting' ? 'Sending…' : message.state === 'queued' ? 'Queued' : 'Paused');
+        row.append(state);
+      }
+
       const edit = document.createElement('button');
       edit.type = 'button'; edit.className = 'queue-edit';
-      edit.title = window.CamelliaI18n.t('Return to editor');
+      edit.title = t(local ? 'Return to editor' : 'Edit queued message');
       edit.setAttribute('aria-label', edit.title);
       edit.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="m14 5 5 5M4 20l5-1L20 8a2.8 2.8 0 0 0-4-4L5 15z"/></svg>';
-      edit.disabled = sending || drainingQueue || loadingSession || switchingEngine || Boolean(editingMessage) || Boolean(pendingConversationSend()) || goalUI.isDraft()
-        || handoffSessions.has(context.sessionId);
-      edit.addEventListener('click', () => editQueuedMessage(message));
+      edit.disabled = sending || drainingQueue || loadingSession || switchingEngine || Boolean(editingMessage)
+        || Boolean(pendingConversationSend()) || goalUI.isDraft() || handoffSessions.has(context.sessionId)
+        || message.state === 'starting';
+      edit.addEventListener('click', () => {
+        if (local) editQueuedMessage(message);
+        else void editUnifiedQueuedMessage(message);
+      });
       const steer = document.createElement('button');
       steer.type = 'button'; steer.className = 'queue-steer';
       steer.title = window.CamelliaI18n.t('Send instruction now');
       steer.setAttribute('aria-label', steer.title);
       steer.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M4 4h16M12 20V9m-5 5 5-5 5 5"/></svg>';
-      steer.disabled = !canSteerQueuedMessage();
-      steer.addEventListener('click', () => void steerQueuedMessage(message));
+      steer.disabled = !canSteerQueuedMessage() || message.state === 'starting';
+      steer.addEventListener('click', () => void steerQueuedMessage(message, { local }));
       const remove = document.createElement('button');
-      remove.type = 'button'; remove.className = 'queue-remove'; remove.title = 'Remove from queue';
-      remove.setAttribute('aria-label', 'Remove from queue'); remove.textContent = '✕';
-      remove.disabled = sending || drainingQueue;
-      remove.addEventListener('click', () => { messageQueue.splice(index, 1); saveMessageQueue(); renderMessageQueue(); });
-      row.append(label, text, edit, steer, remove);
+      remove.type = 'button'; remove.className = 'queue-remove'; remove.title = t('Remove from queue');
+      remove.setAttribute('aria-label', remove.title); remove.textContent = '✕';
+      remove.disabled = sending || drainingQueue || message.state === 'starting';
+      remove.addEventListener('click', () => {
+        if (local) {
+          const localIndex = messageQueue.indexOf(message);
+          if (localIndex === -1) return;
+          messageQueue.splice(localIndex, 1);
+          saveMessageQueue();
+          renderMessageQueue();
+        } else {
+          void remoteQueueAction('remote-queue-remove', message.id);
+        }
+      });
+      row.append(edit, steer, remove);
       return row;
     }));
     if (messageQueuePaused && messageQueue.length) {
       const resume = document.createElement('button');
       resume.type = 'button'; resume.className = 'queue-resume';
-      resume.textContent = window.CamelliaI18n.t('Resume queued messages');
+      resume.textContent = t('Resume queued messages');
       resume.addEventListener('click', () => { setMessageQueuePaused(false); drainMessageQueue(); });
       list.appendChild(resume);
     }
-    renderRemoteQueue(list);
+    const pausedUnified = remoteMessageQueue.filter(message => ['paused', 'failed'].includes(message.state));
+    if (pausedUnified.length) {
+      const resume = document.createElement('button');
+      resume.type = 'button'; resume.className = 'queue-resume';
+      resume.textContent = pausedUnified.every(message => (message.source || 'mobile') === 'mobile')
+        ? t('Resume mobile queue') : t('Resume queued messages');
+      resume.onclick = () => void remoteQueueAction('remote-queue-resume');
+      list.appendChild(resume);
+    }
   }
 
   function applyRemoteQueue(value) {
     if (!value || !Array.isArray(value.queue) || value.queueVersion < remoteQueueVersion) return;
+    unifiedQueueAvailable = true;
     remoteMessageQueue = value.queue; remoteQueueVersion = value.queueVersion;
     renderMessageQueue();
   }
@@ -1290,30 +1377,6 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       if (!result.ok) throw new Error(result.error);
       if (context.sessionId === sessionId) applyRemoteQueue(result);
     } catch (error) { if (context.sessionId === sessionId) setStatus(error.message); }
-  }
-
-  function renderRemoteQueue(list) {
-    const t = window.CamelliaI18n.t;
-    for (const [index, message] of remoteMessageQueue.entries()) {
-      const row = document.createElement('div'); row.className = 'queue-item';
-      const label = document.createElement('span'); label.className = 'queue-index';
-      label.textContent = t('Mobile queued') + ' ' + (index + 1);
-      const text = document.createElement('span'); text.className = 'queue-text';
-      text.textContent = message.text;
-      text.title = message.error || (message.attachments || []).map(file => file.name).join(', ');
-      const state = document.createElement('span'); state.className = 'queue-index';
-      state.textContent = t(message.state === 'starting' ? 'Sending…' : message.state === 'queued' ? 'Queued' : 'Paused');
-      const remove = document.createElement('button'); remove.type = 'button'; remove.className = 'queue-remove';
-      remove.title = t('Remove from queue'); remove.setAttribute('aria-label', remove.title); remove.textContent = '✕';
-      remove.disabled = message.state === 'starting';
-      remove.onclick = () => void remoteQueueAction('remote-queue-remove', message.id);
-      row.append(label, text, state, remove); list.appendChild(row);
-    }
-    if (remoteMessageQueue.some(message => ['paused', 'failed'].includes(message.state))) {
-      const resume = document.createElement('button'); resume.type = 'button'; resume.className = 'queue-resume';
-      resume.textContent = t('Resume mobile queue');
-      resume.onclick = () => void remoteQueueAction('remote-queue-resume'); list.appendChild(resume);
-    }
   }
 
   function editQueuedMessage(message) {
@@ -1333,6 +1396,61 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     return true;
   }
 
+  async function editUnifiedQueuedMessage(message) {
+    if (sending || drainingQueue || loadingSession || switchingEngine || editingMessage || pendingConversationSend() || goalUI.isDraft()
+        || handoffSessions.has(context.sessionId) || message.state === 'starting') return false;
+    if (document.querySelector('.queue-editor[open]')) return false;
+    const sessionId = context.sessionId, openSeq = sessionOpenSeq;
+    const expectedText = message.text || '';
+    const t = window.CamelliaI18n.t;
+    const dialog = document.createElement('dialog');
+    dialog.className = 'question-dialog queue-editor';
+    dialog.setAttribute('aria-labelledby', 'queueEditorTitle');
+    const form = document.createElement('form');
+    const title = document.createElement('h2');
+    title.id = 'queueEditorTitle'; title.textContent = t('Edit queued message');
+    const detail = document.createElement('p');
+    detail.textContent = t(message.source === 'desktop' ? 'Computer queued' : 'Mobile queued') + ' · '
+      + t('Saving keeps this message\'s source, queue position and attachments.');
+    const files = document.createElement('p');
+    files.className = 'queue-editor-files';
+    files.textContent = (message.attachments || []).map(file => file.name).join(', ');
+    files.hidden = !files.textContent;
+    const editor = document.createElement('textarea');
+    editor.value = message.text || ''; editor.maxLength = 16000; editor.rows = 6;
+    editor.setAttribute('aria-label', t('Queued message'));
+    const status = document.createElement('p');
+    status.className = 'queue-editor-status'; status.setAttribute('role', 'status');
+    const actions = document.createElement('div'); actions.className = 'queue-editor-actions';
+    const cancel = document.createElement('button');
+    cancel.type = 'button'; cancel.textContent = t('Cancel'); cancel.onclick = () => dialog.close();
+    const save = document.createElement('button');
+    save.type = 'submit'; save.textContent = t('Save');
+    const validate = () => { save.disabled = !editor.value.trim() || editor.value.length > 16000; };
+    editor.addEventListener('input', validate); validate();
+    actions.append(cancel, save); form.append(title, detail, files, editor, status, actions); dialog.append(form);
+    dialog.addEventListener('close', () => dialog.remove(), { once: true });
+    form.onsubmit = async event => {
+      event.preventDefault();
+      if (save.disabled) return;
+      if (context.sessionId !== sessionId || sessionOpenSeq !== openSeq) { dialog.close(); return; }
+      save.disabled = true; editor.disabled = true;
+      try {
+        const result = await chatApi.messageQueueEdit({ sessionId, queueId: message.id,
+          prompt: editor.value, expectedText });
+        if (!result?.ok) throw new Error(result?.error || t('Could not edit the queued message'));
+        if (context.sessionId === sessionId && sessionOpenSeq === openSeq) applyRemoteQueue(result);
+        dialog.close();
+      } catch (error) {
+        status.textContent = error.message;
+        editor.disabled = false; validate();
+      }
+    };
+    document.body.append(dialog); dialog.showModal(); editor.focus();
+    editor.setSelectionRange(editor.value.length, editor.value.length);
+    return true;
+  }
+
   function canQueueComposerMessage() {
     // A pending conversation send may be preparing settings or compacting
     // context before dispatch. Queueing is safe there because draining still
@@ -1342,25 +1460,144 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       && (!sending || Boolean(pendingConversationSend()));
   }
 
-  function queueComposerMessage() {
+  function canUseUnifiedQueue() {
+    return typeof unifiedQueueAvailable !== 'undefined' && unifiedQueueAvailable && Boolean(context.sessionId) && !pendingForkId
+      && loadedEngine === harnessId && !handoffSessions.has(context.sessionId);
+  }
+
+  async function migrateLocalQueueToUnified() {
+    if (migratingQueue || !canUseUnifiedQueue() || !messageQueue.length || messageQueuePaused
+        || drainingQueue || loadingSession || switchingEngine) return false;
+    const sessionId = context.sessionId, openSeq = sessionOpenSeq, key = draftKey(), queue = messageQueue;
+    migratingQueue = true;
+    try {
+      while (queue.length && context.sessionId === sessionId && sessionOpenSeq === openSeq) {
+        const message = queue[0];
+        const atts = Array.isArray(message.attachments) ? message.attachments : [];
+        const text = message.text || '';
+        if (!text.trim() && !atts.length) {
+          queue.shift();
+          saveMessageQueue(key, queue);
+          continue;
+        }
+        const waitingGoalId = goalUI.waitingId?.();
+        const result = await chatApi.messageQueueAdd({
+          sessionId,
+          text,
+          displayText: message.displayText || text,
+          prompt: buildPrompt(text, atts),
+          attachments: atts,
+          ...(waitingGoalId ? { goalId: waitingGoalId } : {}),
+        });
+        if (result === undefined) return false;
+        if (!result?.ok) throw new Error(result?.error || 'Could not move the queued message to the computer queue');
+        // Acceptance belongs to the original queue even if navigation changed
+        // the visible conversation while the host was taking ownership.
+        const index = queue.indexOf(message);
+        if (index >= 0) queue.splice(index, 1);
+        saveMessageQueue(key, queue);
+        if (context.sessionId !== sessionId || sessionOpenSeq !== openSeq) return !queue.length;
+        applyRemoteQueue(result);
+      }
+      renderMessageQueue();
+      return !queue.length;
+    } catch (error) {
+      if (context.sessionId === sessionId && sessionOpenSeq === openSeq) setStatus(error.message);
+      return false;
+    } finally {
+      migratingQueue = false;
+    }
+  }
+
+  async function queueComposerMessage() {
     if (!canQueueComposerMessage()) return false;
     const text = input.value.trim();
+    const actionDraft = typeof cardActionDraft !== 'undefined' ? cardActionDraft : null;
+    const actionParts = actionDraft ? [actionDraft.action?.label, actionDraft.action?.title].filter(Boolean) : [];
+    const displayText = actionDraft && actionParts.length && text === actionDraft.text
+      ? (window.CamelliaI18n?.t?.('Card decision') || 'Card decision') + ' · ' + actionParts.join(' · ') : text;
     const queuedAttachments = attachments.slice();
     if (!text && !queuedAttachments.length) return false;
     if (goalUI.isDraft() || typeof findUI !== 'undefined' && findUI.isDraft()) { setStatus('Finish this command before queueing messages.'); return false; }
-    messageQueue.push({ text, attachments: queuedAttachments });
+    const queued = { text, attachments: queuedAttachments };
+    if (displayText !== text) queued.displayText = displayText;
+    if (canUseUnifiedQueue()) {
+      const sessionId = context.sessionId, openSeq = sessionOpenSeq, key = draftKey(), queue = messageQueue;
+      const waitingGoalId = goalUI.waitingId?.();
+      input.value = ''; attachments = [];
+      if (typeof clearCardActionDraft === 'function') clearCardActionDraft();
+      renderAttachments(); autoResize(); saveDraft();
+      try {
+        const result = await chatApi.messageQueueAdd({
+          sessionId,
+          text,
+          displayText,
+          prompt: buildPrompt(text, queuedAttachments),
+          attachments: queuedAttachments,
+          ...(waitingGoalId ? { goalId: waitingGoalId } : {}),
+        });
+        // Older hosts do not expose the computer-owned queue. Keep their local
+        // renderer queue so the desktop remains compatible during an update.
+        if (result === undefined) {
+          queue.push(queued);
+          saveMessageQueue(key, queue);
+          if (context.sessionId !== sessionId || sessionOpenSeq !== openSeq) return true;
+          renderMessageQueue();
+          followRunOutput = true;
+          maybeScroll(true);
+          const waiting = messageQueue.length
+            + (typeof remoteMessageQueue !== 'undefined' && Array.isArray(remoteMessageQueue) ? remoteMessageQueue.length : 0);
+          setStatus('Message queued · ' + waiting + ' waiting');
+          return true;
+        }
+        if (!result?.ok) throw new Error(result?.error || 'Could not queue the message');
+        if (context.sessionId !== sessionId || sessionOpenSeq !== openSeq) return true;
+        applyRemoteQueue(result);
+        followRunOutput = true;
+        maybeScroll(true);
+        setStatus('Message queued · ' + (result.queue?.length || remoteMessageQueue.length) + ' waiting');
+        return true;
+      } catch (error) {
+        const visible = context.sessionId === sessionId && sessionOpenSeq === openSeq;
+        if (visible && !input.value && !attachments.length) {
+          input.value = text;
+          attachments = queuedAttachments;
+          renderAttachments(); autoResize(); saveDraft();
+        } else {
+          // Keep the rejected message with its original conversation without
+          // overwriting a newer draft or automatically retrying the request.
+          queue.push({ ...queued, error: error.message || 'Could not queue the message' });
+          saveMessageQueue(key, queue);
+          writeUi('queue-paused:' + key, true);
+          if (context.sessionId === sessionId) {
+            messageQueuePaused = true;
+            renderMessageQueue();
+          }
+        }
+        if (visible) setStatus(error.message || 'Could not queue the message');
+        return false;
+      }
+    }
+    messageQueue.push(queued);
     saveMessageQueue();
     input.value = ''; attachments = [];
+    if (typeof clearCardActionDraft === 'function') clearCardActionDraft();
     renderAttachments(); autoResize(); renderMessageQueue(); saveDraft();
     followRunOutput = true;
     maybeScroll(true);
-    setStatus('Message queued · ' + messageQueue.length + ' waiting');
+    const waiting = messageQueue.length
+      + (typeof remoteMessageQueue !== 'undefined' && Array.isArray(remoteMessageQueue) ? remoteMessageQueue.length : 0);
+    setStatus('Message queued · ' + waiting + ' waiting');
     return true;
   }
 
   function drainMessageQueue() {
     if (messageQueuePaused || drainingQueue || !messageQueue.length || running || sending || loadingSession || conversationActivity || pendingConversationSend() || switchingEngine || editingMessage || goalUI.isActive()
         || handoffSessions.has(context.sessionId)) return;
+    if (typeof canUseUnifiedQueue === 'function' && canUseUnifiedQueue()) {
+      if (typeof migrateLocalQueueToUnified === 'function') void migrateLocalQueueToUnified();
+      return;
+    }
     const next = messageQueue[0];
     const queue = messageQueue, key = draftKey();
     const openSeq = sessionOpenSeq;
@@ -1388,6 +1625,28 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     pop.style.left = Math.max(8, Math.min(rect.left, window.innerWidth - pop.offsetWidth - 8)) + 'px';
     clampPopPosition(pop, rect.top - pop.offsetHeight - 8, null);
   }
+  function attachSearchField(translate, placeholder) {
+    const shell = document.createElement('div');
+    shell.className = 'attach-picker-search-shell';
+    const icon = document.createElement('span');
+    icon.className = 'attach-picker-search-icon';
+    icon.setAttribute('aria-hidden', 'true');
+    icon.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="11" cy="11" r="6.5"/><path d="m16 16 4 4"/></svg>';
+    const search = document.createElement('input');
+    search.type = 'search'; search.className = 'attach-picker-search';
+    search.placeholder = placeholder; search.setAttribute('aria-label', placeholder);
+    const clear = document.createElement('button');
+    clear.type = 'button'; clear.className = 'attach-picker-search-clear';
+    clear.title = translate('Clear'); clear.setAttribute('aria-label', clear.title);
+    clear.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="m7 7 10 10M17 7 7 17"/></svg>';
+    clear.onclick = () => {
+      search.value = '';
+      search.dispatchEvent(new Event('input', { bubbles: true }));
+      search.focus();
+    };
+    shell.append(icon, search, clear);
+    return { shell, input: search };
+  }
   function attachmentMenu() {
     if (openPops.some(pop => pop.classList.contains('attach-pop'))) { closePops(); return; }
     closePops();
@@ -1404,7 +1663,9 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     const t = value => window.CamelliaI18n.t(value);
     const icon = kind => kind === 'file'
       ? '<path d="M21 11.5V17a5 5 0 0 1-10 0V6a3 3 0 0 1 6 0v10a1 1 0 0 1-2 0V7"/>'
-      : '<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>';
+      : kind === 'artifact'
+        ? '<path d="M4 7h16v12H4zM8 7V5h8v2M8 11h8M8 15h5"/>'
+        : '<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>';
     function row(label, kind, action) {
       const button = document.createElement('button'); button.type = 'button'; button.className = 'pop-row attach-option';
       button.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + icon(kind) + '</svg><span></span>';
@@ -1422,7 +1683,11 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
         catch (error) { setStatus(error.message || t('Could not add attachments')); }
       });
       const conversation = row('Conversation', 'conversation', showConversations);
-      pop.append(heading, files, conversation);
+      const artifacts = row('Artifacts', 'artifact', () => {
+        closePops();
+        attachmentPicker({ anchor: attachBtn, initial: 'artifacts' });
+      });
+      pop.append(heading, files, artifacts, conversation);
       positionAttachPop(pop);
       files.focus();
     }
@@ -1434,10 +1699,10 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       const back = document.createElement('button'); back.type = 'button'; back.className = 'attach-picker-back'; back.setAttribute('aria-label', t('Back')); back.textContent = '‹'; back.onclick = mainMenu;
       const title = document.createElement('strong'); title.textContent = t('Attach a conversation');
       header.append(back, title);
-      const search = document.createElement('input'); search.type = 'search'; search.className = 'attach-picker-search';
-      search.placeholder = t('Search conversations'); search.setAttribute('aria-label', t('Search conversations'));
+      const searchField = attachSearchField(t, t('Search conversations'));
+      const search = searchField.input;
       const list = document.createElement('div'); list.className = 'attach-picker-list'; list.setAttribute('role', 'listbox');
-      pop.append(header, search, list);
+      pop.append(header, searchField.shell, list);
       positionAttachPop(pop);
       search.focus();
       async function load() {
@@ -1481,6 +1746,198 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     mainMenu();
   }
   attachBtn.addEventListener('click', attachmentMenu);
+
+  // /attach and the Artifacts entry share this searchable two-source picker.
+  // The paperclip keeps the native file picker alongside these sources.
+  function attachmentPicker({ anchor = attachBtn, initial = 'artifacts' } = {}) {
+    closePops();
+    const pop = document.createElement('div');
+    pop.className = 'dsh-pop attach-pop attach-source-pop';
+    pop.setAttribute('role', 'dialog');
+    pop.setAttribute('aria-label', window.CamelliaI18n.t('Add attachment'));
+    pop.onkeydown = event => {
+      if (event.key === 'Escape') { event.preventDefault(); closePops(); anchor.focus(); }
+    };
+    document.body.appendChild(pop);
+    openPops.push(pop);
+    if (anchor === attachBtn) attachBtn.setAttribute('aria-expanded', 'true');
+
+    const t = value => window.CamelliaI18n.t(value);
+    const position = () => {
+      const rect = anchor.getBoundingClientRect();
+      pop.style.left = Math.max(8, Math.min(rect.left, window.innerWidth - pop.offsetWidth - 8)) + 'px';
+      clampPopPosition(pop, rect.top - pop.offsetHeight - 8, null);
+    };
+
+    const header = document.createElement('div');
+    header.className = 'attach-picker-header';
+    const back = document.createElement('button');
+    back.type = 'button'; back.className = 'attach-picker-back';
+    back.setAttribute('aria-label', t('Back')); back.textContent = '‹';
+    back.onclick = () => { closePops(); attachmentMenu(); };
+    const title = document.createElement('strong'); title.textContent = t('Add attachment');
+    header.append(back, title);
+
+    const tabs = document.createElement('div');
+    tabs.className = 'attach-source-tabs';
+    tabs.setAttribute('role', 'tablist');
+    const tabButtons = [
+      ['artifacts', t('This conversation')],
+      ['conversations', t('All conversations')],
+    ].map(([view, label]) => {
+      const button = document.createElement('button');
+      button.type = 'button'; button.className = 'attach-source-tab'; button.textContent = label;
+      button.setAttribute('role', 'tab');
+      button.onclick = () => {
+        if (active === view) return;
+        active = view; search.value = ''; updateTabs(); updateSearchPlaceholder();
+        search.focus(); void loadActive();
+      };
+      tabs.appendChild(button);
+      return { view, button };
+    });
+
+    const searchField = attachSearchField(t, t('Search artifacts'));
+    const search = searchField.input;
+    const list = document.createElement('div');
+    list.className = 'attach-picker-list';
+    list.setAttribute('role', 'listbox');
+    list.setAttribute('aria-live', 'polite');
+    pop.append(header, tabs, searchField.shell, list);
+
+    let active = initial === 'conversations' ? 'conversations' : 'artifacts';
+    let artifactCache = null;
+    let artifactSeq = 0, conversationSeq = 0;
+    function updateTabs() {
+      for (const { view, button } of tabButtons) {
+        const selected = view === active;
+        button.setAttribute('aria-selected', String(selected));
+        button.classList.toggle('active', selected);
+      }
+    }
+    function updateSearchPlaceholder() {
+      search.placeholder = t(active === 'artifacts' ? 'Search artifacts' : 'Search conversations');
+      search.setAttribute('aria-label', search.placeholder);
+    }
+    function artifactOption(file) {
+      const option = document.createElement('button');
+      option.type = 'button'; option.className = 'attach-conversation-option attach-artifact-option';
+      option.setAttribute('role', 'option');
+      option.title = file.path;
+      const icon = document.createElement('span');
+      icon.className = 'attach-artifact-icon';
+      icon.textContent = String(file.extension || file.kind || 'FILE').slice(0, 4).toUpperCase();
+      icon.setAttribute('aria-hidden', 'true');
+      const info = document.createElement('span'); info.className = 'attach-option-info';
+      const name = document.createElement('span'); name.className = 'attach-conversation-title'; name.textContent = file.name;
+      const detail = document.createElement('span'); detail.className = 'attach-conversation-detail';
+      detail.textContent = [file.extension, formatFileSize(file.size)].filter(Boolean).join(' · ');
+      info.append(name, detail); option.append(icon, info);
+      option.onclick = () => {
+        addAttachments([file.path]);
+        closePops();
+        input.focus();
+      };
+      return option;
+    }
+    function renderArtifacts() {
+      if (active !== 'artifacts') return;
+      const all = artifactCache || [];
+      const term = search.value.trim().toLocaleLowerCase();
+      const matches = all.filter(file => !term || [file.name, file.path, file.kind, file.extension]
+        .some(value => String(value || '').toLocaleLowerCase().includes(term)));
+      list.replaceChildren();
+      if (!matches.length) {
+        list.textContent = all.length ? t('No artifacts match your search') : t('No artifacts in this conversation');
+        position();
+        return;
+      }
+      list.append(...matches.map(artifactOption));
+      position();
+    }
+    async function loadArtifacts() {
+      const seq = ++artifactSeq;
+      if (!context.sessionId) {
+        artifactCache = [];
+        renderArtifacts();
+        return;
+      }
+      list.textContent = t('Loading artifacts…');
+      position();
+      try {
+        const result = await window.dshDesktop.conversationCommand({ engine: harnessId,
+          action: 'list-attachable-artifacts', payload: { sessionId: context.sessionId } });
+        if (seq !== artifactSeq || !pop.isConnected || active !== 'artifacts') return;
+        if (!result.ok) throw new Error(result.error);
+        artifactCache = Array.isArray(result.artifacts) ? result.artifacts : [];
+        renderArtifacts();
+      } catch (error) {
+        if (seq === artifactSeq && pop.isConnected) {
+          list.textContent = error.message || t('Could not load artifacts');
+          position();
+        }
+      }
+    }
+    async function loadConversations() {
+      const seq = ++conversationSeq;
+      list.textContent = t('Loading conversations…');
+      position();
+      try {
+        const result = await window.dshDesktop.conversationCommand({ engine: harnessId, action: 'list-attachable-conversations',
+          payload: { query: search.value, excludeId: context.sessionId } });
+        if (seq !== conversationSeq || !pop.isConnected || active !== 'conversations') return;
+        if (!result.ok) throw new Error(result.error);
+        list.replaceChildren();
+        if (!result.sessions.length) {
+          list.textContent = t('No conversations found');
+          position();
+          return;
+        }
+        for (const session of result.sessions) {
+          const option = document.createElement('button');
+          option.type = 'button'; option.className = 'attach-conversation-option';
+          option.setAttribute('role', 'option');
+          const name = document.createElement('span'); name.className = 'attach-conversation-title'; name.textContent = session.title;
+          const detail = document.createElement('span'); detail.className = 'attach-conversation-detail';
+          detail.textContent = (ENGINE_SHORT_NAMES[session.engine] || session.engine) + ' · ' + session.cwd;
+          option.append(name, detail);
+          option.onclick = async () => {
+            const alreadyAttached = () => attachments.some(file => file.kind === 'conversation' && file.sourceSessionId === session.id);
+            if (alreadyAttached()) { closePops(); input.focus(); return; }
+            option.disabled = true;
+            try {
+              const attached = await window.dshDesktop.conversationCommand({ engine: harnessId,
+                action: 'attach-conversation', payload: { sessionId: session.id } });
+              if (!attached.ok) throw new Error(attached.error);
+              if (alreadyAttached()) await window.dshDesktop.conversationCommand({ engine: harnessId,
+                action: 'discard-conversation-attachment', payload: { path: attached.attachment.path } });
+              else attachments.push(attached.attachment);
+              renderAttachments(); closePops(); input.focus();
+            } catch (error) { option.disabled = false; setStatus(error.message || t('Could not attach conversation')); }
+          };
+          list.append(option);
+        }
+        position();
+      } catch (error) {
+        if (seq === conversationSeq && pop.isConnected)
+          list.textContent = error.message;
+      }
+    }
+    function loadActive() {
+      if (active === 'artifacts') {
+        if (artifactCache) renderArtifacts();
+        else void loadArtifacts();
+      } else {
+        void loadConversations();
+      }
+    }
+    search.oninput = () => {
+      if (active === 'artifacts') {
+        if (artifactCache) renderArtifacts();
+      } else void loadConversations();
+    };
+    updateTabs(); updateSearchPlaceholder(); position(); search.focus(); loadActive();
+  }
 
   // Drag & drop onto the input card
   inputCard.addEventListener('dragover', (e) => {
@@ -1657,11 +2114,14 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
         && row.messageData.at >= attempt.at && row.messageData.text === (attempt.text || '[Attachments]')) : null;
     const div = existing || persisted || addUser(attempt.text || '[Attachments]', attempt.attachments, { at: attempt.at || Date.now() });
     if (div.querySelector('.failed-send')) return;
+    const cancelled = attempt.cancelled || window.CamelliaContextOverflow.requestCancelledText(attempt.error);
     const controls = document.createElement('div'); controls.className = 'failed-send';
+    controls.dataset.state = cancelled ? 'cancelled' : 'failed';
     const recovery = window.CamelliaContextOverflow.contextRecoveryText(attempt.error);
     const canonical = recovery && chat.querySelector('.context-compaction .context-recovery');
     const error = document.createElement('span');
-    error.textContent = canonical ? window.CamelliaI18n.t('Failed to start. Recover the context below, then send again.')
+    error.textContent = cancelled ? window.CamelliaI18n.t('Not sent')
+      : canonical ? window.CamelliaI18n.t('Failed to start. Recover the context below, then send again.')
       : window.CamelliaI18n.t('Failed to start') + ': ' + window.CamelliaContextOverflow.recoverySummary(attempt.error);
     const edit = document.createElement('button'); edit.type = 'button';
     edit.title = window.CamelliaI18n.t('Edit message'); edit.setAttribute('aria-label', edit.title);
@@ -1680,7 +2140,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       div.remove(); input.focus();
     };
     controls.append(error, edit);
-    renderContextRecovery(controls, attempt.error);
+    if (!cancelled) renderContextRecovery(controls, attempt.error);
     div.appendChild(controls);
   }
 
@@ -1755,31 +2215,146 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     return display;
   }
 
+  // The transcript shows a resent message immediately. The editor stays in the
+  // DOM but hidden, so a rejected request can reopen it with the same draft.
+  function setUserMessageContent(div, text, at) {
+    div.messageData.text = text;
+    div.messageData.at = at;
+    const bubble = div.querySelector('.bubble');
+    if (bubble) bubble.innerHTML = mdRender(text);
+    const time = div.querySelector('.message-actions time');
+    if (!time) return;
+    if (!at) { time.textContent = ''; time.removeAttribute('datetime'); time.removeAttribute('title'); return; }
+    const date = new Date(at);
+    time.dateTime = date.toISOString(); time.title = date.toLocaleString();
+    time.textContent = messageClock(date);
+  }
+
+  function suspendMessageEditor(state, text, at) {
+    if (editingMessage === state) editingMessage = null;
+    state.form.hidden = true;
+    state.div.classList.remove('editing');
+    setUserMessageContent(state.div, text, at);
+  }
+
+  // The composer may hold an unrelated draft, so a pending send carries its
+  // own stop action instead of relying on the composer's send button.
+  function showPendingSend(sessionId, parent, text = 'Restarting this turn…') {
+    const row = document.createElement('div');
+    row.className = 'pending-send'; row.setAttribute('role', 'status');
+    const label = document.createElement('span'); label.dataset.i18n = '';
+    label.textContent = text;
+    const stop = document.createElement('button'); stop.type = 'button';
+    stop.textContent = 'Stop'; stop.dataset.i18n = '';
+    stop.onclick = async () => {
+      if (stop.disabled) return;
+      stop.disabled = true; label.textContent = window.CamelliaI18n.t('Stopping…');
+      try {
+        const result = await chatApi.cancel({ sessionId });
+        if (result?.ok === false) throw new Error(result.error || 'Could not stop the response');
+      } catch (error) {
+        if (!row.isConnected) return;
+        label.textContent = error.message; label.classList.add('error');
+        row.setAttribute('role', 'alert'); stop.disabled = false;
+      }
+    };
+    row.append(label, stop);
+    parent.appendChild(row);
+    return row;
+  }
+
+  function reopenMessageEditor(state, originalText, originalAt, text, error, isError = true) {
+    // The bubble is hidden while the editor is open. Restore the original text
+    // so canceling the edit still rolls the transcript back.
+    setUserMessageContent(state.div, originalText, originalAt);
+    state.form.hidden = false;
+    state.div.classList.add('editing');
+    editingMessage = state;
+    state.textarea.value = text;
+    const display = showMessageEditStatus(state, error, isError);
+    updateConversationControls();
+    state.textarea.focus({ preventScroll: true });
+    return display;
+  }
+
+  function renderPendingSend(pending) {
+    const div = addUser(pending.displayText || pending.text || '[Attachments]', pending.attachments || [], { at: pending.at, scrollToBottom: false });
+    div.messageData.pendingSend = pending;
+    showPendingSend(pending.sessionId, div, 'Sending…');
+    return div;
+  }
+
+  function takePendingSendBubble(sendContext) {
+    const bubble = [...chat.querySelectorAll('.msg-user')].find(row => row.messageData?.pendingSend?.id === sendContext.id);
+    if (!bubble) return null;
+    bubble.querySelector('.pending-send')?.remove();
+    delete bubble.messageData.pendingSend;
+    return bubble;
+  }
+
+  function adoptPendingSendUser(ev) {
+    const bubble = [...chat.querySelectorAll('.msg-user')].findLast(row => row.messageData?.pendingSend);
+    if (!bubble) return false;
+    const pending = bubble.messageData.pendingSend;
+    bubble.messageData.seq = ev.userSeq;
+    delete bubble.messageData.pendingSend;
+    bubble.querySelector('.pending-send')?.remove();
+    clearPendingSend(pending.sessionId, pending.id);
+    return true;
+  }
+
+  function pendingSendCommitted(messages, pending) {
+    const lastUser = [...messages].reverse().find(row => row.role === 'user' && !row.internal);
+    if (!lastUser) return false;
+    const text = lastUser.displayText ?? lastUser.text ?? '';
+    if (text === pending.text) {
+      if (Number.isInteger(pending.baselineSeq) && Number.isInteger(lastUser.seq)) return lastUser.seq > pending.baselineSeq;
+      if (!Number.isFinite(lastUser.at) || lastUser.at >= pending.at - 5000) return true;
+    }
+    // The conversation moved past the attempt while its record was stranded.
+    return Number.isFinite(lastUser.at) && lastUser.at > pending.at + 5000;
+  }
+
+  // A reload forgets the send promise. The compaction failure is then the only
+  // notice that the attempt ended, so turn the optimistic row back into a
+  // failed send instead of leaving a message that will never be committed.
+  function discardRestoredPendingSend(sessionId, error) {
+    if (pendingConversationSends.has(sessionId)) return false;
+    const saved = persistedPendingSend(sessionId);
+    if (!saved) return false;
+    clearPendingSend(sessionId, saved.id);
+    const attempt = { text: saved.text, attachments: saved.attachments || [], at: saved.at, error };
+    writeUi('failed-send:' + sessionId, attempt);
+    if (sessionId !== context.sessionId) return true;
+    [...chat.querySelectorAll('.msg-user')].findLast(row => row.messageData?.pendingSend?.sessionId === sessionId)?.remove();
+    showFailedSend(attempt);
+    updateConversationControls();
+    return true;
+  }
+
   async function resendEditedMessage(state) {
     if (editingMessage !== state || state.sessionId !== context.sessionId) return;
     if (sending) return;
     if (conversationBusy() || contextBusy()) { showMessageEditStatus(state, 'Wait for this conversation to finish or stop it first.', true); return; }
-    const text = state.textarea.value.trim(), atts = state.div.messageData.attachments;
+    const draftText = state.textarea.value, text = draftText.trim(), atts = state.div.messageData.attachments;
     if (!text && !atts.length) { showMessageEditStatus(state, 'Message cannot be empty', true); return; }
+    const originalText = state.div.messageData.text, originalAt = state.div.messageData.at;
     const sendContext = { sessionId: state.sessionId, openSeq: sessionOpenSeq, dispatched: true, cancelled: false };
     pendingConversationSends.set(state.sessionId, sendContext);
-    sending = true; restoringRun = true; state.submit.disabled = true; state.textarea.disabled = true;
-    state.cancel.textContent = 'Stop';
-    state.cancel.onclick = async () => {
-      state.cancel.disabled = true;
-      try {
-        const result = await chatApi.cancel({ sessionId: state.sessionId });
-        if (result?.ok === false) throw new Error(result.error || 'Could not stop the response');
-      } catch (error) {
-        if (editingMessage === state) { showMessageEditStatus(state, error.message, true); state.cancel.disabled = false; }
-      }
-    };
-    state.submit.textContent = 'Sending…'; state.form.setAttribute('aria-busy', 'true');
+    sending = true; restoringRun = true; acceptSessionEvents = true;
     // Clear the old reply immediately. Keep its nodes until the backend accepts
     // the revision so a rejected request can restore the unchanged transcript.
     const previousReply = [];
     while (state.div.nextSibling) { previousReply.push(state.div.nextSibling); state.div.nextSibling.remove(); }
-    showMessageEditStatus(state, 'Restarting this turn…');
+    // From here on the message belongs to the conversation, not to the editor.
+    // Compaction can hold the request for a while, so the pending row carries
+    // the stop action while the request is being accepted.
+    suspendMessageEditor(state, text, Date.now());
+    const pendingRow = showPendingSend(state.sessionId, state.div);
+    turnEl = null; blocks = {}; pendingTools = {}; todoItems = null; todoPanelEl = null;
+    turnEngine = loadedEngine || harnessId;
+    setRunning(true);
+    scrollToLatest();
     updateConversationControls();
     let res;
     try {
@@ -1788,9 +2363,13 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     } catch (error) { res = { ok: false, error: error.message }; }
     if (pendingConversationSends.get(state.sessionId) === sendContext) pendingConversationSends.delete(state.sessionId);
     if (sendContext.openSeq !== sessionOpenSeq) {
+      pendingRow.remove();
       void sidebar.load();
-      if (!res?.ok) failedMessageEdits.set(state.sessionId, { seq: state.div.messageData.seq, text,
-        error: 'Could not resend: ' + (res?.error || 'No response from the app') });
+      if (!res?.ok) {
+        const cancelled = res?.cancelled || window.CamelliaContextOverflow.requestCancelledText(res?.error);
+        failedMessageEdits.set(state.sessionId, { seq: state.div.messageData.seq, text,
+          error: cancelled ? 'Cancelled' : 'Could not resend: ' + (res?.error || 'No response from the app'), isError: !cancelled });
+      }
       if (context.sessionId === state.sessionId && !loadingSession && !sending) {
         await openHistorySession(state.sessionId);
       }
@@ -1799,23 +2378,24 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     }
     sending = false;
     if (!res?.ok) {
+      pendingRow.remove();
+      while (state.div.nextSibling) state.div.nextSibling.remove();
       state.div.after(...previousReply);
       restoringRun = false;
       for (const event of eventsDuringRestore.splice(0)) handleEvent(event);
-      state.submit.disabled = false; state.cancel.disabled = false; state.textarea.disabled = false;
-      state.cancel.textContent = 'Cancel'; state.cancel.onclick = cancelMessageEdit;
-      state.submit.textContent = 'Send'; state.form.removeAttribute('aria-busy');
-      const error = 'Could not resend: ' + (res?.error || 'No response from the app');
-      const display = showMessageEditStatus(state, error, true);
-      setStatus(display); updateConversationControls(); state.textarea.focus({ preventScroll: true }); return;
+      clearRunStatus();
+      setRunning(false);
+      turnEl = null; blocks = {}; pendingTools = {}; todoItems = null; todoPanelEl = null;
+      const cancelled = res?.cancelled || window.CamelliaContextOverflow.requestCancelledText(res?.error);
+      const error = cancelled ? 'Cancelled' : 'Could not resend: ' + (res?.error || 'No response from the app');
+      setStatus(reopenMessageEditor(state, originalText, originalAt, draftText, error, !cancelled));
+      return;
     }
-    editingMessage = null;
-    while (state.div.nextSibling) state.div.nextSibling.remove();
-    state.div.remove(); turnEl = null; blocks = {}; pendingTools = {}; todoItems = null; todoPanelEl = null;
-    addUser(text, atts, { seq: res.userSeq, at: Date.now(), scrollToBottom: true });
+    pendingRow.remove();
+    state.form.remove();
+    state.div.messageData.seq = res.userSeq;
     currentRunId = res.runId; acceptSessionEvents = true; loadedEngine = harnessId;
-    followRunOutput = true;
-    setRunning(true); restoringRun = false;
+    followRunOutput = true; restoringRun = false;
     for (const event of eventsDuringRestore.splice(0)) handleEvent(event);
     updateConversationControls(); void sidebar.load();
   }
@@ -1865,7 +2445,23 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     if (turn?.querySelector('.turn-body')?.childElementCount) return false;
     return !turn.querySelector('.run-result, .turn-artifacts, .question-pending, .question-card');
   }
+  // A finished or detached turn cannot receive this run's blocks. Codex sends
+  // tool calls only, so a stale reference would leave the transcript blank with
+  // the run still marked active. Report the anomaly once and start fresh.
+  function turnAcceptsBlocks(turn) {
+    if (!turn) return false;
+    if (!turn.isConnected) {
+      reportRendererDiagnostic('replaced a detached turn while a run was active');
+      return false;
+    }
+    if (turn.querySelector('.run-result, .turn-completion')) {
+      reportRendererDiagnostic('replaced a finished turn while a run was active');
+      return false;
+    }
+    return true;
+  }
   function ensureTurn() {
+    if (!turnAcceptsBlocks(turnEl)) turnEl = null;
     if (turnEl) return turnEl;
     clearEmpty();
     const div = document.createElement('div');
@@ -1946,6 +2542,9 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     const t = ensureTurn();
     let el = t.querySelector('.run-status');
     if (!el) {
+      // Only the current reply may advertise live work. A replaced turn can
+      // still hold a status row after recovery or a delayed start event.
+      for (const row of chat.querySelectorAll('.run-status')) row.remove();
       el = document.createElement('div');
       el.className = 'run-status';
       el.setAttribute('role', 'status');
@@ -1960,8 +2559,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     el.querySelector('.run-text').textContent = pendingQuestion ? 'Waiting for your answer' : text || "Working…";
   }
   function clearRunStatus() {
-    const el = turnEl && turnEl.querySelector('.run-status');
-    if (el) el.remove();
+    for (const el of chat.querySelectorAll('.run-status')) el.remove();
     clearInterval(statusClockTimer);
     statusClockTimer = null;
   }
@@ -2079,6 +2677,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
   // ---------- blocks ----------
   let replayingLiveSnapshot = false;
   const deferredTurnLayouts = new Map();
+  const deferredVisualCards = new Map();
 
   function appendTurnBlock(el) {
     const body = turnBody();
@@ -2100,6 +2699,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     for (const el of entries) {
       if (el.classList.contains('think') && el !== latestThinking) el.remove();
     }
+    const visuals = entries.filter(el => el.classList.contains('visualize-block'));
     const texts = entries.filter(el => {
       if (!el.classList.contains('md')) return false;
       el.markdownHasContent ??= !!(el.textContent.trim() || el.querySelector('.chat-inline-image, .chat-inline-video'));
@@ -2108,17 +2708,16 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     const settled = texts.filter(el => el.dataset.phase !== 'commentary');
     let visible = (finished ? settled : texts).slice(-1);
     if (finished) {
-      const lastActivity = entries.findLastIndex(el => !el.classList.contains('md'));
+      const lastActivity = entries.findLastIndex(el => !el.classList.contains('md') && !el.classList.contains('visualize-block'));
       if (lastActivity >= 0) visible = settled.filter(el => el.dataset.phase === 'final_answer' || entries.indexOf(el) > lastActivity);
       else if (settled.some(el => el.dataset.phase === 'final_answer')) visible = settled.filter(el => el.dataset.phase === 'final_answer');
     }
+    visible = [...visible, ...visuals];
     body.processLayout = { revision: body.processRevision || 0, finished, visible };
     const archived = entries.filter(el => !visible.includes(el) && (!el.classList.contains('think') || el === latestThinking));
     let process = body.querySelector(':scope > .execution-process');
     if (archived.length && !process) {
-      process = document.createElement('details');
-      process.className = 'execution-process';
-      process.innerHTML = '<summary><span data-i18n>Execution process</span><span class="execution-process-count" data-i18n></span></summary><div class="execution-process-body"></div>';
+      process = window.CamelliaChatControls.executionProcess();
       body.prepend(process);
     }
     if (process) {
@@ -2197,6 +2796,135 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       pendingTools[id] = card;
     }
     return card;
+  }
+
+  function applyVisualizeFill(text) {
+    const composer = $('input'), value = String(text || '').trim().slice(0, 2000);
+    if (!composer || !value) return false;
+    if (composer.value.trim()) {
+      setStatus(window.CamelliaI18n.t('The message already has text. Clear it before applying the card choice.'));
+      return false;
+    }
+    composer.value = value;
+    composer.dispatchEvent(new Event('input', { bubbles: true }));
+    composer.focus();
+    setStatus(window.CamelliaI18n.t('Card choice added to the message.'));
+    return true;
+  }
+
+  function applyVisualizeAction(action) {
+    const value = {
+      cardId: String(action?.cardId || ''),
+      title: String(action?.title || ''),
+      type: String(action?.type || ''),
+      label: String(action?.label || ''),
+      payload: action?.payload ?? null,
+    };
+    let text;
+    try {
+      text = 'Camellia card action (structured user choice):\n' + JSON.stringify(value)
+        + '\nContinue from this choice. If the result changes this card, update the same cardId.';
+    } catch {
+      setStatus(window.CamelliaI18n.t('The card action could not be serialized.'));
+      return false;
+    }
+    if (text.length > 1900) {
+      setStatus(window.CamelliaI18n.t('The card action is too large for the message box.'));
+      return false;
+    }
+    if (!applyVisualizeFill(text)) return false;
+    showCardActionDraft(action, text);
+    setStatus(window.CamelliaI18n.t('Card action added. Send it to continue the loop.'));
+    return true;
+  }
+
+  function cardActionRow() {
+    let row = $('cardActionDraft');
+    if (row) return row;
+    row = document.createElement('div');
+    row.id = 'cardActionDraft';
+    row.className = 'card-action-draft';
+    row.hidden = true;
+    row.innerHTML = '<span class="card-action-draft-mark" aria-hidden="true">◇</span>'
+      + '<span class="card-action-draft-copy"><b></b><span></span></span>'
+      + '<button type="button" class="card-action-draft-remove" aria-label="Remove card action" data-i18n-attrs="aria-label">×</button>';
+    row.querySelector('.card-action-draft-remove').addEventListener('click', () => {
+      clearCardActionDraft({ clearComposer: true });
+    });
+    inputCard.insertBefore(row, input);
+    return row;
+  }
+
+  function showCardActionDraft(action, text) {
+    const row = cardActionRow();
+    cardActionDraft = { action, text };
+    row.querySelector('b').textContent = String(action?.label || action?.type || window.CamelliaI18n.t('Card action'));
+    row.querySelector('.card-action-draft-copy > span').textContent = String(action?.title || '');
+    row.hidden = false;
+  }
+
+  function clearCardActionDraft({ clearComposer = false } = {}) {
+    const draft = cardActionDraft;
+    cardActionDraft = null;
+    const row = $('cardActionDraft');
+    if (row) row.hidden = true;
+    if (clearComposer && draft && input.value === draft.text) {
+      input.value = '';
+      autoResize();
+      updateSendEnabled();
+    }
+  }
+  input.addEventListener('input', () => {
+    if (cardActionDraft && !input.value.trim()) clearCardActionDraft();
+  });
+
+  function addVisualizeResult(text, body = null, { defer = false } = {}) {
+    const card = window.CamelliaVisualize?.parse(text);
+    if (!card) return false;
+    // Comparing the target against turnBody() used to call ensureTurn(), which
+    // created an empty live turn in the middle of a history repaint. Decide
+    // before creating anything: an explicit body is live only when it belongs
+    // to the current turn.
+    const live = !body || body === turnEl?.querySelector('.turn-body');
+    const target = body || turnBody();
+    if (!target) return false;
+    if (defer) {
+      deferredVisualCards.set(String(card.cardId), card);
+      return 'deferred';
+    }
+    const existing = target.querySelector('.visualize-block[data-visualize-card-id="' + card.cardId + '"]');
+    if (existing) {
+      existing.updateVisualize?.(card);
+      return 'rendered';
+    }
+    const block = window.CamelliaVisualize.mount(card, {
+      sessionId: context.sessionId, engine: harnessId,
+      onFill: applyVisualizeFill, onAction: applyVisualizeAction, onStatus: setStatus,
+    });
+    if (live) {
+      appendTurnBlock(block);
+      layoutTurnProcess();
+    } else {
+      (target.processBlocks ||= []).push(block);
+      target.appendChild(block);
+    }
+    return 'rendered';
+  }
+
+  function flushDeferredVisualCards(body = null) {
+    if (!deferredVisualCards.size) return;
+    const pending = [...deferredVisualCards.values()];
+    deferredVisualCards.clear();
+    if (!body?.isConnected) return;
+    for (const card of pending) {
+      addVisualizeResult({ ok: true, visualize: card }, body);
+    }
+  }
+
+  function visualizeOutputLabel(visual, fallback) {
+    if (visual === 'deferred') return 'Interactive visualization will render when the reply finishes.';
+    if (visual) return 'Interactive visualization rendered in the conversation.';
+    return fallback;
   }
 
   function finalizeStreamBlocks() {
@@ -2395,8 +3123,13 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     const oldTexts = currentEntries.filter(el => el.classList.contains('md'));
     const folded = new Set(oldTexts.map(el => el.foldedThinkEl).filter(Boolean));
     const oldThinking = currentEntries.filter(el => el.classList.contains('think') && !folded.has(el));
+    const oldVisuals = currentEntries.filter(el => el.classList.contains('visualize-block'));
     const reused = new Set(stableEntries);
     body.processBlocks = [...stableEntries];
+    for (const visual of oldVisuals) {
+      reused.add(visual);
+      body.processBlocks.push(visual);
+    }
     body.processLayout = null;
     body.processRevision = (body.processRevision || 0) + 1;
     body.rebuilding = true;
@@ -2515,8 +3248,9 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
   function renderCompactionStatus(compaction, historyBefore, { recoverable = true, replay = false } = {}) {
     if (!compaction) return;
     const was = historyBefore === undefined && nearBottom();
-    let row = historyBefore === undefined ? chat.querySelector('.context-compaction[data-state="running"]') : null;
-    if (!row && compaction.seq) row = chat.querySelector('.context-compaction[data-seq="' + compaction.seq + '"]');
+    if (historyBefore === undefined && compaction.state === 'running') clearTransientCompactionStatus();
+    let row = compaction.seq ? chat.querySelector('.context-compaction[data-seq="' + compaction.seq + '"]') : null;
+    if (!row && historyBefore === undefined) row = chat.querySelector('.context-compaction[data-state="running"]');
     // On reload the backend reports the last failed compaction without a
     // message sequence. If history already painted that notice, update it in
     // place instead of appending a second copy at the end of the transcript.
@@ -2553,7 +3287,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       if (!errorEl) { errorEl = document.createElement('div'); errorEl.className = 'context-compaction-error'; row.appendChild(errorEl); }
       errorEl.textContent = window.CamelliaContextOverflow.recoverySummary(compaction.error);
     } else errorEl?.remove();
-    if (recoverable) renderContextRecovery(row, compaction.error, compaction.state === 'failed');
+    if (recoverable && compaction.state === 'failed') renderContextRecovery(row, compaction.error, true);
     else row.querySelector('.context-recovery')?.remove();
     // The label is translated in place, so the elapsed time lives beside it
     // instead of inside the translated text node.
@@ -2621,7 +3355,6 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     }
     row.classList.toggle('background-work-unknown', tasks.some(task => task.status === 'unknown'));
     const label = row.querySelector('.background-work-text');
-    label.title = tasks.map(task => task.description || task.id).join('\n');
     const stop = row.querySelector('.background-work-stop');
     stop.hidden = !tasks.some(task => task.canStop);
     stop.disabled = Boolean(state?.pending);
@@ -2637,15 +3370,35 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
   }
   let statusText = '';
   let conversationPhase = '', conversationPhaseSessionId = null;
+  const compactionAttempts = new Map();
   function setStatus(text) { statusText = text; statusLine.textContent = text; }
+  // Live-turn state is invisible to the main process. Send the rare anomalies
+  // that can hide an active run's execution process to the application log, so
+  // one occurrence is enough to explain them.
+  function reportRendererDiagnostic(message) {
+    try {
+      void window.dshDesktop.conversationCommand({ engine: harnessId, action: 'diagnostic', payload: { message } });
+    } catch { /* diagnostics must never break the transcript */ }
+  }
   function handleConversationStatus({ sessionId, text, compaction, replay = false }) {
+    const pending = pendingConversationSends.get(sessionId);
+    // Interrupted summary workers can settle after another attempt starts.
+    // Their status must not replace the new attempt or restart a stopped clock.
+    if (Number.isFinite(compaction?.startedAt)) {
+      const previous = compactionAttempts.get(sessionId);
+      if (compaction.startedAt < (pending?.at || 0)
+          || previous && (compaction.startedAt < previous.startedAt
+            || compaction.startedAt === previous.startedAt && previous.state !== 'running' && compaction.state === 'running')) return;
+      compactionAttempts.set(sessionId, { startedAt: compaction.startedAt, state: compaction.state });
+    }
     // The transcript marker owns the compaction progress. Mirroring its text
     // into the in-turn run row would print the same sentence twice inside the
     // transcript, so the row keeps its own neutral placeholder meanwhile.
     const runText = compaction?.state === 'running' ? 'Working…' : text;
     if (text && compaction?.native && compaction.state === 'running') text = compactionLabel(compaction);
-    const pending = pendingConversationSends.get(sessionId);
     if (pending) pending.phase = text;
+    if (compaction && ['failed', 'cancelled'].includes(compaction.state))
+      discardRestoredPendingSend(sessionId, compaction.error || (compaction.state === 'cancelled' ? 'Compaction canceled' : 'Compaction failed'));
     if (sessionId !== context.sessionId) return;
     conversationPhase = text; conversationPhaseSessionId = sessionId;
     updateHandoffStop();
@@ -2781,6 +3534,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       // The engine may stay silent for minutes (long tool runs, compactions or
       // stalled turns), and a status line outside the transcript is not enough
       // evidence that the reply is coming.
+      if (!turnAcceptsBlocks(turnEl)) turnEl = null;
       if (!turnEl?.querySelector('.run-status')) setRunStatus('Working…');
     } else {
       stopRunTicker();
@@ -2865,7 +3619,19 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       return;
     }
     if (restoringRun) { eventsDuringRestore.push(ev); return; }
-    if (ev.session_id !== context.sessionId) return;
+    if (ev.session_id !== context.sessionId) {
+      // Live content for the conversation on screen must never be dropped
+      // silently; a mismatched id here means the view lost track of it.
+      if (running && ['gui:tool', 'result', 'assistant', 'stream_event'].includes(ev.type)) {
+        const pair = 'session:' + ev.session_id + ':' + context.sessionId;
+        if (pair !== droppedRunReport) {
+          droppedRunReport = pair;
+          reportRendererDiagnostic('dropped ' + ev.type + ' for session ' + ev.session_id
+            + ' while the view holds ' + context.sessionId);
+        }
+      }
+      return;
+    }
     if (ev.type === 'conversation:remote-queue') { applyRemoteQueue(ev); return; }
     if (ev.type === 'conversation:approval-resolved') {
       const index = permissionQueue.findIndex(request => request.requestId === ev.requestId && request.runId === ev.runId);
@@ -2908,7 +3674,19 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     }
     if (ev.type === 'conversation:continued') {
       if (currentRunId !== ev.runId) return;
+      clearTextChoice();
       finalizeStreamBlocks();
+      clearRunStatus();
+      // A continuation is the same task handing off to a new attempt, not a
+      // second live worker. Keep the earlier content without its live marker.
+      if (turnEl && turnIsEmpty(turnEl)) turnEl.remove();
+      if (ev.reason === 'subscription-account-switch') {
+        const note = document.createElement('div');
+        note.className = 'handoff-notice continuation-notice';
+        note.dataset.i18n = '';
+        note.textContent = 'Subscription account switched. Continuing with the saved conversation history.';
+        chat.appendChild(note);
+      }
       turnEl = null; blocks = {}; pendingTools = {};
       setRunning(true);
       return;
@@ -2917,13 +3695,25 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       if (ev.runId !== currentRunId) {
         clearTextChoice();
         currentRunId = ev.runId;
+        deferredVisualCards.clear();
         turnEl = null; blocks = {}; pendingTools = {};
-        if (!ev.background) addUser(ev.displayText ?? ev.prompt, ev.attachments, { seq: ev.userSeq, at: Date.now() });
+        if (!ev.background && !adoptPendingSendUser(ev))
+          addUser(ev.displayText ?? ev.prompt, ev.attachments, { seq: ev.userSeq, at: Date.now() });
         setRunning(true);
       }
       return;
     }
-    if (currentRunId != null && ev.runId != null && currentRunId !== ev.runId) return;
+    if (currentRunId != null && ev.runId != null && currentRunId !== ev.runId) {
+      // A live run whose events never reach the transcript is invisible until
+      // it finishes; record the first dropped event for each run pair.
+      const pair = currentRunId + ':' + ev.runId;
+      if (running && pair !== droppedRunReport) {
+        droppedRunReport = pair;
+        reportRendererDiagnostic('dropped ' + (ev.type || 'event') + ' for run ' + ev.runId
+          + ' while the view runs ' + currentRunId);
+      }
+      return;
+    }
     const was = nearBottom();
 
     if (ev.type === 'gui:prompt-queue') {
@@ -2948,7 +3738,12 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
 
     if (ev.type === 'system' && ev.subtype === 'init') {
       loadedEngine = harnessId;
-      context.sessionId = ev.session_id || context.sessionId;
+      // A native engine id must never replace the conversation the view is
+      // showing: every later event carries the conversation id and would then
+      // be dropped as another conversation's output.
+      if (!context.sessionId) context.sessionId = ev.session_id || context.sessionId;
+      else if (ev.session_id && ev.session_id !== context.sessionId)
+        reportRendererDiagnostic('init reported session ' + ev.session_id + ' while the view holds ' + context.sessionId);
       context.workspaceId = ev.workspaceId || null;
       contextPanel?.refresh();
       sidebar.render();
@@ -3014,8 +3809,9 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
           const card = pendingTools[blk.tool_use_id];
           const text = extractResultText(blk.content).trim();
           if (card) {
-            card.setOutput(text, blk.is_error);
-            captureTaskResultId(card.name, text);
+            const visual = addVisualizeResult(text, null, { defer: running });
+            card.setOutput(visualizeOutputLabel(visual, text), blk.is_error);
+            if (!visual) captureTaskResultId(card.name, text);
           }
           if (running) setRunStatus("Working…");
         }
@@ -3033,7 +3829,11 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       if (conversationPhase === 'Background work in progress · request queued') handleConversationStatus({ sessionId: ev.session_id, text: '' });
       const card = pendingTools[ev.id] || makeToolCard(ev.name || "Tool", ev.input, ev.id);
       if (ev.input !== undefined) card.setInput(ev.input);
-      if (ev.status === 'completed' || ev.status === 'failed') card.setOutput(ev.output || '', ev.is_error || ev.status === 'failed');
+      if (ev.status === 'completed' || ev.status === 'failed') {
+        const visual = addVisualizeResult(ev.output || '', null, { defer: running });
+        card.setOutput(visualizeOutputLabel(visual, ev.output || ''),
+          ev.is_error || ev.status === 'failed');
+      }
       if (ev.permissionBlocked && !seenPermissionBlocks.has(ev.runId + ':' + ev.id)) {
         seenPermissionBlocks.add(ev.runId + ':' + ev.id);
         const dialog = $('permissionBlockedDialog');
@@ -3078,10 +3878,29 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       permissionQueue.length = 0;
       $('permMask').classList.remove('visible');
       finalizeStreamBlocks();
+      const completedBody = turnEl?.querySelector('.turn-body')
+        || (deferredVisualCards.size ? turnBody() : null);
+      flushDeferredVisualCards(completedBody);
       clearRunStatus();
       consolidateFinishedTurn();
       const { chip, stats, stopped, ok } = runResultChip(ev, true, ev.userSeq);
       for (const card of Object.values(pendingTools)) if (!card.finished) card.setOutput(stopped ? 'Stopped before a tool result was received.' : 'No tool result was received before the response ended.', true);
+      // A turn that ends without any visible block means its output was never
+      // attached to the transcript. A detached turn cannot be repaired in
+      // place, so repaint the stored reply after recording it.
+      if (!turnEl?.isConnected || !turnEl.querySelector('.turn-body')?.childElementCount) {
+        const detached = Boolean(turnEl && !turnEl.isConnected);
+        reportRendererDiagnostic('completed a turn with no visible content: '
+          + (detached ? 'detached turn' : turnEl ? 'empty turn' : 'no turn'));
+        const sessionId = context.sessionId;
+        if (detached && sessionId && !restoringRun && !loadingSession && !sending && !switchingEngine) {
+          setTimeout(() => {
+            if (context.sessionId !== sessionId || running || loadingSession || sending || switchingEngine
+                || historyOpening || messageQueue.length) return;
+            void openHistorySession(sessionId);
+          }, 0);
+        }
+      }
       (turnEl || chat).appendChild(chip);
       moveTurnFooter(turnEl);
       const requestUsage = ev.requestUsageLead && ev.requestUsage?.breakdown ? ev.requestUsage : null;
@@ -3159,8 +3978,49 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       && (running ? Boolean(currentRunId) : Boolean(goalUI.waitingId?.()));
   }
 
-  async function steerQueuedMessage(message) {
-    if (!messageQueue.includes(message) || !canSteerQueuedMessage()) return;
+  function clearTransientCompactionStatus() {
+    chat.querySelectorAll('.context-compaction[data-state="failed"], .context-compaction[data-state="cancelled"]').forEach(row => {
+      if (!row.dataset.seq) row.remove();
+      else row.querySelector('.context-recovery')?.remove();
+    });
+    // Also clean up startup chips created by older versions of the renderer.
+    chat.querySelectorAll('.run-result.err').forEach(row => {
+      if (row.dataset.sendFailure || /^Failed to start: /.test(row.textContent)) row.remove();
+    });
+  }
+
+  async function steerUnifiedQueuedMessage(message) {
+    const sessionId = context.sessionId, openSeq = sessionOpenSeq;
+    const goalId = running ? undefined : goalUI.waitingId?.();
+    sending = true; updateSendEnabled();
+    setStatus('Sending instruction…');
+    try {
+      const result = await chatApi.messageQueueSteer({
+        sessionId,
+        queueId: message.id,
+        ...(running && currentRunId ? { runId: currentRunId } : {}),
+        ...(goalId ? { goalId } : {}),
+      });
+      if (!result?.ok) throw new Error(result?.error || 'The instruction was not accepted.');
+      if (context.sessionId !== sessionId || sessionOpenSeq !== openSeq) return;
+      applyRemoteQueue(result);
+      setStatus('Instruction accepted by the active turn');
+    } catch (error) {
+      if (context.sessionId === sessionId && sessionOpenSeq === openSeq) setStatus(error.message);
+    } finally {
+      if (context.sessionId === sessionId && sessionOpenSeq === openSeq) {
+        sending = false; updateSendEnabled();
+      }
+    }
+  }
+
+  async function steerQueuedMessage(message, { local = true } = {}) {
+    if (!canSteerQueuedMessage()) return;
+    if (!local) {
+      await steerUnifiedQueuedMessage(message);
+      return;
+    }
+    if (!messageQueue.includes(message)) return;
     if (!running) {
       // Waiting Goals have no live run to steer. Send the selected entry through
       // the Goal handoff, keeping its queue and draft tied to this conversation.
@@ -3213,7 +4073,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     const active = running || Boolean(pendingSend) || (Boolean(conversationActivity) && !waitingGoalId);
     if (active && !queuedMessage) {
       if ((input.value.trim() || attachments.length) && (editingMessage || switchingEngine || handoffHere)) return;
-      if (input.value.trim() || attachments.length) { queueComposerMessage(); return; }
+      if (input.value.trim() || attachments.length) { void queueComposerMessage(); return; }
       const stopSessionId = context.sessionId, stopRunId = currentRunId, stopOpenSeq = sessionOpenSeq;
       if (messageQueue.length) setMessageQueuePaused(true);
       setStatus("Stopping…");
@@ -3237,6 +4097,11 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       return;
     }
     const text = queuedMessage ? queuedMessage.text : input.value.trim();
+    const actionDraft = typeof cardActionDraft !== 'undefined' ? cardActionDraft : null;
+    const actionParts = actionDraft ? [actionDraft.action?.label, actionDraft.action?.title].filter(Boolean) : [];
+    const displayText = queuedMessage?.displayText
+      || (actionDraft && actionParts.length && text === actionDraft.text
+        ? (window.CamelliaI18n?.t?.('Card decision') || 'Card decision') + ' · ' + actionParts.join(' · ') : text);
     if (!queuedMessage && typeof findUI !== 'undefined' && findUI.isDraft()) {
       // An empty composer is a valid search here: it lists the files recent
       // conversations produced, for a user who cannot name what they want.
@@ -3271,24 +4136,34 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
         const message = row.closest('.msg-user');
         if (message?.messageData?.seq) row.remove(); else message?.remove();
       });
+      clearTransientCompactionStatus();
     }
-    const sendContext = { sessionId: context.sessionId || null, workspaceId: context.workspaceId, engine: harnessId,
+    const sentAt = Date.now();
+    const baselineSeq = [...chat.querySelectorAll('.msg-user')].reduce((max, row) =>
+      Number.isSafeInteger(row.messageData?.seq) ? Math.max(max, row.messageData.seq) : max, 0);
+    const sendContext = { id: newSendId(), text, displayText, attachments: atts.slice(), at: sentAt, baselineSeq,
+      sessionId: context.sessionId || null, workspaceId: context.workspaceId, engine: harnessId,
       fork: Boolean(pendingForkId), openSeq: sessionOpenSeq, dispatched: false, cancelled: false, fastMode: currentFastMode,
       ...(waitingGoalId ? { goalId: waitingGoalId } : {}) };
-    if (sendContext.sessionId && !sendContext.fork) pendingConversationSends.set(sendContext.sessionId, sendContext);
+    if (sendContext.sessionId && !sendContext.fork) {
+      latestConversationSends.set(sendContext.sessionId, sendContext.id);
+      pendingConversationSends.set(sendContext.sessionId, sendContext);
+      savePendingSend(sendContext);
+    }
     sending = true;
     turnEngine = harnessId;
     if (!queuedMessage) followRunOutput = true;
     restoringRun = true;
     if (!queuedMessage) {
       input.value = '';
+      if (typeof clearCardActionDraft === 'function') clearCardActionDraft();
       attachments = [];
       renderAttachments();
       autoResize();
     }
     chat.querySelector('.switch-hint')?.remove();
     clearTextChoice();
-    const userMessage = addUser(text || "[Attachments]", atts, { at: Date.now(), scrollToBottom: !queuedMessage });
+    const userMessage = addUser(displayText || "[Attachments]", atts, { at: sentAt, scrollToBottom: !queuedMessage });
     setRunning(true);
     setRunStatus('Working…');
     updateSendEnabled();
@@ -3301,8 +4176,8 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       if (sendContext.cancelled) throw new Error('Request canceled before sending');
       sendContext.dispatched = true;
       res = await chatApi.send({
-        prompt: buildPrompt(text, atts),
-        displayText: text,
+        prompt: queuedMessage?.prompt || buildPrompt(text, atts),
+        displayText,
         attachments: atts,
         sessionId: sendContext.sessionId,
         workspaceId: sendContext.workspaceId,
@@ -3312,11 +4187,16 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
         settings,
       }, sendContext.engine);
     } catch (err) { res = { ok: false, error: err.message }; }
+    if (sendContext.sessionId && !sendContext.fork && latestConversationSends.get(sendContext.sessionId) !== sendContext.id)
+      return Boolean(res.ok);
     if (pendingConversationSends.get(sendContext.sessionId) === sendContext) pendingConversationSends.delete(sendContext.sessionId);
+    clearPendingSend(sendContext.sessionId, sendContext.id);
+    const cancelled = !res.ok && (sendContext.cancelled || res.cancelled || window.CamelliaContextOverflow.requestCancelledText(res.error));
+    const attempt = { text, attachments: atts, error: res.error || 'No response from the app', at: userMessage.messageData.at, cancelled };
     if (sendContext.openSeq !== sessionOpenSeq) {
       void sidebar.load();
       if (!res.ok && !queuedMessage && sendContext.sessionId && sendContext.dispatched) {
-        writeUi('failed-send:' + sendContext.sessionId, { text, attachments: atts, error: res.error || 'No response from the app', at: userMessage.messageData.at });
+        writeUi('failed-send:' + sendContext.sessionId, attempt);
         const saved = readUi('draft:' + sentDraftKey);
         if (saved?.text === text) writeUi('draft:' + sentDraftKey, { ...saved, text: '', attachments: [] });
       } else if (!res.ok && !queuedMessage) {
@@ -3325,15 +4205,19 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       } else if (res.ok) {
         const saved = readUi('draft:' + sentDraftKey);
         if (saved?.text === text) writeUi('draft:' + sentDraftKey, { ...saved, text: '', attachments: [] });
+        // If the started event was missed, adopt a restored row directly.
+        const bubble = takePendingSendBubble(sendContext);
+        if (bubble) { bubble.messageData.seq = res.userSeq; updateMessageActions(); }
       }
       if (context.sessionId === sendContext.sessionId && !loadingSession && !sending) {
         if (!res.ok) {
           if (sendContext.dispatched) {
             if (sendContext.sessionId && input.value === text) { input.value = ''; attachments = []; renderAttachments(); autoResize(); saveDraft(); }
-            showFailedSend({ text, attachments: atts, error: res.error || 'No response from the app', at: userMessage.messageData.at });
+            showFailedSend(attempt, takePendingSendBubble(sendContext));
           }
           clearRunStatus();
-          setStatus('Failed to start: ' + res.error);
+          if (turnEl && turnIsEmpty(turnEl)) { turnEl.remove(); turnEl = null; }
+          setStatus(cancelled ? 'Stopped' : 'Failed to start: ' + window.CamelliaContextOverflow.recoverySummary(res.error));
         }
         updateConversationControls();
       }
@@ -3345,23 +4229,36 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     updateConversationControls();
     if (!res.ok) {
       if (messageQueue.length) setMessageQueuePaused(true);
-      if (sendContext.sessionId && sendContext.dispatched && !queuedMessage) {
-        writeUi('failed-send:' + sendContext.sessionId, { text, attachments: atts, error: res.error || 'No response from the app', at: userMessage.messageData.at });
-        showFailedSend({ text, attachments: atts, error: res.error || 'No response from the app', at: userMessage.messageData.at }, userMessage);
+      const keepAttempt = sendContext.sessionId && !queuedMessage
+        && (sendContext.dispatched || cancelled && Boolean(input.value || attachments.length));
+      if (keepAttempt) {
+        writeUi('failed-send:' + sendContext.sessionId, attempt);
+        showFailedSend(attempt, userMessage);
       } else if (!queuedMessage && !input.value && !attachments.length) { input.value = text; attachments = atts; renderAttachments(); autoResize(); }
+      if (cancelled && !sendContext.dispatched && !keepAttempt) userMessage.remove();
       saveDraft();
       finalizeStreamBlocks();
-      const chip = document.createElement('div');
-      chip.className = 'run-result err';
-      chip.textContent = "Failed to start: " + res.error;
-      chat.appendChild(chip);
-      setStatus("Failed to start");
+      // The uncommitted message already owns its failure and edit action.
+      // A cancelled compaction has its own neutral marker, never an error chip.
+      if (!cancelled && !keepAttempt
+          && !chat.querySelector('.context-compaction[data-state="failed"]')) {
+        const chip = document.createElement('div');
+        chip.className = 'run-result err'; chip.dataset.sendFailure = 'true';
+        chip.textContent = 'Failed to start: ' + window.CamelliaContextOverflow.recoverySummary(attempt.error);
+        chat.appendChild(chip);
+      }
       updateSwitchHint();
       clearRunStatus();
+      if (turnEl && turnIsEmpty(turnEl)) { turnEl.remove(); turnEl = null; }
       setRunning(false);
       acceptSessionEvents = false;
-      restoringRun = false; eventsDuringRestore.length = 0;
-      return;
+      restoringRun = false;
+      // Activity/title changes may have arrived while compaction held send().
+      // In particular, keep the terminal activity so Stop cannot remain stuck.
+      for (const event of eventsDuringRestore.splice(0))
+        if (event.type === 'conversation:activity' || event.type === 'conversation:title') handleEvent(event);
+      setStatus(cancelled ? 'Stopped' : 'Failed to start');
+      return false;
     }
     if (pendingForkId) {
       pendingForkId = null;
@@ -3372,6 +4269,8 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     userMessage.messageData.seq = res.userSeq;
     loadedEngine = harnessId;
     restoringRun = false;
+    if (typeof canUseUnifiedQueue === 'function' && typeof migrateLocalQueueToUnified === 'function'
+        && canUseUnifiedQueue() && messageQueue.length) void migrateLocalQueueToUnified();
     for (const event of eventsDuringRestore.splice(0)) handleEvent(event);
     updateSendEnabled(); void sidebar.load();
     writeUi('draft:' + sentDraftKey, {});
@@ -3398,6 +4297,9 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     { id: 'find', label: '/find', desc: 'Find files on this computer and download them',
       icon: '<circle cx="11" cy="11" r="7"/><path d="M20 20l-4.2-4.2"/>',
       run: () => findUI.reveal() },
+    { id: 'attach', label: '/attach', desc: 'Attach current artifacts or another conversation',
+      icon: '<path d="M21 11.5V17a5 5 0 0 1-10 0V6a3 3 0 0 1 6 0v10a1 1 0 0 1-2 0V7"/>',
+      run: () => attachmentPicker({ anchor: input }) },
     { id: 'tasks', label: '/tasks', desc: 'Schedule periodic experiment checks',
       icon: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>', run: () => void tasksUI.reveal() },
     { id: 'usage', label: '/usage', desc: 'Show request and token usage through the local router',
@@ -3572,7 +4474,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       if (e.key === 'Escape') { e.preventDefault(); closeSlash(); return; }
     }
     if (e.key === 'Escape' && findUI.isDraft()) { e.preventDefault(); findUI.setDraft(false); return; }
-    if (e.key === 'Enter' && e.altKey && !e.isComposing && (running || conversationActivity || pendingConversationSend())) { e.preventDefault(); queueComposerMessage(); return; }
+    if (e.key === 'Enter' && e.altKey && !e.isComposing && (running || conversationActivity || pendingConversationSend())) { e.preventDefault(); void queueComposerMessage(); return; }
     if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(); }
   });
 
@@ -3948,7 +4850,10 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       if (question && pendingQuestion === question) { question.card.querySelectorAll('input, textarea, button').forEach(el => el.disabled = false); questionError(error); }
       setStatus(error); return;
     }
-    finishQuestion(allow ? 'Answers sent' : 'Questions skipped', allow, input);
+    // Key the answered card by its transcript sequence when the reply beat the
+    // approval event; otherwise that event would append a second identical card.
+    finishQuestion(allow ? 'Answers sent' : 'Questions skipped', allow, input,
+      result?.responseSeq === undefined ? undefined : questionResponseKey({ responseSeq: result.responseSeq }));
     setStatus(allow ? 'Answers sent' : 'Questions skipped');
     permRequestId = null;
     permissionQueue.shift();
@@ -4066,7 +4971,6 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
   }
   function updateConversationControls() {
     const locked = conversationBusy() || loadingSession || switchingEngine || sending || handoffForCurrentSession();
-    $('conversationActions').disabled = !context.sessionId || loadingSession || switchingEngine || handoffForCurrentSession();
     // Changing the model or reasoning level is queued the same way a message is:
     // it applies to the next message, not the running turn, so it stays usable
     // while a response runs. Switching harness, and the session-level settings
@@ -4090,6 +4994,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     historyOpening = false;
     replayingLiveSnapshot = false;
     deferredTurnLayouts.clear();
+    deferredVisualCards.clear();
     sending = false;
     drainingQueue = false;
     closePops();
@@ -4111,7 +5016,8 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     clearRunStatus(); setRunning(false);
     conversationPhase = ''; conversationPhaseSessionId = null;
     updateHandoffStop();
-    messageQueue = []; messageQueuePaused = false; remoteMessageQueue = []; remoteQueueVersion = -1; renderMessageQueue();
+    messageQueue = []; messageQueuePaused = false; remoteMessageQueue = []; remoteQueueVersion = -1;
+    unifiedQueueAvailable = false; renderMessageQueue();
   }
   const sidebar = createClaudeSidebar({ $, context, contextBusy, canChangeContext, setStatus,
     canReadReply: () => !discussionVisible && !loadingSession && !restoringRun,
@@ -4168,7 +5074,6 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
   new ResizeObserver(updatePanelReservation).observe(mainElement);
   new MutationObserver(updatePanelReservation).observe(mainElement, { attributes: true, attributeFilter: ['class'] });
   updatePanelReservation();
-  $('conversationActions').onclick = () => sidebar.openCurrentActions($('conversationActions'));
   const goalUI = createClaudeGoalUI({ $, context, canChangeContext: () => !editingMessage && !handoffForCurrentSession() && canChangeContext() && !running, openHistorySession, setStatus,
     acceptEvents: () => { acceptSessionEvents = true; }, onChange: () => { sidebar.updateLabel(); updateConversationControls(); queueMicrotask(drainMessageQueue); }, openActionMenu, closePops });
 
@@ -4313,7 +5218,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     reviewPanel?.reset();
     context.workspaceId = sidebar.sessions.find(entry => entry.id === id)?.workspaceId || null;
     conversationActivity = sidebar.sessions.find(entry => entry.id === id)?.activity || null;
-    input.value = ''; attachments = []; renderAttachments();
+    input.value = ''; attachments = []; clearCardActionDraft(); renderAttachments();
     updateConversationControls();
     updateSendEnabled();
     sidebar.updateLabel();
@@ -4392,6 +5297,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       if (!chat.childElementCount) chat.innerHTML = "<div class=\"empty-state\"><div class=\"empty-state-desc\" data-i18n>No messages to display. Send a message to continue this session.</div></div>";
       sidebar.render();
       restoreDraft();
+      if (canUseUnifiedQueue() && messageQueue.length) void migrateLocalQueueToUnified();
       draftRestored = true;
       setStatus(res.interrupted ? 'The last turn was interrupted. Review its result before continuing.' : res.truncated ? "Showing the latest 200 messages. Continuation uses the full history." : "History loaded. Your next message continues this session.");
       if (!await applyLiveRun(res.live, historyOptions)) return false;
@@ -4403,6 +5309,28 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       const liveRun = res.live?.runId;
       restoringRun = false;
       for (const event of eventsDuringRestore.splice(0)) if (event.type === 'conversation:activity' || event.runId !== liveRun || event.eventSeq > lastSeq) handleEvent(event);
+      // A send waiting on compaction has no committed user row yet. Restore
+      // its optimistic message so reloading or switching back does not hide it.
+      const livePending = pendingConversationSend();
+      // Edited messages keep their original row in history until the backend
+      // accepts the revision; only a new message needs an optimistic copy.
+      const storedPending = livePending ? (livePending.editSeq ? null : livePending) : persistedPendingSend(id);
+      if (storedPending) {
+        // A live run already carries its own committed user row.
+        if (res.live || pendingSendCommitted(res.messages, storedPending)) {
+          clearPendingSend(id, storedPending.id);
+        } else if (livePending || res.activity === 'running' || res.compaction?.state === 'running') {
+          renderPendingSend(storedPending);
+        } else if (['failed', 'cancelled'].includes(res.compaction?.state)) {
+          const attempt = { text: storedPending.text, attachments: storedPending.attachments || [], at: storedPending.at,
+            error: res.compaction.error || (res.compaction.state === 'cancelled' ? 'Compaction canceled' : 'Compaction failed') };
+          clearPendingSend(id, storedPending.id);
+          writeUi('failed-send:' + id, attempt);
+          showFailedSend(attempt);
+        } else {
+          clearPendingSend(id, storedPending.id);
+        }
+      }
       const pending = pendingConversationSend();
       if (pending?.phase || res.compaction) handleConversationStatus({ sessionId: id, replay: true,
         text: pending?.phase || (res.compaction?.state === 'running' ? 'Compacting context…' : ''), compaction: res.compaction });
@@ -4561,7 +5489,9 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
                 const unfinished = !['completed', 'failed', 'cancelled'].includes(block.status);
                 const output = block.text || (unfinished ? runResult?.subtype === 'stopped'
                   ? 'Stopped before a tool result was received.' : 'No tool result was received before the response ended.' : '');
-                card.setOutput(output, unfinished || block.status === 'failed' || block.status === 'cancelled');
+                const visual = addVisualizeResult(output, body);
+                card.setOutput(visualizeOutputLabel(visual, output),
+                  unfinished || block.status === 'failed' || block.status === 'cancelled');
                 body.processBlocks.push(card.el);
                 body.appendChild(card.el);
                 continue;
@@ -4675,6 +5605,12 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
         finally { restoringRun = buffering; }
       }
       flushLiveSnapshotBatch();
+      const attached = turnEl && turnEl.isConnected;
+      const position = attached ? [...chat.children].indexOf(turnEl) + 1 : 0;
+      reportRendererDiagnostic('live restore ' + live.sessionId + ' run ' + live.runId + ': '
+        + live.events.length + ' events, '
+        + (attached ? 'turn ' + position + '/' + chat.children.length + ' with '
+          + (turnEl.querySelector('.turn-body')?.childElementCount || 0) + ' blocks' : 'no attached turn'));
       return true;
     } finally {
       replayingLiveSnapshot = false;

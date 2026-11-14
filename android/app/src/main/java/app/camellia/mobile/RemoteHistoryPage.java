@@ -78,6 +78,8 @@ final class RemoteHistoryPage {
             JSONObject entry = process.optJSONObject(index);
             if (entry != null) size += 32 + entry.optString("text", "").length() + entry.optString("input", "").length();
         }
+        JSONArray visualizations = row.optJSONArray("visualizations");
+        if (visualizations != null) size += 32 + visualizations.toString().length();
         return size;
     }
 }

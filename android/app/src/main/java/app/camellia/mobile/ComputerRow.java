@@ -47,10 +47,13 @@ final class ComputerRow extends LinearLayout {
         addView(copy, new LayoutParams(0, -2, 1));
 
         TextView action = new TextView(context); action.setText(chinese ? "管理" : "Manage"); action.setTextSize(Palette.TEXT_BODY);
-        action.setTextColor(style.ink); action.setGravity(Gravity.CENTER); action.setMinHeight(dp(48)); action.setMinWidth(dp(60));
+        action.setTextColor(style.accent); action.setGravity(Gravity.CENTER); action.setMinHeight(dp(48)); action.setMinWidth(dp(60));
         action.setPadding(dp(14), 0, dp(14), 0); action.setSingleLine(true); action.setFocusable(true);
         action.setTag("manage:" + address); action.setContentDescription((chinese ? "管理电脑" : "Manage computer") + " · " + name);
-        GradientDrawable face = new GradientDrawable(); face.setColor(style.background); face.setCornerRadius(dp(Palette.RADIUS_FIELD));
+        GradientDrawable face = new GradientDrawable();
+        face.setColor(android.graphics.Color.argb(20, android.graphics.Color.red(style.accent),
+            android.graphics.Color.green(style.accent), android.graphics.Color.blue(style.accent)));
+        face.setCornerRadius(dp(Palette.RADIUS_FIELD));
         GradientDrawable mask = new GradientDrawable(); mask.setColor(Color.WHITE); mask.setCornerRadius(dp(Palette.RADIUS_FIELD));
         action.setBackground(new RippleDrawable(ColorStateList.valueOf(Palette.RIPPLE_ON_CARD),
             new android.graphics.drawable.InsetDrawable(face, 0, dp(6), 0, dp(6)),

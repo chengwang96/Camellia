@@ -92,13 +92,13 @@
   }
   function organize() {
     arrange('generalPage', [
-      ['shared-memory', ['#memoryDirectory', '#contextMemoryEnabled']],
-      ['appearance', ['#language', '#theme', '#advancedAnimations', '#chatContentWidth', '#showConversationNavigator']],
-      ['workspace-tools', ['#vscodeChoice']],
-      ['quota-refresh', ['#autoRefreshBalances', '#accountRefreshMinutes', '#antigravityAutoRefresh']],
-      ['background-routing', ['#closeToTray']],
+      ['appearance', ['#language', '#theme', '#advancedAnimations']],
+      ['interface', ['#chatContentWidth', '#showConversationNavigator', '#showHoverHints']],
       ['conversation-handoff', ['#conversationMode', '#conversationHandoffHelp', '.setting-note', '#conversationWarn', '#conversationOriginSetting']],
-      ['python', ['#pythonCard']],
+      ['quota-refresh', ['#autoRefreshBalances', '#accountRefreshMinutes', '#antigravityAutoRefresh']],
+      ['workspace-tools', ['#vscodeChoice', '#pythonCard']],
+      ['shared-resources', ['#memoryDirectory', '#contextMemoryEnabled', '#portableSkills']],
+      ['background-routing', ['#closeToTray']],
       // Older installed releases keep data controls on General/Archived.
       ['local-data', ['#dataPath']],
       ['data-transfer', ['#dataMigrationSection']],
@@ -113,8 +113,8 @@
       if (versionGroup && general.lastElementChild !== versionGroup) general.append(versionGroup);
     }
     arrange('shortcutsPage', [
-      ['shortcuts', ['#shortcutSettingsRow', '#shortcutHomeRow', '#shortcutGoalRow', '#shortcutReviewRow',
-        '#shortcutZoomInRow', '#shortcutZoomOutRow', '#shortcutZoomResetRow']],
+      ['shortcuts', ['#shortcutSettingsRow', '#shortcutHomeRow', '#shortcutGoalRow', '#shortcutReviewRow']],
+      ['zoom-shortcuts', ['#shortcutZoomInRow', '#shortcutZoomOutRow', '#shortcutZoomResetRow']],
     ]);
     arrange('dataPage', [
       ['local-data', ['#dataDirectorySection']], ['data-transfer', ['#dataMigrationSection']], ['storage', ['#storageSection']],
@@ -130,6 +130,8 @@
       ['subscription-visibility', ['.subscription-models-section']],
       ['quick-switch', [() => get('quickSwitchModels')?.previousElementSibling, '#quickSwitchModels']],
       ['model-sessions', [() => get('conversationSessionTtl')?.closest('.section')]],
+      ['review-defaults', ['#reviewDefaultsHeading', '#reviewDefaultEngine', '#reviewDefaultMode',
+        '#reviewDefaultMaxTokens', '#reviewDefaultAgentConsent', '#reviewDefaultGate', '#reviewDefaultTurnGate']],
     ]);
     arrange('networkPage', [
       ['connection-mode', ['#networkMode', '#systemProxyStatus']],

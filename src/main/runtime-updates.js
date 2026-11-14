@@ -10,7 +10,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const patchDsh = require('../../integrations/dsh/patch.cjs');
-const { createDownloadConnection } = require('./download-network');
+const { createDownloadConnection, chooseDownloadConnection } = require('./download-network');
 const { upgradePythonRuntime } = require('./python-runtime');
 const { latestAntigravityCli, upgradeAntigravityCli, manifestUrl } = require('./antigravity-cli-release');
 
@@ -33,7 +33,7 @@ function compareVersions(a, b) {
   return x.pre < y.pre ? -1 : 1;
 }
 
-function createRuntimeUpdates({ manager, engines, node, npm, run, downloadSettings = () => undefined, registries = {}, beforeInstall = async () => {}, onChange = () => {}, log = () => {}, cliUpgrade = upgradeAntigravityCli }) {
+function createRuntimeUpdates({ manager, engines, node, npm, run, downloadSettings = () => undefined, registries = {}, beforeInstall = async () => {}, onChange = () => {}, log = () => {}, cliUpgrade = upgradeAntigravityCli, chooseConnection = chooseDownloadConnection }) {
   const pending = new Map();
   const reinstalling = new Set();
   const uninstalling = new Set();
@@ -58,12 +58,26 @@ function createRuntimeUpdates({ manager, engines, node, npm, run, downloadSettin
     return response.json();
   }
 
-  function latestVersion(connection, engine, mode) {
+  function pythonProbeUrl(data, latest, fallback) {
+    const files = Array.isArray(data.urls) ? data.urls : data.releases?.[latest] || [];
+    return files.filter(file => typeof file?.url === 'string' && /^https?:\/\//.test(file.url))
+      .sort((a, b) => (Number(b.size) || 0) - (Number(a.size) || 0))[0]?.url || fallback;
+  }
+
+  async function resolveLatest(connection, engine, mode) {
     if (engines[engine].type === 'python') {
-      if (mode === 'subscription') return latestAntigravityCli(connection, { url: registryUrls.antigravity() }).then(release => release.version);
-      return fetchJson(connection, registryUrls.pypi('google-antigravity')).then(data => data.info?.version || null);
+      if (mode === 'subscription') {
+        const release = await latestAntigravityCli(connection, { url: registryUrls.antigravity() });
+        return { latest: release.version, release, probeUrl: release.url };
+      }
+      const registryUrl = registryUrls.pypi('google-antigravity');
+      const data = await fetchJson(connection, registryUrl);
+      const latest = data.info?.version || null;
+      return { latest, probeUrl: pythonProbeUrl(data, latest, registryUrl) };
     }
-    return fetchJson(connection, registryUrls.npm(engines[engine].package)).then(data => data.version || null);
+    const registryUrl = registryUrls.npm(engines[engine].package);
+    const data = await fetchJson(connection, registryUrl);
+    return { latest: data.version || null, probeUrl: data.dist?.tarball || registryUrl };
   }
 
   function check() {
@@ -85,7 +99,7 @@ function createRuntimeUpdates({ manager, engines, node, npm, run, downloadSettin
         const base = { id: row.id, name: row.name, mode: row.mode, external: Boolean(row.external), installed: row.status === 'ready' ? row.version || null : null, latest: null, updateAvailable: false, checkable: true, error: null };
         if (row.external) return { ...base, checkable: false };
         try {
-          const latest = await latestVersion(connection, row.id, row.mode);
+          const { latest } = await resolveLatest(connection, row.id, row.mode);
           return { ...base, latest, updateAvailable: Boolean(base.installed && latest && compareVersions(latest, base.installed) > 0) };
         } catch (error) {
           log(`runtime update check failed for ${row.id}: ${error.message}`);
@@ -161,15 +175,29 @@ function createRuntimeUpdates({ manager, engines, node, npm, run, downloadSettin
     const found = manager.locate(engine);
     if (!found) throw new Error('Download this engine before updating it');
     if (found.external) throw new Error('This CLI is installed outside Camellia. Update it using its original installer.');
-    const connection = createDownloadConnection(downloadSettings());
+    const settings = downloadSettings();
+    const metadata = createDownloadConnection(settings);
+    let resolved;
     try {
-      const cliRelease = engine === 'antigravity' && found.mode === 'subscription'
-        ? await latestAntigravityCli(connection, { url: registryUrls.antigravity() }) : null;
-      const latest = cliRelease?.version || await latestVersion(connection, engine, found.mode);
-      if (!latest) throw new Error('Could not determine the latest version');
-      if (compareVersions(latest, found.version) <= 0) {
-        return { ok: true, engine, from: found.version, to: found.version, changed: false, restartRequired: false, restarting: false };
-      }
+      resolved = await resolveLatest(metadata, engine, found.mode);
+    } finally {
+      await metadata.close();
+    }
+    const { latest, release: cliRelease } = resolved;
+    if (!latest) throw new Error('Could not determine the latest version');
+    if (compareVersions(latest, found.version) <= 0) {
+      return { ok: true, engine, from: found.version, to: found.version, changed: false, restartRequired: false, restarting: false };
+    }
+    let choice;
+    try {
+      choice = await chooseConnection(settings, { probeUrl: resolved.probeUrl, log });
+    } catch (error) {
+      log(`runtime update ${engine}: download speed test failed: ${error.message}`);
+      choice = { connection: createDownloadConnection(settings), route: 'configured', results: [] };
+    }
+    const connection = choice.connection;
+    try {
+      log(`runtime update ${engine}: using the ${choice.route} download connection`);
       const restore = await beforeInstall(engine);
       let result, updateError;
       try {

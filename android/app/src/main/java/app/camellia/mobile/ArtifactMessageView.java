@@ -26,9 +26,11 @@ final class ArtifactMessageView extends LinearLayout {
         super(context);
         this.chinese = chinese;
         style = new ChatStyle(context);
-        border = Color.red(style.background) < 128 ? 0xff3b3b40 : 0xffe2e4e8;
+        Palette palette = Palette.of(context);
+        border = palette.cardBorder;
         setOrientation(VERTICAL);
-        setBackground(shape(style.background, 14, true));
+        setTag("artifactCard");
+        setBackground(shape(palette.card, 12, true));
         setClipToOutline(true);
         setPadding(style.dp(1), style.dp(1), style.dp(1), style.dp(1));
         List<String> files = new ArrayList<>(names);
@@ -82,7 +84,7 @@ final class ArtifactMessageView extends LinearLayout {
         String name = ArtifactReferences.name(reference);
         String kind = kind(name), extension = extension(name);
         LinearLayout row = new LinearLayout(getContext()); row.setGravity(Gravity.CENTER_VERTICAL);
-        row.setPadding(style.dp(12), style.dp(12), style.dp(12), style.dp(12));
+        row.setPadding(style.dp(10), style.dp(9), style.dp(10), style.dp(9));
         row.setTag("artifactRow:" + name);
         LinearLayout file = new LinearLayout(getContext()); file.setGravity(Gravity.CENTER_VERTICAL);
         file.setFocusable(true); file.setBackground(ripple()); file.setOnClickListener(view -> open.accept(reference));
@@ -91,19 +93,19 @@ final class ArtifactMessageView extends LinearLayout {
         int color = kind.equals("pdf") ? 0xffed5362 : kind.equals("spreadsheet") ? 0xff29875c
             : kind.equals("presentation") ? 0xffc86b31 : kind.equals("package") ? 0xff3b6fd4 : style.accent;
         TextView icon = text(extension, 10, color); icon.setGravity(Gravity.CENTER); icon.setTypeface(null, Typeface.BOLD);
-        icon.setBackground(shape(style.surface, 10, false)); icon.setImportantForAccessibility(IMPORTANT_FOR_ACCESSIBILITY_NO);
-        file.addView(icon, new LinearLayout.LayoutParams(style.dp(38), style.dp(48)));
+        icon.setBackground(shape(style.surface, 8, false)); icon.setImportantForAccessibility(IMPORTANT_FOR_ACCESSIBILITY_NO);
+        file.addView(icon, new LinearLayout.LayoutParams(style.dp(30), style.dp(38)));
         LinearLayout info = new LinearLayout(getContext()); info.setOrientation(VERTICAL);
         LinearLayout.LayoutParams infoParams = new LinearLayout.LayoutParams(0, -2, 1); infoParams.setMarginStart(style.dp(10));
         file.addView(info, infoParams);
-        TextView title = text(name, Palette.TEXT_INPUT, style.ink); title.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        TextView title = text(name, Palette.TEXT_NOTE, style.ink); title.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
         title.setSingleLine(true); title.setEllipsize(TextUtils.TruncateAt.MIDDLE); title.setTag("artifactName:" + name);
         info.addView(title);
-        TextView meta = text(category(kind) + " · " + extension, Palette.TEXT_SMALL, style.muted); meta.setPadding(0, style.dp(4), 0, 0);
+        TextView meta = text(category(kind) + " · " + extension, Palette.TEXT_SMALL, style.muted); meta.setPadding(0, style.dp(2), 0, 0);
         meta.setSingleLine(true); meta.setEllipsize(TextUtils.TruncateAt.END); info.addView(meta);
-        TextView action = text(tr("查看", "View"), Palette.TEXT_NOTE, style.ink); action.setGravity(Gravity.CENTER);
+        TextView action = text(tr("查看", "View"), Palette.TEXT_NOTE, style.accent); action.setGravity(Gravity.CENTER);
         action.setMinHeight(style.dp(48)); action.setPadding(style.dp(10), style.dp(8), style.dp(10), style.dp(8));
-        action.setBackground(new RippleDrawable(ColorStateList.valueOf(Palette.RIPPLE_ON_PAGE), shape(Color.TRANSPARENT, 9, true), shape(Color.WHITE, 9, false)));
+        action.setBackground(new RippleDrawable(ColorStateList.valueOf(Palette.RIPPLE_ON_PAGE), null, shape(Color.WHITE, 9, false)));
         action.setTag("artifactAction:" + name); action.setFocusable(true);
         action.setContentDescription(tr("查看文件：", "View file: ") + name);
         action.setOnClickListener(view -> open.accept(reference));

@@ -11,9 +11,8 @@ import android.view.ViewConfiguration;
 import android.view.animation.DecelerateInterpolator;
 import android.view.accessibility.AccessibilityNodeInfo;
 import android.os.Bundle;
-import android.widget.ScrollView;
 
-final class RefreshScrollView extends ScrollView {
+final class RefreshScrollView extends ChatScrollView {
     private float startX, startY;
     private boolean eligible, pulling, armed, refreshing;
     private Runnable refresh;

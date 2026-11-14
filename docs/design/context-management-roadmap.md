@@ -18,7 +18,8 @@ As of 2026-11-12:
   injection, binding switch, compaction, handoff, fork/child creation and child
   settlement, with estimated net-token deltas where available. The panel also
   compares the selected request with the previous turn by category and node
-  count.
+  count. Long request-content lists show five nodes by default and keep the
+  remaining rows collapsed until the user expands them.
 - Phase 2 is implemented for managed child conversations: a bounded
   `DelegationPacket` is injected once, a `Settlement` is written back to the
   parent, and the Context panel renders an observed node/link agent graph.

@@ -5,6 +5,7 @@ const { contextBridge, ipcRenderer, webUtils } = require('electron');
 contextBridge.exposeInMainWorld('camelliaWindowChrome', {
   getState: () => ipcRenderer.invoke('camellia:window-chrome-state'),
   openMenu: payload => ipcRenderer.invoke('camellia:window-chrome-menu', payload),
+  setDimmed: value => ipcRenderer.invoke('camellia:window-chrome-dimmed', value),
   onState: callback => subscribe('camellia:window-chrome', callback),
   onFocus: callback => subscribe('camellia:window-chrome-focus', callback),
 });
@@ -119,6 +120,12 @@ contextBridge.exposeInMainWorld('dshDesktop', {
   switchMode: (mode) => ipcRenderer.invoke('dsh:switch-mode', mode),
   onHarnessNavigate: callback => subscribe('dsh:harness-navigate', callback),
   conversationCommand: payload => ipcRenderer.invoke('dsh:conversation-command', payload),
+  visualizeGet: payload => ipcRenderer.invoke('dsh:visualize-get', payload),
+  visualizeState: payload => ipcRenderer.invoke('dsh:visualize-state', payload),
+  visualizeExport: payload => ipcRenderer.invoke('dsh:visualize-export', payload),
+  visualizeCopy: payload => ipcRenderer.invoke('dsh:visualize-copy', payload),
+  visualizeNetwork: payload => ipcRenderer.invoke('dsh:visualize-network', payload),
+  visualizeNetworkFetch: payload => ipcRenderer.invoke('dsh:visualize-network-fetch', payload),
   conversationSwitch: payload => ipcRenderer.invoke('dsh:conversation-switch', payload),
   conversationHandoff: payload => ipcRenderer.invoke('dsh:conversation-handoff', payload),
   conversationOpenHandoff: payload => ipcRenderer.invoke('dsh:conversation-open-handoff', payload),

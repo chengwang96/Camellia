@@ -41,23 +41,36 @@
     height: 3px;
     border-radius: 999px;
     background: var(--dsw-alias-label-caption);
-    transition: width .2s cubic-bezier(.2, .85, .3, 1.25), background .16s var(--ds-ease-in-out),
+    transition: width .2s cubic-bezier(.2, .85, .3, 1.25), height .2s cubic-bezier(.2, .85, .3, 1.25),
+      background .16s var(--ds-ease-in-out),
       box-shadow .18s var(--ds-ease-in-out), transform .18s cubic-bezier(.2, .85, .3, 1.15);
-  }
-  .conversation-marker:hover .conversation-marker-line,
-  .conversation-marker:focus-visible .conversation-marker-line {
-    width: 18px;
-    background: var(--dsw-alias-label-secondary);
-    box-shadow: 0 0 0 2px color-mix(in srgb, var(--dsw-alias-label-secondary) 8%, transparent);
-    transform: scaleY(1.25);
   }
   .conversation-marker.is-current .conversation-marker-line {
     width: 16px;
     background: var(--dsw-alias-label-primary);
   }
-  .conversation-marker.is-current:hover .conversation-marker-line,
-  .conversation-marker.is-current:focus-visible .conversation-marker-line {
+  .conversation-marker:hover .conversation-marker-line,
+  .conversation-marker:focus-visible .conversation-marker-line {
+    width: 24px;
+    height: 4px;
+    background: var(--dsw-alias-label-primary);
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--dsw-alias-label-primary) 9%, transparent);
+  }
+  /* Magnify a short run around the pointer so nearby turns remain easy to
+     target while sweeping the rail. The hovered marker stays the widest. */
+  .conversation-marker:has(+ .conversation-marker:hover) .conversation-marker-line,
+  .conversation-marker:has(+ .conversation-marker:focus-visible) .conversation-marker-line,
+  .conversation-marker:hover + .conversation-marker .conversation-marker-line,
+  .conversation-marker:focus-visible + .conversation-marker .conversation-marker-line {
     width: 20px;
+    height: 4px;
+  }
+  .conversation-marker:has(+ .conversation-marker + .conversation-marker:hover) .conversation-marker-line,
+  .conversation-marker:has(+ .conversation-marker + .conversation-marker:focus-visible) .conversation-marker-line,
+  .conversation-marker:hover + .conversation-marker + .conversation-marker .conversation-marker-line,
+  .conversation-marker:focus-visible + .conversation-marker + .conversation-marker .conversation-marker-line {
+    width: 16px;
+    height: 4px;
   }
   .conversation-marker:focus-visible {
     outline: 2px solid var(--dsw-static-deepseek-400);
@@ -98,8 +111,8 @@
   .conversation-preview {
     position: absolute;
     z-index: 14;
-    width: min(300px, calc(100% - 16px));
-    padding: 10px 12px 11px;
+    width: min(330px, calc(100% - 16px));
+    padding: 11px 13px 12px;
     border: 1px solid var(--dsw-alias-border-l2);
     border-radius: 12px;
     background: var(--dsw-alias-bg-layer-1);
@@ -153,12 +166,25 @@
   .conversation-preview-text {
     display: -webkit-box;
     -webkit-box-orient: vertical;
-    -webkit-line-clamp: 3;
+    -webkit-line-clamp: 2;
     overflow: hidden;
     overflow-wrap: anywhere;
     color: var(--dsw-alias-label-primary);
+    font: var(--f-s-14);
+    font-weight: 600;
+    line-height: 1.4;
+  }
+  .conversation-preview-answer {
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 3;
+    overflow: hidden;
+    overflow-wrap: anywhere;
+    margin-top: 6px;
+    color: var(--dsw-alias-label-secondary);
     font: var(--f-xs-13);
-    line-height: 1.48;
+    font-weight: 400;
+    line-height: 1.5;
   }
   @media (max-width: 760px) {
     .conversation-rail { display: none; }

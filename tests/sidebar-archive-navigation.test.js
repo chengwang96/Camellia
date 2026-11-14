@@ -198,6 +198,50 @@ test('a neighbor that is gone, archived elsewhere, or unreadable falls back to t
   assert.deepEqual(unreadable.state.created, ['ws']);
 });
 
+test('a conversation opened while the archive reloads wins over the draft fallback', async () => {
+  const sessions = [{ id: 'only', title: 'Only', workspaceId: 'ws' }];
+  const { context, state } = fixture({ sessions, sessionId: 'only' });
+  context.loadSessionHistory = async () => {
+    context.context.sessionId = 'user-target';
+    context.sessionHistory = [];
+    return true;
+  };
+  await context.archiveSession(sessions[0]);
+  assert.deepEqual(state.archived, [{ id: 'only', archived: true }]);
+  assert.deepEqual(state.opened, []);
+  assert.deepEqual(state.created, []);
+  assert.equal(context.context.sessionId, 'user-target');
+  assert.deepEqual(state.status, ['Session archived']);
+});
+
+test('a conversation opened while the archive neighbor loads is not replaced by a draft', async () => {
+  const sessions = [workspace('open'), workspace('neighbor')];
+  const { context, state } = fixture({ sessions, sessionId: 's-open' });
+  context.openHistorySession = async id => {
+    state.opened.push(id);
+    context.context.sessionId = 'user-target';
+    return false;
+  };
+  await context.archiveSession(sessions[0]);
+  assert.deepEqual(state.opened, ['s-neighbor']);
+  assert.deepEqual(state.created, []);
+  assert.equal(context.context.sessionId, 'user-target');
+});
+
+test('a phone archive does not replace a conversation opened while its neighbor loads', async () => {
+  const sessions = [workspace('open'), workspace('neighbor')];
+  const { context, state } = fixture({ sessions, sessionId: 's-open', pages: [[sessions[1]]] });
+  context.openHistorySession = async id => {
+    state.opened.push(id);
+    context.context.sessionId = 'user-target';
+    return false;
+  };
+  await context.archivedChanged('s-open', true);
+  assert.deepEqual(state.opened, ['s-neighbor']);
+  assert.deepEqual(state.created, []);
+  assert.equal(context.context.sessionId, 'user-target');
+});
+
 test('the last row of a loaded page pulls the next history page before falling back', async () => {
   const sessions = [workspace('first')];
   const older = workspace('older');
@@ -247,6 +291,22 @@ test('deleting the only conversation of a workspace falls back to its draft page
   assert.deepEqual(state.deleted, ['only']);
   assert.deepEqual(state.opened, []);
   assert.deepEqual(state.created, ['ws']);
+});
+
+test('a conversation opened while a delete reloads wins over the draft fallback', async () => {
+  const sessions = [{ id: 'only', title: 'Only', workspaceId: 'ws' }];
+  const { context, state } = fixture({ sessions, sessionId: 'only' });
+  context.loadSessionHistory = async () => {
+    context.context.sessionId = 'user-target';
+    context.sessionHistory = [];
+    return true;
+  };
+  context.confirmDeleteSession(sessions[0]);
+  await context.deleteSessionConfirmed();
+  assert.deepEqual(state.deleted, ['only']);
+  assert.deepEqual(state.opened, []);
+  assert.deepEqual(state.created, []);
+  assert.equal(context.context.sessionId, 'user-target');
 });
 
 test('deleting another conversation keeps the current one and cannot start while busy', async () => {

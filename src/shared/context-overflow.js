@@ -92,10 +92,14 @@ function contextError(status, detail) {
 // signal that should start another summary automatically.
 const AUTOCOMPACT_THRASHING = /autocompact is thrashing|context refilled to the (?:context )?limit within \d+ turns?/i;
 
+// Match cancellation outcomes, not arbitrary failures that happen to mention
+// cancellation (for example, "Could not cancel compaction: connection lost").
+const requestCancelledText = value => /^(?:(?:Failed to start|Could not resend):\s*)?(?:(?:Compaction|Request) cancel(?:l)?ed(?: before sending|; the original conversation is retained\.)?|cancel(?:l)?ed)[.!]?$/i.test(String(value ?? '').trim());
+
 // Recovery choices also apply when summarization itself failed, even though
 // that failure must never be treated as a provider context-overflow signal.
-const contextRecoveryText = value => contextOverflowText(value) || AUTOCOMPACT_THRASHING.test(String(value ?? ''))
-  || /\bcompaction\b|\bcontext recovery\b|\bconversation (?:is |was )?(?:still )?too large\b|\bcompacted context\b/i.test(String(value ?? ''));
+const contextRecoveryText = value => !requestCancelledText(value) && (contextOverflowText(value) || AUTOCOMPACT_THRASHING.test(String(value ?? ''))
+  || /\bcompaction\b|\bcontext recovery\b|\bconversation (?:is |was )?(?:still )?too large\b|\bcompacted context\b/i.test(String(value ?? '')));
 
 // Engines append this paragraph for clients that have no recovery controls.
 // The workbench shows the same choices beside the error, so it strips the
@@ -108,5 +112,5 @@ const recoverySummary = value => {
 };
 
 return { CONTEXT_OVERFLOW_SOURCES, RATE_LIMIT, contextOverflow, contextOverflowText, contextTokenLimit, contextError,
-  contextRecoveryText, RECOVERY_ADVICE, recoverySummary };
+  requestCancelledText, contextRecoveryText, RECOVERY_ADVICE, recoverySummary };
 });

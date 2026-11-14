@@ -94,7 +94,7 @@ with sync_playwright() as playwright:
     expect(page.locator('.background-work-error')).to_be_visible()
 
     # Reuse the current work controls and tokens at compact widths, in both
-    # languages/themes. The count exposes individual descriptions as a tooltip.
+    # languages/themes. The count stays compact without a hover hint.
     for language, theme, width, height in [('en', 'light', 1100, 800), ('zh-CN', 'dark', 1100, 800), ('en', 'dark', 390, 760), ('zh-CN', 'light', 390, 760)]:
         page.set_viewport_size({'width': width, 'height': height})
         page.emulate_media(color_scheme=theme, reduced_motion='reduce')
@@ -108,7 +108,7 @@ with sync_playwright() as playwright:
         }""")
         expect(page.locator('.background-work-text')).to_contain_text('2 个后台任务' if language == 'zh-CN' else '2 background tasks')
         expect(stop).to_have_text('停止后台任务' if language == 'zh-CN' else 'Stop background tasks')
-        expect(page.locator('.background-work-text')).to_have_attribute('title', 'Governed policy evaluation\nGenerate the comparison report')
+        assert page.locator('.background-work-text').evaluate("el => !el.hasAttribute('title') && !el.hasAttribute('data-tooltip')")
         assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
         assert stop.bounding_box()['width'] > 80
         page.screenshot(path=str(preview / f'background-work-{language}-{theme}-{width}.png'), animations='disabled')

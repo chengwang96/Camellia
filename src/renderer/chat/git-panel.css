@@ -1,19 +1,18 @@
 .git-icon-button, .git-icon-text-button { display: inline-grid; place-items: center; flex: none; width: 28px; height: 28px; padding: 0; border: 0; border-radius: 7px; background: transparent; color: var(--dsw-alias-label-secondary); font: var(--f-xxs-12); cursor: pointer; }
 .git-icon-text-button { width: auto; padding: 0 7px; }
 .git-icon-button:hover:not(:disabled), .git-icon-text-button:hover:not(:disabled) { background: var(--dsw-alias-interactive-bg-hover); color: var(--dsw-alias-label-primary); }
-.git-change-row { position: relative; display: flex; align-items: center; width: 100%; border-radius: 9px; }
+.git-change-row { display: flex; align-items: center; width: auto; padding-right: 6px; border-radius: 9px; }
 .git-change-row:hover { background: var(--dsw-alias-interactive-bg-hover); }
 .git-change-open { display: flex; align-items: center; gap: 12px; flex: 1; min-width: 0; padding: 8px; border: 0; border-radius: 9px; background: transparent; color: var(--dsw-alias-label-primary); text-align: left; font: inherit; cursor: pointer; }
 .git-change-icon { display: grid; place-items: center; flex: none; width: 18px; height: 18px; color: var(--dsw-alias-label-secondary); }
 .git-change-icon svg { width: 18px; height: 18px; }
 .git-change-label { flex: 1; min-width: 0; }
-.git-change-menu { position: absolute; right: 6px; top: 50%; display: grid; place-items: center; width: 28px; height: 28px; padding: 0; border: 0; border-radius: 7px; background: var(--dsw-alias-bg-layer-1); color: var(--dsw-alias-label-secondary); opacity: 0; visibility: hidden; transform: translateY(-50%); cursor: pointer; }
+.git-change-menu { display: none; place-items: center; flex: none; width: 28px; height: 28px; padding: 0; border: 0; border-radius: 7px; background: var(--dsw-alias-bg-layer-1); color: var(--dsw-alias-label-secondary); cursor: pointer; }
 .git-change-menu svg { width: 18px; height: 18px; }
 .git-change-menu:hover:not(:disabled) { background: var(--dsw-alias-bg-muted); color: var(--dsw-alias-label-primary); }
-.git-change-row:hover .git-change-menu, .git-change-row:focus-within .git-change-menu { opacity: 1; visibility: visible; }
-.git-change-row:hover .git-stats, .git-change-row:hover .git-stats-partial, .git-change-row:focus-within .git-stats, .git-change-row:focus-within .git-stats-partial { visibility: hidden; }
+.git-change-row:hover .git-change-menu, .git-change-row:focus-within .git-change-menu { display: grid; }
+.git-change-row:hover .git-stats, .git-change-row:focus-within .git-stats { display: none; }
 .git-stats { display: inline-flex; flex: none; align-items: center; gap: 6px; font: var(--f-xxs-12); font-variant-numeric: tabular-nums; white-space: nowrap; }
-.git-stats-partial { flex: none; color: var(--dsw-alias-label-caption); font: var(--f-xxs-12); }
 .git-additions { color: var(--dsw-alias-state-success-primary); }
 .git-deletions { color: var(--dsw-alias-state-error-primary); }
 .git-summary-message { padding-top: 5px; padding-bottom: 5px; }
@@ -72,7 +71,7 @@
 .git-commit-input:focus { border-color: var(--dsw-static-deepseek-400); outline: 2px solid var(--dsw-static-deepseek-400); outline-offset: 0; }
 .git-commit-form .work-action { white-space: nowrap; }
 .git-confirm-dialog { width: min(420px, calc(100vw - 32px)); padding: 0; border: 1px solid var(--dsw-alias-border-l2); border-radius: 14px; background: var(--dsw-alias-bg-layer-1); color: var(--dsw-alias-label-primary); box-shadow: var(--dsw-shadow-lv3); }
-.git-confirm-dialog::backdrop { background: #0005; }
+.git-confirm-dialog::backdrop { background: var(--dsw-alias-bg-mask-1); }
 .git-confirm-form { padding: 20px; }
 .git-confirm-form h2 { margin: 0 0 10px; font: var(--f-base-16); }
 .git-confirm-body { margin: 0; white-space: pre-wrap; color: var(--dsw-alias-label-secondary); font: var(--f-xs-13); line-height: 1.6; }
@@ -85,8 +84,8 @@
 .file-viewer[data-mode="git"] .file-viewer-kicker { color: var(--dsw-alias-state-success-primary); }
 .file-viewer[data-mode="git"] .file-viewer-actions button[hidden] { display: none; }
 @media (hover: none) {
-  .git-change-menu { opacity: 1; visibility: visible; }
-  .git-change-row .git-stats, .git-change-row .git-stats-partial { visibility: hidden; }
+  .git-change-menu { display: grid; }
+  .git-change-row .git-stats { display: none; }
 }
 @media (max-width: 600px) {
   .git-files { max-height: 210px; }

@@ -16,6 +16,7 @@ Start with the [English README](../README.md) or [Simplified Chinese README](../
 | [Goals](goals.md) | Natural-language goals, revisions, continuation and independent completion checks. |
 | [Scheduled checks](scheduled-tasks.md) | Natural-language scheduling, recovery, and task scope. |
 | [File finding](file-find.md) | `/find`, recent files, name/content search, and phone downloads. |
+| [Attachments](attachments.md) | `/attach`, current-conversation artifacts, and cross-conversation handoffs. |
 | [Artifact previews](artifact-previews.md) | File cards and desktop preview behavior. |
 | [Storage maintenance](storage-maintenance.md) | Manual cleanup and protected data. |
 | [Runtime troubleshooting](troubleshooting-runtimes.md) | Engines missing or failing to launch. |

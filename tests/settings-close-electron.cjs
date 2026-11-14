@@ -99,6 +99,7 @@ async function main() {
     else home.emit('focus'); // Activation through the native owner caption.
     await waitFor(() => settings.isDestroyed());
     assert.equal(contents.isDestroyed(), true);
+    assert.equal(home.isMinimized(), false, 'dismissing Settings must not minimize the workbench');
     await waitFor(() => home.webContents.executeJavaScript('!!document.querySelector(".settings-window-backdrop[hidden]")'));
     assert.equal(home.listenerCount('focus'), ownerFocusListeners, 'dismissal listener is removed on close');
     const servers = await home.webContents.executeJavaScript('window.dshDesktop.listCliServers()');

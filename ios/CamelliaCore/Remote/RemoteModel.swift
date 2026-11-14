@@ -742,6 +742,7 @@ public struct RemoteTask: Sendable, Identifiable, Equatable {
 
 public struct RemoteQueueEntry: Sendable, Identifiable, Equatable {
     public let id: String
+    public let source: String
     public let text: String
     public let state: String
     public let error: String
@@ -754,6 +755,7 @@ public struct RemoteQueueEntry: Sendable, Identifiable, Equatable {
 
     public init(_ json: JSONObject) {
         id = json.text("id")
+        source = json.text("source") == "desktop" ? "desktop" : "mobile"
         text = json.text("text")
         state = json.text("state")
         error = json.text("error")
@@ -812,6 +814,7 @@ public struct RemoteArtifactPage: Sendable {
     }
 
     public var isLast: Bool { nextOffset < 0 }
+
 }
 
 // MARK: - Snapshots
@@ -824,6 +827,8 @@ public struct RemoteArtifactPage: Sendable {
 /// messages array does not replace the visible transcript; Android makes the
 /// same distinction in `MainActivity.applySnapshot`.
 public struct RemoteSnapshot: Sendable {
+    /// Current first list page attached to a background notification.
+    public let conversationList: RemoteListPage?
     public let subagents: [RemoteSubtask]?
     public let conversation: RemoteConversation?
     /// The device's current permission, carried on every detail snapshot.
@@ -873,6 +878,7 @@ public struct RemoteSnapshot: Sendable {
     public let olderAvailable: Bool
 
     public init(_ json: JSONObject) {
+        conversationList = json.object("conversationList").map(RemoteListPage.init)
         olderAvailable = !json.has("nextBefore") || !json.isNull("nextBefore")
         subagents = json.has("subagents") ? json.objects("subagents").map(RemoteSubtask.init) : nil
         conversation = json.object("conversation").map(RemoteConversation.init)
@@ -940,6 +946,13 @@ public struct RemoteListPage: Sendable {
     public var availableEngines: [RemoteEngine] { RemoteEngine.available(advertised: engines) }
 
     public var isLast: Bool { nextOffset < 0 }
+
+    /// A pushed first page can replace the visible list only when it carries
+    /// all metadata and covers the range the reader already opened.
+    public func coversVisibleList(count: Int, searching: Bool) -> Bool {
+        !searching && access != nil && engines != nil
+            && (isLast || conversations.count >= count)
+    }
 }
 
 // MARK: - Pairing

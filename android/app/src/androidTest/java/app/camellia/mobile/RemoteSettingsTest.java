@@ -23,7 +23,8 @@ public class RemoteSettingsTest extends InstrumentationTestCase {
             getInstrumentation().waitForIdleSync();
             getInstrumentation().runOnMainSync(() -> {
                 try {
-                    field(activity, "credentials", new JSONObject());
+                    field(activity, "credentials", new JSONObject()
+                        .put("address", "http://100.80.1.2:43127").put("token", "a".repeat(43)));
                     var list = MainActivity.class.getDeclaredMethod("listScreen"); list.setAccessible(true); list.invoke(activity);
                     View root = activity.getWindow().getDecorView();
                     LinearLayout bar = root.findViewWithTag("remoteSearchBar");
@@ -86,6 +87,42 @@ public class RemoteSettingsTest extends InstrumentationTestCase {
         } finally {
             getInstrumentation().runOnMainSync(activity::finish);
             getInstrumentation().waitForIdleSync();
+        }
+    }
+
+    public void testAttachmentSheetDoesNotDuplicateTheSafetyLevel() throws Exception {
+        Activity activity = getInstrumentation().startActivitySync(new Intent(
+            getInstrumentation().getTargetContext(), MainActivity.class)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+        try {
+            getInstrumentation().waitForIdleSync();
+            getInstrumentation().runOnMainSync(() -> {
+                try {
+                    field(activity, "credentials", new JSONObject()
+                        .put("address", "http://100.80.1.2:43127").put("token", "a".repeat(43)));
+                    field(activity, "conversationId", "12345678-1234-1234-1234-123456789abc");
+                    field(activity, "connected", true);
+                    field(activity, "controlAllowed", true);
+                    var detail = MainActivity.class.getDeclaredMethod("detailScreen");
+                    detail.setAccessible(true); detail.invoke(activity);
+                    var attach = MainActivity.class.getDeclaredMethod("pickImage");
+                    attach.setAccessible(true); attach.invoke(activity);
+
+                    View root = activity.getWindow().getDecorView();
+                    assertNotNull("Permission stays beside the attachment action",
+                        root.findViewWithTag("remotePermissionPicker"));
+                    android.app.Dialog dialog = (android.app.Dialog) field(activity, "computerDialog");
+                    View sheet = dialog.getWindow().getDecorView();
+                    assertNull("Safety level must not be duplicated inside the attachment sheet",
+                        sheet.findViewWithTag("attachPermission"));
+                    assertNotNull(sheet.findViewWithTag("attachArtifacts"));
+                    dialog.dismiss();
+                } catch (Exception error) {
+                    throw new AssertionError(error);
+                }
+            });
+        } finally {
+            getInstrumentation().runOnMainSync(activity::finish);
         }
     }
 

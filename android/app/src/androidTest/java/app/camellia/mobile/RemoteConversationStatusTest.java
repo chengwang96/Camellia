@@ -25,6 +25,10 @@ public class RemoteConversationStatusTest extends InstrumentationTestCase {
                 new JSONObject().put("tasks", new org.json.JSONArray().put(new JSONObject().put("id", "shell").put("engine", "kimi").put("runId", 7).put("canStop", true).put("status", unknown ? "unknown" : "running")))));
             field("canStopBackgroundWork", true); field("connected", true); field("controlAllowed", true);
             var update = MainActivity.class.getDeclaredMethod("updateControls"); update.setAccessible(true); update.invoke(activity);
+            // Inline work cards live inside the collapsible work strip; reveal it
+            // before checking the legacy background-control geometry.
+            var inlineField = MainActivity.class.getDeclaredField("workInline"); inlineField.setAccessible(true);
+            ((View) inlineField.get(activity)).setVisibility(View.VISIBLE);
         });
         getInstrumentation().waitForIdleSync();
         ui(() -> {
@@ -32,7 +36,9 @@ public class RemoteConversationStatusTest extends InstrumentationTestCase {
             PageTransitions transitions = root.findViewWithTag("pageTransitions");
             if (transitions != null) transitions.finishTransition();
             TextView stop = root.findViewWithTag("remoteBackgroundStop");
-            assertTrue(stop.isEnabled()); assertTrue(stop.getWidth() > 0); assertTrue(bar.getWidth() <= root.getWidth());
+            assertTrue(stop.isEnabled());
+            assertTrue("stop width " + stop.getWidth() + ", bar " + bar.getWidth() + ", root " + root.getWidth(), stop.getWidth() > 0);
+            assertTrue("bar " + bar.getWidth() + " exceeds root " + root.getWidth(), bar.getWidth() <= root.getWidth());
             TextView label = (TextView) ((android.widget.LinearLayout) bar).getChildAt(0);
             assertEquals(unknown ? (zh ? "后台状态未知 · 1" : "Background status unknown · 1") : (zh ? "后台任务 · 1" : "Background tasks · 1"), label.getText().toString());
             assertTrue(label.getWidth() > 0); assertNotNull(label.getLayout());

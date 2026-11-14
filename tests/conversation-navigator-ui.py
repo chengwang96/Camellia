@@ -41,7 +41,7 @@ with sync_playwright() as p:
     expect(page.locator('.conversation-marker')).to_have_count(24)
     rail_box = page.locator('#conversationRail').bounding_box()
     main_box = page.locator('.main').bounding_box()
-    assert abs(rail_box['x'] - main_box['x'] - 2) <= 1, (rail_box, main_box)
+    assert abs(rail_box['x'] - main_box['x'] - 12) <= 1, (rail_box, main_box)
     assert page.locator('#chatScroll').evaluate('(node)=>getComputedStyle(node).scrollbarWidth') == 'none'
     assert page.locator('#chatScroll').evaluate('(node)=>node.offsetWidth===node.clientWidth')
     page.wait_for_function("document.querySelectorAll('.conversation-marker')[23].classList.contains('is-current')")
@@ -72,12 +72,13 @@ with sync_playwright() as p:
     expect(page.locator('#conversationRail')).to_be_visible()
     page.locator('#workPanelToggle').click()
     expect(page.locator('#workPanel')).to_be_visible()
-    expect(page.locator('#conversationRail')).to_be_visible()
+    expect(page.locator('#conversationRail')).to_be_hidden()
     assert page.locator('.conversation-marker').first.evaluate('(node)=>getComputedStyle(node).width') == '20px'
     assert page.locator('.conversation-marker-line').first.evaluate('(node)=>getComputedStyle(node).width') == '12px'
     page.screenshot(path=str(preview / 'conversation-navigator-panel.png'), animations='disabled')
     page.locator('#workPanelClose').click()
     expect(page.locator('#workPanel')).to_be_hidden()
+    expect(page.locator('#conversationRail')).to_be_visible()
     page.emulate_media(reduced_motion='no-preference')
     hover_marker = page.locator('.conversation-marker').nth(2)
     hover_line = hover_marker.locator('.conversation-marker-line')
@@ -87,14 +88,41 @@ with sync_playwright() as p:
     page.wait_for_timeout(260)
     after_hover = hover_line.evaluate('(node)=>parseFloat(getComputedStyle(node).width)')
     assert after_hover > before_hover + 5, (before_hover, after_hover)
-    expect(page.locator('.conversation-preview')).to_be_visible()
-    expect(page.locator('.conversation-preview')).to_contain_text('Turn 3')
-    expect(page.locator('.conversation-preview')).to_contain_text('Click to jump')
-    expect(page.locator('.conversation-preview')).to_contain_text('Question 3')
-    assert page.locator('.conversation-preview').evaluate('(node)=>getComputedStyle(node).borderRadius') == '12px'
+    wave_widths = page.locator('.conversation-marker-line').evaluate_all(
+        '(lines)=>lines.slice(0, 6).map(line=>parseFloat(getComputedStyle(line).width))')
+    assert wave_widths[2] == 24, wave_widths
+    assert wave_widths[1] == wave_widths[3] == 20, wave_widths
+    assert wave_widths[0] == wave_widths[4] == 16, wave_widths
+    assert wave_widths[5] == 12, wave_widths
+    active_line_box = hover_line.bounding_box()
+    assert active_line_box['x'] - main_box['x'] >= 9, (active_line_box, main_box)
+    preview_card = page.locator('.conversation-preview')
+    expect(preview_card).to_be_visible()
+    expect(preview_card).to_contain_text('Turn 3')
+    expect(preview_card).to_contain_text('Click to jump')
+    expect(preview_card).to_contain_text('Question 3')
+    question = page.locator('.conversation-preview-text')
+    reply = page.locator('.conversation-preview-answer')
+    assert question.evaluate('(node)=>getComputedStyle(node).fontSize') == '14px'
+    assert question.evaluate('(node)=>getComputedStyle(node).fontWeight') == '600'
+    assert reply.evaluate('(node)=>getComputedStyle(node).fontSize') == '13px'
+    assert reply.evaluate('(node)=>getComputedStyle(node).fontWeight') == '400'
+    expect(reply).to_contain_text('Answer 3')
+    assert reply.text_content().endswith('…')
+    assert len(reply.text_content()) <= 220
+    assert reply.evaluate('(node)=>getComputedStyle(node).webkitLineClamp') == '3'
+    assert preview_card.evaluate('(node)=>getComputedStyle(node).borderRadius') == '12px'
     page.screenshot(path=str(preview / 'conversation-navigator-hover.png'), animations='disabled')
     page.mouse.move(1000, 120)
     expect(page.locator('.conversation-preview')).to_be_hidden()
+    hover_marker.focus()
+    page.keyboard.press('Tab')
+    page.keyboard.press('Shift+Tab')
+    page.wait_for_timeout(260)
+    assert hover_marker.evaluate('(node)=>node.matches(":focus-visible")')
+    assert hover_line.evaluate('(node)=>parseFloat(getComputedStyle(node).width)') == 24
+    expect(page.locator('.conversation-preview')).to_be_visible()
+    page.locator('#input').focus()
     page.emulate_media(reduced_motion='reduce')
 
     page.evaluate("changeLanguage('zh-CN')")
@@ -103,6 +131,7 @@ with sync_playwright() as p:
     page.locator('.conversation-marker').nth(2).hover()
     expect(page.locator('.conversation-preview')).to_contain_text('第 3 轮')
     expect(page.locator('.conversation-preview')).to_contain_text('点击跳转')
+    expect(page.locator('.conversation-preview-answer')).to_contain_text('Answer 3')
     page.mouse.move(1000, 120)
     page.evaluate("changeLanguage('en')")
 
@@ -110,8 +139,21 @@ with sync_playwright() as p:
     page.emulate_media(color_scheme='dark')
     page.screenshot(path=str(preview / 'conversation-navigator-dark.png'), animations='disabled')
     page.emulate_media(color_scheme='light')
-    page.set_viewport_size({'width': 1100, 'height': 900})
+    for narrow_width in (900, 1080):
+        page.set_viewport_size({'width': narrow_width, 'height': 900})
+        expect(page.locator('#conversationRail')).to_be_hidden()
+        page.screenshot(path=str(preview / f'conversation-navigator-{narrow_width}.png'), animations='disabled')
+    page.set_viewport_size({'width': 1120, 'height': 900})
     expect(page.locator('#conversationRail')).to_be_visible()
+    page.locator('.conversation-marker').nth(2).hover()
+    page.wait_for_timeout(260)
+    rail_geometry = page.evaluate('''() => {
+      const line = document.querySelectorAll('.conversation-marker-line')[2].getBoundingClientRect();
+      const chat = document.querySelector('#chat').getBoundingClientRect();
+      return {lineLeft: line.left, lineRight: line.right, chatLeft: chat.left};
+    }''')
+    assert rail_geometry['lineRight'] <= rail_geometry['chatLeft'] - 1, rail_geometry
+    page.mouse.move(1000, 120)
     assert page.locator('.conversation-marker').first.evaluate('(node)=>getComputedStyle(node).width') == '20px'
     assert page.locator('.conversation-marker-line').first.evaluate('(node)=>getComputedStyle(node).width') == '12px'
     page.set_viewport_size({'width': 1440, 'height': 900})

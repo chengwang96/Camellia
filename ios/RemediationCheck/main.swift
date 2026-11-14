@@ -110,6 +110,11 @@ private enum RemediationChecks {
     private static var count = 0
     private static var started = false
 
+    private static func phase(_ name: String) {
+        print("[remediation-check] phase=\(name)")
+        fflush(stdout)
+    }
+
     private static func expect(_ value: Bool, _ label: String) {
         count += 1
         if !value {
@@ -129,6 +134,7 @@ private enum RemediationChecks {
         guard !started else { return }
         started = true
         precondition(Bundle.main.bundleIdentifier == "app.camellia.mobile.remediationcheck")
+        phase("starting")
         do {
             let support = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask,
                                                       appropriateFor: nil, create: true)
@@ -281,21 +287,38 @@ private enum RemediationChecks {
             expect((reopenedMessages as NSArray).isEqual(to: originalMessages),
                    "cancelled edit history is recoverable after reopening the store")
 
+            phase("backgrounds-and-popups")
             try await checkBackground(.dark)
             try await checkBackground(.light)
             for style: UIUserInterfaceStyle in [.light, .dark] {
                 try await checkPopupSurface(style, size: CGSize(width: 288, height: 248))
                 try await checkPopupSurface(style, size: CGSize(width: 312, height: 344))
             }
+            phase("back-navigation")
             try await checkBackNavigation()
+            phase("page-covers")
             try await checkPageCovers()
+            phase("composer-feedback")
             try await checkComposerFeedback()
+            phase("reference-screens")
             try await captureReferenceScreens()
         } catch {
             failures.append("unexpected error: \(error)")
             print("FAIL: unexpected error: \(error)")
         }
-        print("remediation checks=\(count) verdict=\(failures.isEmpty ? "PASS" : "FAIL")")
+        let verdict = failures.isEmpty ? "PASS" : "FAIL"
+        do {
+            let documents = try FileManager.default.url(for: .documentDirectory, in: .userDomainMask,
+                                                       appropriateFor: nil, create: true)
+            let result: [String: Any] = ["version": 1, "checks": count, "verdict": verdict, "failures": failures]
+            try JSONSerialization.data(withJSONObject: result, options: [.sortedKeys])
+                .write(to: documents.appendingPathComponent("remediation-result.json"), options: .atomic)
+        } catch {
+            print("FAIL: could not persist remediation verdict: \(error)")
+            fflush(stdout)
+            exit(1)
+        }
+        print("remediation checks=\(count) verdict=\(verdict)")
         fflush(stdout)
         exit(failures.isEmpty ? 0 : 1)
     }

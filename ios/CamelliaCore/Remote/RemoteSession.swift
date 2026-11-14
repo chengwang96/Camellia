@@ -14,9 +14,8 @@ import Foundation
 /// the bug behind "配对成功但看不到会话": `connect()` opened the list stream and
 /// then asked for the list, the fetch sat on a queue the stream was holding,
 /// `listLoading` never cleared, and the screen stayed empty with no message.
-/// Android is immune because its streams run on a two-thread pool, so one
-/// long-lived stream leaves the other thread free for requests. Two queues here
-/// are the same guarantee.
+/// Android also keeps long-lived streams on their own executor so they cannot
+/// occupy the workers needed for history and ordinary requests.
 ///
 /// The `generation` counter is what stops a slow answer from a computer the
 /// user has just switched away from overwriting the new one's screen. It is
@@ -370,10 +369,9 @@ final class RemoteSession {
               onState: onState, onListEvent: nil, incremental: incremental)
     }
 
-    /// A list event is complete only after its list request has completed.
-    /// Android performs that request inside the SSE listener; this receipt
-    /// preserves the same success/failure and retry ordering without putting
-    /// the blocking stream on the one-shot request queue.
+    /// A list event completes after its pushed page is applied, or after a
+    /// fallback/range request succeeds. The receipt preserves retry ordering
+    /// without putting the blocking stream on the one-shot request queue.
     func watchList(onEvent: @escaping (RemoteSnapshot, Bool, @escaping (Result<Void, Error>) -> Void) -> Void,
                    onState: @escaping (RemoteStreamState) -> Void) {
         watch(conversationId: nil, onSnapshot: { _ in },

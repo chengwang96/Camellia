@@ -154,6 +154,7 @@ function graphForConversation(manager, rootId) {
     status: manager.busy(rootId) ? 'running' : 'idle',
     parentId: null,
     root: true,
+    contextObserved: true,
   };
   const nodes = [rootNode];
   const ids = new Map([[rootNode.id, rootNode]]);

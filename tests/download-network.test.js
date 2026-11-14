@@ -9,7 +9,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { createHash } = require('node:crypto');
-const { downloadSettings, createDownloadConnection } = require('../src/main/download-network');
+const { downloadSettings, createDownloadConnection, chooseDownloadConnection } = require('../src/main/download-network');
 const { createRuntimeManager } = require('../src/main/runtime-manager');
 const { createHarness } = require('./main-process-harness.cjs');
 const { BAD_PORTS } = require('./bad-ports.cjs');
@@ -56,6 +56,45 @@ async function networkFixture(t) {
   });
   return { body, url: `http://127.0.0.1:${origin.address().port}`, proxy: `http://127.0.0.1:${proxy.address().port}/`,
     requests: () => requests, tunnels: () => tunnels, forwarded: () => forwarded };
+}
+
+async function speedFixture(t) {
+  const body = Buffer.alloc(1024 * 1024, 7);
+  let originRequests = 0, proxyRequests = 0;
+  const origin = http.createServer((_req, res) => {
+    originRequests++;
+    res.writeHead(200, { 'content-length': body.length, 'content-type': 'application/octet-stream' });
+    res.end(body);
+  });
+  for (;;) {
+    await new Promise(resolve => origin.listen(0, '127.0.0.1', resolve));
+    if (!BAD_PORTS.has(origin.address().port)) break;
+    await new Promise(resolve => origin.close(resolve));
+  }
+  // HTTP proxy requests use absolute-form URLs. This fixture answers slowly so
+  // the direct route wins without needing a real external network.
+  const proxy = http.createServer((req, res) => {
+    proxyRequests++;
+    if (req.url.includes('/fail')) { res.statusCode = 502; res.end('proxy failed'); return; }
+    const length = 512 * 1024;
+    res.writeHead(200, { 'content-length': length, 'content-type': 'application/octet-stream' });
+    let offset = 0;
+    const timer = setInterval(() => {
+      if (offset >= length) { clearInterval(timer); res.end(); return; }
+      res.write(body.subarray(offset, Math.min(length, offset + 16 * 1024)));
+      offset += 16 * 1024;
+    }, 5);
+    req.on('close', () => clearInterval(timer));
+  });
+  await new Promise(resolve => proxy.listen(0, '127.0.0.1', resolve));
+  t.after(async () => {
+    origin.closeAllConnections();
+    proxy.closeAllConnections();
+    await Promise.all([new Promise(resolve => origin.close(resolve)), new Promise(resolve => proxy.close(resolve))]);
+  });
+  return { body, url: `http://127.0.0.1:${origin.address().port}/archive`,
+    proxy: `http://127.0.0.1:${proxy.address().port}/`,
+    originRequests: () => originRequests, proxyRequests: () => proxyRequests };
 }
 
 test('download preferences start empty, persist per profile, and reject invalid proxies', async t => {
@@ -115,6 +154,87 @@ test('a broken selected proxy reports failure without falling back to a direct d
   t.after(async () => { await connection.close(); await new Promise(resolve => broken.close(resolve)); });
   await assert.rejects(connection.fetch(f.url, { signal: AbortSignal.timeout(3000) }));
   assert.equal(f.requests(), 0);
+});
+
+test('harness downloads compare direct and proxy routes and use the clearly faster one', async t => {
+  const f = await speedFixture(t);
+  const choice = await chooseDownloadConnection({ mode: 'proxy', url: f.proxy }, { probeUrl: f.url });
+  t.after(() => choice.connection.close());
+  assert.equal(choice.route, 'direct');
+  assert.deepEqual(choice.results.map(result => [result.route, result.ok]).sort(), [['direct', true], ['proxy', true]]);
+  assert.equal(choice.connection.env.HTTPS_PROXY, '');
+  assert.equal(f.originRequests(), 1);
+  assert.equal(f.proxyRequests(), 1);
+  assert.equal((await (await choice.connection.fetch(f.url)).arrayBuffer()).byteLength, f.body.length);
+});
+
+test('a direct speed-test failure keeps the configured proxy for the download', async t => {
+  const f = await speedFixture(t);
+  const choice = await chooseDownloadConnection({ mode: 'proxy', url: f.proxy }, { probeUrl: 'http://registry.invalid/archive' });
+  t.after(() => choice.connection.close());
+  assert.equal(choice.route, 'proxy');
+  assert.equal(choice.connection.env.HTTPS_PROXY, f.proxy);
+  const routes = Object.fromEntries(choice.results.map(result => [result.route, result.ok]));
+  assert.deepEqual(routes, { direct: false, proxy: true });
+});
+
+test('a failed speed test falls back to the saved connection instead of silently changing it', async t => {
+  const closed = http.createServer();
+  await new Promise(resolve => closed.listen(0, '127.0.0.1', resolve));
+  const probeUrl = `http://127.0.0.1:${closed.address().port}/archive`;
+  await new Promise(resolve => closed.close(resolve));
+  const broken = http.createServer((_req, res) => { res.statusCode = 502; res.end('proxy failed'); });
+  for (;;) {
+    await new Promise(resolve => broken.listen(0, '127.0.0.1', resolve));
+    if (!BAD_PORTS.has(broken.address().port)) break;
+    await new Promise(resolve => broken.close(resolve));
+  }
+  t.after(async () => { broken.closeAllConnections(); await new Promise(resolve => broken.close(resolve)); });
+  const proxy = `http://127.0.0.1:${broken.address().port}/`;
+  const choice = await chooseDownloadConnection({ mode: 'proxy', url: proxy }, { probeUrl });
+  t.after(() => choice.connection.close());
+  assert.equal(choice.route, 'proxy');
+  assert.equal(choice.connection.env.HTTPS_PROXY, proxy);
+  assert.ok(choice.results.every(result => !result.ok));
+});
+
+test('direct downloads skip the speed test entirely', async t => {
+  const f = await speedFixture(t);
+  const choice = await chooseDownloadConnection({ mode: 'direct', url: '' }, { probeUrl: f.url });
+  t.after(() => choice.connection.close());
+  assert.equal(choice.route, 'direct');
+  assert.deepEqual(choice.results, []);
+  assert.equal(f.originRequests() + f.proxyRequests(), 0);
+});
+
+test('speed selection keeps the saved proxy unless direct is clearly faster', async () => {
+  const connections = [];
+  const create = settings => {
+    const connection = { settings, env: {}, closed: false, close() { connection.closed = true; } };
+    connections.push(connection);
+    return connection;
+  };
+  let directSpeed = 110, proxySpeed = 100;
+  const probe = async connection => ({
+    bytes: 256 * 1024,
+    ms: 1000,
+    bytesPerSecond: connection.settings.mode === 'direct' ? directSpeed : proxySpeed,
+  });
+  const settings = { mode: 'proxy', url: 'http://proxy.example/' };
+  const inspect = (choice, route) => {
+    const direct = connections.findLast(connection => connection.settings.mode === 'direct');
+    const proxy = connections.findLast(connection => connection.settings.mode === 'proxy');
+    assert.equal(choice.connection.closed, false);
+    assert.equal((route === 'proxy' ? direct : proxy).closed, true, 'The unused route is closed');
+    choice.connection.close();
+  };
+  const marginal = await chooseDownloadConnection(settings, { probeUrl: 'http://artifact.invalid/file', create, probe });
+  assert.equal(marginal.route, 'proxy');
+  inspect(marginal, 'proxy');
+  directSpeed = 140;
+  const clear = await chooseDownloadConnection(settings, { probeUrl: 'http://artifact.invalid/file', create, probe });
+  assert.equal(clear.route, 'direct');
+  inspect(clear, 'direct');
 });
 
 test('Antigravity bootstrap and both uv download commands use the chosen connection', async t => {

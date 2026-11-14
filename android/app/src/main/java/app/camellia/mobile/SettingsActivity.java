@@ -39,7 +39,7 @@ public final class SettingsActivity extends Activity {
     @Override protected void attachBaseContext(Context context) { super.attachBaseContext(MobilePreferences.wrap(context)); }
 
     @Override protected void onCreate(Bundle saved) {
-        super.onCreate(saved); PageTransitions.configureActivity(this);
+        super.onCreate(saved); MobileOrientation.lockPhonePortrait(this); PageTransitions.configureActivity(this);
         style = new ChatStyle(this); chinese = getResources().getConfiguration().getLocales().get(0).getLanguage().equals("zh");
         settingsStyle = new SettingsStyle(this);
         section = saved == null ? getIntent().getStringExtra("section") : saved.getString("section");
@@ -69,9 +69,9 @@ public final class SettingsActivity extends Activity {
             public void failed(Exception error) {
                 if (isDestroyed()) return;
                 failure(error);
-                TextView retry = text(tr("重新读取", "Read again"), 15, style.accent);
-                retry.setTag("localStorageLoadRetry"); retry.setMinHeight(dp(48));
-                retry.setOnClickListener(view -> loadStore()); content.addView(retry);
+                TextView retry = settingsStyle.secondaryButton(tr("重新读取", "Read again"),
+                    "localStorageLoadRetry", SettingsActivity.this::loadStore);
+                content.addView(retry);
             }
         });
     }
@@ -116,16 +116,15 @@ public final class SettingsActivity extends Activity {
         TextView result = new TextView(this); result.setText(value); result.setTextSize(size); result.setTextColor(color); result.setPadding(0, dp(5), 0, dp(5)); return result;
     }
     private void shell(String title) {
-        LinearLayout root = column(); root.setBackgroundColor(settingsStyle.background);
+        LinearLayout root = column(); root.setBackground(settingsStyle.palette().pageBackground());
         root.setClipChildren(false); root.setClipToPadding(false);
         settingsStyle.pagePadding(root);
         root.addView(settingsStyle.header(title, tr("返回", "Back"), this::finish));
         ScrollView scroll = new ScrollView(this); scroll.setVerticalScrollBarEnabled(false);
         content = column(); content.setPadding(0, dp(12), 0, dp(16)); scroll.addView(content); root.addView(scroll, new LinearLayout.LayoutParams(-1, 0, 1));
         status = text("", Palette.TEXT_NOTE, style.muted); status.setTag("settingsStatus"); status.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE); root.addView(status);
-        storageRetry = text(tr("重试保存", "Retry saving"), Palette.TEXT_BODY, settingsStyle.accent);
-        storageRetry.setTag("settingsStorageRetry"); storageRetry.setGravity(Gravity.CENTER); storageRetry.setMinHeight(dp(48));
-        storageRetry.setFocusable(true); storageRetry.setOnClickListener(view -> retryStorage());
+        storageRetry = settingsStyle.secondaryButton(tr("重试保存", "Retry saving"),
+            "settingsStorageRetry", this::retryStorage);
         storageRetry.setVisibility(storageError.isEmpty() ? View.GONE : View.VISIBLE); root.addView(storageRetry);
         pages.show(root, section, 0); root.requestApplyInsets();
     }

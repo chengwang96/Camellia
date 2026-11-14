@@ -67,6 +67,7 @@ public final class RemoteDiscussionsActivity extends Activity {
     private boolean pageLoading;
     private boolean chinese, foreground, connected, restoring, stateReady;
     private RemoteApi api;
+    private final java.util.function.Function<String, RemoteApi> remoteClientFactory = address -> new RemoteApi(this, address);
     private LinearLayout root, content, roster, toolbar, pendingBar;
     private ScrollView scroll;
     private TextView title, status, membersButton;
@@ -74,6 +75,7 @@ public final class RemoteDiscussionsActivity extends Activity {
     private ChatStatusLine workStatus;
     private boolean reconnecting, connectionBlocked;
     private ChatComposer composer;
+    private PermissionTool permissionButton;
     private AlertDialog dialog;
     private LinearLayout memberPanel;
     private final List<String> images = new ArrayList<>();
@@ -107,7 +109,8 @@ public final class RemoteDiscussionsActivity extends Activity {
     private TextView button(String label, String tag, Runnable action) {
         TextView button = text(label, 14, style.ink); button.setGravity(Gravity.CENTER); button.setTag(tag);
         button.setPadding(dp(14), dp(8), dp(14), dp(8)); button.setMinHeight(dp(48)); button.setFocusable(true);
-        button.setBackground(new android.graphics.drawable.RippleDrawable(ColorStateList.valueOf(0x224176e6), style.capsule(style.surface), style.capsule(-1)));
+        button.setBackground(new android.graphics.drawable.RippleDrawable(ColorStateList.valueOf(0x224176e6),
+            style.capsule(style.surface), style.capsule(-1)));
         button.setOnClickListener(view -> action.run()); return button;
     }
     private EditText field(String hint, String value, int limit, boolean multiline, String tag) {
@@ -121,7 +124,7 @@ public final class RemoteDiscussionsActivity extends Activity {
     }
 
     @Override public void onCreate(Bundle saved) {
-        super.onCreate(saved); EmbeddedNetwork.initialize(getApplicationContext());
+        super.onCreate(saved); MobileOrientation.lockPhonePortrait(this); EmbeddedNetwork.initialize(getApplicationContext());
         composerAttachments = AttachmentMaintenance.protect(this); stateAttachments = AttachmentMaintenance.protect(this);
         chinese = getResources().getConfiguration().getLocales().get(0).getLanguage().equals("zh");
         style = new ChatStyle(this); settingsStyle = new SettingsStyle(this);
@@ -171,7 +174,7 @@ public final class RemoteDiscussionsActivity extends Activity {
 
     private void stateLoadError(Exception error) {
         stateReady = false;
-        root = column(); root.setTag("discussionStateLoadError"); root.setBackgroundColor(style.background);
+        root = column(); root.setTag("discussionStateLoadError"); root.setBackground(style.pageBackground());
         root.setGravity(Gravity.CENTER_VERTICAL); root.setPadding(dp(24), dp(24), dp(24), dp(24));
         root.addView(text(tr("群聊数据无法读取", "Discussion data unavailable"), 20, style.ink));
         TextView details = text(ErrorDetails.withSummary(tr("无法读取或解密本地群聊数据，原数据已保留。", "Could not read or decrypt local discussion data. Stored data has been preserved."), error), 14, style.muted);
@@ -214,7 +217,7 @@ public final class RemoteDiscussionsActivity extends Activity {
 
     private void shell() {
         releasePageViews(); rosterSignature = "";
-        root = column(); root.setPadding(dp(18), dp(10), dp(18), dp(8)); root.setBackgroundColor(style.background); root.setClipToPadding(false);
+        root = column(); root.setPadding(dp(18), dp(10), dp(18), dp(8)); root.setBackground(style.pageBackground()); root.setClipToPadding(false);
         getWindow().setStatusBarColor(style.background); getWindow().setNavigationBarColor(style.background);
         if (android.os.Build.VERSION.SDK_INT >= 27) getWindow().getDecorView().setSystemUiVisibility(android.graphics.Color.red(style.background) < 128 ? 0
             : View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR | View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR);
@@ -258,6 +261,10 @@ public final class RemoteDiscussionsActivity extends Activity {
                 this::chooseMode, this::send, () -> submit("stop", groupId, new JSONObject()), () -> {});
             composer.input.setTag("discussionComposer"); composer.send.setTag("discussionSend"); composer.stop.setTag("discussionStop");
             ImageButton attach = style.lineButton("plus", tr("添加内容", "Add"), this::attachmentMenu); attach.setTag("discussionAttach"); composer.addTool(attach);
+            boolean expandedPermission = MobileLayout.useExpandedComposerControls(getResources().getConfiguration());
+            permissionButton = new PermissionTool(this, style, chinese, expandedPermission, this::showPermissionMenu);
+            permissionButton.setTag("discussionPermission");
+            composer.addTool(permissionButton, expandedPermission ? -2 : 48);
             attachmentStrip = new android.widget.HorizontalScrollView(this); attachmentStrip.setHorizontalScrollBarEnabled(false);
             attachmentTray = new LinearLayout(this); attachmentStrip.addView(attachmentTray); bar.addView(attachmentStrip, 0); renderAttachments();
             android.widget.HorizontalScrollView horizontal = new android.widget.HorizontalScrollView(this); horizontal.setHorizontalScrollBarEnabled(false);
@@ -292,22 +299,29 @@ public final class RemoteDiscussionsActivity extends Activity {
     private void connect() {
         if (!stateReady || !foreground || !credentials.has("token")) return;
         connectionBlocked = false; disconnect(); int ticket = generation; String target = groupId;
-        RemoteApi client = new RemoteApi(this, address); api = client;
+        RemoteApi client = remoteClientFactory.apply(address); api = client;
         reads.execute(() -> {
             try {
                 JSONObject info = client.json("/v1/status", credentials.optString("token"), null);
                 if (!String.valueOf(info.optJSONArray("capabilities")).contains("\"discussions\""))
                     throw new IllegalStateException(tr("这台主机尚未开放远程讨论，请更新主机并检查设备授权。", "Remote discussions are unavailable. Update the host and check device access."));
-                JSONObject snapshot = client.json("/v1/discussions" + (target == null ? "" : "/" + target), credentials.optString("token"), null);
                 deliver(ticket, () -> {
                     rich = String.valueOf(info.optJSONArray("capabilities")).contains("\"discussion-rich\"");
-                    connected = true; reconnecting = false; workStatus.reconnected(); apply(snapshot, false); controls();
-                    if (getIntent().getBooleanExtra("createGroup", false)) { getIntent().removeExtra("createGroup"); createGroup(); }
-                    if (group != null && getIntent().getBooleanExtra("showActions", false)) { getIntent().removeExtra("showActions"); groupMenu(group); }
-                    for (String id : keys(pending)) poll(id, false);
                     events.execute(() -> {
                         try {
-                            client.discussionEvents(target, credentials.optString("token"), next -> deliver(ticket, () -> apply(next, false)));
+                            boolean[] initial = { true };
+                            client.discussionEvents(target, credentials.optString("token"), next -> {
+                                boolean first = initial[0]; initial[0] = false;
+                                deliver(ticket, () -> {
+                                    connected = true; reconnecting = false; workStatus.reconnected();
+                                    apply(next, false); controls();
+                                    if (first) {
+                                        if (getIntent().getBooleanExtra("createGroup", false)) { getIntent().removeExtra("createGroup"); createGroup(); }
+                                        if (group != null && getIntent().getBooleanExtra("showActions", false)) { getIntent().removeExtra("showActions"); groupMenu(group); }
+                                        for (String id : keys(pending)) poll(id, false);
+                                    }
+                                });
+                            });
                             throw new java.io.IOException("Discussion event stream disconnected");
                         }
                         catch (Exception error) { deliver(ticket, () -> connectionError(error)); }
@@ -370,7 +384,8 @@ public final class RemoteDiscussionsActivity extends Activity {
             String detail = (row.optBoolean("pinned") ? tr("置顶 · ", "Pinned · ") : "") + (row.optBoolean("active") ? tr("正在回复", "Replying") : row.optInt("members") + tr(" 位成员", " members"));
             ConversationRow item = new ConversationRow(this, style, false, name, detail, "discussionRow:" + id, "discussionState:" + id,
                 () -> openGroup(id), () -> groupMenu(row)); line.addView(item, new LinearLayout.LayoutParams(0, -2, 1));
-            ImageButton menu = style.lineButton("more", name + tr("：更多操作", ": more actions"), () -> groupMenu(row)); menu.setTag("discussionActions:" + id);
+            ImageButton menu = style.composerToolButton("more", name + tr("：更多操作", ": more actions"), style.muted,
+                () -> groupMenu(row)); menu.setTag("discussionActions:" + id);
             line.addView(menu, new LinearLayout.LayoutParams(dp(48), dp(48))); content.addView(line);
         }
         if (nextOffset >= 0) content.addView(button(tr("加载更多", "Load more"), "discussionMoreGroups", () -> readPage("/v1/discussions?offset=" + nextOffset)));
@@ -617,7 +632,7 @@ public final class RemoteDiscussionsActivity extends Activity {
         if (workStatus != null) { workStatus.close(); workStatus = null; }
         if (dialog != null) { dialog.dismiss(); dialog = null; }
         if (approvalDialog != null) { approvalDialog.dismiss(); approvalDialog = null; }
-        approvalKey = ""; composer = null; memberPanel = null;
+        approvalKey = ""; composer = null; permissionButton = null; memberPanel = null;
         roster = null; membersButton = null; attachmentTray = null; attachmentStrip = null;
         olderMessages = null; historyNotice = null;
         root = null; content = null; scroll = null; toolbar = null; pendingBar = null;
@@ -652,6 +667,9 @@ public final class RemoteDiscussionsActivity extends Activity {
             composer.send.setVisibility(View.VISIBLE);
             composer.model.setText(mode.equals("serial") ? tr("依次回答", "Sequential replies") : tr("并行回答", "Parallel replies"));
             composer.model.setContentDescription(tr("回答方式", "Reply mode")); composer.model.setEnabled(connected);
+            if (permissionButton != null) permissionButton.level(
+                group == null ? "ask" : group.optString("permissionMode"),
+                rich && connected && group != null && !group.optBoolean("active"));
         }
         if (pendingBar != null) {
             pendingBar.removeAllViews();
@@ -732,21 +750,27 @@ public final class RemoteDiscussionsActivity extends Activity {
         if (groupId == null) return;
         AttachSheet sheet = new AttachSheet(this); LinearLayout panel = sheet.panel();
         boolean ready = rich && connected && !loadingAttachments && pending.length() == 0 && images.size() + documents.size() < 16;
-        sheet.note(panel, tr("最多 16 个附件 · 图片 4 MiB/张 · 文档 10 MiB/个 · 合计 32 MiB", "16 attachments · 4 MiB/image · 10 MiB/document · 32 MiB total"));
+        dialog = new CamelliaDialog.Builder(this).setView(panel).create();
+        sheet.header(panel, "plus", tr("添加内容", "Add"), tr("关闭", "Close"), () -> dialog.dismiss());
+        sheet.sectionLabel(panel, tr("从手机添加", "From this phone"));
         sheet.tiles(panel, List.of(new AttachSheet.Tile("camera", tr("拍照", "Camera"), "discussionCamera", ready, () -> pickAttachment(3)),
             new AttachSheet.Tile("image", tr("照片", "Photos"), "discussionPhotos", ready, () -> pickAttachment(1)),
             new AttachSheet.Tile("file", tr("文件", "Files"), "discussionDocuments", ready, () -> pickAttachment(2))));
+        sheet.note(panel, tr("最多 16 个附件 · 图片 4 MiB/张 · 文档 10 MiB/个 · 合计 32 MiB", "16 attachments · 4 MiB/image · 10 MiB/document · 32 MiB total"));
         LinearLayout options = sheet.group(panel, "");
         sheet.row(options, "folder", tr("查看产物", "Files"), "", "", "discussionFiles", rich && connected, () -> { dialog.dismiss(); showFiles(); });
-        sheet.row(options, "shield", tr("安全级别", "Safety level"), "", group == null ? "" : RemoteSettingsPopup.permissionLabel(group.optString("permissionMode"), chinese),
-            "discussionPermission", rich && connected && group != null && !group.optBoolean("active"), () -> {
-                dialog.dismiss(); String[] levels = {"ask", "auto", "full"};
-                dialog = new CamelliaDialog.Builder(this).setTitle(tr("安全级别", "Safety level"))
-                    .setItems(new String[]{RemoteSettingsPopup.permissionLabel("ask", chinese), RemoteSettingsPopup.permissionLabel("auto", chinese), RemoteSettingsPopup.permissionLabel("full", chinese)},
-                        (d, index) -> submit("set-permission", groupId, object("permissionMode", levels[index]))).show();
-            });
         if (!rich) sheet.note(panel, tr("请更新并重启电脑端以启用附件和审批。", "Update and restart the host for attachments and approvals."));
-        dialog = new CamelliaDialog.Builder(this).setTitle(tr("添加内容", "Add")).setView(panel).setNegativeButton(tr("关闭", "Close"), null).show();
+        dialog.show();
+    }
+
+    private void showPermissionMenu() {
+        if (group == null || groupId == null || !rich || !connected || group.optBoolean("active")) return;
+        String[] levels = {"ask", "auto", "full"};
+        dialog = new CamelliaDialog.Builder(this).setTitle(tr("安全级别", "Safety level"))
+            .setItems(new String[]{RemoteSettingsPopup.permissionLabel("ask", chinese),
+                RemoteSettingsPopup.permissionLabel("auto", chinese),
+                RemoteSettingsPopup.permissionLabel("full", chinese)},
+                (d, index) -> submit("set-permission", groupId, object("permissionMode", levels[index]))).show();
     }
     private void pickAttachment(int kind) {
         dialog.dismiss(); pickerGroup = groupId;

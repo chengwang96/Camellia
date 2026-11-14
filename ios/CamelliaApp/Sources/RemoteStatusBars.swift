@@ -272,7 +272,9 @@ private struct QueueCard: View {
             text += model.usesChinese ? " · 附件 \(entry.attachmentCount)"
                   : " · \(entry.attachmentCount) attachments"
         }
-        return text
+        let source = entry.source == "desktop"
+            ? (model.usesChinese ? "电脑" : "Computer") : (model.usesChinese ? "手机" : "Mobile")
+        return source + " · " + text
     }
 }
 
@@ -290,8 +292,8 @@ private struct QueueEditor: View {
     var body: some View {
         NavigationView {
             VStack(alignment: .leading, spacing: 12) {
-                Text(model.usesChinese ? "保存后保留原来的排队位置和附件。"
-                     : "Saving keeps this message's queue position and attachments.")
+                Text(model.usesChinese ? "保存后保留消息原来的设备归属、排队位置和附件。"
+                     : "Saving keeps this message's source, queue position and attachments.")
                     .font(.caption)
                     .foregroundColor(Palette.muted)
                 TextEditor(text: $prompt)

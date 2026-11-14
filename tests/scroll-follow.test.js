@@ -73,6 +73,42 @@ test('opening idle history reaches the bottom again after layout grows', () => {
   assert.equal(state.chatScroll.scrollTop, 2400);
 });
 
+test('idle history keeps following delayed media layouts after the initial scroll frame', () => {
+  const { state, layout, resize } = scrollFixture();
+  state.scrollToLatest();
+  layout();
+  for (const height of [2600, 3200, 2900]) {
+    state.chatScroll.scrollHeight = height;
+    resize();
+    layout();
+    assert.equal(state.chatScroll.scrollTop, height - state.chatScroll.clientHeight);
+    assert.equal(state.running, false);
+  }
+});
+
+test('delayed media respects idle history reading and follows again on bottom return', () => {
+  const { state, dispatch, layout, resize } = scrollFixture();
+  state.scrollToLatest();
+  layout();
+  dispatch('wheel', { deltaY: -24 });
+  state.chatScroll.scrollTop -= 24;
+  dispatch('scroll');
+  const position = state.chatScroll.scrollTop;
+  state.chatScroll.scrollHeight = 3000;
+  resize();
+  layout();
+  assert.equal(state.chatScroll.scrollTop, position);
+  assert.equal(state.followRunOutput, false);
+
+  dispatch('wheel', { deltaY: 100000 });
+  state.chatScroll.scrollTop = state.chatScroll.scrollHeight;
+  dispatch('scroll');
+  state.chatScroll.scrollHeight = 3600;
+  resize();
+  layout();
+  assert.equal(state.chatScroll.scrollTop, 3000);
+});
+
 test('upward wheel, keyboard, touch and scrollbar gestures pause following even near the bottom', () => {
   for (const gesture of ['wheel', 'keyboard', 'touch', 'pointer']) {
     const { state, dispatch, layout, resize } = scrollFixture();

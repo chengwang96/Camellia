@@ -59,14 +59,14 @@ async function registryFixture(t, versions, onRequest = () => {}) {
       const version = versions[decodeURIComponent(req.url.slice(5))];
       if (version === undefined) { res.statusCode = 404; res.end(); return; }
       res.setHeader('content-type', 'application/json');
-      res.end(JSON.stringify({ version }));
+      res.end(JSON.stringify({ version, dist: { tarball: `${base}/archive/${encodeURIComponent(req.url.slice(5))}` } }));
       return;
     }
     if (req.url.startsWith('/pypi/')) {
       const version = versions[decodeURIComponent(req.url.slice(6))];
       if (version === undefined) { res.statusCode = 404; res.end(); return; }
       res.setHeader('content-type', 'application/json');
-      res.end(JSON.stringify({ info: { version } }));
+      res.end(JSON.stringify({ info: { version }, urls: [{ url: `${base}/archive/pypi`, size: 1024 }] }));
       return;
     }
     res.statusCode = 404;
@@ -87,6 +87,29 @@ async function registryFixture(t, versions, onRequest = () => {}) {
     pypi: pkg => `${base}/pypi/${encodeURIComponent(pkg)}`,
     antigravity: () => `${base}/antigravity-cli`,
   };
+}
+
+async function httpProxy(t) {
+  const proxy = http.createServer((req, res) => {
+    const target = new URL(req.url);
+    const upstream = http.request({ hostname: target.hostname, port: target.port || 80,
+      path: target.pathname + target.search, method: req.method, headers: req.headers }, response => {
+      res.writeHead(response.statusCode, response.headers);
+      response.pipe(res);
+    });
+    upstream.on('error', () => { res.statusCode = 502; res.end('proxy failed'); });
+    req.pipe(upstream);
+  });
+  for (;;) {
+    await new Promise(resolve => proxy.listen(0, '127.0.0.1', resolve));
+    if (!BAD_PORTS.has(proxy.address().port)) break;
+    await new Promise(resolve => proxy.close(resolve));
+  }
+  t.after(async () => {
+    proxy.closeAllConnections();
+    await new Promise(resolve => proxy.close(resolve));
+  });
+  return `http://127.0.0.1:${proxy.address().port}/`;
 }
 
 const direct = () => ({ mode: 'direct', url: '' });
@@ -192,12 +215,17 @@ test('subscription CLI checks and upgrades use the native release manifest rathe
   const release = { version: '1.3.5', url: 'https://storage.googleapis.com/antigravity-public/antigravity-cli/1.3.5-123/windows-x64/cli_windows_x64.exe', sha512: 'a'.repeat(128) };
   const registries = await registryFixture(t, { 'antigravity-cli': release });
   const lifecycle = [];
+  let probedUrl = '';
   const manager = {
     state: () => [{ id: 'antigravity', name: 'Antigravity', mode: 'subscription', version, status: 'ready' }],
     locate: () => ({ file: 'x', dir: 'x', version, mode: 'subscription' }),
   };
   const updates = createRuntimeUpdates({ manager, engines: ENGINES, node: null, npm: null,
     run: async () => assert.fail('No npm or Python SDK installation'), downloadSettings: direct, registries,
+    chooseConnection: async (_settings, options) => {
+      probedUrl = options.probeUrl;
+      return { connection: { env: {}, close: async () => {} }, route: 'proxy', results: [] };
+    },
     beforeInstall: async () => { lifecycle.push('stop'); return async result => { lifecycle.push(result.updated ? 'restart updated' : 'restart previous'); }; },
     cliUpgrade: async options => { assert.deepEqual(options.release, release); assert.equal(options.dir, 'x'); lifecycle.push('native upgrade'); version = release.version; } });
   const [row] = await updates.check();
@@ -208,6 +236,7 @@ test('subscription CLI checks and upgrades use the native release manifest rathe
   const result = await updates.update('antigravity');
   assert.equal(result.to, '1.3.5'); assert.equal(result.changed, true);
   assert.deepEqual(lifecycle, ['stop', 'native upgrade', 'restart updated']);
+  assert.equal(probedUrl, release.url);
   assert.equal((await updates.check())[0].updateAvailable, false);
 });
 
@@ -247,6 +276,33 @@ test('npm update installs the latest version and restores the harness without re
   assert.ok(args.includes('install') && args.includes('--save-exact'), `npm install args: ${args.join(' ')}`);
   assert.ok(args.includes('@moonshot-ai/kimi-code@0.43.1'));
   assert.ok(args.includes('--omit=optional') && args.includes('--ignore-scripts'), 'Kimi keeps its install flags on update');
+  assert.equal(manager.locate('kimi').version, '0.43.1');
+});
+
+test('npm updates speed-test the package archive and hand the winning route to npm', async t => {
+  const root = fixtureRoot(t);
+  const dir = npmRuntime(root, 'kimi', '0.43.0');
+  const registries = await registryFixture(t, { '@moonshot-ai/kimi-code': '0.43.1' });
+  const manager = createRuntimeManager({ root, installRoot: path.join(root, 'elsewhere') });
+  const settings = { mode: 'proxy', url: await httpProxy(t) };
+  let probeUrl = '', npmEnv;
+  const updates = createRuntimeUpdates({ manager, engines: ENGINES, node: '/node', npm: '/npm-cli.js',
+    downloadSettings: () => settings, registries,
+    chooseConnection: async (received, options) => {
+      assert.deepEqual(received, settings);
+      probeUrl = options.probeUrl;
+      return { connection: { env: { HTTPS_PROXY: '', NO_PROXY: '*' }, close: async () => {} }, route: 'direct', results: [] };
+    },
+    run: async (_exe, args, options) => {
+      npmEnv = options.env;
+      const spec = args.find(arg => arg.startsWith('@moonshot-ai/kimi-code@'));
+      const version = spec.slice('@moonshot-ai/kimi-code@'.length);
+      fs.writeFileSync(path.join(dir, 'node_modules', '@moonshot-ai', 'kimi-code', 'package.json'),
+        JSON.stringify({ name: '@moonshot-ai/kimi-code', version }));
+    } });
+  assert.equal((await updates.update('kimi')).to, '0.43.1');
+  assert.match(probeUrl, /\/archive\//, 'The probe uses the npm tarball, not only the small version document');
+  assert.equal(npmEnv.HTTPS_PROXY, '');
   assert.equal(manager.locate('kimi').version, '0.43.1');
 });
 
@@ -346,12 +402,17 @@ test('antigravity API runtime upgrades its SDK through the bundled installer', a
   const registries = await registryFixture(t, { 'google-antigravity': '0.2.0' });
   const manager = createRuntimeManager({ root, installRoot: path.join(root, 'elsewhere') });
   const calls = [];
+  let probedUrl = '';
   const run = async (exe, args) => {
     calls.push({ exe, args });
     if (args[0] === 'pip' && args[1] === 'compile') fs.writeFileSync(args[args.indexOf('--output-file') + 1], '# lock\n');
   };
   const updates = createRuntimeUpdates({ manager, engines: ENGINES, node: null, npm: null, run,
-    downloadSettings: direct, registries });
+    downloadSettings: direct, registries,
+    chooseConnection: async (_settings, options) => {
+      probedUrl = options.probeUrl;
+      return { connection: { env: {}, close: async () => {} }, route: 'proxy', results: [] };
+    } });
   const result = await updates.update('antigravity');
   assert.deepEqual({ ...result }, { ok: true, engine: 'antigravity', from: '0.1.17', to: '0.2.0', changed: true, restartRequired: false, restarting: false });
   const compile = calls.find(call => call.args[0] === 'pip' && call.args[1] === 'compile');
@@ -365,6 +426,7 @@ test('antigravity API runtime upgrades its SDK through the bundled installer', a
   assert.equal(JSON.parse(fs.readFileSync(path.join(dir, 'runtime.json'), 'utf8')).sdk, '0.2.0');
   assert.equal(JSON.parse(fs.readFileSync(path.join(dir, 'installed.json'), 'utf8')).sdk, '0.2.0');
   assert.equal(manager.locate('antigravity').version, '0.2.0');
+  assert.match(probedUrl, /\/archive\/pypi$/, 'The SDK probe uses the published wheel rather than only the JSON metadata');
 });
 
 for (const failures of [[], ['kimi'], ['claude'], ['claude', 'kimi']]) {

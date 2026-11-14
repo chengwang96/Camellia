@@ -44,19 +44,19 @@ public class SettingsControlsTest extends InstrumentationTestCase {
                 assertEquals(style.field, fill.getColor().getDefaultColor());
                 assertEquals(style.ink, input.getCurrentTextColor());
                 for (boolean checked : new boolean[]{false, true}) {
-                    android.widget.CheckBox choice = new android.widget.CheckBox(context);
-                    choice.setText(checked ? "多选 · Selected" : "多选 · Not selected");
-                    choice.setTextColor(style.ink); choice.setMinHeight(style.dp(48)); choice.setChecked(checked);
-                    style.selection(choice); panel.addView(choice);
+                    ChoiceRow choice = new ChoiceRow(context, checked ? "多选 · Selected" : "多选 · Not selected",
+                        "独立的描边选项", true, checked);
+                    choice.setTag("multi:" + checked); panel.addView(choice);
+                    assertTrue(choice.createAccessibilityNodeInfo().isCheckable());
+                    assertEquals(checked, choice.isChecked());
+                    assertTrue(choice.getElevation() > 0);
                 }
-                android.widget.RadioGroup choices = new android.widget.RadioGroup(context);
                 for (boolean checked : new boolean[]{true, false}) {
-                    android.widget.RadioButton choice = new android.widget.RadioButton(context);
-                    choice.setText(checked ? "单选 · Selected" : "单选 · Not selected"); choice.setId(View.generateViewId());
-                    choice.setTextColor(style.ink); choice.setMinHeight(style.dp(48)); choice.setChecked(checked);
-                    style.selection(choice); choices.addView(choice);
+                    ChoiceRow choice = new ChoiceRow(context, checked ? "单选 · Selected" : "单选 · Not selected",
+                        "", false, checked);
+                    choice.setTag("single:" + checked); panel.addView(choice);
+                    assertTrue(choice.getMinimumHeight() >= Math.round(48 * context.getResources().getDisplayMetrics().density));
                 }
-                panel.addView(choices);
                 ProgressBar progress = style.progressBar(); progress.setTag("testProgress"); progress.setProgress(42);
                 LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, Math.round(6 * context.getResources().getDisplayMetrics().density));
                 params.topMargin = Math.round(20 * context.getResources().getDisplayMetrics().density); panel.addView(progress, params);

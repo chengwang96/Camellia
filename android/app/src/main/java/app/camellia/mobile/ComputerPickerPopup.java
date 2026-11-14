@@ -70,7 +70,7 @@ final class ComputerPickerPopup {
         action(rows, "plus", chinese ? "添加电脑" : "Add computer", "pickerAddComputer", add);
         action(rows, "settings", chinese ? "管理电脑" : "Manage computers", "pickerManageComputers", manage);
         Rect visible = new Rect(); anchor.getWindowVisibleDisplayFrame(visible);
-        int width = Math.min(dp(312), visible.width() - dp(24));
+        int width = PopupSurface.menuWidth(anchor.getContext(), visible, PopupSurface.COMPACT_MENU_MAX_WIDTH_DP);
         int limit = Math.max(dp(96), Math.min(dp(520), visible.height() - dp(32)));
         panel.measure(View.MeasureSpec.makeMeasureSpec(width, View.MeasureSpec.EXACTLY), View.MeasureSpec.makeMeasureSpec(limit, View.MeasureSpec.AT_MOST));
         int height = Math.min(limit, panel.getMeasuredHeight());

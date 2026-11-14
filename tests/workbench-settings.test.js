@@ -127,8 +127,8 @@ test('keyboard shortcuts persist, clear and reject conflicts', () => {
 test('settings separates general, data, engine and model preferences and starts on General', () => {
   const html = fs.readFileSync(path.join(__dirname, '../src/renderer/settings/api-settings.html'), 'utf8');
   const categories = [...html.matchAll(/<button data-view="([^"]+)"/g)].map(match => match[1]);
-  assert.deepEqual(categories, ['subscriptions', 'providers', 'usage', 'general', 'shortcuts', 'data', 'network',
-    'engines', 'models', 'archived', 'mobile', 'devices']);
+  assert.deepEqual(categories, ['subscriptions', 'providers', 'usage', 'general', 'shortcuts', 'engines', 'models',
+    'network', 'mobile', 'devices', 'data', 'archived']);
   assert.match(html, /<button data-view="general" class="active" aria-current="page"/);
   assert.match(html, /<section id="generalPage" class="page">/);
   assert.match(html, /<section id="shortcutsPage" class="page" hidden>/);

@@ -65,7 +65,7 @@ second_graph = {
     'rootId': second['id'],
     'nodes': [
         {'id': 'conversation:' + second['id'], 'kind': 'conversation', 'title': second['title'],
-         'engine': 'codex', 'status': 'idle', 'parentId': None, 'root': True},
+         'engine': 'codex', 'status': 'idle', 'parentId': None, 'root': True, 'contextObserved': True},
     ],
     'edges': [], 'truncated': False,
 }
@@ -90,7 +90,7 @@ graph = {
     'rootId': fixture['id'],
     'nodes': [
         {'id': 'conversation:' + fixture['id'], 'kind': 'conversation', 'title': fixture['title'],
-         'engine': 'codex', 'status': 'idle', 'parentId': None, 'root': True},
+         'engine': 'codex', 'status': 'idle', 'parentId': None, 'root': True, 'contextObserved': True},
         {'id': 'managed:child', 'kind': 'managed', 'title': 'Child task', 'engine': 'codex',
          'status': 'completed', 'parentId': 'conversation:' + fixture['id'], 'contextObserved': True,
          'contextPacket': {'goal': 'Review the context'}, 'settlement': {'status': 'completed',
@@ -105,24 +105,77 @@ blocks = {
                 'originalTokens': 1200, 'summaryPreview': 'Compacted original context.',
                 'firstUserPinned': True, 'active': True, 'retired': False}],
 }
+many = {
+    'id': 'context-many',
+    'title': 'Inspect many context items',
+    'origin': 'codex',
+    'currentEngine': 'codex',
+    'workspaceId': None,
+    'messages': [
+        {'seq': 1, 'role': 'user', 'text': 'Show the request contents.'},
+        {'seq': 2, 'role': 'assistant', 'engine': 'codex', 'text': 'Many context items ready.'},
+    ],
+}
+many_nodes = [
+    {
+        'id': 'n:' + str(seq),
+        'category': 'conversation' if seq == 1 else 'tool-results',
+        'label': 'Conversation' if seq == 1 else 'Tool results',
+        'seq': seq,
+        'role': 'user' if seq == 1 else 'tool',
+        'kind': 'conversation' if seq == 1 else 'tool-results',
+        'tokens': 80 + seq * 20,
+        'chars': 120 + seq * 10,
+        'preview': 'Request content item ' + str(seq),
+        'observed': True,
+        'status': 'estimated',
+        'expandable': False,
+        'redacted': False,
+    }
+    for seq in range(1, 13)
+]
+many_snapshot = {
+    'version': 1, 'conversationId': many['id'], 'engine': 'codex', 'model': 'fixture-model',
+    'turnSeq': 1, 'pressure': {'used': 5000, 'cap': 200000, 'pct': 2.5, 'source': 'usage'},
+    'usage': {'inputTokens': 4200, 'outputTokens': 80, 'cacheReadTokens': 0,
+              'cacheWriteTokens': 0, 'contextWindow': 200000, 'cacheHitRate': 0},
+    'categories': [
+        {'id': 'conversation', 'label': 'Conversation', 'tokens': 400, 'status': 'estimated'},
+        {'id': 'tool-results', 'label': 'Tool results', 'tokens': 4600, 'status': 'estimated'},
+    ],
+    'nodes': many_nodes,
+    'events': [], 'memory': {'enabled': False, 'scope': {'user': 0, 'workspace': 0}, 'snapshot': ''},
+    'warnings': [], 'truncated': False,
+}
+many_graph = {
+    'rootId': many['id'],
+    'nodes': [
+        {'id': 'conversation:' + many['id'], 'kind': 'conversation', 'title': many['title'],
+         'engine': 'codex', 'status': 'idle', 'parentId': None, 'root': True, 'contextObserved': True},
+    ],
+    'edges': [], 'truncated': False,
+}
 bridge = r"""(() => {
-  const fixture = FIXTURE, second = SECOND, snapshot = SNAPSHOT, secondSnapshot = SECOND_SNAPSHOT,
-        previous = PREVIOUS, graph = GRAPH, secondGraph = SECOND_GRAPH, blocks = BLOCKS;
-  const loadById = id => id === second.id ? second : fixture;
+  const fixture = FIXTURE, second = SECOND, many = MANY, snapshot = SNAPSHOT, secondSnapshot = SECOND_SNAPSHOT,
+        manySnapshot = MANY_SNAPSHOT, previous = PREVIOUS, graph = GRAPH, secondGraph = SECOND_GRAPH,
+        manyGraph = MANY_GRAPH, blocks = BLOCKS;
+  const loadById = id => id === second.id ? second : id === many.id ? many : fixture;
   let reviewConsent = {id:'consent-1', reviewerEngine:'claude', mode:'adversarial', focus:'data loss'};
   window.dshDesktop = {
     sharedConversations: true,
     conversationCommand: async ({action, payload}) => {
-      if (action === 'list-sessions') return {ok:true,sessions:[{...fixture,mtimeMs:Date.now()},{...second,mtimeMs:Date.now()-60000}],workspaces:[],pagination:{}};
+      if (action === 'list-sessions') return {ok:true,sessions:[{...fixture,mtimeMs:Date.now()},{...second,mtimeMs:Date.now()-60000},{...many,mtimeMs:Date.now()-120000}],workspaces:[],pagination:{}};
       if (action === 'get-live') return {ok:true,live:null};
       if (action === 'load-session') return {ok:true,...loadById(payload),preferences:{mode:'direct'},settings:{model:'fixture-model',connection:'api'}};
       if (action === 'get-settings') return {model:'fixture-model',connection:'api'};
       if (action === 'context-snapshot') {
+        if (payload?.sessionId === many.id) return {ok:true,snapshot:manySnapshot};
         if (payload?.sessionId === second.id) return {ok:true,snapshot:secondSnapshot};
         return {ok:true,snapshot: payload?.turnSeq === 1 ? previous : snapshot};
       }
-      if (action === 'agent-graph') return {ok:true,graph: payload?.sessionId === second.id ? secondGraph : graph};
-      if (action === 'context-blocks') return {ok:true,...(payload?.sessionId === second.id
+      if (action === 'agent-graph') return {ok:true,graph: payload?.sessionId === many.id ? manyGraph
+        : payload?.sessionId === second.id ? secondGraph : graph};
+      if (action === 'context-blocks') return {ok:true,...(payload?.sessionId === second.id || payload?.sessionId === many.id
         ? {conversationId:second.id,engine:'codex',blocks:[]} : blocks)};
       if (action === 'context-memory-status') return {ok:true,enabled:true,scope:{user:1,workspace:1},snapshot:'Prefer concise answers.'};
       if (action === 'context-node') return {ok:true,node:{content:'Exact user content',truncated:false,redacted:false}};
@@ -173,7 +226,10 @@ bridge = r"""(() => {
   };
 })();""".replace('SECOND_SNAPSHOT', json.dumps(second_snapshot)) \
     .replace('SECOND_GRAPH', json.dumps(second_graph)) \
+    .replace('MANY_SNAPSHOT', json.dumps(many_snapshot)) \
+    .replace('MANY_GRAPH', json.dumps(many_graph)) \
     .replace('FIXTURE', json.dumps(fixture)).replace('SECOND', json.dumps(second)) \
+    .replace('MANY', json.dumps(many)) \
     .replace('SNAPSHOT', json.dumps(snapshot)) \
     .replace('PREVIOUS', json.dumps(previous)) \
     .replace('GRAPH', json.dumps(graph)).replace('BLOCKS', json.dumps(blocks))
@@ -255,6 +311,8 @@ with sync_playwright() as p:
     expect(page.locator('#contextPanelBody')).to_contain_text('Composition')
     expect(page.locator('#contextPanelBody')).to_contain_text('Recoverable blocks')
     expect(page.locator('#contextPanelBody')).to_contain_text('vs previous turn')
+    expect(page.locator('.ctx-agents')).to_contain_text('Observed context')
+    assert 'Opaque context' not in page.locator('.ctx-agents').inner_text()
     close_state = page.evaluate("""() => {
       const panel = document.querySelector('#contextPanel');
       document.querySelector('#contextPanelClose').click();
@@ -296,9 +354,27 @@ with sync_playwright() as p:
     expect(page.locator('.review-finding')).to_contain_text('src/app.js:12')
     page.screenshot(path=str(preview / 'review-dialog.png'), animations='disabled')
     page.locator('#reviewClose').click()
+    expect(page.locator('#reviewDialog')).to_be_hidden()
     page.keyboard.press('Control+Shift+R')
     expect(page.locator('#reviewDialog')).to_be_visible()
     page.locator('#reviewClose').click()
+    page.locator('[data-sid="context-many"]').click()
+    expect(page.locator('#chat')).to_contain_text('Many context items ready.')
+    page.locator('#contextToggle').click()
+    page.wait_for_function(
+        "document.querySelectorAll('.ctx-node').length === 12"
+        " && document.querySelectorAll('.ctx-node:not([hidden])').length === 5")
+    more = page.locator('.ctx-list-more')
+    expect(more).to_have_text('Show 7 more items')
+    expect(more).to_have_attribute('aria-expanded', 'false')
+    more.click()
+    expect(page.locator('.ctx-node:not([hidden])')).to_have_count(12)
+    expect(more).to_have_text('Show fewer items')
+    expect(more).to_have_attribute('aria-expanded', 'true')
+    more.click()
+    expect(page.locator('.ctx-node:not([hidden])')).to_have_count(5)
+    expect(more).to_have_text('Show 7 more items')
+    page.screenshot(path=str(preview / 'context-many-collapsed.png'), animations='disabled')
     assert errors == [], errors
     browser.close()
-    print('PASS context browser: composition, node, block, agents, memory, switching')
+    print('PASS context browser: composition, node, block, agents, memory, switching, long-list collapse')

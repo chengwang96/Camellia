@@ -8,12 +8,26 @@ const TITLEBAR_HEIGHT = 40;
 // behavior. Only the application menus move into the renderer's caption row.
 function createWindowChrome({ ipcMain, Menu, nativeTheme, loadConfig, translate, platform = process.platform }) {
   const windows = new Set();
-  const dimmed = new WeakSet();
+  const dimmed = new WeakMap();
   const enabled = platform === 'win32';
+  function isDimmed(window) { return (dimmed.get(window)?.size || 0) > 0; }
+  function setDimmed(window, value, source = 'settings') {
+    if (!windows.has(window)) return;
+    let sources = dimmed.get(window);
+    if (!sources) {
+      sources = new Set();
+      dimmed.set(window, sources);
+    }
+    const before = sources.size > 0;
+    if (value) sources.add(source); else sources.delete(source);
+    const after = sources.size > 0;
+    if (after) dimmed.set(window, sources); else dimmed.delete(window);
+    if (before !== after) publish(window);
+  }
   function palette(window) {
     const dark = nativeTheme.shouldUseDarkColors;
     const colors = dark ? { color: '#151517', symbolColor: '#cfd3d6' } : { color: '#ffffff', symbolColor: '#61666b' };
-    if (!dimmed.has(window)) return colors;
+    if (!isDimmed(window)) return colors;
     // Match --dsw-alias-bg-mask-1 in ui-theme.css. The renderer's backdrop
     // cannot cover Windows caption buttons, so composite their colors too.
     const alpha = dark ? 0x80 : 0x3d;
@@ -59,19 +73,25 @@ function createWindowChrome({ ipcMain, Menu, nativeTheme, loadConfig, translate,
       y: Math.round(Math.max(0, Math.min(bounds.height, payload.y * zoom))),
       callback: () => resolve({ ok: true }) }));
   });
+  ipcMain.handle('camellia:window-chrome-dimmed', (event, value) => {
+    const window = owner(event);
+    if (!window || typeof value !== 'boolean') return { ok: false };
+    setDimmed(window, value, 'renderer-overlay');
+    return { ok: true };
+  });
   return {
     options,
-    setDimmed(window, value) {
-      if (!windows.has(window)) return;
-      if (value) dimmed.add(window); else dimmed.delete(window);
-      publish(window);
-    },
+    setDimmed,
     start() { if (enabled) nativeTheme.on('updated', () => this.refresh()); },
     attach(window) {
       if (!enabled) return;
       windows.add(window);
       window.setMenuBarVisibility(false);
       window.webContents.on('dom-ready', () => publish(window));
+      window.webContents.on('did-start-navigation', details => {
+        if (!details.isMainFrame || details.isSameDocument) return;
+        setDimmed(window, false, 'renderer-overlay');
+      });
       let menuKey = null;
       window.webContents.on('before-input-event', (event, input) => {
         // Do not let Alt reveal the old native menu on a second row.

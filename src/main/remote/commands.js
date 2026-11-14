@@ -23,14 +23,17 @@ function findResult(result) {
 }
 
 class RemoteCommands {
-  constructor({ file, reader, access, publish = () => {} }) {
+  constructor({ file, reader, access, publish = () => {}, queue = null }) {
     Object.assign(this, { file, reader, access, publish });
     this.entries = readJson(file, []);
     this.pending = new Map();
     this.pendingAttachments = new Map();
     this.reservations = new Map();
-    this.queue = new RemoteMessageQueue({ file: path.join(path.dirname(file), 'message-queue.json'), manager: reader.manager,
-      authorize: (deviceId, id) => this.authorize(deviceId, id), send: (deviceId, id, payload) => this.sendPrepared(deviceId, id, payload) });
+    this.queue = queue || new RemoteMessageQueue({ file: path.join(path.dirname(file), 'message-queue.json'), manager: reader.manager });
+    this.queue.setTransport({
+      authorize: (deviceId, id) => this.authorize(deviceId, id),
+      send: (deviceId, id, payload) => this.sendPrepared(deviceId, id, payload),
+    });
     reader.manager.remoteQueue = this.queue;
   }
   save() { writeJson(this.file, this.entries); }
@@ -64,7 +67,7 @@ class RemoteCommands {
     const result = this.pending.has(key) ? { ok: false, state: 'pending' }
       : entry.result || { ok: false, state: 'unknown', error: 'Previous request outcome is uncertain; inspect the conversation. It will not be repeated.' };
     return entry.conversationId && (entry.action === 'send' || QUEUE_ACTIONS.includes(entry.action))
-      ? { ...result, ...this.queue.snapshot(entry.conversationId) } : result;
+      ? { ...result, ...this.queue.snapshot(entry.conversationId, { redactAttachments: true }) } : result;
   }
   async acknowledgement(operation) {
     let timer;
@@ -163,7 +166,7 @@ class RemoteCommands {
     }
     const fingerprint = digest([id, ...fields.map(field => payload[field])]);
     const receipt = result => id && (payload.queue === true || QUEUE_ACTIONS.includes(action))
-      ? { ...result, ...this.queue.snapshot(id) } : result;
+      ? { ...result, ...this.queue.snapshot(id, { redactAttachments: true }) } : result;
     const key = device.id + ':' + requestId;
     const prior = this.entries.find(entry => entry.key === key);
     if (prior) {
@@ -313,15 +316,17 @@ class RemoteCommands {
     if (payload.action === 'configure') return configure(manager, conversation, payload);
     if (payload.action === 'queue-remove') {
       if (typeof payload.queueId !== 'string') fail(400, 'Queued message ID required');
-      return { ...this.queue.remove(id, payload.queueId), state: 'accepted' };
+      return { ...this.queue.remove(id, payload.queueId),
+        ...this.queue.snapshot(id, { redactAttachments: true }), state: 'accepted' };
     }
-    if (payload.action === 'queue-resume') return { ...this.queue.resume(id), state: 'accepted' };
+    if (payload.action === 'queue-resume') return { ...this.queue.resume(id),
+      ...this.queue.snapshot(id, { redactAttachments: true }), state: 'accepted' };
     if (payload.action === 'queue-edit' || payload.action === 'queue-steer') {
       if (typeof payload.queueId !== 'string') fail(400, 'Queued message ID required');
       const result = payload.action === 'queue-edit'
         ? this.queue.edit(id, payload.queueId, payload.prompt, payload.expectedText)
         : await this.queue.steer(id, payload.queueId, payload.runId, payload.goalId);
-      return { ...result, state: 'accepted' };
+      return { ...result, ...this.queue.snapshot(id, { redactAttachments: true }), state: 'accepted' };
     }
     if (payload.action === 'send' || payload.action === 'resend') {
       if (payload.queue !== undefined && typeof payload.queue !== 'boolean') fail(400, 'Invalid queue option');
@@ -379,7 +384,8 @@ class RemoteCommands {
         const prepared = { prompt, displayText: payload.prompt, ...(payload.editSeq !== undefined ? { editSeq: payload.editSeq } : {}), ...(attachments.length ? { attachments } : {}) };
         if (queue) {
           const result = this.queue.add(deviceId, id, prepared);
-          committed = result.ok; return result;
+          committed = result.ok;
+          return { ...result, ...this.queue.snapshot(id, { redactAttachments: true }) };
         }
         const { done, ...result } = await this.sendPrepared(deviceId, id, prepared);
         committed = result.ok;

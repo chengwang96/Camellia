@@ -52,6 +52,27 @@ test('returning to the current engine cancels a pending cross-engine navigation'
   assert.deepEqual([loads, saved, titles], [[], [], []]);
 });
 
+test('opening a saved conversation does not wait for its runtime update', async () => {
+  const { state, loads, saved, titles } = fixture(async () => {
+    assert.fail('Opening saved history must not prepare the runtime');
+  });
+  state.assertRuntimeAvailable = () => {
+    assert.fail('Opening saved history must not require an idle runtime');
+  };
+  assert.equal((await state.switchMode('kimi', 'kimi-session', undefined, true, false)).ok, true);
+  assert.equal(state.currentMode, 'kimi');
+  assert.equal(saved.at(-1).mode, 'kimi');
+  assert.deepEqual(titles, ['Kimi Code — Camellia']);
+  assert.deepEqual(loads, []);
+});
+
+test('returning to the current engine ignores a runtime update lock', async () => {
+  const { state } = fixture();
+  state.assertRuntimeAvailable = () => { throw new Error('Codex CLI is updating'); };
+  assert.equal((await state.switchMode('codex', undefined, undefined, true)).ok, true);
+  assert.equal(state.currentMode, 'codex');
+});
+
 test('a fresh draft also supersedes pending engine navigation', async () => {
   let finish;
   const { state } = fixture(() => new Promise(resolve => { finish = resolve; }));

@@ -1,7 +1,9 @@
 package app.camellia.mobile;
 
 import android.content.Intent;
+import android.graphics.Bitmap;
 import android.test.InstrumentationTestCase;
+import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -106,6 +108,55 @@ public class ConversationEntryScrollTest extends InstrumentationTestCase {
             ((RemotePrefetch) field("prefetch")).put((JSONObject) field("credentials"), snapshot(1));
             detail(); apply(2); apply(3);
         });
+        assertBottom();
+    }
+
+    private java.util.List<MarkdownView.ImageCallback> delayedImages() {
+        java.util.List<MarkdownView.ImageCallback> callbacks = new java.util.ArrayList<>();
+        ui(() -> {
+            ChatStyle style = new ChatStyle(activity);
+            MarkdownView markdown = new MarkdownView(activity, style.ink, style.muted, style.surface, style.accent,
+                new MarkdownView.ImageLoader() {
+                    @Override public void load(String reference, MarkdownView.ImageCallback callback) { callbacks.add(callback); }
+                    @Override public void close() {}
+                });
+            ((LinearLayout) field("messages")).addView(markdown.render("![First](first.png)\n\n![Second](second.png)\n\n![Third](third.png)"));
+        });
+        awaitLayout();
+        assertEquals(3, callbacks.size());
+        return callbacks;
+    }
+
+    public void testDelayedImagesStayAtBottomAfterEntryAndSnapshotSettle() {
+        ui(() -> { detail(); apply(1); });
+        assertBottom();
+        var callbacks = delayedImages();
+        assertBottom();
+        for (var callback : callbacks) {
+            ui(() -> callback.loaded(Bitmap.createBitmap(320, 480, Bitmap.Config.ARGB_8888)));
+            assertBottom();
+        }
+    }
+
+    public void testDelayedImagesRespectSmallUpwardScrollAndResumeAtBottom() {
+        ui(() -> { detail(); apply(1); });
+        assertBottom();
+        var callbacks = delayedImages();
+        int[] position = new int[1];
+        ui(() -> {
+            ScrollView scroll = (ScrollView) field("scroll");
+            scroll.scrollBy(0, -Math.round(24 * activity.getResources().getDisplayMetrics().density));
+            position[0] = scroll.getScrollY();
+            assertTrue(scroll.canScrollVertically(1));
+            callbacks.get(0).loaded(Bitmap.createBitmap(320, 480, Bitmap.Config.ARGB_8888));
+        });
+        awaitLayout();
+        ui(() -> {
+            ScrollView scroll = (ScrollView) field("scroll");
+            assertEquals("Image loading must preserve history reading", position[0], scroll.getScrollY());
+            scroll.scrollTo(0, scroll.getChildAt(0).getHeight());
+        });
+        ui(() -> callbacks.get(1).loaded(Bitmap.createBitmap(320, 480, Bitmap.Config.ARGB_8888)));
         assertBottom();
     }
 }

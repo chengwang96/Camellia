@@ -67,8 +67,7 @@ window.CamelliaDiscussionRich = { create({ getGroup, call, mutate, getAttachment
       const key = getGroup().id + ':' + delivery.id;
       let state = processes.get(key);
       if (!state) {
-        const el = node('details', 'execution-process');
-        el.innerHTML = '<summary><span data-i18n>Execution process</span><span class="execution-process-count" data-i18n></span></summary><div class="execution-process-body"></div>';
+        const el = controls.executionProcess();
         state = { el, body: el.querySelector('.execution-process-body') }; processes.set(key, state);
       }
       const finished = !['queued', 'preparing', 'running', 'stopping'].includes(delivery.status);

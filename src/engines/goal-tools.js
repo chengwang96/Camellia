@@ -27,7 +27,17 @@ function validateTool(name, args, extraTools = []) {
   for (const key of tool.inputSchema.required) if (!Object.hasOwn(args, key)) throw new Error('Missing argument: ' + key);
   for (const [key, value] of Object.entries(args)) {
     const rule = tool.inputSchema.properties[key];
-    if (rule.type === 'integer') {
+    if (rule.type === 'array') {
+      if (!Array.isArray(value) || rule.maxItems && value.length > rule.maxItems)
+        throw new Error('Invalid argument: ' + key);
+      if (rule.items?.type === 'string') {
+        for (const item of value) {
+          if (typeof item !== 'string' || rule.items.minLength && !item.trim()
+              || rule.items.maxLength && [...item].length > rule.items.maxLength)
+            throw new Error('Invalid argument: ' + key);
+        }
+      }
+    } else if (rule.type === 'integer') {
       if (!Number.isSafeInteger(value) || value < rule.minimum || value > rule.maximum) throw new Error('Invalid argument: ' + key);
     } else if (rule.type === 'boolean') {
       if (typeof value !== 'boolean') throw new Error('Invalid argument: ' + key);

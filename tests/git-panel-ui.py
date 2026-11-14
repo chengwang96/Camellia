@@ -106,7 +106,9 @@ def exercise(browser, theme, language, width, full_workflow):
     expect(summary.locator('.git-change-label')).to_have_text('4 个变更项' if language == 'zh' else '4 changed item(s)')
     expect(summary.locator('.git-additions')).to_have_text('+7')
     expect(summary.locator('.git-deletions')).to_have_text('−1')
-    expect(summary.locator('.git-stats-partial')).to_be_visible()
+    expect(summary.locator('.git-stats-partial')).to_have_count(0)
+    partial_note = '行数统计不包含已折叠的未跟踪目录。' if language == 'zh' else 'Line counts exclude collapsed untracked folders.'
+    expect(summary.locator('.git-change-open')).to_have_attribute('title', partial_note)
     output = repo / 'dist/ui-preview/git-panel-design'
     output.mkdir(parents=True, exist_ok=True)
     stem = f'{theme}-{language}-{width}'
@@ -118,6 +120,14 @@ def exercise(browser, theme, language, width, full_workflow):
     expect(menu_button).to_be_hidden()
     summary.locator('.git-change-open').hover()
     expect(menu_button).to_be_visible()
+    summary_box = summary.bounding_box()
+    row_box = summary.locator('.git-change-row').bounding_box()
+    menu_box = menu_button.bounding_box()
+    assert summary_box and row_box and menu_box
+    assert menu_box['x'] >= row_box['x']
+    assert row_box['x'] + row_box['width'] <= summary_box['x'] + summary_box['width'] - 9
+    assert menu_box['x'] + menu_box['width'] <= summary_box['x'] + summary_box['width'] - 14
+    assert abs((menu_box['y'] + menu_box['height'] / 2) - (row_box['y'] + row_box['height'] / 2)) <= 1
     expect(summary.locator('.git-stats')).to_be_hidden()
     assert 'origin/main' in menu_button.get_attribute('title')
     summary.screenshot(path=str(output / f'summary-hover-{stem}.png'), animations='disabled')

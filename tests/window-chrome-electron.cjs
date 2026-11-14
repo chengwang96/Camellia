@@ -226,11 +226,37 @@ async function main() {
       && await window.webContents.executeJavaScript('!!document.querySelector("#toggle") && !!document.querySelector(".desktop-titlebar")')) return window;
   }, 'mobile-access caption');
   assert.equal(remote.isMenuBarVisible(), false);
+  await remote.webContents.executeJavaScript(`(() => {
+    const dialog = document.createElement('dialog');
+    dialog.className = 'mobile-logout'; dialog.id = 'qaDialog';
+    dialog.append(document.createElement('p')); document.body.append(dialog); dialog.showModal();
+  })()`);
+  await wait(() => captionOverlays.get(remote.id)?.color === (nativeTheme.shouldUseDarkColors ? '#0a0a0b' : '#c2c2c2'),
+    'secondary-window dialog dim');
+  await remote.webContents.executeJavaScript('document.querySelector("#qaDialog").close()');
+  await wait(() => captionOverlays.get(remote.id)?.color === (nativeTheme.shouldUseDarkColors ? '#151517' : '#ffffff'),
+    'secondary-window dialog restore');
   remote.close(); await wait(() => remote.isDestroyed(), 'mobile-access close');
 
   await home.loadFile(path.join(__dirname, '../src/renderer/chat/workbench.html'), { query: { harness: 'codex' } });
   await wait(() => wc.executeJavaScript('!!document.querySelector(".desktop-titlebar") && uiReady'), 'chat caption');
   assert.equal(await wc.executeJavaScript('Math.round(document.querySelector(".app").getBoundingClientRect().top)'), 40);
+  // Renderer dialogs sit above the page but below the native caption. Their
+  // backdrop must also dim the Windows buttons or the caption stays a bright strip.
+  const dimmedCaption = nativeTheme.shouldUseDarkColors ? '#0a0a0b' : '#c2c2c2';
+  const undimmedCaption = nativeTheme.shouldUseDarkColors ? '#151517' : '#ffffff';
+  await wc.executeJavaScript('document.querySelector("#permMask").classList.add("visible")');
+  await wait(() => captionOverlays.get(home.id)?.color === dimmedCaption, 'permission caption dim');
+  await wc.executeJavaScript('document.querySelector("#reviewDialog").showModal()');
+  await wait(() => captionOverlays.get(home.id)?.color === dimmedCaption, 'review caption dim');
+  await wc.executeJavaScript('document.querySelector("#permMask").classList.remove("visible")');
+  await new Promise(resolve => setTimeout(resolve, 20));
+  assert.equal(captionOverlays.get(home.id)?.color, dimmedCaption,
+    'closing one overlay must not restore the caption while another remains open');
+  checkNativeCaption(await capture(wc, 'chat-review-open'), 'review dialog');
+  await wc.executeJavaScript('document.querySelector("#reviewDialog").close()');
+  await wait(() => captionOverlays.get(home.id)?.color === undimmedCaption, 'review caption restore');
+  checkNativeCaption(await capture(wc, 'chat-review-closed'), 'review closed');
   const fits = await wc.executeJavaScript('document.querySelector("#inputCard").getBoundingClientRect().bottom <= innerHeight');
   assert.ok(fits);
   home.maximize();

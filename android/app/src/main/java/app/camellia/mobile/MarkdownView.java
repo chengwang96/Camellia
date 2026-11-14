@@ -24,7 +24,6 @@ import android.text.style.TypefaceSpan;
 import android.text.style.URLSpan;
 import android.view.Gravity;
 import android.view.View;
-import android.widget.Button;
 import android.widget.HorizontalScrollView;
 import android.widget.ImageButton;
 import android.widget.LinearLayout;
@@ -433,30 +432,39 @@ final class MarkdownView {
             }).show();
     }
 
-    private Button copy(Supplier<String> value) {
-        Button button = new Button(context); button.setAllCaps(false); button.setText(tr("复制", "Copy"));
-        button.setTextSize(Palette.TEXT_SMALL); button.setTextColor(accent); button.setBackgroundColor(android.graphics.Color.TRANSPARENT);
-        button.setMinHeight(dp(48)); button.setContentDescription(tr("复制代码", "Copy code"));
+    private ImageButton copy(Supplier<String> value) {
+        ImageButton button = new ImageButton(context);
+        button.setImageDrawable(new LineIcon("copy", accent));
+        button.setPadding(dp(12), dp(12), dp(12), dp(12));
+        button.setBackground(codeActionBackground());
+        button.setMinimumWidth(dp(48)); button.setMinimumHeight(dp(48));
+        button.setContentDescription(tr("复制代码", "Copy code"));
+        button.setTag("markdownCodeCopy");
         button.setOnClickListener(view -> {
             ClipboardManager clipboard = (ClipboardManager) context.getSystemService(Context.CLIPBOARD_SERVICE);
             clipboard.setPrimaryClip(ClipData.newPlainText("Camellia", value.get()));
-            button.setText(tr("已复制", "Copied"));
+            button.setImageDrawable(new LineIcon("check", accent));
             MobileHaptics.success(view);
+            button.postDelayed(() -> {
+                if (button.isAttachedToWindow()) button.setImageDrawable(new LineIcon("copy", accent));
+            }, 1200);
         }); return button;
     }
 
     private void code(String value, String language, LinearLayout target) {
-        LinearLayout panel = column(); panel.setTag("markdownCode"); panel.setBackground(background(surface, false)); panel.setPadding(dp(12), 0, dp(12), dp(8));
+        LinearLayout panel = column(); panel.setTag("markdownCode"); panel.setBackground(background(surface, true)); panel.setPadding(dp(12), dp(4), dp(12), dp(10));
         TextView code = text(value.endsWith("\n") ? value.substring(0, value.length() - 1) : value, 13);
         code.setTag("markdownCodeText"); code.setTypeface(Typeface.MONOSPACE);
         CodeContent content = new CodeContent(code, value.endsWith("\n")); panel.setTag(R.id.markdown_code_content, content);
         LinearLayout header = new LinearLayout(context); header.setGravity(Gravity.CENTER_VERTICAL);
+        header.setPadding(0, dp(2), 0, dp(2));
         TextView label = text(language.split("\\s+", 2)[0], 11); label.setTextColor(muted); label.setSingleLine(true); label.setEllipsize(android.text.TextUtils.TruncateAt.END);
         ImageButton wrap = new ImageButton(context); wrap.setTag("markdownCodeWrap");
         wrap.setContentDescription(tr("自动换行", "Word wrap")); wrap.setTooltipText(tr("自动换行", "Word wrap"));
-        wrap.setBackgroundColor(android.graphics.Color.TRANSPARENT); wrap.setPadding(dp(14), dp(14), dp(14), dp(14));
+        wrap.setBackground(codeActionBackground()); wrap.setPadding(dp(12), dp(12), dp(12), dp(12));
+        wrap.setMinimumWidth(dp(48)); wrap.setMinimumHeight(dp(48));
         header.addView(label, new LinearLayout.LayoutParams(0, -2, 1)); header.addView(wrap, new LinearLayout.LayoutParams(dp(48), dp(48)));
-        header.addView(copy(content::value), new LinearLayout.LayoutParams(-2, dp(48))); panel.addView(header);
+        header.addView(copy(content::value), new LinearLayout.LayoutParams(dp(48), dp(48))); panel.addView(header);
         HorizontalScrollView horizontal = new HorizontalScrollView(context); horizontal.setTag("markdownCodeScroll");
         android.content.SharedPreferences preferences = context.getSharedPreferences("markdown", Context.MODE_PRIVATE);
         Runnable applyWrap = () -> {
@@ -476,6 +484,14 @@ final class MarkdownView {
             preferences.edit().putBoolean("codeWrap", wrap.isSelected()).apply(); applyWrap.run();
         });
         LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, -2); params.setMargins(0, dp(6), 0, dp(10)); target.addView(panel, params);
+    }
+
+    private android.graphics.drawable.Drawable codeActionBackground() {
+        GradientDrawable mask = new GradientDrawable();
+        mask.setColor(android.graphics.Color.WHITE);
+        mask.setCornerRadius(dp(999));
+        return new android.graphics.drawable.RippleDrawable(
+            android.content.res.ColorStateList.valueOf(Palette.RIPPLE_ON_PAGE), null, mask);
     }
 
     private void table(TableBlock node, LinearLayout target) {

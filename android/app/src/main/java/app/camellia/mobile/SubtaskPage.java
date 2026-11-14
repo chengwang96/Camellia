@@ -285,8 +285,12 @@ final class SubtaskPage extends Dialog {
     private Button actionButton(String label, int foreground, int background) {
         Button button = new Button(activity); button.setText(label); button.setAllCaps(false); button.setTextSize(Palette.TEXT_INPUT); medium(button);
         button.setTextColor(foreground); button.setMinHeight(dp(48)); button.setMinimumHeight(dp(48)); button.setMinWidth(dp(72)); button.setMinimumWidth(dp(72));
-        button.setPadding(dp(16), dp(12), dp(16), dp(12)); button.setStateListAnimator(null); button.setElevation(0);
-        button.setBackground(new RippleDrawable(ColorStateList.valueOf(Palette.RIPPLE_ON_CARD), shape(background, Palette.RADIUS_HOME_CARD), shape(Color.WHITE, Palette.RADIUS_HOME_CARD)));
+        button.setPadding(dp(16), dp(12), dp(16), dp(12));
+        GradientDrawable face = shape(background, Palette.RADIUS_CAPSULE);
+        face.setStroke(dp(1), background == style.accent ? Color.argb(58, 255, 255, 255) : palette.cardBorder);
+        button.setBackground(new RippleDrawable(ColorStateList.valueOf(background == style.accent
+            ? Palette.RIPPLE_ON_ACCENT_LIGHT : Palette.RIPPLE_ON_CARD), face, shape(Color.WHITE, Palette.RADIUS_CAPSULE)));
+        SurfaceElevation.apply(button, background == style.accent ? 2 : 1);
         return button;
     }
     private void updateDisclosure() {

@@ -4,6 +4,7 @@ const { contextBridge, ipcRenderer } = require('electron');
 contextBridge.exposeInMainWorld('camelliaWindowChrome', {
   getState: () => ipcRenderer.invoke('camellia:window-chrome-state'),
   openMenu: payload => ipcRenderer.invoke('camellia:window-chrome-menu', payload),
+  setDimmed: value => ipcRenderer.invoke('camellia:window-chrome-dimmed', value),
   onState: callback => { ipcRenderer.on('camellia:window-chrome', (_event, state) => callback(state)); },
   onFocus: callback => { ipcRenderer.on('camellia:window-chrome-focus', () => callback()); },
 });

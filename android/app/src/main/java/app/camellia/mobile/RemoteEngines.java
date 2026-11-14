@@ -16,6 +16,7 @@ final class RemoteEngines {
     }
 
     static String label(String engine) {
+        if (engine == null || engine.isEmpty() || engine.equals("null")) return "";
         return engine.equals("grok") ? "Grok Build" : engine.toUpperCase(Locale.ROOT);
     }
 }

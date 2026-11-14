@@ -4,6 +4,7 @@ import android.content.Context;
 import android.content.res.ColorStateList;
 import android.graphics.Color;
 import android.graphics.drawable.GradientDrawable;
+import android.graphics.drawable.InsetDrawable;
 import android.graphics.drawable.RippleDrawable;
 import android.widget.ImageButton;
 import android.widget.LinearLayout;
@@ -63,12 +64,31 @@ final class ChatStyle {
         GradientDrawable shape = new GradientDrawable(); shape.setColor(color); shape.setCornerRadius(dp(Palette.RADIUS_CARD)); return shape;
     }
 
+    android.graphics.drawable.Drawable pageBackground() { return palette.pageBackground(); }
+
     GradientDrawable capsule(int color) {
         GradientDrawable shape = rounded(color); shape.setCornerRadius(dp(Palette.RADIUS_CAPSULE)); return shape;
     }
 
+    GradientDrawable outlinedCapsule(int color) {
+        GradientDrawable shape = capsule(color);
+        shape.setStroke(dp(1), palette.cardBorder);
+        return shape;
+    }
+
+    private GradientDrawable circle(int color) {
+        GradientDrawable shape = new GradientDrawable();
+        shape.setShape(GradientDrawable.OVAL);
+        shape.setColor(color);
+        return shape;
+    }
+
+    void raised(android.view.View view, int elevationDp) {
+        SurfaceElevation.apply(view, elevationDp);
+    }
+
     GradientDrawable floatingBar(android.view.View view) {
-        GradientDrawable shape = capsule(background); shape.setStroke(dp(1), floatingBarEdge());
+        GradientDrawable shape = capsule(palette.card); shape.setStroke(dp(1), floatingBarEdge());
         view.setBackground(shape); view.setElevation(dp(4)); view.setTranslationZ(dp(1));
         if (android.os.Build.VERSION.SDK_INT >= 28) {
             view.setOutlineAmbientShadowColor(0x12000000); view.setOutlineSpotShadowColor(0x28000000);
@@ -83,49 +103,76 @@ final class ChatStyle {
     }
 
     ImageButton lineButton(String icon, String label, Runnable action) {
+        ImageButton button = new ImageButton(context); button.setImageDrawable(new LineIcon(icon, accent));
+        button.setContentDescription(label); button.setTooltipText(label); button.setPadding(dp(12), dp(12), dp(12), dp(12));
+        button.setMinimumWidth(dp(48)); button.setMinimumHeight(dp(48));
+        button.setBackground(new RippleDrawable(ColorStateList.valueOf(Palette.RIPPLE_ON_PAGE),
+            null, circle(Color.WHITE)));
+        button.setElevation(0f);
+        button.setOnClickListener(view -> action.run()); return button;
+    }
+
+    ImageButton accentButton(String icon, String label, Runnable action) {
         ImageButton button = new ImageButton(context); button.setImageDrawable(new LineIcon(icon, ink));
         button.setContentDescription(label); button.setTooltipText(label); button.setPadding(dp(13), dp(13), dp(13), dp(13));
-        button.setBackground(new RippleDrawable(ColorStateList.valueOf(Palette.RIPPLE_ON_PAGE), capsule(background), capsule(Color.WHITE)));
+        GradientDrawable face = new GradientDrawable();
+        face.setColor(Color.argb(22, Color.red(accent), Color.green(accent), Color.blue(accent)));
+        face.setCornerRadius(dp(999));
+        face.setStroke(dp(1), Color.argb(60, Color.red(accent), Color.green(accent), Color.blue(accent)));
+        GradientDrawable mask = capsule(Color.WHITE);
+        button.setBackground(new RippleDrawable(ColorStateList.valueOf(Palette.RIPPLE_ON_CARD), face, mask));
+        raised(button, 2);
         button.setOnClickListener(view -> action.run()); return button;
+    }
+
+    /** An icon-only composer tool: the surrounding composer is the control surface. */
+    ImageButton composerToolButton(String icon, String label, int color, Runnable action) {
+        ImageButton button = new ImageButton(context);
+        button.setImageDrawable(new LineIcon(icon, color));
+        button.setContentDescription(label); button.setTooltipText(label);
+        button.setPadding(dp(12), dp(12), dp(12), dp(12));
+        button.setBackground(new RippleDrawable(ColorStateList.valueOf(Palette.RIPPLE_ON_PAGE),
+            null, capsule(Color.WHITE)));
+        button.setMinimumWidth(dp(48)); button.setMinimumHeight(dp(48));
+        button.setOnClickListener(view -> action.run());
+        return button;
     }
 
     LinearLayout workspaceHeader(String title, String label, String tag, Runnable action) {
         LinearLayout header = new LinearLayout(context); header.setGravity(Gravity.CENTER_VERTICAL);
         header.setPadding(0, dp(12), 0, 0);
-        TextView heading = new TextView(context); heading.setText(title); heading.setTextSize(Palette.TEXT_BODY); heading.setTextColor(muted);
+        TextView heading = new TextView(context); heading.setText(title); heading.setTextSize(Palette.TEXT_CARD); heading.setTextColor(ink);
+        heading.setTypeface(android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.NORMAL));
         header.addView(heading, new LinearLayout.LayoutParams(0, -2, 1));
-        ImageButton create = lineButton("add", label, action); create.setTag(tag);
-        create.setImageDrawable(new LineIcon("add", muted));
+        ImageButton create = composerToolButton("add", label, accent, action); create.setTag(tag);
         header.addView(create, new LinearLayout.LayoutParams(dp(48), dp(48)));
         return header;
     }
 
     ImageButton backButton(String label, Runnable action) {
-        ImageButton button = new ImageButton(context); button.setImageDrawable(new LineIcon("back", ink));
+        ImageButton button = new ImageButton(context); button.setImageDrawable(new LineIcon("back", accent));
         button.setContentDescription(label); button.setTooltipText(label); button.setTag("pageBack");
         button.setPadding(dp(14), dp(14), dp(14), dp(14)); button.setMinimumWidth(dp(48)); button.setMinimumHeight(dp(48));
-        GradientDrawable face = new GradientDrawable(); face.setShape(GradientDrawable.OVAL);
-        face.setColor(palette.raisedFace);
-        face.setStroke(1, palette.raisedEdge);
-        GradientDrawable mask = new GradientDrawable(); mask.setShape(GradientDrawable.OVAL); mask.setColor(Color.WHITE);
-        button.setBackground(new RippleDrawable(ColorStateList.valueOf(palette.backRipple()), face, mask));
-        button.setElevation(dp(4));
-        if (android.os.Build.VERSION.SDK_INT >= 28) {
-            button.setOutlineAmbientShadowColor(0x40000000); button.setOutlineSpotShadowColor(0x50000000);
-        }
-        android.animation.StateListAnimator states = new android.animation.StateListAnimator();
-        android.animation.ObjectAnimator pressed = android.animation.ObjectAnimator.ofFloat(button, "translationZ", -dp(2)); pressed.setDuration(100);
-        android.animation.ObjectAnimator resting = android.animation.ObjectAnimator.ofFloat(button, "translationZ", 0f); resting.setDuration(150);
-        states.addState(new int[]{android.R.attr.state_pressed, android.R.attr.state_enabled}, pressed);
-        states.addState(new int[]{}, resting); button.setStateListAnimator(states);
+        button.setBackground(new RippleDrawable(ColorStateList.valueOf(Palette.RIPPLE_ON_PAGE),
+            null, circle(Color.WHITE)));
+        button.setElevation(0f);
         button.setOnClickListener(view -> action.run()); return button;
     }
 
     ImageButton composerAction(String label, int icon, Runnable action) {
         ImageButton button = new ImageButton(context); button.setImageResource(icon);
-        button.setContentDescription(label); button.setTooltipText(label); button.setPadding(dp(13), dp(13), dp(13), dp(13));
-        button.setBackground(new RippleDrawable(ColorStateList.valueOf(Palette.RIPPLE_ON_ACCENT_LIGHT), capsule(accent), capsule(Color.WHITE)));
-        button.setBackgroundTintList(enabledColors(accent, surface)); button.setImageTintList(enabledColors(Color.WHITE, muted));
+        button.setContentDescription(label); button.setTooltipText(label); button.setPadding(dp(14), dp(14), dp(14), dp(14));
+        GradientDrawable enabledFace = circle(accent);
+        GradientDrawable disabledFace = circle(palette.controlFill);
+        android.graphics.drawable.StateListDrawable faces = new android.graphics.drawable.StateListDrawable();
+        int inset = dp(5);
+        faces.addState(new int[]{-android.R.attr.state_enabled},
+            new InsetDrawable(disabledFace, inset, inset, inset, inset));
+        faces.addState(new int[]{}, new InsetDrawable(enabledFace, inset, inset, inset, inset));
+        button.setBackground(new RippleDrawable(ColorStateList.valueOf(Palette.RIPPLE_ON_ACCENT_LIGHT),
+            faces, new InsetDrawable(circle(Color.WHITE), inset, inset, inset, inset)));
+        button.setImageTintList(enabledColors(Color.WHITE, muted));
+        button.setElevation(0f);
         button.setOnClickListener(view -> action.run()); return button;
     }
 
@@ -164,15 +211,14 @@ final class ChatStyle {
         LinearLayout.LayoutParams footerParams = new LinearLayout.LayoutParams(user ? -2 : -1, dp(48));
         footerParams.gravity = user ? Gravity.END : Gravity.START; footerParams.bottomMargin = dp(18);
         String label = chinese ? "复制消息" : "Copy message";
-        ImageButton copy = lineButton("copy", label, () -> {
+        ImageButton copy = composerToolButton("copy", label, faint, () -> {
             String value = content.get();
             if (value == null || value.isEmpty()) return;
             ClipboardManager clipboard = (ClipboardManager) context.getSystemService(Context.CLIPBOARD_SERVICE);
             clipboard.setPrimaryClip(ClipData.newPlainText(label, value));
             if (android.os.Build.VERSION.SDK_INT < 33) Toast.makeText(context, chinese ? "已复制" : "Copied", Toast.LENGTH_SHORT).show();
         });
-        copy.setImageDrawable(new LineIcon("copy", faint)); copy.setTag("copyMessage");
-        copy.setPadding(dp(16), dp(16), dp(16), dp(16));
+        copy.setTag("copyMessage");
         footer.addView(copy, new LinearLayout.LayoutParams(dp(48), dp(48)));
         wrapper.addView(footer, footerParams); updateMessageTimestamp(wrapper, at, chinese); return wrapper;
     }

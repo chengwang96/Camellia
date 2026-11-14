@@ -3,6 +3,7 @@ package app.camellia.mobile;
 import android.content.Context;
 import android.content.res.Configuration;
 import android.graphics.Color;
+import android.graphics.drawable.GradientDrawable;
 
 /** Desktop-aligned light/dark tokens shared by native chat and settings.
  * Settings keep their own semantic names, while card/control radii stay
@@ -44,33 +45,25 @@ final class Palette {
     /** Business accent shared with desktop. */
     final int accent;
 
-    // ── Colour: the back button's own pair ────────────────────────────────
-    /**
-     * The raised disc, and its outline.
-     *
-     * <p>Not the field hairline above: this rings a raised button rather than a
-     * field, and in both appearances it is a shade off the disc rather than the
-     * value a divider would use.
-     */
-    final int raisedFace, raisedEdge;
-
     /** Whether these values are the dark set, for the few sites that ask. */
     final boolean dark;
 
     // ── Corner radii ───────────────────────────────────────────────────────
     /** A bubble or a card: {@code ChatStyle.rounded()}. */
     static final int RADIUS_CARD = 12;
-    static final int RADIUS_USER_BUBBLE = 18;
-    static final int RADIUS_SETTINGS_CARD = 16;
+    static final int RADIUS_USER_BUBBLE = 16;
+    static final int RADIUS_SETTINGS_CARD = 14;
     static final int RADIUS_SETTINGS_CONTROL = 10;
     /** A floating bar or a search field: {@code ChatStyle.capsule()}. */
-    static final int RADIUS_CAPSULE = 28;
+    static final int RADIUS_CAPSULE = 18;
     /** A settings card, a popup panel, a computer row's card. */
-    static final int RADIUS_GROUP = 26;
+    static final int RADIUS_GROUP = 16;
     /** A bottom sheet's own panel. */
-    static final int RADIUS_SHEET = 30;
+    static final int RADIUS_SHEET = 22;
+    /** The floating bottom navigation and its selected segment. */
+    static final int RADIUS_NAVIGATION = 22;
     /** An input field, a computer row, a choice row's mask. */
-    static final int RADIUS_FIELD = 18;
+    static final int RADIUS_FIELD = 12;
     /** A code block inside rendered Markdown. */
     static final int RADIUS_CODE = 8;
     /** A switch's track, and the grip on a sheet. */
@@ -84,11 +77,11 @@ final class Palette {
      * meant to be. Same number as {@link #RADIUS_HOME_CARD} by coincidence of
      * when each was written, not because they are the same thing.
      */
-    static final int RADIUS_DIALOG_ACTION = 20;
+    static final int RADIUS_DIALOG_ACTION = 14;
     /** The home screen's cards. */
-    static final int RADIUS_HOME_CARD = 20;
+    static final int RADIUS_HOME_CARD = 14;
     /** The hairline around a card on the home screen. */
-    static final int RADIUS_HOME_EDGE = 20;
+    static final int RADIUS_HOME_EDGE = 14;
 
     /**
      * How far the reader's own bubble is inset from the trailing edge.
@@ -97,7 +90,7 @@ final class Palette {
      * the same number on both sides so a short reply and a long one start and
      * end in the same place.
      */
-    static final int BUBBLE_INSET = 44;
+    static final int BUBBLE_INSET = 36;
 
     // ── Type scale (sp) ───────────────────────────────────────────────────
     /** A timestamp, a status, a badge. */
@@ -112,7 +105,7 @@ final class Palette {
     /** A row's title, a computer's name, a bubble's action. */
     static final int TEXT_ROW = 16;
     /** A row's title in the settings vocabulary. */
-    static final int TEXT_ROW_STRONG = 17;
+    static final int TEXT_ROW_STRONG = 16;
     /** A dialog's item. */
     static final int TEXT_DIALOG = 18;
     /**
@@ -123,11 +116,11 @@ final class Palette {
      * second heading. It is not an alias of anything above it — 19 appears
      * nowhere else in the app.
      */
-    static final int TEXT_CARD = 19;
+    static final int TEXT_CARD = 18;
     /** A page or sheet heading. */
-    static final int TEXT_TITLE = 20;
+    static final int TEXT_TITLE = 21;
     /** An empty state's heading. */
-    static final int TEXT_DISPLAY = 21;
+    static final int TEXT_DISPLAY = 22;
     /**
      * A selection tick.
      *
@@ -140,22 +133,18 @@ final class Palette {
 
     // ── Ripple ─────────────────────────────────────────────────────────────
     /** On a floating bar or a line button over the page. */
-    static final int RIPPLE_ON_PAGE = 0x224176e6;
+    static final int RIPPLE_ON_PAGE = 0x224D6BFE;
     /** On a settings row, which sits on a card rather than the page. */
-    static final int RIPPLE_ON_CARD = 0x184176e6;
+    static final int RIPPLE_ON_CARD = 0x184D6BFE;
     /** On a card of the home screen, whose own outline is already faint. */
-    static final int RIPPLE_HOME_CARD = 0x144176e6;
+    static final int RIPPLE_HOME_CARD = 0x144D6BFE;
     /** On a filled accent button, in either appearance. */
     static final int RIPPLE_ON_ACCENT_LIGHT = 0x33ffffff;
-    /** The back button's own press. */
-    static final int RIPPLE_BACK_LIGHT = 0x14000000;
-    static final int RIPPLE_BACK_DARK = 0x33ffffff;
-
     // ── Status colours ─────────────────────────────────────────────────────
     /** A computer row's presence dot when it is reachable. */
     static final int ONLINE = 0xFF27B56D;
     /** A permission level's highlight, where a stricter one is worth marking. */
-    static final int PERMISSION_STRICT = 0xC28A35;
+    static final int PERMISSION_STRICT = 0xFFC28A35;
 
     // ── Switch track ───────────────────────────────────────────────────────
     /** The track's off state: a light grey by day, a darker one at night. */
@@ -163,42 +152,42 @@ final class Palette {
 
     private Palette(boolean dark) {
         this.dark = dark;
-        background = color(dark, "#151517", "#FFFFFF");
+        background = color(dark, "#151517", "#F6F7F9");
         surface = color(dark, "#232324", "#F5F6F7");
-        ink = color(dark, "#F9FAFB", "#0F1115");
-        muted = color(dark, "#CFD3D6", "#61666B");
-        faint = color(dark, "#ADB2B8", "#81858C");
-        caption = color(dark, "#81858C", "#ADB2B8");
-        userBubble = color(dark, "#283142", "#EDF3FE");
-        cardBorder = color(dark, "#424448", "#D6D6D8");
+        ink = color(dark, "#F0F2F4", "#14171A");
+        muted = color(dark, "#A4AAB2", "#69717B");
+        faint = color(dark, "#ADB2B8", "#858C95");
+        caption = color(dark, "#81858C", "#9AA1A9");
+        userBubble = color(dark, "#283142", "#EEF2FF");
+        cardBorder = color(dark, "#393B40", "#E2E6EA");
         controlFill = color(dark, "#292A2D", "#F5F6F7");
         selectedBorder = color(dark, "#737981", "#ADB2B8");
         progressTrack = color(dark, "#353638", "#EBEEF2");
-        separator = color(dark, "#3B3B40", "#ECEEF1");
+        separator = color(dark, "#3B3B40", "#E8EBEF");
 
         grouped = background;
-        card = color(dark, "#232324", "#FFFFFF");
+        card = color(dark, "#222326", "#FFFFFF");
         secondary = muted;
-        divider = color(dark, "#37373C", "#ECECEE");
+        divider = color(dark, "#37373C", "#E8EBEF");
         field = controlFill;
         fieldBorder = cardBorder;
-        error = color(dark, "#FF969A", "#B8323B");
-        success = color(dark, "#7DDDA5", "#187644");
-        warning = color(dark, "#EAC56D", "#8A5A12");
+        error = color(dark, "#FF8791", "#C93645");
+        success = color(dark, "#61D49E", "#1F8A5B");
+        warning = color(dark, "#F1B45F", "#A8610A");
 
-        accent = color(dark, "#679EFE", "#4176E6");
-
-        raisedFace = color(dark, "#29292D", "#FFFFFF");
-        raisedEdge = color(dark, "#3A3A40", "#F3F3F5");
+        accent = color(dark, "#8095FF", "#4D6BFE");
 
         trackOff = color(dark, "#54575D", "#D9DCE0");
     }
 
     /** The home screen's card outline, which has no name of its own. */
-    int homeCardEdge() { return color(dark, "#34363A", "#E6E8EB"); }
+    int homeCardEdge() { return color(dark, "#393B40", "#E2E6EA"); }
 
-    /** The back button's press, which follows the appearance. */
-    int backRipple() { return dark ? RIPPLE_BACK_DARK : RIPPLE_BACK_LIGHT; }
+    /** A quiet page wash; the top matches the system bar colour. */
+    GradientDrawable pageBackground() {
+        return new GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM,
+            new int[]{background, dark ? Color.rgb(16, 17, 20) : Color.rgb(238, 243, 250)});
+    }
 
     static Palette of(Context context) {
         boolean dark = (context.getResources().getConfiguration().uiMode & Configuration.UI_MODE_NIGHT_MASK)

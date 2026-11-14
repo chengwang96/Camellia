@@ -155,6 +155,7 @@ public final class LocalChatActivity extends Activity {
 
     @Override protected void onCreate(Bundle saved) {
         super.onCreate(saved);
+        MobileOrientation.lockPhonePortrait(this);
         composerAttachments = AttachmentMaintenance.protect(this);
         PageTransitions.configureActivity(this);
         chinese = getResources().getConfiguration().getLocales().get(0).getLanguage().equals("zh");
@@ -220,15 +221,20 @@ public final class LocalChatActivity extends Activity {
     private Button button(String label, String tag, Runnable action) {
         Button button = new Button(this); button.setText(label); button.setTag(tag); button.setAllCaps(false);
         button.setTextSize(Palette.TEXT_BODY); button.setTextColor(new ColorStateList(new int[][] { {-android.R.attr.state_enabled}, {} }, new int[] {muted, ink}));
-        button.setBackground(new RippleDrawable(ColorStateList.valueOf(Palette.RIPPLE_ON_PAGE), chatStyle.capsule(surface), chatStyle.capsule(Color.WHITE)));
+        GradientDrawable face = chatStyle.outlinedCapsule(surface);
+        button.setBackground(new RippleDrawable(ColorStateList.valueOf(Palette.RIPPLE_ON_PAGE), face, chatStyle.capsule(Color.WHITE)));
         button.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
-        button.setPadding(dp(14), dp(8), dp(14), dp(8)); button.setMinHeight(dp(48)); button.setStateListAnimator(null);
+        button.setPadding(dp(14), dp(8), dp(14), dp(8)); button.setMinHeight(dp(48));
+        SurfaceElevation.apply(button, 1);
         button.setOnClickListener(view -> action.run()); return button;
     }
     private TextView dialogAction(String label, String tag, boolean primary, Runnable action) {
         TextView view = text(label, Palette.TEXT_INPUT, primary ? Color.WHITE : ink); view.setTag(tag); view.setGravity(Gravity.CENTER);
         view.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL)); view.setMinHeight(dp(48));
-        view.setBackground(new RippleDrawable(ColorStateList.valueOf(Palette.RIPPLE_ON_PAGE), chatStyle.capsule(primary ? accent : new SettingsStyle(this).card), chatStyle.capsule(Color.WHITE)));
+        GradientDrawable face = chatStyle.capsule(primary ? accent : new SettingsStyle(this).card);
+        face.setStroke(dp(1), primary ? accent : new SettingsStyle(this).palette().cardBorder);
+        view.setBackground(new RippleDrawable(ColorStateList.valueOf(Palette.RIPPLE_ON_PAGE), face, chatStyle.capsule(Color.WHITE)));
+        SurfaceElevation.apply(view, primary ? 2 : 1);
         view.setOnClickListener(clicked -> action.run()); return view;
     }
     private void showStyledDialog(LinearLayout panel) {
@@ -236,14 +242,16 @@ public final class LocalChatActivity extends Activity {
     }
     private EditText input(String hint, String tag) {
         EditText input = tag.equals("localComposer") ? new ComposerInput(this) : new EditText(this); input.setHint(hint); input.setTag(tag); input.setTextSize(Palette.TEXT_INPUT);
-        input.setTextColor(ink); input.setHintTextColor(muted); input.setBackground(chatStyle.capsule(surface));
+        input.setTextColor(ink); input.setHintTextColor(muted); input.setBackground(chatStyle.outlinedCapsule(surface));
+        input.setElevation(dp(1));
         input.setContentDescription(hint); input.setImportantForAutofill(View.IMPORTANT_FOR_AUTOFILL_NO);
         input.setPadding(dp(14), dp(12), dp(14), dp(12)); input.setMinHeight(dp(48)); return input;
     }
     private void shell(String title) {
         releasePageViews();
         if (conversationId == null) composerAttachments.replace();
-        root = column(); root.setBackgroundColor(background); root.setPadding(dp(18), dp(12), dp(18), chatStyle.dockBottomPadding());
+        root = column(); root.setBackground(chatStyle.pageBackground());
+        root.setPadding(dp(18), dp(12), dp(18), chatStyle.dockBottomPadding());
         root.setClipToPadding(false);
         if (conversationId != null) { root.setFocusableInTouchMode(true); root.requestFocus(); }
         root.setOnApplyWindowInsetsListener((view, insets) -> {
@@ -269,7 +277,7 @@ public final class LocalChatActivity extends Activity {
         subtitle.setPadding(dp(6), 0, 0, 0); subtitle.setSingleLine(true); subtitle.setEllipsize(android.text.TextUtils.TruncateAt.END);
         device.addView(subtitle); titles.addView(device);
         header.addView(titles, new LinearLayout.LayoutParams(0, -2, 1)); root.addView(header);
-        scroll = new ScrollView(this); scroll.setFillViewport(true); scroll.setVerticalScrollBarEnabled(false);
+        scroll = new ChatScrollView(this); scroll.setFillViewport(true); scroll.setVerticalScrollBarEnabled(false);
         content = column(); content.setPadding(0, 0, 0, dp(16)); scroll.addView(content);
         root.addView(scroll, new LinearLayout.LayoutParams(-1, 0, 1));
         status = text("", Palette.TEXT_TINY, muted); status.setTag("localStatus"); status.setGravity(Gravity.CENTER);
@@ -347,7 +355,8 @@ public final class LocalChatActivity extends Activity {
         EditText search = input(tr("搜索本机会话", "Search local chats"), "localSearch"); search.setSingleLine(true); search.setText(query);
         search.setTextSize(Palette.TEXT_ROW); search.setBackgroundColor(Color.TRANSPARENT); search.setPadding(dp(2), dp(12), dp(8), dp(12));
         searchPill.addView(search, new LinearLayout.LayoutParams(0, -2, 1));
-        ImageButton create = chatStyle.lineButton("new", tr("新建独立会话", "New standalone chat"), () -> createConversation(""));
+        ImageButton create = chatStyle.composerToolButton("new", tr("新建独立会话", "New standalone chat"), accent,
+            () -> createConversation(""));
         create.setTag("localNewStandalone"); create.setElevation(dp(2)); bottom.addView(create, new LinearLayout.LayoutParams(dp(48), dp(48)));
         search.addTextChangedListener(new TextWatcher() {
             public void beforeTextChanged(CharSequence value, int start, int count, int after) {}
@@ -446,11 +455,13 @@ public final class LocalChatActivity extends Activity {
         if (workspace != null) MobileHaptics.setOnLongClickListener(label, view -> { workspaceMenu(workspace); return true; });
         header.addView(label, new LinearLayout.LayoutParams(0, -2, 1));
         if (workspace != null) {
-            ImageButton manage = chatStyle.lineButton("more", tr("管理工作区", "Manage workspace") + " · " + name, () -> workspaceMenu(workspace));
+            ImageButton manage = chatStyle.composerToolButton("more", tr("管理工作区", "Manage workspace") + " · " + name,
+                muted, () -> workspaceMenu(workspace));
             manage.setTag("localWorkspaceMenu:" + id);
             header.addView(manage, new LinearLayout.LayoutParams(dp(48), dp(48)));
         }
-        ImageButton add = chatStyle.lineButton("new", tr("新建会话：", "New chat: ") + name, () -> createConversation(id)); add.setTag("localAdd:" + id);
+            ImageButton add = chatStyle.composerToolButton("new", tr("新建会话：", "New chat: ") + name, accent,
+                () -> createConversation(id)); add.setTag("localAdd:" + id);
         header.addView(add, new LinearLayout.LayoutParams(dp(48), dp(48))); group.addView(header);
         if (collapsed.contains(id) && query.isEmpty()) return;
         for (JSONObject conversation : entries) {
@@ -611,6 +622,7 @@ public final class LocalChatActivity extends Activity {
         } catch (Exception error) { failure(error); }
         imageConversation = conversationId;
         shell(title(conversation));
+        ((ChatScrollView) scroll).setFollowBottomOnLayout(true);
         scroll.setVerticalScrollBarEnabled(false);
         messageViews = column(); content.addView(messageViews); renderMessages();
         LinearLayout bar = bottomBar("localComposerBar");
@@ -620,9 +632,9 @@ public final class LocalChatActivity extends Activity {
         composer = chatComposer.input; composer.setTag("localComposer");
         composer.setText(conversation.optString("draft")); composer.setSelection(composer.length());
         modelButton = chatComposer.model; modelButton.setTag("localModel");
-        toolsButton = chatStyle.lineButton("search", tr("联网工具", "Web tools"), this::configureTools);
+        toolsButton = chatStyle.composerToolButton("search", tr("联网工具", "Web tools"), ink, this::configureTools);
         toolsButton.setTag("localTools"); chatComposer.addTool(toolsButton);
-        attachButton = chatStyle.lineButton("plus", tr("添加附件", "Add attachments"), this::pickImage);
+        attachButton = chatStyle.composerToolButton("plus", tr("添加附件", "Add attachments"), accent, this::pickImage);
         attachButton.setTag("localAttach"); chatComposer.addTool(attachButton);
         imageStrip = new android.widget.HorizontalScrollView(this);
         imageStrip.setHorizontalScrollBarEnabled(false); imageStrip.setTag("localImageStrip");
@@ -686,16 +698,17 @@ public final class LocalChatActivity extends Activity {
         AttachSheet sheet = new AttachSheet(this);
         LinearLayout panel = sheet.panel();
         sheet.header(panel, "plus", tr("添加内容", "Add"), tr("关闭", "Close"), () -> { if (dialog != null) dialog.dismiss(); });
-        sheet.note(panel, ChatAttachments.limits(chinese, false));
+        sheet.sectionLabel(panel, tr("从手机添加", "From this phone"));
         sheet.tiles(panel, java.util.Arrays.asList(
             new AttachSheet.Tile("camera", tr("拍照", "Camera"), "localImageCamera", images, () -> { dialog.dismiss(); openCamera(); }),
             new AttachSheet.Tile("image", tr("照片", "Photos"), "localImageGallery", images, () -> { dialog.dismiss(); openGallery(); }),
             new AttachSheet.Tile("file", tr("文件", "Files"), "localDocumentPicker", images, () -> { dialog.dismiss(); openDocuments(); })));
+        sheet.note(panel, ChatAttachments.limits(chinese, false));
         boolean webTools = store.conversation(conversationId).optBoolean("webTools");
         boolean configurable = runningId == null;
         LinearLayout group = sheet.group(panel, "");
         sheet.row(group, "search", tr("联网搜索", "Web search"),
-            tr("使用 Bing 和百度搜索，并读取公开网页", "Search with Bing and Baidu, and read public pages"),
+            tr("使用 Bing、百度并读取网页", "Search Bing and Baidu; read pages"),
             webTools ? tr("已开启", "On") : tr("已关闭", "Off"), "localAttachTools", configurable, () -> { dialog.dismiss(); configureTools(); });
         if (!images) sheet.note(panel, selectedImages.size() + selectedDocuments.size() >= ChatAttachments.MAX_COUNT
             ? tr("最多添加 20 个附件。", "Add up to 20 attachments.")

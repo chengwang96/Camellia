@@ -44,7 +44,7 @@ public class NavigationTest extends InstrumentationTestCase {
             });
             assertTrue(started.await(3, java.util.concurrent.TimeUnit.SECONDS));
             getInstrumentation().runOnMainSync(() -> {
-                activity.getWindow().getDecorView().findViewWithTag("remoteControlEntry").performClick();
+                activity.getWindow().getDecorView().findViewWithTag("nav:computers").performClick();
                 for (String address : addresses) {
                     TextView label = activity.getWindow().getDecorView().findViewWithTag("computerState:" + address);
                     assertTrue(label.getText().toString().matches("Checking…|正在检查…"));
@@ -74,7 +74,7 @@ public class NavigationTest extends InstrumentationTestCase {
                         assertTrue(label.getText().toString().matches("Checking…|正在检查…"));
                     }
                     activity.onBackPressed();
-                    assertNotNull(activity.getWindow().getDecorView().findViewWithTag("remoteControlEntry"));
+                    assertNotNull(activity.getWindow().getDecorView().findViewWithTag("homeShortcuts"));
                 } catch (Exception error) { throw new AssertionError(error); }
             });
         } finally {
@@ -186,6 +186,8 @@ public class NavigationTest extends InstrumentationTestCase {
     }
 
     public void testMigrationRenameSwitchPendingAndRemovalIsolation() throws Exception {
+        String preferenceName = "navigation-migration-test";
+        encrypted = new CredentialStore(getInstrumentation().getTargetContext(), preferenceName); encrypted.clear();
         JSONObject first = computer("http://100.80.1.2:43127", "a"); encrypted.save(first);
         ComputerStore computers = new ComputerStore(encrypted); assertEquals(1, computers.all().size());
         computers.rename(first.getString("address"), "Research laptop");
@@ -205,11 +207,12 @@ public class NavigationTest extends InstrumentationTestCase {
         assertEquals("b".repeat(43), computers.load().getString("token"));
         JSONObject revoked = computers.load(); revoked.remove("token"); computers.save(revoked);
         assertFalse(computers.all().get(0).has("token"));
-        String raw = getInstrumentation().getTargetContext().getSharedPreferences("remote-private", 0).getString("credential", "");
+        String raw = getInstrumentation().getTargetContext().getSharedPreferences(preferenceName, 0).getString("credential", "");
         assertFalse(raw.contains("retry-second")); assertFalse(raw.contains("100.80"));
     }
 
     public void testLegacyRevocationWithoutDeviceId() throws Exception {
+        encrypted = new CredentialStore(getInstrumentation().getTargetContext(), "navigation-legacy-revocation-test"); encrypted.clear();
         JSONObject legacy = computer("http://100.80.1.2:43127", "a"); legacy.remove("deviceId"); encrypted.save(legacy);
         ComputerStore computers = new ComputerStore(encrypted); computers.rename(legacy.getString("address"), "Laptop");
         JSONObject revoked = computers.load(); revoked.remove("token"); computers.save(revoked);
@@ -257,16 +260,16 @@ public class NavigationTest extends InstrumentationTestCase {
             getInstrumentation().runOnMainSync(() -> {
                 try {
                     View root = activity.getWindow().getDecorView();
-                    root.findViewWithTag("remoteControlEntry").performClick();
-                    assertNotNull(findText(root, "Remote control", "远程控制")); assertNotNull(findText(root, "Research laptop", "Research laptop"));
+                    root.findViewWithTag("nav:computers").performClick();
+                    assertNotNull(findText(root, "Computers & connections", "电脑与连接")); assertNotNull(findText(root, "Research laptop", "Research laptop"));
                     assertNull(findText(root, "MOBILE", "移动端"));
                     assertNull(findText(root, "Appearance & language · System default", "外观与语言 · 跟随系统"));
                     assertNotNull(root.findViewWithTag("computerState:" + profile.getString("address")));
                     root.findViewWithTag("computer:" + profile.getString("address")).performClick(); invoke(activity, "stopNetwork");
                     root = activity.getWindow().getDecorView();
                     assertNull(findText(root, "Refresh conversations", "刷新会话"));
-                    assertSame(root.findViewWithTag("pageTitle"), findText(root, "Conversations", "会话列表"));
-                    assertEquals(1, countText(root, "Conversations", "会话列表"));
+                    String sessionsTitle = ((TextView) root.findViewWithTag("pageTitle")).getText().toString();
+                    assertTrue(sessionsTitle.equals("会话") || sessionsTitle.equals("Conversations"));
                     assertNull(findText(root, "Network settings", "网络设置")); assertNull(findText(root, "Forget computer", "移除电脑"));
                     assertNull(findText(root, profile.getString("address"), profile.getString("address")));
                     assertNull(root.findViewWithTag("searchBar")); assertNotNull(root.findViewWithTag("remoteSearchButton"));
@@ -298,8 +301,7 @@ public class NavigationTest extends InstrumentationTestCase {
                     activity.onBackPressed(); invoke(activity, "stopNetwork");
                     assertNull(activity.getWindow().getDecorView().findViewWithTag("composerBar"));
                     activity.onBackPressed(); invoke(activity, "stopNetwork");
-                    assertNotNull(findText(activity.getWindow().getDecorView(), "Remote control", "远程控制"));
-                    activity.onBackPressed(); assertNotNull(activity.getWindow().getDecorView().findViewWithTag("settingsEntry"));
+                    assertNotNull(activity.getWindow().getDecorView().findViewWithTag("settingsEntry"));
                 } catch (Exception error) { throw new AssertionError(error); }
             });
             getInstrumentation().waitForIdleSync();
@@ -319,7 +321,7 @@ public class NavigationTest extends InstrumentationTestCase {
             getInstrumentation().waitForIdleSync();
             getInstrumentation().runOnMainSync(() -> {
                 try {
-                    activity.getWindow().getDecorView().findViewWithTag("remoteControlEntry").performClick();
+                    activity.getWindow().getDecorView().findViewWithTag("nav:computers").performClick();
                     activity.getWindow().getDecorView().findViewWithTag("computer:" + profile.optString("address")).performClick();
                     invoke(activity, "stopNetwork");
                     var failure = MainActivity.class.getDeclaredMethod("showFailure", Exception.class, boolean.class);
@@ -337,7 +339,9 @@ public class NavigationTest extends InstrumentationTestCase {
         TextView status = activity.getWindow().getDecorView().findViewWithTag("connectionStatus");
         LinearLayout parent = (LinearLayout) status.getParent();
         LinearLayout bar = barTag == null ? null : parent.findViewWithTag(barTag);
-        assertEquals(parent.getChildCount() - 1, parent.indexOfChild(status));
+        View navigation = parent.findViewWithTag("workbenchNav");
+        assertEquals(navigation == null ? parent.getChildCount() - 1 : parent.indexOfChild(navigation) - 1,
+            parent.indexOfChild(status));
         if (barTag != null) {
             assertEquals(parent.indexOfChild(bar) + 1, parent.indexOfChild(status));
             assertFalse(bar.getClipChildren()); assertFalse(bar.getClipToPadding());
@@ -389,6 +393,7 @@ public class NavigationTest extends InstrumentationTestCase {
     }
 
     public void testListFailureAndFooterSpacing() throws Exception {
+        new ComputerStore(encrypted).save(computer("http://100.80.1.2:43127", "a"));
         Activity activity = getInstrumentation().startActivitySync(new Intent(getInstrumentation().getTargetContext(), MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
         try {
             getInstrumentation().runOnMainSync(() -> {
@@ -447,24 +452,30 @@ public class NavigationTest extends InstrumentationTestCase {
         var target = MainActivity.class.getDeclaredMethod(method); target.setAccessible(true); target.invoke(activity);
     }
 
-    public void testRaisedBackButtonsAndComputerHeader() throws Exception {
+    public void testTopLevelDestinationsHaveNoBackAndNestedPagesDo() throws Exception {
         Activity activity = getInstrumentation().startActivitySync(new Intent(getInstrumentation().getTargetContext(), MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
         try {
             getInstrumentation().waitForIdleSync();
             getInstrumentation().runOnMainSync(() -> {
                 try {
                     View root = activity.getWindow().getDecorView();
-                    root.findViewWithTag("remoteControlEntry").performClick(); invoke(activity, "stopNetwork");
+                    root.findViewWithTag("nav:computers").performClick(); invoke(activity, "stopNetwork");
                     assertNull(findText(root, "Camellia", "Camellia"));
                     View title = root.findViewWithTag("remoteControlTitle"); assertNotNull(title);
-                    assertEquals(1, countText(root, "Remote control", "远程控制"));
-                    assertSame(title.getParent(), root.findViewWithTag("pageBack").getParent());
-                    for (String page : new String[]{"computersScreen", "listScreen", "detailScreen", "pairScreen", "settingsScreen", "showNetwork"}) {
+                    assertEquals(1, countText(root, "Computers & connections", "电脑与连接"));
+                    assertNull("A top-level destination must not look pushed", root.findViewWithTag("pageBack"));
+                    for (String page : new String[]{"computersScreen", "listScreen"}) {
                         invoke(activity, page); invoke(activity, "stopNetwork");
-                        View back = root.findViewWithTag(page.equals("settingsScreen") || page.equals("showNetwork") || page.equals("pairScreen") ? "settingsBack" : "pageBack");
+                        assertNull("Top-level destination " + page + " must not show a back button",
+                            root.findViewWithTag(page.equals("listScreen") ? "pageBack" : "settingsBack"));
+                    }
+                    for (String page : new String[]{"detailScreen", "pairScreen", "settingsScreen", "showNetwork"}) {
+                        invoke(activity, page); invoke(activity, "stopNetwork");
+                        View back = root.findViewWithTag(page.equals("detailScreen") ? "pageBack" : "settingsBack");
+                        assertNotNull(page + " needs a nested-page back button", back);
                         assertTrue(back instanceof android.widget.ImageButton);
-                        assertEquals(Math.round(4 * activity.getResources().getDisplayMetrics().density), back.getElevation(), 0f);
-                        assertNotNull(back.getStateListAnimator()); assertNotNull(back.getContentDescription());
+                        assertEquals(0f, back.getElevation(), 0f);
+                        assertNull(back.getStateListAnimator()); assertNotNull(back.getContentDescription());
                         ViewGroup header = (ViewGroup) back.getParent(); assertFalse(header.getClipChildren()); assertFalse(header.getClipToPadding());
                     }
                     invoke(activity, "computersScreen"); invoke(activity, "stopNetwork");
@@ -476,8 +487,8 @@ public class NavigationTest extends InstrumentationTestCase {
                 screenshot.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, output);
             } finally { screenshot.recycle(); }
             getInstrumentation().runOnMainSync(() -> {
-                activity.getWindow().getDecorView().findViewWithTag("pageBack").performClick();
-                assertNotNull(activity.getWindow().getDecorView().findViewWithTag("remoteControlEntry"));
+                activity.onBackPressed();
+                assertNotNull(activity.getWindow().getDecorView().findViewWithTag("homeShortcuts"));
             });
         } finally { getInstrumentation().runOnMainSync(activity::finish); }
     }

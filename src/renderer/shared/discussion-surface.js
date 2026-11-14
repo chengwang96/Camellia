@@ -28,6 +28,7 @@ window.CamelliaDiscussionSurface = { create({ host, onChange, onRename, onSideba
       root.append(style);
       await Promise.all(styles);
       window.CamelliaI18n.observe(root);
+      window.CamelliaNativeOverlay?.observe(root);
       const mounted = window.CamelliaDiscussions.create({ root, embedded: true, onChange, onRename });
       root.getElementById('sidebarToggle').onclick = onSidebarToggle;
       root.getElementById('sidebarToggle').setAttribute('aria-label', 'Show sidebar');

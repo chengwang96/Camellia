@@ -33,8 +33,12 @@ final class PageTransitions extends FrameLayout {
     }
 
     void show(View next, String nextRoute, int nextDepth) {
+        show(next, nextRoute, nextDepth, false);
+    }
+
+    void show(View next, String nextRoute, int nextDepth, boolean instant) {
         finishTransition();
-        boolean animate = page != null && !nextRoute.equals(route) && isLaidOut()
+        boolean animate = !instant && page != null && !nextRoute.equals(route) && isLaidOut()
             && getWidth() > 0 && getHeight() > 0 && ValueAnimator.areAnimatorsEnabled();
         boolean back = nextDepth < depth;
         if (animate) {

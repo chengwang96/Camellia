@@ -78,6 +78,11 @@ public class ModelPickerStyleTest extends InstrumentationTestCase {
 
     public void testRetainsParentAndRestoresNavigation() throws Exception {
         open(false, false);
+        getInstrumentation().runOnMainSync(() -> {
+            View fade = panel().findViewWithTag("glassScrollFade");
+            assertNotNull(fade);
+            assertEquals(View.GONE, fade.getVisibility());
+        });
         screenshot("glass-models");
         View parent = panel().findViewWithTag("modelPickerModels");
         getInstrumentation().runOnMainSync(() -> panel().findViewWithTag("thinkingSettings").performClick());
@@ -143,7 +148,8 @@ public class ModelPickerStyleTest extends InstrumentationTestCase {
                 assertTrue("The full label must fit by truncation", label.getLayout().getEllipsisCount(0) > 0);
                 assertTrue(row.getContentDescription().toString().contains(title));
                 assertTrue(row.getTooltipText().toString().contains(title));
-                assertTrue(row.getHeight() >= Math.round(64 * activity.getResources().getDisplayMetrics().density));
+                assertTrue("Compact model rows still keep a 54dp touch target",
+                    row.getHeight() >= Math.round(54 * activity.getResources().getDisplayMetrics().density));
                 View tick = row.getChildAt(1);
                 assertTrue(words.getRight() <= tick.getLeft());
                 assertTrue(tick.getRight() <= row.getWidth() - row.getPaddingRight());

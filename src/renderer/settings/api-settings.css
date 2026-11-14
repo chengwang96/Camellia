@@ -81,6 +81,9 @@ small { font-size: 12px; color: var(--dsw-alias-label-secondary); line-height: 1
 .account-connections > .hint { margin: 0 0 4px; }
 .account-shortcuts { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0 4px; }
 .account-shortcuts button { padding: 5px 12px; min-height: 30px; white-space: nowrap; }
+/* The shortcut row is introductory; each engine's account section starts below
+   the same rule that separates them from each other. */
+#subscriptionAccounts { margin-top: 14px; border-top: 1px solid var(--subscription-border); }
 .subscription-account { margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--dsw-alias-border-l2); scroll-margin-top: 16px; }
 .subscription-account h3 { font-size: 14px; margin: 0 0 4px; }
 .subscription-account .account-actions { flex-wrap: wrap; }
@@ -384,6 +387,9 @@ dialog > button { display: block; margin: 20px 0 0 auto; }
 #subscriptionsPage .hint, #subscriptionsPage small { color: var(--subscription-muted); }
 #subscriptionsPage .hint.error { color: var(--subscription-red); }
 #subscriptionsPage .subscription-account { padding-top: 22px; margin-top: 22px; border-color: var(--subscription-border); }
+/* Inside the engine-section list the group rule owns spacing, so account cards
+   do not add a second top gap under each divider. */
+#subscriptionAccounts .subscription-account { margin-top: 0; padding-top: 0; }
 #subscriptionsPage .account-shortcuts button, #subscriptionsPage .account-actions button:not(.primary) { color: var(--subscription-muted); border-color: var(--subscription-border); background: var(--subscription-surface); }
 #subscriptionsPage .account-shortcuts button:hover, #subscriptionsPage .account-actions button:not(.primary):hover { color: var(--subscription-blue); background: var(--subscription-tool-bg); }
 /* Match the provider/balance grids: auto-fill keeps a tight gutter at any card

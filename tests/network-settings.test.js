@@ -64,6 +64,36 @@ test('three modes persist, share download transport and do not save missing syst
   assert.equal(applied.HTTPS_PROXY, ''); assert.equal(applied.NO_PROXY, '*');
   assert.match(service.state().error, /No system proxy/);
 });
+test('Electron receives proxy rules without URL paths in system, auto and bridge modes', async t => {
+  for (const proxyRoute of ['PROXY localhost:7890', 'HTTPS [::1]:8443']) {
+    let config = {}, applied, rules;
+    const service = createNetworkSettings({ loadConfig: () => config, saveConfig: value => Object.assign(config, value),
+      sessions: () => ({
+        fromPartition: () => ({ setProxy: async () => {}, resolveProxy: async () => proxyRoute }),
+        defaultSession: { setProxy: async value => { rules = value; } },
+      }),
+      applyEnvironment: env => { applied = env; },
+      createFallback: async () => ({ url: 'http://127.0.0.1:12345/', close() {} }),
+      providerTargetsImpl: () => [{ host: 'api.example.com', port: 443 }],
+      probeImpl: async targets => targets.map(target => ({ ...target, direct: false, proxy: true })),
+    });
+    t.after(() => service.close());
+    const expected = proxyRoute.startsWith('HTTPS') ? 'https://[::1]:8443' : 'http://localhost:7890';
+    for (const mode of ['system', 'auto']) {
+      await service.save({ mode });
+      assert.equal(rules.mode, 'fixed_servers');
+      assert.equal(rules.proxyRules, expected);
+      assert.equal(applied.HTTPS_PROXY, expected + '/');
+      assert.equal(config.downloadProxy.url, expected + '/');
+    }
+    await service.save({ mode: 'prefer-direct' });
+    assert.equal(rules.proxyRules, 'http://127.0.0.1:12345');
+    assert.equal(applied.HTTPS_PROXY, 'http://127.0.0.1:12345/');
+    await service.save({ mode: 'direct' });
+    assert.deepEqual(rules, { mode: 'direct' });
+  }
+});
+
 test('a system proxy that cannot reach the internet downgrades to prefer-direct once', async () => {
   let config = { network: { mode: 'system' } }, applied, events = [];
   const service = createNetworkSettings({ loadConfig: () => config, saveConfig: value => Object.assign(config, value),

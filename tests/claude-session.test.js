@@ -104,6 +104,35 @@ test('Claude keeps a task notification inside an active turn instead of adopting
   assert.equal(f.events.slice(before).some(event => event.type === 'gui:background-turn'), false);
 });
 
+test('Claude ignores the zero-token result of a notification turn before the requested reply', t => {
+  const f = fixture(t);
+  f.session.sendUserMessage('Continue the hand test');
+  const send = row => f.session.emitLine(JSON.stringify(row));
+  send({ type: 'user', origin: { kind: 'task-notification' }, message: { role: 'user',
+    content: '<task-notification>\n<task-id>b44xtbpim</task-id>\n<status>stopped</status>\n</task-notification>' } });
+  send({ type: 'result', subtype: 'success', result: '', num_turns: 0,
+    usage: { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } });
+  assert.equal(f.results.length, 0, 'the notification acknowledgement is not the requested turn');
+  assert.equal(f.session.running, true);
+  send({ type: 'assistant', message: { content: [{ type: 'text', text: 'Hand test finished.' }] } });
+  send({ type: 'result', subtype: 'success', result: 'Hand test finished.' });
+  assert.equal(f.results.at(-1).subtype, 'success');
+  assert.equal(f.results.at(-1).result, 'Hand test finished.');
+  assert.equal(f.session.running, false);
+});
+
+test('Claude still reports an empty reply that consumed model tokens after a notification', t => {
+  const f = fixture(t);
+  f.session.sendUserMessage('Continue');
+  const send = row => f.session.emitLine(JSON.stringify(row));
+  send({ type: 'user', origin: { kind: 'task-notification' },
+    message: { role: 'user', content: '<task-notification>\n<status>completed</status>\n</task-notification>' } });
+  send({ type: 'result', subtype: 'success', result: '',
+    usage: { input_tokens: 1200, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } });
+  assert.equal(f.results[0].subtype, 'empty_response');
+  assert.equal(f.results[0].is_error, true);
+});
+
 test('Claude keeps background lifecycle events flowing during context compaction', async t => {
   const f = fixture(t), send = row => f.session.emitLine(JSON.stringify({ type: 'system', ...row }));
   send({ subtype: 'task_started', task_id: 'child', task_type: 'local_agent' });
@@ -630,6 +659,17 @@ test('Claude spawn preserves the exact native edit cut and dropped-turn guard', 
   assert.equal(spec.args.includes('--fork-session'), true);
   assert.equal(spec.args[spec.args.indexOf('--resume-session-at') + 1], resumeSessionAt);
   assert.equal(spec.args[spec.args.indexOf('--resume-drops-turn') + 1], resumeDropsTurn);
+});
+
+test('Claude sessions carry the progress-note instruction and refresh the recorded system prompt', t => {
+  const h = createHarness(); t.after(() => h.cleanup());
+  h.configureApi();
+  const spec = h.api.claudeSpawnSpec({ model: 'test-model' }, {});
+  const index = spec.args.indexOf('--append-system-prompt');
+  assert.ok(index >= 0);
+  assert.match(spec.args[index + 1], /progress note/i);
+  assert.match(spec.args[index + 1], /same assistant message as the next tool call/i);
+  assert.equal(spec.args[spec.args.indexOf('--system-prompt-snapshot') + 1], 'off');
 });
 
 test('Claude waits for the current input identity before cutting an identical earlier request', async t => {

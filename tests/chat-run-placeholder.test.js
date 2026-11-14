@@ -22,6 +22,7 @@ function fixture() {
     stopRunTicker() { state.stopTicker++; },
     updateSendEnabled() { state.sendEnabled++; },
     renderBackgroundWork() {},
+    turnAcceptsBlocks: turn => Boolean(turn),
     setRunStatus(text) { state.runStatus.push(text); state.statusRow = { text: text || 'Working…' }; },
   };
   vm.createContext(state);
@@ -75,8 +76,8 @@ test('a native background follow-up starts a fresh reply without repeating the u
   const handle = source.slice(start, end);
   for (const background of [false, true]) {
     const users = [], state = { ev: { type: 'conversation:started', runId: 2, userSeq: 1, prompt: 'Build', background },
-      currentRunId: 1, turnEl: {}, blocks: {}, pendingTools: {}, clearTextChoice() {},
-      addUser: text => users.push(text), setRunning(value) { state.running = value; } };
+      currentRunId: 1, turnEl: {}, blocks: {}, pendingTools: {}, deferredVisualCards: new Map(), clearTextChoice() {},
+      adoptPendingSendUser: () => false, addUser: text => users.push(text), setRunning(value) { state.running = value; } };
     vm.createContext(state);
     vm.runInContext('(function () {' + handle + '})()', state);
     assert.equal(state.currentRunId, 2);

@@ -41,8 +41,11 @@ final class ChatEmptyState extends LinearLayout {
 
     void addAction(String label, String tag, Runnable action) {
         TextView button = new TextView(getContext()); button.setText(label); button.setTextColor(style.ink); button.setTextSize(Palette.TEXT_INPUT);
+        button.setTypeface(android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.NORMAL));
         button.setGravity(Gravity.CENTER); button.setMinHeight(style.dp(48)); button.setPadding(style.dp(20), style.dp(10), style.dp(20), style.dp(10));
-        button.setBackground(new RippleDrawable(ColorStateList.valueOf(Palette.RIPPLE_ON_PAGE), style.capsule(style.surface), style.capsule(Color.WHITE)));
+        android.graphics.drawable.GradientDrawable face = style.outlinedCapsule(style.surface);
+        button.setBackground(new RippleDrawable(ColorStateList.valueOf(Palette.RIPPLE_ON_PAGE), face, style.capsule(Color.WHITE)));
+        style.raised(button, 1);
         button.setFocusable(true); button.setTag(tag); button.setOnClickListener(view -> action.run());
         LayoutParams params = new LayoutParams(-2, -2); params.topMargin = style.dp(20); addView(button, params);
     }

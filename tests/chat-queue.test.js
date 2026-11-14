@@ -91,6 +91,65 @@ test('returning during a pending send does not dispatch the queue twice', () => 
   assert.equal(state.drainingQueue, false);
 });
 
+for (const returnBeforeCompletion of [true, false]) {
+  test(`accepted unified queue migrations remove the original local entry across navigation (returned=${returnBeforeCompletion})`, async () => {
+    const state = fixture();
+    Object.assign(state, {
+      unifiedQueueAvailable: true, migratingQueue: false, pendingForkId: null,
+      loadedEngine: 'codex', harnessId: 'codex', queueMicrotask,
+      buildPrompt: text => text, applyRemoteQueue() {},
+    });
+    vm.runInContext(extract('  function canUseUnifiedQueue()', '  async function queueComposerMessage()'), state);
+    state.messageQueue.push({ text: 'Migrate once', attachments: [] });
+    state.saveMessageQueue();
+    let finish;
+    state.chatApi = { messageQueueAdd: () => new Promise(resolve => { finish = resolve; }) };
+    const migration = state.migrateLocalQueueToUnified();
+    state.navigate('other');
+    if (returnBeforeCompletion) state.navigate('first');
+    finish({ ok: true, queue: [] });
+    await migration;
+    assert.equal(state.readUi('queue:first').length, 0);
+    if (!returnBeforeCompletion) assert.equal(state.context.sessionId, 'other');
+    state.navigate('first');
+    assert.equal(state.messageQueue.length, 0);
+  });
+}
+
+for (const outcome of ['unsupported', 'rejected']) {
+  for (const returnBeforeCompletion of [true, false]) {
+    test(`unfinished unified queue additions retain their message across navigation (${outcome}, returned=${returnBeforeCompletion})`, async () => {
+      const state = fixture();
+      Object.assign(state, {
+        input: { value: 'Keep this message' }, attachments: [{ path: 'D:/report.pdf', name: 'report.pdf' }],
+        canQueueComposerMessage: () => true, canUseUnifiedQueue: () => true,
+        buildPrompt: text => text, renderAttachments() {}, autoResize() {}, saveDraft() {},
+        maybeScroll() {}, applyRemoteQueue() {},
+      });
+      state.goalUI.isDraft = () => false;
+      vm.runInContext(extract('  async function queueComposerMessage()', '  function drainMessageQueue()'), state);
+      state.saveMessageQueue();
+      let finish;
+      state.chatApi = { messageQueueAdd: () => new Promise(resolve => { finish = resolve; }) };
+      const pending = state.queueComposerMessage();
+      state.navigate('other');
+      if (returnBeforeCompletion) state.navigate('first');
+      state.input.value = 'New draft';
+      finish(outcome === 'unsupported' ? undefined : { ok: false, error: 'Queue unavailable' });
+      await pending;
+      assert.equal(state.input.value, 'New draft');
+      const queue = state.readUi('queue:first');
+      assert.equal(queue?.length, 1);
+      assert.equal(queue[0].text, 'Keep this message');
+      assert.equal(queue[0].attachments[0].path, 'D:/report.pdf');
+      assert.equal(state.readUi('queue-paused:first') === true, outcome === 'rejected');
+      state.navigate('first');
+      assert.equal(state.messageQueue.length, 1);
+      assert.equal(state.messageQueuePaused, outcome === 'rejected');
+    });
+  }
+}
+
 test('a new conversation does not inherit the previous conversation queue', () => {
   const state = fixture();
   state.context.sessionId = null;

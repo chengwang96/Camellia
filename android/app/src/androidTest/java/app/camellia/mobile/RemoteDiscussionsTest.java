@@ -78,6 +78,37 @@ public class RemoteDiscussionsTest extends InstrumentationTestCase {
         });
     }
 
+    public void testConnectUsesInitialEventSnapshotWithoutADuplicateRead() throws Exception {
+        offlineFixture();
+        var queries = new java.util.concurrent.atomic.AtomicInteger();
+        var opened = new java.util.concurrent.CountDownLatch(1);
+        var release = new java.util.concurrent.CountDownLatch(1);
+        JSONObject next = snapshot(11, "Streamed title", "Delivered by initial snapshot");
+        try {
+            ui(() -> {
+                field(activity, "remoteClientFactory", (java.util.function.Function<String, RemoteApi>) address -> new RemoteApi(address) {
+                    @Override public JSONObject json(String path, String token, JSONObject payload) throws java.io.IOException {
+                        assertEquals("Only capability discovery should precede the stream", "/v1/status", path);
+                        queries.incrementAndGet();
+                        try { return new JSONObject().put("capabilities", new JSONArray().put("discussions").put("discussion-rich")); }
+                        catch (Exception error) { throw new java.io.IOException(error); }
+                    }
+                    @Override public void discussionEvents(String id, String token, SnapshotListener listener) throws java.io.IOException {
+                        listener.onSnapshot(next); opened.countDown();
+                        try { release.await(); }
+                        catch (InterruptedException error) { Thread.currentThread().interrupt(); }
+                    }
+                    @Override public void cancel() { release.countDown(); }
+                });
+                field(activity, "foreground", true);
+                invoke("connect", new Class<?>[0]);
+            });
+            assertTrue(opened.await(3, java.util.concurrent.TimeUnit.SECONDS));
+            waitFor(() -> (boolean) field(activity, "connected") && ((JSONObject) field(activity, "group")).optString("title").equals("Streamed title"));
+            assertEquals(1, queries.get());
+        } finally { release.countDown(); }
+    }
+
     private static boolean markdownIdle(View view) {
         if (view instanceof StreamingMarkdownView && !((StreamingMarkdownView) view).idle()) return false;
         if (view instanceof android.view.ViewGroup) for (int i = 0; i < ((android.view.ViewGroup) view).getChildCount(); i++)

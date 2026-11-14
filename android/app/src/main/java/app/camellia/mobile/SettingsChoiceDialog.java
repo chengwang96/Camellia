@@ -62,7 +62,9 @@ final class SettingsChoiceDialog extends AlertDialog {
         panel.addView(heading, new LinearLayout.LayoutParams(-1, -2));
 
         LinearLayout options = new LinearLayout(getContext()); options.setOrientation(LinearLayout.VERTICAL);
-        options.setBackground(rounded(style.card, Palette.RADIUS_DIALOG_ACTION)); options.setClipToOutline(true);
+        GradientDrawable optionsFace = rounded(style.card, Palette.RADIUS_DIALOG_ACTION);
+        optionsFace.setStroke(dp(1), style.palette().cardBorder);
+        options.setBackground(optionsFace); options.setClipToOutline(true); options.setElevation(dp(1));
         for (int index = 0; index < labels.length; index++) {
             final int choice = index;
             if (index > 0) {
@@ -104,7 +106,10 @@ final class SettingsChoiceDialog extends AlertDialog {
         TextView cancel = text(cancelLabel, Palette.TEXT_ROW, style.ink); cancel.setGravity(Gravity.CENTER);
         cancel.setPadding(dp(16), dp(14), dp(16), dp(14)); cancel.setMinimumHeight(dp(52));
         cancel.setTag("settingsChoiceCancel"); cancel.setFocusable(true);
-        cancel.setBackground(new RippleDrawable(ColorStateList.valueOf(style.divider), rounded(style.card, Palette.RADIUS_DIALOG_ACTION), rounded(Color.WHITE, Palette.RADIUS_DIALOG_ACTION)));
+        GradientDrawable cancelFace = rounded(style.card, Palette.RADIUS_DIALOG_ACTION);
+        cancelFace.setStroke(dp(1), style.palette().cardBorder);
+        cancel.setBackground(new RippleDrawable(ColorStateList.valueOf(style.divider), cancelFace, rounded(Color.WHITE, Palette.RADIUS_DIALOG_ACTION)));
+        SurfaceElevation.apply(cancel, 1);
         cancel.setAccessibilityDelegate(new View.AccessibilityDelegate() {
             @Override public void onInitializeAccessibilityNodeInfo(View host, AccessibilityNodeInfo info) {
                 super.onInitializeAccessibilityNodeInfo(host, info); info.setClassName("android.widget.Button");

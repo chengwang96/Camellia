@@ -77,19 +77,47 @@ public class PopupCoordinatesTest extends InstrumentationTestCase {
                     picker.show(anchor, true); popup = popup(picker);
                 }
             });
+            getInstrumentation().waitForIdleSync();
+            if (direction == View.LAYOUT_DIRECTION_LTR) {
+                android.os.SystemClock.sleep(550);
+                android.graphics.Bitmap screenshot = getInstrumentation().getUiAutomation().takeScreenshot();
+                java.io.File output = new java.io.File(activity.getExternalCacheDir(), kind + "-popover.png");
+                try (var stream = new java.io.FileOutputStream(output)) {
+                    assertTrue(screenshot.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, stream));
+                } catch (Exception error) {
+                    throw new AssertionError(error);
+                } finally { screenshot.recycle(); }
+            }
             ui(() -> {
                 View content = popup.getContentView();
                 int[] location = new int[2]; content.getLocationOnScreen(location);
                 int[] anchorLocation = new int[2]; anchor.getLocationOnScreen(anchorLocation);
                 Rect visible = new Rect(); anchor.getWindowVisibleDisplayFrame(visible);
                 int margin = Math.round(12 * activity.getResources().getDisplayMetrics().density);
-                int expectedLeft = Math.max(visible.left + margin,
-                    Math.min(anchorLocation[0], visible.right - popup.getWidth() - margin));
+                int maxWidth = Math.round((kind.equals("conversation") ? 192 : PopupSurface.BOTTOM_SHEET_MAX_WIDTH_DP)
+                    * activity.getResources().getDisplayMetrics().density);
+                assertTrue("Popovers must stay compact: " + popup.getWidth(), popup.getWidth() <= maxWidth);
+                int anchorCenter = anchorLocation[0] + anchor.getWidth() / 2;
+                int expectedLeft = kind.equals("conversation")
+                    ? Math.max(visible.left + margin,
+                        Math.min(anchorLocation[0], visible.right - popup.getWidth() - margin))
+                    : PopupSurface.sheetLeft(anchorCenter, popup.getWidth(), visible.left, visible.right, margin);
                 assertEquals(expectedLeft, location[0]);
                 assertTrue(content.getWidth() > 0); assertTrue(content.getHeight() > 0);
                 assertTrue(location[0] + content.getWidth() <= visible.right);
-                assertTrue(location[1] >= visible.top);
-                assertTrue(location[1] + content.getHeight() <= visible.bottom);
+                assertTrue("Sheet starts above the visible frame: " + location[1] + " / " + visible.top,
+                    location[1] >= visible.top);
+                assertTrue("Sheet exceeds the visible frame: top=" + location[1] + " height=" + content.getHeight()
+                    + " bottom=" + (location[1] + content.getHeight()) + " visibleBottom=" + visible.bottom,
+                    location[1] + content.getHeight() <= visible.bottom);
+                if (!kind.equals("conversation")) {
+                    int bottomGap = Math.round(PopupSurface.BOTTOM_SHEET_BOTTOM_GAP_DP
+                        * activity.getResources().getDisplayMetrics().density);
+                    assertTrue("Picker sheets must attach to the visible bottom edge: top=" + location[1]
+                        + " height=" + content.getHeight() + " bottom=" + (location[1] + content.getHeight())
+                        + " visibleBottom=" + visible.bottom + " gap=" + bottomGap,
+                        Math.abs(location[1] + content.getHeight() - (visible.bottom - bottomGap)) <= 2);
+                }
                 if (direction == View.LAYOUT_DIRECTION_LTR) {
                     previous[0] = location[0]; previous[1] = location[1];
                 } else {

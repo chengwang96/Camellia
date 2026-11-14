@@ -1,7 +1,7 @@
 'use strict';
 
 const diagnosticOutput = require('./diagnostic-output').installDiagnosticOutput();
-const { app, BrowserWindow, WebContentsView, ipcMain, dialog, shell, Menu, Tray, nativeImage, nativeTheme, screen } = require('electron');
+const { app, BrowserWindow, WebContentsView, ipcMain, dialog, shell, Menu, Tray, nativeImage, nativeTheme, screen, clipboard } = require('electron');
 const { spawn, spawnSync } = require('node:child_process');
 const { once } = require('node:events');
 const fs = require('node:fs');
@@ -889,6 +889,18 @@ const { nativeMode } = require('../engines/permission-levels');
 const { nativeEditingSupported } = require('../engines/native-edit-boundary');
 const claudeSessions = new SessionPool();
 
+// Claude Code stays silent through long tool stretches, while Codex's base
+// prompt asks for short progress notes that the app shows live. Ask Claude
+// for the same notes, but require each one to share the assistant message
+// with the next tool call: a turn that ends on an announcement is treated as
+// a finished answer, and Claude has no automatic continuation.
+const CLAUDE_PROGRESS_INSTRUCTIONS = 'For multi-step or tool-heavy work, send a brief progress note '
+  + 'as normal assistant text, never inside thinking: one short sentence at the start and after each '
+  + 'major milestone. Keep it to about 20 words, say what you are about to do or what you just found, '
+  + 'and use the same language as the conversation. Put the note in the same assistant message as the '
+  + 'next tool call; never end a turn with only a progress note. Do not narrate routine or repetitive '
+  + 'tool calls, do not restate the plan, and do not announce the final summary before writing it.';
+
 // Build spawn args/env for one persistent claude process.
 // opts: { sessionId?: string, fork?: boolean }
 function claudeSpawnSpec(settings, opts) {
@@ -901,6 +913,11 @@ function claudeSpawnSpec(settings, opts) {
     '--include-partial-messages',
     '--prompt-suggestions', 'true',
     '--verbose',
+    // A resumed conversation would otherwise reuse the system prompt recorded
+    // at its first request and never see the progress instruction. Re-render
+    // it so the trial applies to conversations that are already open.
+    '--system-prompt-snapshot', 'off',
+    '--append-system-prompt', CLAUDE_PROGRESS_INSTRUCTIONS,
   ];
   if (opts.sessionId) {
     // An absolute transcript also resumes across directories on older CLIs
@@ -1664,16 +1681,29 @@ function openSettingsWindow(target = {}) {
     const settingsContents = settingsWindow.webContents;
     settingsWindow.setMenu(null);
     const closingWindow = settingsWindow;
+    let settingsClosing = false, ownerStateBeforeClose = null;
     const dismissSettings = () => {
       // Includes activation through the owner's native caption. Losing focus
       // to another application or a settings-owned dialog does not dismiss it.
-      if (settingsShowReady && !closingWindow.isDestroyed()) closingWindow.close();
+      if (settingsShowReady && !settingsClosing && !settingsCloseReady && !closingWindow.isDestroyed()) closingWindow.close();
     };
     owner?.on('focus', dismissSettings);
+    const ownerMinimized = () => {
+      log(`Settings: workbench minimized while Settings is open (close pending: ${settingsClosing})`);
+    };
+    owner?.on('minimize', ownerMinimized);
     settingsWindow.on('close', event => {
       if (settingsCloseReady) return;
       event.preventDefault();
+      // Focus can return to the owner while the save is still pending. Ignore
+      // that second request instead of re-entering the close flow.
+      if (settingsClosing) { log('Settings close: ignored a repeated close while saving'); return; }
+      settingsClosing = true;
+      if (!ownerStateBeforeClose && owner && !owner.isDestroyed()) {
+        ownerStateBeforeClose = { minimized: owner.isMinimized(), visible: owner.isVisible() };
+      }
       void flushSettingsWindow().then(saved => {
+        settingsClosing = false;
         if (closingWindow.isDestroyed()) return;
         if (!saved) { closingWindow.focus(); return; }
         settingsCloseReady = true;
@@ -1691,12 +1721,26 @@ function openSettingsWindow(target = {}) {
     });
     settingsWindow.on('closed', () => {
       owner?.removeListener('focus', dismissSettings);
+      owner?.removeListener('minimize', ownerMinimized);
       const nativeContents = liveWebContents(nativeSettingsView);
       settingsWindow = null; settingsShowReady = false;
       nativeSettingsView = null; nativeSettingsLoad = null;
       cliDevices.detach([settingsContents, nativeContents]);
       if (nativeContents && !nativeContents.isDestroyed()) nativeContents.close();
       void setSettingsBackdrop(owner, false);
+      // Windows can leave an owner minimized when its owned Settings window
+      // closes. Only undo that when the owner was visible and not minimized
+      // when the close started, so an intentional minimize is preserved.
+      const restoreOwner = () => {
+        if (appQuitting || !owner || owner.isDestroyed() || !ownerStateBeforeClose
+          || ownerStateBeforeClose.minimized || !ownerStateBeforeClose.visible
+          || !owner.isMinimized()) return;
+        log('Settings close: restoring the workbench after an unexpected minimize');
+        owner.restore();
+        owner.show();
+      };
+      restoreOwner();
+      setTimeout(restoreOwner, 120);
     });
     const destination = opening.target;
     settingsWindow.loadFile(path.join(RENDERER_ROOT, 'settings/api-settings.html'), { query: { page: destination.page || 'general', engine: destination.engine || 'dsh', ...(destination.focus ? { focus: destination.focus } : {}) } });
@@ -2536,8 +2580,93 @@ if (!gotSingleInstanceLock) {
     try { return await sharedConversations.command(engine, action, payload, { historyPage }); }
     catch (error) { return { ok: false, error: error.message }; }
     finally {
-      if (!['list-sessions', 'load-session', 'get-live', 'get-settings', 'goal-get', 'task-list', 'list-attachable-conversations'].includes(action))
+      if (!['list-sessions', 'load-session', 'get-live', 'get-settings', 'goal-get', 'task-list', 'list-attachable-conversations', 'list-attachable-artifacts', 'visualize-get', 'visualize-state'].includes(action))
         remoteDesktop?.publish();
+    }
+  });
+  ipcMain.handle('dsh:visualize-get', (_event, payload) => {
+    try {
+      sharedConversations.get(payload?.sessionId);
+      return { ok: true, card: sharedConversations.visualize.get(payload.sessionId, payload?.cardId) };
+    } catch (error) { return { ok: false, error: error.message }; }
+  });
+  ipcMain.handle('dsh:visualize-state', (_event, payload) => {
+    try {
+      sharedConversations.get(payload?.sessionId);
+      return { ok: true, ...sharedConversations.visualize.setState(payload?.sessionId, payload?.cardId,
+        payload?.state, { clear: payload?.clear === true }) };
+    } catch (error) { return { ok: false, error: error.message }; }
+  });
+  ipcMain.handle('dsh:visualize-export', async (_event, payload) => {
+    try {
+      const html = String(payload?.html || '');
+      if (!html) throw new Error('Visualization export is empty');
+      if (Buffer.byteLength(html, 'utf8') > 32 * 1024 * 1024)
+        throw new Error('Visualization export is too large');
+      const title = String(payload?.title || 'Camellia card')
+        .replace(/[<>:"/\\|?*\u0000-\u001f]/g, '_').replace(/\s+/g, ' ').trim().slice(0, 80)
+        || 'Camellia card';
+      const suffix = String(payload?.cardId || '').replace(/[^a-z0-9-]/gi, '').slice(0, 8);
+      const options = {
+        title: 'Export visualization',
+        defaultPath: path.join(app.getPath('downloads'), title + (suffix ? '-' + suffix : '') + '.html'),
+        filters: [{ name: 'HTML document', extensions: ['html'] }],
+      };
+      const result = mainWindow
+        ? await dialog.showSaveDialog(mainWindow, options)
+        : await dialog.showSaveDialog(options);
+      if (result.canceled || !result.filePath) return { ok: true, canceled: true };
+      await fs.promises.writeFile(result.filePath, html, 'utf8');
+      return { ok: true, filePath: result.filePath };
+    } catch (error) { return { ok: false, error: error.message }; }
+  });
+  ipcMain.handle('dsh:visualize-copy', (_event, payload) => {
+    try {
+      const html = String(payload?.html || '');
+      if (!html) throw new Error('Visualization snapshot is empty');
+      if (Buffer.byteLength(html, 'utf8') > 32 * 1024 * 1024)
+        throw new Error('Visualization snapshot is too large');
+      clipboard.writeText(html);
+      return { ok: true };
+    } catch (error) { return { ok: false, error: error.message }; }
+  });
+  ipcMain.handle('dsh:visualize-network', (_event, payload) => {
+    try {
+      sharedConversations.get(payload?.sessionId);
+      return { ok: true, card: sharedConversations.visualize.setNetworkApproval(payload?.sessionId,
+        payload?.cardId, payload?.approved === true) };
+    } catch (error) { return { ok: false, error: error.message }; }
+  });
+  ipcMain.handle('dsh:visualize-network-fetch', async (_event, payload) => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 10000);
+    try {
+      const card = sharedConversations.visualize.network(payload?.sessionId, payload?.cardId);
+      if (!card.networkApproved) throw new Error('Network access has not been approved for this card');
+      const url = new URL(String(payload?.url || ''));
+      if (url.protocol !== 'https:') throw new Error('Only HTTPS network requests are allowed');
+      if (!card.networkOrigins.includes(url.origin))
+        throw new Error('Network origin is not allowed for this card');
+      const method = payload?.method === 'HEAD' ? 'HEAD' : 'GET';
+      const fetchImpl = typeof fetch === 'function' ? fetch : require('undici').fetch;
+      const response = await fetchImpl(url.href, {
+        method,
+        redirect: 'error',
+        credentials: 'omit',
+        signal: controller.signal,
+        headers: { Accept: 'application/json, text/csv, text/plain, application/*+json, */*;q=0.5' },
+      });
+      if (!response.ok) throw new Error('Network request failed with status ' + response.status);
+      if (method === 'HEAD') return { ok: true, status: response.status,
+        contentType: response.headers.get('content-type') || '', text: '' };
+      const bytes = Buffer.from(await response.arrayBuffer());
+      if (bytes.length > 2 * 1024 * 1024) throw new Error('Network response exceeds 2 MB');
+      return { ok: true, status: response.status,
+        contentType: response.headers.get('content-type') || '', text: bytes.toString('utf8') };
+    } catch (error) {
+      return { ok: false, error: error.name === 'AbortError' ? 'Network request timed out' : error.message };
+    } finally {
+      clearTimeout(timer);
     }
   });
   ipcMain.handle('dsh:conversation-switch', async (_event, payload) => {
@@ -2549,7 +2678,8 @@ if (!gotSingleInstanceLock) {
       }
       const navigation = !payload.sessionId && payload.newSession === true ? { new: '1',
         ...(typeof payload.workspaceId === 'string' ? { workspace: payload.workspaceId } : {}), ...(payload.addWorkspace === true ? { addWorkspace: '1' } : {}) } : undefined;
-      const result = await switchMode(payload.engine, payload.sessionId, navigation, payload.inPlace === true);
+      const prepareRuntime = !(payload.navigate === true && payload.sessionId);
+      const result = await switchMode(payload.engine, payload.sessionId, navigation, payload.inPlace === true, prepareRuntime);
       return result;
     } catch (error) { return { ok: false, error: error.message }; }
   });
@@ -3259,19 +3389,19 @@ if (!gotSingleInstanceLock) {
     }
     return switchMode(mode);
   }
-  async function switchMode(mode, conversationId, navigation, inPlace = false) {
+  async function switchMode(mode, conversationId, navigation, inPlace = false, prepareRuntime = true) {
     if (!['home', 'discussions', 'claude', 'codex', 'dsh', 'kimi', 'antigravity', 'grok'].includes(mode)) {
       return { ok: false, error: 'Unknown engine or page' };
     }
     const request = ++modeRequest;
     const next = mode;
-    if (Object.hasOwn(ENGINES, next)) {
-      try { assertRuntimeAvailable(next); }
-      catch (error) { return { ok: false, error: error.message }; }
-    }
     if (inPlace && currentMode === next && mainWindow && !mainWindow.isDestroyed()
       && mainWindow.webContents.getURL().split(/[?#]/)[0] === require('node:url').pathToFileURL(path.join(RENDERER_ROOT, 'chat/workbench.html')).href) {
       return { ok: true };
+    }
+    if (prepareRuntime && Object.hasOwn(ENGINES, next)) {
+      try { assertRuntimeAvailable(next); }
+      catch (error) { return { ok: false, error: error.message }; }
     }
     if (next === 'discussions' && mainWindow && !mainWindow.isDestroyed()
       && mainWindow.webContents.getURL().split(/[?#]/)[0] === require('node:url').pathToFileURL(path.join(RENDERER_ROOT, 'chat/workbench.html')).href) {
@@ -3279,7 +3409,7 @@ if (!gotSingleInstanceLock) {
       return { ok: true };
     }
     try {
-      if (!['home', 'discussions'].includes(next) && !(next === 'dsh' && loadConfig().dshBin)) await runtimes().ensure(next, conversationId ? sharedConversations.settings(next, conversationId).connection : undefined);
+      if (prepareRuntime && !['home', 'discussions'].includes(next) && !(next === 'dsh' && loadConfig().dshBin)) await runtimes().ensure(next, conversationId ? sharedConversations.settings(next, conversationId).connection : undefined);
     } catch (error) {
       if (error.code === 'DOWNLOAD_CANCELLED') return { ok: true, canceled: true };
       log(`runtime preparation failed: ${error.message}`);

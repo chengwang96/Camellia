@@ -42,7 +42,7 @@ public class MobileDeviceTest extends InstrumentationTestCase {
             getInstrumentation().runOnMainSync(() -> {
                 View root = activity.getWindow().getDecorView();
                 assertTrue(hasText(root, "Settings", "设置"));
-                root.findViewWithTag("remoteControlEntry").performClick();
+                root.findViewWithTag("nav:computers").performClick();
                 root.findViewWithTag("addComputer").performClick();
                 root = activity.getWindow().getDecorView();
                 assertTrue(hasText(root, "Pair computer", "配对电脑"));
@@ -223,6 +223,10 @@ public class MobileDeviceTest extends InstrumentationTestCase {
                     root.findViewWithTag("group:workspace").performClick();
                     assertNotNull(root.findViewWithTag("conversation:next"));
                     assertNotNull(root.findViewWithTag("conversation:research"));
+                    TextView researchMeta = root.findViewWithTag("conversation:research").findViewWithTag("conversationRowMeta");
+                    assertNotNull(researchMeta);
+                    assertFalse("The workspace name is already shown by the group header",
+                        researchMeta.getText().toString().contains("Research"));
                     var search = MainActivity.class.getDeclaredField("searchInput"); search.setAccessible(true);
                     assertEquals(View.GONE, root.findViewWithTag("remoteSearchBar").getVisibility());
                     root.findViewWithTag("remoteSearchButton").performClick();

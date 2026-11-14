@@ -427,6 +427,7 @@ with sync_playwright() as p:
         if finish == 'cancel':
             page.locator('[data-sid="pending-a"]').click()
             page.wait_for_function('context.sessionId === "pending-a" && !loadingSession')
+            expect(page.locator('#chat')).to_contain_text('Continue pending A')
             expect(page.locator('#chat')).to_contain_text('Asking the engine to summarize')
             expect(page.locator('#send')).to_be_enabled()
             page.locator('#send').click()
@@ -705,11 +706,16 @@ with sync_playwright() as p:
         page.evaluate('window.holdSend=context.sessionId')
         page.evaluate('window.failEdit=true')
         page.locator('.message-editor button.primary').click()
-        expect(page.locator('.message-editor button.primary')).to_have_text('Sending…')
-        expect(page.locator('.message-edit-status')).to_contain_text('Restarting this turn')
+        # The resent message, not the editor, owns the transcript while the
+        # request is still being accepted. Its own stop action keeps working
+        # even though the composer holds an unrelated draft.
+        expect(page.locator('.message-editor')).to_be_hidden()
+        expect(page.locator('.msg-user .bubble')).to_have_text('Corrected task B')
         expect(page.locator('#chat')).not_to_contain_text('Stopped Task B')
-        expect(page.locator('.message-editor').get_by_role('button',name='Stop',exact=True)).to_be_enabled()
-        page.locator('.message-editor').get_by_role('button',name='Stop',exact=True).click()
+        expect(page.locator('.pending-send')).to_contain_text('Restarting this turn')
+        page.screenshot(path=str(preview/f'edit-pending-send-{engine}.png'),animations='disabled')
+        page.locator('.pending-send button').click()
+        expect(page.locator('.message-editor')).to_be_visible()
         expect(editor).to_have_value('Corrected task B')
         expect(page.locator('.message-edit-status[role="alert"]')).to_contain_text('Fixture compaction canceled')
         expect(page.locator('#chat')).to_contain_text('Stopped Task B')
@@ -717,7 +723,8 @@ with sync_playwright() as p:
         page.evaluate('window.failEdit=false;window.holdEdit=true')
         page.screenshot(path=str(preview/f'edit-message-{engine}.png'),animations='disabled')
         page.locator('.message-editor button.primary').click()
-        expect(page.locator('.message-editor button.primary')).to_be_disabled()
+        expect(page.locator('.message-editor')).to_be_hidden()
+        expect(page.locator('.msg-user .bubble')).to_have_text('Corrected task B')
         expect(page.locator('#chat')).not_to_contain_text('Streaming Task B')
         assert page.evaluate('actions.filter(a=>a.action==="send" && a.payload.editSeq).length')==2
         page.evaluate('window.releaseEdit()')
@@ -1194,8 +1201,9 @@ with sync_playwright() as p:
     page.goto((repo/'src/renderer/chat/workbench.html').as_uri()+'?harness=claude',wait_until='networkidle')
     page.wait_for_function('uiReady')
     page.locator('#input').fill('/')
-    expect(page.locator('.slash-pop .slash-row')).to_have_count(5)
+    expect(page.locator('.slash-pop .slash-row')).to_have_count(6)
     expect(page.locator('.slash-pop')).to_contain_text('/find')
+    expect(page.locator('.slash-pop')).to_contain_text('/attach')
     page.locator('#input').fill('/g')
     expect(page.locator('.slash-pop .slash-row')).to_have_count(1)
     expect(page.locator('.slash-pop')).to_contain_text('/goal')
@@ -1470,6 +1478,45 @@ with sync_playwright() as p:
     assert page.evaluate('running') is False
     expect(page.locator('.run-result')).to_have_count(1)
     page.close()
+    # A send that is compacting has no committed user row yet. After a renderer
+    # reload the optimistic message is restored from local state, adopted when
+    # the run starts, and rolled back when compaction fails.
+    for finish in ['started', 'failed']:
+        page = browser.new_page(viewport={'width':1200,'height':820})
+        page.on('pageerror', lambda error: errors.append(str(error)))
+        page.add_init_script(concurrent_bridge)
+        page.goto((repo/'src/renderer/chat/workbench.html').as_uri()+'?harness=codex',wait_until='networkidle')
+        page.wait_for_function('uiReady')
+        pending_at = page.evaluate('Date.now()')
+        page.evaluate('''async (pendingAt) => {
+          sessionFixtures.set('restored-pending',{id:'restored-pending',title:'Restored pending',mtimeMs:Date.now(),
+            currentEngine:'codex',activity:'running',compaction:{state:'running',native:true},live:null,
+            messages:[{role:'user',seq:1,text:'Older request',at:pendingAt-60000},
+                      {role:'assistant',engine:'codex',text:'Older answer',at:pendingAt-50000}]});
+          localStorage.setItem('camellia-chat-pending-send:restored-pending',JSON.stringify(
+            {id:'restored-send',text:'Compacting request',attachments:[],at:pendingAt}));
+          await sidebar.load();
+        }''', pending_at)
+        page.locator('[data-sid="restored-pending"]').click()
+        page.wait_for_function('context.sessionId === "restored-pending" && !loadingSession')
+        expect(page.locator('.msg-user')).to_have_count(2)
+        expect(page.locator('.msg-user').last).to_contain_text('Compacting request')
+        expect(page.locator('.pending-send')).to_contain_text('Sending…')
+        if finish == 'started':
+            page.screenshot(path=str(preview/'pending-send-restored.png'),animations='disabled')
+            page.evaluate('receiveEvent({type:"conversation:started",session_id:"restored-pending",engine:"codex",runId:77,displayText:"Compacting request",userSeq:3})')
+            expect(page.locator('.msg-user')).to_have_count(2)
+            expect(page.locator('.pending-send')).to_have_count(0)
+            assert page.evaluate('''[...document.querySelectorAll('.msg-user')].at(-1).messageData.seq''') == 3
+            assert page.evaluate('running') is True
+            assert page.evaluate('localStorage.getItem("camellia-chat-pending-send:restored-pending")') is None
+        else:
+            page.evaluate('receiveStatus({sessionId:"restored-pending",text:"",compaction:{state:"failed",error:"Summary service unavailable"}})')
+            expect(page.locator('.pending-send')).to_have_count(0)
+            expect(page.locator('.msg-user').last).to_contain_text('Compacting request')
+            expect(page.locator('.failed-send')).to_contain_text('Summary service unavailable')
+            assert page.evaluate('localStorage.getItem("camellia-chat-pending-send:restored-pending")') is None
+        page.close()
     browser.close()
     assert not errors, errors
     print('PASS: question dialogs with full tool permissions, deferred answers, answer mapping, selection drafts, failed-submit retry and explicit skips; concurrent conversations, independent stop and approval, restored streams and drafts, harness locks, plus five-engine goal lifecycle and elapsed-time bars, logos, aligned composers, shared history, switch preferences, persistent drafts and attachments, reload, light/dark layouts')

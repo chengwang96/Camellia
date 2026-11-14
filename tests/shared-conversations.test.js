@@ -119,6 +119,86 @@ test('the shared skill bridge can be toggled without restarting a conversation',
   assert.ok(toolNames().includes('camellia_skill_catalog'));
 });
 
+test('visualize cards are parent-only, persistent and removed with their conversation', async t => {
+  const h = fixture(t, { createGoalBridge: async options => ({ call: options.call, close() {} }) });
+  t.after(() => h.manager.closeGoalTools());
+  const parent = h.manager.create('codex', null, 'Visualize parent', h.root);
+  const names = conversation => h.manager.dynamicGoalTools(conversation).map(tool => tool.name);
+  assert.ok(names(parent).includes('camellia_visualize'));
+  assert.match(h.manager.toolInstructions(parent), /camellia_visualize/);
+  assert.match(h.manager.toolInstructions(parent), /Camellia card action \(structured user choice\)/);
+  const child = h.manager.create('codex', null, 'Visualize child', h.root);
+  child.controlParentId = parent.id;
+  h.manager.save(child);
+  assert.equal(names(child).includes('camellia_visualize'), false);
+  fs.writeFileSync(path.join(h.root, 'figure.png'), Buffer.from(
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=', 'base64'));
+  fs.writeFileSync(path.join(h.root, 'results.csv'), 'label,value\nA,1\n');
+  fs.writeFileSync(path.join(h.root, 'clip.mp4'), Buffer.concat([
+    Buffer.from([0, 0, 0, 24]), Buffer.from('ftypisom', 'ascii'), Buffer.alloc(8),
+  ]));
+
+  const run = await h.manager.send('codex', { sessionId: parent.id, prompt: 'Show an interactive card' });
+  const token = h.manager.active.get(parent.id).goalRunToken;
+  const created = h.manager.callGoalTool(parent.id, 'camellia_visualize', {
+    run_token: token,
+    action: 'create',
+    title: 'Experiment dashboard',
+    summary: 'A compact result explorer',
+    mode: 'wide',
+    style: 'paper',
+    network_origins: ['https://interactive-examples.mdn.mozilla.net'],
+    fragment: '<script type="application/json" data-viz-data="results.csv" data-viz-name="results"></script>'
+      + '<div class="card"><img data-viz-src="figure.png" alt="figure"><video data-viz-src="clip.mp4" controls></video>Current result: 0.842</div>',
+  });
+  assert.equal(created.ok, true, created.error);
+  assert.match(created.visualize.cardId, /^[0-9a-f-]{36}$/);
+  assert.equal(created.visualize.style, 'paper');
+  assert.equal(created.visualize.images[0].path, 'figure.png');
+  assert.equal(created.visualize.data[0].name, 'results');
+  assert.equal(created.visualize.videos[0].path, 'clip.mp4');
+  assert.deepEqual(created.visualize.networkOrigins, ['https://interactive-examples.mdn.mozilla.net']);
+  const updated = h.manager.callGoalTool(parent.id, 'camellia_visualize', {
+    run_token: token,
+    action: 'update',
+    card_id: created.visualize.cardId,
+    old_str: '0.842',
+    new_str: '0.861',
+  });
+  assert.equal(updated.ok, true, updated.error);
+  assert.equal(updated.visualize.revision, 2);
+  const loaded = await h.manager.command('codex', 'visualize-get', {
+    sessionId: parent.id, cardId: created.visualize.cardId,
+  });
+  assert.equal(loaded.ok, true);
+  assert.match(loaded.card.html, /0\.861/);
+  assert.match(loaded.card.html, /data:image\/png;base64,/);
+  assert.match(loaded.card.html, /data-viz-name="results"/);
+  assert.match(loaded.card.html, /data:video\/mp4;base64,/);
+  const savedState = await h.manager.command('codex', 'visualize-state', {
+    sessionId: parent.id, cardId: created.visualize.cardId, state: { selected: 'line' },
+  });
+  assert.equal(savedState.ok, true);
+  const stateful = await h.manager.command('codex', 'visualize-get', {
+    sessionId: parent.id, cardId: created.visualize.cardId,
+  });
+  assert.deepEqual(stateful.card.state, { selected: 'line' });
+  const network = await h.manager.command('codex', 'visualize-network', {
+    sessionId: parent.id, cardId: created.visualize.cardId, approved: true,
+  });
+  assert.equal(network.ok, true);
+  assert.equal(network.card.networkApproved, true);
+  await assert.rejects(h.manager.command('codex', 'visualize-get', {
+    sessionId: child.id, cardId: created.visualize.cardId,
+  }), /not found/);
+
+  h.finish('codex', 'success', 'Done', h.sent.at(-1).session);
+  await run.done;
+  await h.flush();
+  await h.manager.purge(parent.id);
+  assert.equal(fs.existsSync(path.join(h.root, 'visualize', parent.id)), false);
+});
+
 test('portable skills install, update and uninstall with verified state and recovery copies', async t => {
   const h = fixture(t);
   const first = await h.manager.command('codex', 'skill-install', { name: 'review', host: 'codex', scope: 'app' });
@@ -726,6 +806,7 @@ test('managed children receive one quoted context packet and return a settlement
   const graph = await h.manager.command('codex', 'agent-graph', { sessionId: parent.sessionId });
   assert.equal(graph.ok, true);
   assert.equal(graph.graph.nodes.length, 2);
+  assert.equal(graph.graph.nodes[0].contextObserved, true);
   assert.equal(graph.graph.edges[0].from, 'conversation:' + parent.sessionId);
   assert.equal(graph.graph.nodes[1].settlement.status, 'completed');
 });
@@ -1608,23 +1689,25 @@ for (const engine of ['codex', 'kimi']) test(engine + ' compaction quota fallbac
   c.engineSettings[engine].contextWindow = 6000;
   for (let index = 0; index < 3; index++) h.manager.append(c, { role: 'tool', text: 'SOURCE_' + index + ' ' + 'x'.repeat(9000) });
   const pending = h.manager.compact(c.id).catch(error => error);
-  let firstPrompt, failedPrompt, failures = 0;
-  const allowedFailures = engine === 'kimi' ? 2 : 1;
-  while (h.manager.switching.has(c.id)) {
-    assert.ok(h.sent.length < 12);
+  let firstPrompt, failedPrompt, settled = false;
+  pending.finally(() => { settled = true; });
+  for (let guard = 0; !settled || h.manager.switching.has(c.id); guard++) {
+    assert.ok(guard < 80);
+    await h.flush();
     const running = h.sent.filter(item => item.session.running);
-    if (!running.length) { await h.flush(); continue; }
-    const next = !firstPrompt ? running.find(item => item.prompt.includes('SOURCE_0'))
-      : !failedPrompt ? running.find(item => item.prompt.includes('SOURCE_1')) : running.at(-1);
-    if (!next) { await h.flush(); continue; }
-    if (!firstPrompt) {
-      firstPrompt = next.prompt;
-      h.finish(engine, 'success', 'First completed fragment', next.session);
-    } else if (!failedPrompt || next.prompt === failedPrompt && failures < allowedFailures) {
-      failedPrompt ||= next.prompt;
-      failures++;
-      h.finish(engine, 'error', 'You\u2019ve hit your usage limit.', next.session);
-    } else h.finish(engine, 'success', 'Recovered working context', next.session);
+    if (!running.length) continue;
+    for (const item of running) {
+      if (!item.session.running) continue;
+      const merge = /Summaries to merge/.test(item.prompt);
+      if (!firstPrompt && !merge && item.prompt.includes('SOURCE_0')) {
+        firstPrompt = item.prompt;
+        h.finish(engine, 'success', 'First completed fragment', item.session);
+      } else if (!merge && item.prompt !== firstPrompt && item.opts.settings.subscriptionId === 'a') {
+        failedPrompt ||= item.prompt;
+        if (item.prompt === failedPrompt) h.finish(engine, 'error', 'You\u2019ve hit your usage limit.', item.session);
+        else h.finish(engine, 'success', 'Recovered working context', item.session);
+      } else h.finish(engine, 'success', 'Recovered working context', item.session);
+    }
     await h.flush();
   }
   const result = await pending;
@@ -1641,14 +1724,29 @@ test('Codex pre-send compaction fallback continues the original message and pers
   h.manager.append(c, { role: 'tool', text: 'OLD_CONTEXT ' + 'x'.repeat(18000) });
   const pending = h.manager.send('codex', { sessionId: c.id, prompt: 'Finish the original request' }).catch(error => error);
   await h.flush();
-  h.finish('codex', 'error', 'Usage limit reached'); await h.flush();
-  assert.equal(h.sent.at(-1).opts.settings.subscriptionId, 'account-1');
-  while (h.manager.switching.has(c.id)) {
-    assert.ok(h.sent.length < 12);
-    h.finish('codex', 'success', 'Recovered working context'); await h.flush();
+  let settled = false, failedPrompt = '';
+  pending.finally(() => { settled = true; });
+  for (let guard = 0; !settled; guard++) {
+    assert.ok(guard < 80);
+    await h.flush();
+    const summaries = h.sent.filter(item => item.session.running
+      && /History fragment|Summaries to merge/.test(item.prompt));
+    for (const item of summaries) {
+      if (!/History fragment/.test(item.prompt)) h.finish('codex', 'success', 'Recovered working context', item.session);
+      else if (!failedPrompt) {
+        failedPrompt = item.prompt;
+        h.finish('codex', 'error', 'Usage limit reached', item.session);
+      } else if (item.prompt === failedPrompt && item.opts.settings.subscriptionId === 'default') {
+        h.finish('codex', 'error', 'Usage limit reached', item.session);
+      } else h.finish('codex', 'success', 'Recovered working context', item.session);
+    }
+    if (!summaries.length) await h.flush();
   }
   const run = await pending;
   assert.equal(run.ok, true, run.message);
+  const summary = h.sent.find(item => /History fragment|Summaries to merge/.test(item.prompt));
+  assert.ok(summary);
+  assert.equal(h.sent.filter(item => item.prompt === failedPrompt).at(-1).opts.settings.subscriptionId, 'account-1');
   assert.equal(h.sent.at(-1).opts.settings.subscriptionId, 'account-1');
   assert.match(h.sent.at(-1).prompt, /Recovered working context[\s\S]*Finish the original request/);
   h.progress(); h.finish('codex'); await run.done;
@@ -1768,11 +1866,24 @@ test('Codex compaction fallback excludes failed summary accounts from subsequent
   h.manager.append(c, { role: 'tool', text: 'x'.repeat(18000) });
   const pending = h.manager.send('codex', { sessionId: c.id, prompt: 'Continue the task' });
   await h.flush(); h.finish('codex', 'error', 'Usage limit reached'); await h.flush();
+  let failedSummaryPrompt = '';
   while (h.manager.switching.has(c.id)) {
-    h.finish('codex', 'success', 'Recovered context'); await h.flush();
+    const running = h.sent.filter(item => item.session.running);
+    for (const item of running) {
+      const summary = /History fragment/.test(item.prompt);
+      if (summary && !failedSummaryPrompt) {
+        failedSummaryPrompt = item.prompt;
+        h.finish('codex', 'error', 'Usage limit reached', item.session);
+      } else if (summary && item.prompt === failedSummaryPrompt && item.opts.settings.subscriptionId === 'default') {
+        h.finish('codex', 'error', 'Usage limit reached', item.session);
+      } else h.finish('codex', 'success', 'Recovered context', item.session);
+    }
+    await h.flush();
   }
   const run = await pending;
-  h.finish('codex', 'error', 'Usage limit reached'); await h.flush();
+  const nextTurn = h.sent.filter(item => item.session.running).at(-1);
+  assert.equal(nextTurn.opts.settings.subscriptionId, 'account-1');
+  h.finish('codex', 'error', 'Usage limit reached', nextTurn.session); await h.flush();
   assert.equal(h.sent.at(-1).opts.settings.subscriptionId, 'account-2');
   h.progress(); h.finish('codex'); await run.done;
   assert.equal(h.codex.accountState().activeId, 'account-2');
@@ -2270,14 +2381,18 @@ test('engine fallback maps a million-character history once and merges short sum
   await h.flush();
   const requests = [];
   while (manager.busy(c.id)) {
-    assert.ok(requests.length < 6, 'a million ASCII characters need only a few bounded summary requests');
-    const sent = h.sent.at(-1); requests.push(sent.prompt);
-    assert.equal(sent.opts.settings.thinkingBudget, 'low');
-    assert.equal(manager.settings('codex', c.id).thinkingBudget, 'max');
-    assert.equal(c.segments.codex.nativeId, nativeBefore, 'temporary summaries cannot move the real native binding');
-    const merge = /Summaries to merge/.test(sent.prompt);
-    if (!merge) assert.doesNotMatch(sent.prompt, /PART_SUMMARY/);
-    h.finish('codex', 'success', merge ? 'Merged result with constraints and next steps' : 'PART_SUMMARY ' + requests.length);
+    const running = h.sent.filter(item => item.session.running);
+    assert.ok(requests.length + running.length <= 6, 'a million ASCII characters need only a few bounded summary requests');
+    for (const sent of running) {
+      const requestNumber = requests.length + 1;
+      requests.push(sent.prompt);
+      assert.equal(sent.opts.settings.thinkingBudget, 'low');
+      assert.equal(manager.settings('codex', c.id).thinkingBudget, 'max');
+      assert.equal(c.segments.codex.nativeId, nativeBefore, 'temporary summaries cannot move the real native binding');
+      const merge = /Summaries to merge/.test(sent.prompt);
+      if (!merge) assert.doesNotMatch(sent.prompt, /PART_SUMMARY/);
+      h.finish('codex', 'success', merge ? 'Merged result with constraints and next steps' : 'PART_SUMMARY ' + requestNumber, sent.session);
+    }
     await h.flush();
   }
   const result = await pending;
@@ -2351,6 +2466,33 @@ test('Kimi subscription summaries run four independent workers and merge in sour
   assert.match(fs.readFileSync(result.file, 'utf8'), /MERGED_CONTEXT/);
 });
 
+test('Codex subscription summaries run four bounded workers instead of one long serial chain', async context => {
+  const h = subscriptionFixture(context, 'codex'), manager = h.manager;
+  const first = await manager.send('codex', { prompt: 'Original task' });
+  h.finish('codex'); await first.done;
+  const c = manager.get(first.sessionId);
+  c.engineSettings.codex.contextWindow = 6000;
+  for (let n = 0; n < 5; n++) manager.append(c, { role: 'tool', text: 'CODEX_FRAGMENT_' + n + ' ' + 'x'.repeat(8000) });
+  const pending = manager.compact(c.id, { portable: true });
+  let maxActive = 0;
+  for (let guard = 0; manager.busy(c.id); guard++) {
+    assert.ok(guard < 40);
+    maxActive = Math.max(maxActive, manager.active.size);
+    const running = h.sent.filter(item => item.session.running);
+    if (!running.length) { await h.flush(); continue; }
+    for (const item of running) {
+      const merge = /Summaries to merge/.test(item.prompt);
+      const fragment = merge ? null : item.prompt.match(/CODEX_FRAGMENT_(\d+)/)?.[1];
+      h.finish('codex', 'success', merge ? 'MERGED_CODEX_CONTEXT' : 'CODEX_PART_' + fragment, item.session);
+    }
+    await h.flush();
+  }
+  const result = await pending;
+  assert.equal(maxActive, 4);
+  assert.equal(c.lastCompaction.concurrency, 4);
+  assert.match(fs.readFileSync(result.file, 'utf8'), /MERGED_CODEX_CONTEXT/);
+});
+
 test('Kimi parallel summary quota failure reuses checkpoints before serial account recovery', async context => {
   const h = subscriptionFixture(context, 'kimi'), manager = h.manager;
   const first = await manager.send('kimi', { prompt: 'Original task' }); h.finish('kimi'); await first.done;
@@ -2410,23 +2552,35 @@ test('engine summary timeout leaves a retryable checkpoint and the original nati
   const pending = manager.compact(c.id, { portable: true });
   const rejected = assert.rejects(pending, /timed out[\s\S]*original history is retained/);
   await h.flush();
-  h.finish('codex', 'success', 'Completed first fragment');
+  let running = h.sent.filter(item => item.session.running);
+  const completedPrompts = running.slice(0, -1).map(item => item.prompt);
+  for (const item of running.slice(0, -1)) h.finish('codex', 'success', 'Completed first fragment', item.session);
   await h.flush();
-  const stalled = h.sent.at(-1).session;
+  running = h.sent.filter(item => item.session.running);
+  assert.equal(running.length, 1);
+  const stalled = running[0].session;
+  const stalledPrompt = running[0].prompt;
   context.mock.timers.tick(120001);
   await rejected;
   assert.equal(stalled.running, false);
   assert.equal(manager.busy(c.id), false);
   assert.equal(c.segments.codex.nativeId, nativeId);
   assert.equal(c.interrupted, false, 'an auxiliary failure cannot mark the real turn interrupted');
-  assert.equal(c.compactionRecovery.summary, 'Completed first fragment');
+  assert.match(c.compactionRecovery.summary, /Completed first fragment/);
   assert.equal(manager.rows(c).some(row => row.file), false);
   const retry = manager.compact(c.id, { portable: true });
   await h.flush();
-  assert.equal(h.sent.at(-1).prompt, h.sent.find(item => item.session === stalled).prompt);
-  h.finish('codex', 'success', 'Completed second fragment');
-  await h.flush();
-  h.finish('codex', 'success', 'Recovered summary');
+  const retryPrompts = h.sent.filter(item => item.session.running).map(item => item.prompt);
+  assert.ok(retryPrompts.includes(stalledPrompt));
+  assert.ok(retryPrompts.every(prompt => !completedPrompts.includes(prompt)));
+  while (manager.busy(c.id)) {
+    const retryRunning = h.sent.filter(item => item.session.running);
+    for (const item of retryRunning) {
+      const merge = /Summaries to merge/.test(item.prompt);
+      h.finish('codex', 'success', merge ? 'Recovered summary' : 'Completed second fragment', item.session);
+    }
+    await h.flush();
+  }
   assert.match(fs.readFileSync((await retry).file, 'utf8'), /Recovered summary/);
   assert.equal(manager.busy(c.id), false);
 });
@@ -2575,14 +2729,16 @@ test('a long sequence of healthy engine fragments continues beyond thirty minute
   while (manager.busy(c.id)) {
     assert.ok(completed < 64, 'the bounded summary should finish');
     context.mock.timers.tick(110000);
-    h.finish('codex', 'success', 'Completed fragment ' + completed);
-    completed++;
+    const running = h.sent.filter(item => item.session.running);
+    for (const item of running) {
+      h.finish('codex', 'success', 'Completed fragment ' + completed++, item.session);
+    }
     await h.flush();
   }
   const result = await pending;
   assert.ok(completed > 16, 'the run kept making progress beyond the old whole-run limit');
   assert.equal(c.lastCompaction.outcome, 'completed');
-  assert.ok(c.lastCompaction.totalMs > 30 * 60 * 1000);
+  assert.ok(c.lastCompaction.totalMs > 10 * 60 * 1000);
   assert.ok(fs.existsSync(result.file));
 });
 
@@ -2601,12 +2757,18 @@ test('a long edited history can finish more than 32 fast requests within five mi
   await h.flush();
   while (manager.switching.has(c.id)) {
     assert.ok(requests.length < 128, 'compaction remains bounded');
-    const prompt = h.sent.at(-1).prompt;
-    requests.push(prompt);
-    assert.doesNotMatch(prompt, /SUPERSEDED_REQUEST|SUPERSEDED_REPLY|REVISED_REQUEST/);
-    for (const match of prompt.matchAll(/SOURCE_(\d+)/g)) covered.add(Number(match[1]));
+    const running = h.sent.filter(item => item.session.running);
+    const prompts = running.map(item => item.prompt);
+    requests.push(...prompts);
+    for (const prompt of prompts) {
+      assert.doesNotMatch(prompt, /SUPERSEDED_REQUEST|SUPERSEDED_REPLY|REVISED_REQUEST/);
+      for (const match of prompt.matchAll(/SOURCE_(\d+)/g)) covered.add(Number(match[1]));
+    }
     context.mock.timers.tick(3000);
-    h.finish('codex', 'success', /Summaries to merge/.test(prompt) ? 'Complete working context' : 'Completed fragment ' + requests.length);
+    for (const item of running) {
+      h.finish('codex', 'success', /Summaries to merge/.test(item.prompt)
+        ? 'Complete working context' : 'Completed fragment ' + requests.length, item.session);
+    }
     await h.flush();
   }
   const revised = await pending;
@@ -2653,11 +2815,13 @@ test('retrying an older engine checkpoint after restart reuses completed fragmen
   const first = manager.compact(c.id, { portable: true });
   const rejected = assert.rejects(first, /Provider unavailable/);
   await h.flush();
-  const completedPrompt = h.sent.at(-1).prompt;
-  h.finish('codex', 'success', 'COMPLETED_FRAGMENT');
+  let running = h.sent.filter(item => item.session.running);
+  const completedPrompt = running[0].prompt;
+  h.finish('codex', 'success', 'COMPLETED_FRAGMENT', running[0].session);
   await h.flush();
-  const unfinishedPrompt = h.sent.at(-1).prompt;
-  h.finish('codex', 'error', 'Provider unavailable');
+  running = h.sent.filter(item => item.session.running);
+  const unfinishedPrompt = running[0].prompt;
+  for (const item of running) h.finish('codex', 'error', 'Provider unavailable', item.session);
   await rejected;
   assert.deepEqual(manager.rows(c).filter(row => !row.internal), before);
   const settings = manager.settings('codex', c.id), budget = Math.floor(manager.summaryTransportCap(c, 'codex', settings) * 1.8);
@@ -2669,13 +2833,21 @@ test('retrying an older engine checkpoint after restart reuses completed fragmen
   const offset = h.sent.length;
   const retry = restarted.compact(c.id, { portable: true });
   await h.flush();
-  assert.equal(h.sent.at(-1).prompt, unfinishedPrompt);
-  h.finish('codex', 'success', 'REMAINING_FRAGMENT');
-  await h.flush();
-  assert.match(h.sent.at(-1).prompt, /COMPLETED_FRAGMENT[\s\S]*REMAINING_FRAGMENT/);
-  h.finish('codex', 'success', 'FINAL_CONTEXT');
+  const retryRunning = h.sent.slice(offset).filter(item => item.session.running);
+  assert.ok(retryRunning.some(item => item.prompt === unfinishedPrompt));
+  let settled = false;
+  retry.finally(() => { settled = true; });
+  while (!settled) {
+    const active = h.sent.slice(offset).filter(item => item.session.running);
+    assert.ok(active.length > 0);
+    for (const item of active) h.finish('codex', 'success',
+      /Summaries to merge/.test(item.prompt) ? 'FINAL_CONTEXT' : 'REMAINING_FRAGMENT', item.session);
+    await h.flush();
+  }
   const result = await retry;
   assert.ok(h.sent.slice(offset).every(item => item.prompt !== completedPrompt));
+  assert.match(h.sent.find(item => /Summaries to merge/.test(item.prompt)).prompt,
+    /COMPLETED_FRAGMENT[\s\S]*REMAINING_FRAGMENT/);
   assert.equal(restored.lastCompaction.reusedRequests, 1);
   assert.equal(restored.compactionRecovery, undefined);
   assert.match(fs.readFileSync(result.file, 'utf8'), /FINAL_CONTEXT/);
@@ -2689,11 +2861,13 @@ test('appending a turn after a failed compaction reuses unchanged fragments acro
   const first = manager.compact(c.id, { portable: true });
   const rejected = assert.rejects(first, /Provider unavailable/);
   await h.flush();
-  const completedPrompt = h.sent.at(-1).prompt;
-  h.finish('codex', 'success', 'COMPLETED_FRAGMENT');
+  let running = h.sent.filter(item => item.session.running);
+  const completedPrompt = running[0].prompt;
+  h.finish('codex', 'success', 'COMPLETED_FRAGMENT', running[0].session);
   await h.flush();
-  const unfinishedPrompt = h.sent.at(-1).prompt;
-  h.finish('codex', 'error', 'Provider unavailable');
+  running = h.sent.filter(item => item.session.running);
+  const unfinishedPrompt = running[0].prompt;
+  for (const item of running) h.finish('codex', 'error', 'Provider unavailable', item.session);
   await rejected;
   const restarted = h.restart(), restored = restarted.get(c.id);
   restarted.append(restored, { role: 'user', text: 'NEW_CONSTRAINT: preserve the saved files' });
@@ -2701,13 +2875,21 @@ test('appending a turn after a failed compaction reuses unchanged fragments acro
   const offset = h.sent.length;
   const retry = restarted.compact(c.id, { portable: true });
   await h.flush();
-  assert.equal(h.sent.at(-1).prompt, unfinishedPrompt);
-  h.finish('codex', 'success', 'REMAINING_FRAGMENT');
-  await h.flush();
-  assert.match(h.sent.at(-1).prompt, /COMPLETED_FRAGMENT[\s\S]*REMAINING_FRAGMENT/);
-  h.finish('codex', 'success', 'FINAL_CONTEXT');
+  const retryRunning = h.sent.slice(offset).filter(item => item.session.running);
+  assert.ok(retryRunning.some(item => item.prompt === unfinishedPrompt));
+  let settled = false;
+  retry.finally(() => { settled = true; });
+  while (!settled) {
+    const active = h.sent.slice(offset).filter(item => item.session.running);
+    assert.ok(active.length > 0);
+    for (const item of active) h.finish('codex', 'success',
+      /Summaries to merge/.test(item.prompt) ? 'FINAL_CONTEXT' : 'REMAINING_FRAGMENT', item.session);
+    await h.flush();
+  }
   const result = await retry;
   assert.ok(h.sent.slice(offset).every(item => item.prompt !== completedPrompt));
+  assert.match(h.sent.find(item => /Summaries to merge/.test(item.prompt)).prompt,
+    /COMPLETED_FRAGMENT[\s\S]*REMAINING_FRAGMENT/);
   assert.equal(restored.lastCompaction.reusedRequests, 1);
   assert.match(fs.readFileSync(result.file, 'utf8'), /FINAL_CONTEXT[\s\S]*NEW_CONSTRAINT/);
 });
@@ -2720,24 +2902,33 @@ test('portable checkpoint reuse remains isolated by the actual subscription acco
   const first = manager.compact(c.id, { portable: true });
   const rejected = assert.rejects(first, /Provider unavailable/);
   await h.flush();
-  const completedPrompt = h.sent.at(-1).prompt;
-  assert.equal(h.sent.at(-1).opts.settings.subscriptionId, 'a');
-  h.finish('codex', 'success', 'ACCOUNT_A_FRAGMENT');
+  let running = h.sent.filter(item => item.session.running);
+  const completedPrompt = running[0].prompt;
+  assert.equal(running[0].opts.settings.subscriptionId, 'a');
+  h.finish('codex', 'success', 'ACCOUNT_A_FRAGMENT', running[0].session);
   await h.flush();
-  h.finish('codex', 'error', 'Provider unavailable'); await rejected;
+  running = h.sent.filter(item => item.session.running);
+  for (const item of running) h.finish('codex', 'error', 'Provider unavailable', item.session);
+  await rejected;
   h.state.activeId = 'b';
   const restarted = h.restart();
   const retry = restarted.compact(c.id, { portable: true });
   await h.flush();
-  assert.equal(h.sent.at(-1).opts.settings.subscriptionId, 'b');
-  assert.equal(h.sent.at(-1).prompt, completedPrompt);
-  h.finish('codex', 'success', 'ACCOUNT_B_FIRST');
-  await h.flush();
-  h.finish('codex', 'success', 'ACCOUNT_B_REMAINING');
-  await h.flush();
-  assert.doesNotMatch(h.sent.at(-1).prompt, /ACCOUNT_A_FRAGMENT/);
-  h.finish('codex', 'success', 'ACCOUNT_B_CONTEXT');
+  let retryRunning = h.sent.filter(item => item.session.running);
+  assert.ok(retryRunning.length > 0);
+  assert.ok(retryRunning.every(item => item.opts.settings.subscriptionId === 'b'));
+  assert.ok(retryRunning.some(item => item.prompt === completedPrompt));
+  let settled = false;
+  retry.finally(() => { settled = true; });
+  while (!settled) {
+    retryRunning = h.sent.filter(item => item.session.running);
+    assert.ok(retryRunning.length > 0);
+    for (const item of retryRunning) h.finish('codex', 'success',
+      /Summaries to merge/.test(item.prompt) ? 'ACCOUNT_B_CONTEXT' : 'ACCOUNT_B_REMAINING', item.session);
+    await h.flush();
+  }
   await retry;
+  assert.doesNotMatch(h.sent.find(item => /Summaries to merge/.test(item.prompt)).prompt, /ACCOUNT_A_FRAGMENT/);
   assert.equal(restarted.get(c.id).lastCompaction.reusedRequests, undefined);
 });
 
@@ -2930,6 +3121,11 @@ for (const engine of ['codex', 'kimi']) {
     assert.match(h.sent[1].prompt, /saved file/);
     assert.match(h.sent[1].prompt, /File already written/);
     assert.equal(h.events.filter(e => e.type === 'conversation:continued').length, 1);
+    const continued = h.events.find(e => e.type === 'conversation:continued');
+    assert.equal(continued.reason, 'subscription-account-switch');
+    assert.equal(continued.runId, run.runId);
+    assert.equal(h.manager.live(engine, run.sessionId).live.events.find(e => e.type === 'conversation:continued').reason,
+      'subscription-account-switch');
     h.finish(engine, 'success', 'Finished');
     assert.equal((await run.done).is_error, false);
     assert.equal(h.events.filter(e => e.type === 'result').length, 1);
@@ -6936,6 +7132,35 @@ test('stopping pre-send compaction during setup sends neither summary nor task',
   assert.equal(f.manager.load('codex', conversation.id).compaction.state, 'cancelled');
 });
 
+test('stopped summary callbacks cannot publish progress over a retried compaction', async t => {
+  const statuses = [], workers = [];
+  const f = fixture(t, { onStatus: status => statuses.push(status) });
+  const conversation = f.manager.create('codex', null, 'Retry after stop');
+  f.manager.append(conversation, { role: 'user', text: 'Preserve this task' });
+  f.manager.summarizeViaEngine = ({ status }) => new Promise(resolve => workers.push({ status, resolve }));
+  const first = f.manager.compact(conversation.id);
+  const rejected = assert.rejects(first, /canceled/i);
+  await f.flush();
+  assert.equal(workers.length, 1);
+  await f.manager.cancel({ sessionId: conversation.id });
+  await rejected;
+  const second = f.manager.compact(conversation.id);
+  await f.flush();
+  assert.equal(workers.length, 2);
+  const count = statuses.length;
+  workers[0].status('Late progress', { state: 'running', stage: 'summarizing' });
+  workers[0].status('Late failure', { state: 'failed' });
+  workers[0].resolve('Obsolete summary');
+  await f.flush();
+  assert.equal(statuses.length, count);
+  assert.equal(f.manager.load('codex', conversation.id).compaction.state, 'running');
+  workers[1].status('Current progress', { state: 'running', stage: 'summarizing' });
+  assert.equal(statuses.at(-1).text, 'Current progress');
+  workers[1].resolve('Preserve this task and its workspace.');
+  assert.equal((await second).ok, true);
+  assert.equal(f.manager.busy(conversation.id), false);
+});
+
 test('resending after stop reports internal compaction before the visible turn starts', async context => {
   const statuses = [];
   const harness = fixture(context, { modelContextWindow: () => 20000, onStatus: status => statuses.push(status) });
@@ -7843,6 +8068,37 @@ test('terminal errors keep their result styling after history reload and stay ou
   assert.doesNotMatch(manager.context(old, 'codex'), /Context recovery failed/);
 });
 
+test('current conversation artifacts can be listed and attached by path', async context => {
+  const harness = fixture(context), manager = harness.manager;
+  const conversation = manager.create('codex', undefined, 'Artifact picker');
+  const file = path.join(conversation.cwd, 'artifact-picker.pdf');
+  fs.writeFileSync(file, 'fixture');
+  context.after(() => { try { fs.unlinkSync(file); } catch {} });
+  const run = await manager.send('codex', { sessionId: conversation.id, prompt: 'Create the artifact' });
+  const session = harness.sent.at(-1).session;
+  manager.capture('codex', { type: 'gui:tool', runId: session.gen,
+    id: 'artifact-picker', name: 'write_file', input: { path: 'artifact-picker.pdf' }, status: 'completed' });
+  harness.finish('codex', 'success', '[Artifact](artifact-picker.pdf)');
+  await run.done;
+
+  const listed = await manager.command('codex', 'list-attachable-artifacts', { sessionId: conversation.id });
+  assert.equal(listed.ok, true);
+  assert.deepEqual(listed.artifacts.map(artifact => artifact.name), ['artifact-picker.pdf']);
+  const canonicalFile = fs.realpathSync.native(file);
+  assert.equal(listed.artifacts[0].path, canonicalFile);
+  assert.equal(listed.artifacts[0].canonicalPath, canonicalFile);
+  assert.equal(listed.artifacts[0].kind, 'pdf');
+  const filtered = await manager.command('codex', 'list-attachable-artifacts',
+    { sessionId: conversation.id, query: 'PICKER' });
+  assert.deepEqual(filtered.artifacts.map(artifact => artifact.name), ['artifact-picker.pdf']);
+  assert.deepEqual((await manager.command('codex', 'list-attachable-artifacts',
+    { sessionId: conversation.id, query: 'missing' })).artifacts, []);
+
+  fs.unlinkSync(file);
+  assert.deepEqual((await manager.command('codex', 'list-attachable-artifacts',
+    { sessionId: conversation.id })).artifacts, []);
+});
+
 test('conversation attachments snapshot the saved transcript and remain available after deleting the source', async context => {
   const harness = fixture(context), manager = harness.manager;
   const source = manager.create('codex', undefined, 'Broken context');
@@ -8225,7 +8481,8 @@ test('confirmed question answers are broadcast, replayed and saved with secret v
   f.manager.capture('codex', { type: 'gui:permission', requestId: 'network-question', runId: session.gen, questions });
   const payload = { sessionId: run.sessionId, runId: run.runId, requestId: 'network-question', allow: true,
     input: { network: 'Yes', carrier: ['Carrier A', 'Custom carrier'], secret: 'private-answer-marker' } };
-  assert.equal((await f.manager.command('codex', 'control-respond', payload)).ok, true);
+  const answered = await f.manager.command('codex', 'control-respond', payload);
+  assert.equal(answered.ok, true);
   assert.deepEqual(session.permissions[2], payload.input, 'The native engine receives the original answers');
   const resolved = f.events.find(event => event.type === 'conversation:approval-resolved');
   assert.ok(resolved, 'All answer transports must publish the confirmed response');
@@ -8236,6 +8493,9 @@ test('confirmed question answers are broadcast, replayed and saved with secret v
   const saved = f.manager.messages(f.manager.get(run.sessionId)).find(row => row.questionResponse);
   assert.deepEqual(saved.questionResponse.answers, resolved.answers);
   assert.equal(resolved.responseSeq, saved.seq);
+  // The answering window keys its card from the reply when the broadcast
+  // arrives later, so the reply must carry the same durable sequence.
+  assert.equal(answered.responseSeq, saved.seq);
   assert.match(saved.text, /Same router\?\nYes/);
   assert.match(saved.text, /Custom carrier/);
   assert.equal(JSON.stringify(f.manager.rows(f.manager.get(run.sessionId))).includes('private-answer-marker'), false);
