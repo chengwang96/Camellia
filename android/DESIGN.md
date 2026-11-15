@@ -2,80 +2,84 @@
 
 App 的取值集中在一个类里：`app/src/main/java/app/camellia/mobile/Palette.java`。
 
-它不是新的一套设计，是**把本来散在别处的取值收拢到一处**，取值一律沿用现状 —— 见下面「为什么不改值」。逐页补齐内容与布局时，先读这份，再改页面。
+Design values and control behavior have shared owners. Before changing a reported screen, inventory all equivalent callers and update the shared owner. Current family coverage and remaining iOS gaps are recorded in [the mobile consistency audit](../docs/design/mobile-consistency-audit.md). Numeric tables below reflect the current Android Palette; the cross-platform guard checks shared iOS roles.
 
-## 为什么有这一层
+## Shared owners (2026-11-15)
+
+- `ActionStyle`: page/dialog action appearance, enabled/disabled states and primary contrast. All eight action adapters delegate here; inline text actions and toolbar symbols retain their own roles.
+- `ChatStyle.pageHeader` and `ChatDockLayout`: common local/remote/discussion header geometry, clipped viewport and composer tail clearance. Do not rebuild a fourth copy in another conversation type.
+- `ScrollViews.plain/capped`: scrollbar policy for ordinary panels. Keep each panel's meaningful height/keyboard constraint and preserve specialized chat/refresh scrolling.
+- `Palette`: theme, typography and shape roles. Shared iOS values and both iOS composer callers are guarded by `tests/mobile-ui-consistency.test.js`.
+- Validate every caller in light/dark, Chinese/English, enabled/disabled and narrow layouts. Track unverified platform/device coverage explicitly.
+
+## 为什么有这一层（历史背景）
 
 在它之前，颜色写在两个构造函数里：五个在 `ChatStyle.java`（聊天页），九个在 `SettingsStyle.java`（设置、电脑、配对页）；圆角、字号、涟漪透明度则内联在各自的调用点。改一个颜色要动三个地方，页面上每处 `setTextSize(14)` 都要自己判断这是不是正文的 14。
 
 已经漂了一处可以佐证：`SettingsStyle.toggle` 的开关轨道 on 态硬编码了浅色的 `#4176E6`，深色模式下也是这个值（而 accent 在深色下应是 `#679EFE`）；off 态则用 `background == #F5F5F5` 反推深浅色。现在两者都直接读 token。
 
-## 为什么不顺便改值
+## Changing shared values
 
-逐页补齐的目标是**让现有页面更好看更一致**，不是重做设计。如果 token 化顺手改了半个 app 的观感，那之后每张截图都分不清是「补齐的效果」还是「重构的副作用」，无法验收。
-
-所以这一层只做收拢。取值要改的话，改在补齐那一页里改，并在 `PARITY` 式的地方写明理由。
+Token extraction initially preserved the existing appearance. Subsequent design changes must update the shared family, its callers and documented values together. Changing a single page's copy of a value is not a completed consistency fix. Shared roles can retain distinct names when their semantics differ, even if their current numbers coincide.
 
 ## Desktop-aligned surfaces (2026-11-01)
 
 Chat and settings share the desktop neutral base. Settings use outlined cards and filled controls; popups keep their mobile glass and larger radii.
 
+The four bottom destinations use one 64dp navigation component. Keep its glass wash, neutral selected face, icon scale and soft shadow consistent across pages; only the active icon/label and selected position change. Underlying content may show softly through the glass without visibly changing the selected button's grey tone. Cap width to the actual viewport, leave 4dp below the bar for its shadow, and include that gap in scrolling tail padding. Retain rounded press feedback and the opaque power-save fallback.
+
 | token | 用在哪 | 浅色 | 深色 |
 | --- | --- | --- | --- |
-| `background` | 聊天页底色 | `#FFFFFF` | `#151517` |
+| `background` | 聊天页底色 | `#F6F7F9` | `#151517` |
 | `surface` | 聊天页通用块（用户气泡使用 `userBubble`） | `#F5F6F7` | `#232324` |
-| `ink` | 聊天页正文 | `#0F1115` | `#F9FAFB` |
-| `muted` | 聊天页次要文字 | `#61666B` | `#CFD3D6` |
-| `separator` | 悬浮栏的细边 | `#ECEEF1` | `#3B3B40` |
-| `grouped` | 设置/配对页底色 | `#FFFFFF` | `#151517` |
-| `card` | 那几页的卡片 | `#FFFFFF` | `#232324` |
-| `secondary` | 那几页的次要文字 | `#61666B` | `#CFD3D6` |
-| `divider` | 卡片内行间细线 | `#ECECEE` | `#37373C` |
+| `ink` | 聊天页正文 | `#14171A` | `#F0F2F4` |
+| `muted` | 聊天页次要文字 | `#69717B` | `#A4AAB2` |
+| `separator` | 悬浮栏的细边 | `#E8EBEF` | `#3B3B40` |
+| `grouped` | 设置/配对页底色 | `#F6F7F9` | `#151517` |
+| `card` | 那几页的卡片 | `#FFFFFF` | `#222326` |
+| `secondary` | 那几页的次要文字 | `#69717B` | `#A4AAB2` |
+| `divider` | 卡片内行间细线 | `#E8EBEF` | `#37373C` |
 | `field` | 输入框底 | `#F5F6F7` | `#292A2D` |
-| `fieldBorder` | 输入框边 | `#D6D6D8` | `#424448` |
-| `error` | 破坏性操作、错误文字 | `#B8323B` | `#FF969A` |
-| `userBubble` | 用户气泡 | `#EDF3FE` | `#283142` |
-| `faint` | 三级文字 | `#81858C` | `#ADB2B8` |
-| `caption` | 占位文字 | `#ADB2B8` | `#81858C` |
-| `accent` | 两套共用 | `#4176E6` | `#679EFE` |
+| `fieldBorder` | 输入框边 | `#E2E6EA` | `#393B40` |
+| `error` | 破坏性操作、错误文字 | `#C93645` | `#FF8791` |
+| `userBubble` | 用户气泡 | `#EEF2FF` | `#283142` |
+| `faint` | 三级文字 | `#858C95` | `#ADB2B8` |
+| `caption` | 占位文字 | `#9AA1A9` | `#81858C` |
+| `accent` | 两套共用 | `#4D6BFE` | `#8095FF` |
 | `trackOff` | 开关关态轨道 | `#D9DCE0` | `#54575D` |
 
-首页卡片有自己的描边（浅色 `#E6E8EB` / 深色 `#34363A`），走 `Palette.homeCardEdge()`。
+首页卡片的描边（浅色 `#E2E6EA` / 深色 `#393B40`），走 `Palette.homeCardEdge()`。
 
 ## 圆角
 
 | token | 值 | 用在哪 |
 | --- | --- | --- |
 | `RADIUS_CARD` | 12 | 通用块 |
-| `RADIUS_USER_BUBBLE` | 18 | 用户气泡 |
-| `RADIUS_SETTINGS_CARD` | 16 | 设置卡片 |
+| `RADIUS_USER_BUBBLE` | 16 | 用户气泡 |
+| `RADIUS_SETTINGS_CARD` | 14 | 设置卡片 |
 | `RADIUS_SETTINGS_CONTROL` | 10 | 设置输入框 |
-| `RADIUS_CAPSULE` | 28 | 悬浮栏、输入胶囊（不是真胶囊，是大圆角矩形） |
-| `RADIUS_GROUP` | 26 | 弹层面板 |
-| `RADIUS_SHEET` | 30 | 底部 sheet 的面板 |
-| `RADIUS_FIELD` | 18 | 输入框、选项行 |
+| `RADIUS_CAPSULE` | 18 | 悬浮栏、输入胶囊（不是真胶囊，是大圆角矩形） |
+| `RADIUS_GROUP` | 16 | 弹层面板 |
+| `RADIUS_SHEET` | 22 | 底部 sheet 的面板 |
+| `RADIUS_FIELD` | 12 | 输入框、选项行 |
 | `RADIUS_CODE` | 8 | Markdown 里的代码块 |
 | `RADIUS_TRACK` | 14 | 开关轨道 |
 | `RADIUS_GRIP` | 3 | sheet 顶部的抓手、进度条 |
-| `RADIUS_HOME_CARD` | 20 | 首页卡片 |
+| `RADIUS_HOME_CARD` | 14 | 首页卡片 |
 
-另有一个不是圆角：**`BUBBLE_INSET` = 44**，是「自己的消息」离屏幕右边缘的距离，也是气泡允许到的最大宽度。两个方向同值，短回复和长回复才会起于同一处、止于同一处。
+另有一个不是圆角：**`BUBBLE_INSET` = 36**，是「自己的消息」离屏幕右边缘的距离，也是气泡允许到的最大宽度。两个方向同值，短回复和长回复才会起于同一处、止于同一处。
 
 ## 字号
 
-`TEXT_TINY` 11 · `TEXT_SMALL` 12 · `TEXT_NOTE` 13 · `TEXT_BODY` 14 · `TEXT_INPUT` 15 · `TEXT_ROW` 16 · `TEXT_ROW_STRONG` 17 · `TEXT_DIALOG` 18 · `TEXT_CARD` 19 · `TEXT_TITLE` 20 · `TEXT_DISPLAY` 21 · `TEXT_HERO` 28
+`TEXT_TINY` 11 · `TEXT_SMALL` 12 · `TEXT_NOTE` 13 · `TEXT_BODY` 14 · `TEXT_INPUT` 15 · `TEXT_ROW` 16 · `TEXT_ROW_STRONG` 16 · `TEXT_DIALOG` 18 · `TEXT_CARD` 18 · `TEXT_TITLE` 21 · `TEXT_DISPLAY` 22 · `TEXT_HERO` 28
 
-几处刻意的相邻档位：
-
-- **14 / 16 / 17 三档**：设置页的行标题用 17（`TEXT_ROW_STRONG`），聊天页的会话名用 16（`TEXT_ROW`），首页卡片标题用 19（`TEXT_CARD`）——视觉重量刻意不同，不是随手取的整数。
-- **19 与 20**：卡片标题比页面标题小一档，因为卡片在页面**之内**，用 20 会读成第二个标题。
-- **13 与 15**：13 是注释级（卡片描述、说明行），15 是可交互文本（动作标签、输入框内容）。
+Use the semantic role rather than copying the number. Conversation headers share `TEXT_CARD`; page titles use `TEXT_TITLE`, while the main Workbench destinations use `TEXT_HERO`. Compact metadata remains below interactive row text.
 
 ## 首页的层级
 
 首页是「在几种进入方式里选一个」，不是「叫用户去做某件事」。这条决定了它的视觉规则：
 
-- 入口是**卡片**（`RADIUS_HOME_CARD` = 20），底部设置入口也是同一圆角。同一屏不该出现两种圆角的同级元素。
+- 入口是**卡片**（`RADIUS_HOME_CARD` = 14），底部设置入口也是同一圆角。同一屏不该出现两种圆角的同级元素。
 - 卡片的动作行是 **accent 色文字、无底色**；它属于卡片内部的说明性动作，不是独立按钮。
 - 首页不再放重复的电脑连接横条；配对电脑和连接状态在会话页/电脑页呈现。首页打开的会话返回首页，会话列表打开的会话返回列表。
 - 首页快捷区只保留“本地聊天 / 设置”，以整行作为点击目标，右侧只保留一个箭头；不要再加重复的“打开”文字胶囊。“电脑与连接”从底部“电脑”进入，不在首页重复，也不保留该条目附带的连接状态和重试按钮。
@@ -86,7 +90,7 @@ Chat and settings share the desktop neutral base. Settings use outlined cards an
 - 会话筛选固定为“全部 / 运行中 / 等待处理 / 已归档”四项，不再提供“有文件”；旧状态如果残留 `files`，读取时回退到“全部”。
 - 工作台、会话和电脑一级页使用 28sp 大标题，分组标题 18sp，列表行标题 16sp；不要再让“会话”与普通行标题同一字号。设置索引保留自己的居中页头语义。Apple 的沉浸式背景和仪表盘卡片结构不进入 Camellia。
 - 顶部相邻的搜索和切换电脑动作合并进同一个中性胶囊工具组；只有一个动作时仍保持裸符号。不要恢复成每个图标一张白卡。
-- 底部导航是居中的悬浮胶囊，宽度约为窗口的 `78%`（`300–440dp` 夹取），不再横跨整页；外层无描边，只有选中项获得浅 accent 填充，不能给选中项再加轮廓。
+- 底部导航是居中的悬浮胶囊，宽度约为窗口的 `78%`（`300–440dp` 夹取），不再横跨整页；外层无描边，只有选中项获得稳定的中性灰色填充，不能给选中项再加轮廓。
 - 平板横屏且窗口至少 `840×600dp` 时，远程会话详情使用左栏会话、右栏聊天。左栏 `300–360dp`，行内保留引擎、状态、时间和未读；切会话只替换右栏，不退出当前页面。手机仍锁定竖屏。
 - 语言、主题只覆盖对应配置，不能复制整份 `Configuration` 固定屏幕尺寸或方向。横竖屏回归要通过系统实际旋转，确认左栏显示、草稿和连接对象保留；手动修改资源并调用回调不能代替这项检查。
 - 宽屏分栏左侧的标题拥有独立不透明背景并绘制在滚动层之上，滚动区从标题下方开始并裁剪到栏内，不能把列表内容画到标题或状态栏上。
@@ -97,8 +101,8 @@ Chat and settings share the desktop neutral base. Settings use outlined cards an
 
 移动端不再依赖平台默认按钮的立体感。可交互元素的层次固定为：
 
-- **页面按钮**：1dp 描边 + 2dp 轻阴影；按下时 `translationZ` 下沉 1dp。
-- **主操作**：唯一允许的 accent 实心面 + 3dp 阴影；禁止同时出现第二个同级强调按钮。
+- **页面按钮**：1dp 描边 + 1dp 轻阴影；按下时 `translationZ` 下沉 1dp。
+- **主操作**：accent 实心面 + 2dp 阴影；禁止同时出现第二个同级强调按钮。
 - **卡片与列表行**：1dp 描边 + 1dp 阴影，保持白/深色面之间的分离。
 - **浮层与 sheet**：保留更高的 elevation 和独立描边，继续保持玻璃语义。模型选择器是较窄的浮动菜单，宽度为可见宽度的 `82%`、上限 `340dp`（最小 `280dp`）；权限选择器仍可使用 `420dp` 宽度。两者都水平对准输入区的触发按钮，并带短距离上移动画；不要按整条模型行的左边缘定位。通用 `CamelliaDialog` 在首帧显示前锁定最终宽度，显示后只按可见区域调整高度；不要先显示、再改宽度，否则居中面板会横向跳一下。
 - **状态标签和正文中的动作文字**：不加投影，避免状态色变成装饰。
@@ -130,7 +134,7 @@ Chat and settings share the desktop neutral base. Settings use outlined cards an
 ## 约定
 
 - **页面代码不再出现字面量颜色、圆角、字号。** 需要新的档位时，先想清楚它是不是现有某一档的别名 —— 是就复用，不是才往 `Palette` 加，并写清为什么不能是现有那档。
-- 同值就是同一个 token。不要为了「语义不同」造一个值相同的名字。
+- Equivalent controls reuse the same semantic token. Different roles may share a current number without becoming the same control.
 - 判断深浅色用 `palette.dark`，不要拿颜色和某个字面量比（那是 `toggle` 之前的老做法）。
 - `PopupSurface` 是个例外：它浮在**别的页面**上，所以从采样到的颜色反推深浅，而不是问配置。
 

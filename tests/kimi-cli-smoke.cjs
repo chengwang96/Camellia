@@ -184,8 +184,9 @@ async function run() {
     const accepted = await session.steerUserMessage('SMOKE steer correction', [{ path: image, isImage: true }]);
     assert.ok(Number.isSafeInteger(accepted.turnId));
     finishSteerRequest();
-    assert.equal((await steeredTurn).subtype, 'success');
-    assert.equal(requests.length, requestCount + 1, 'The correction must join the active turn instead of launching another one');
+    const steerResult = await steeredTurn;
+    assert.equal(steerResult.subtype, 'success', JSON.stringify(steerResult) + logs.join('\n'));
+    assert.equal(requests.length, requestCount + 1, 'The correction must join the active response instead of starting an unrelated request');
     const steeredRequest = JSON.stringify(requests.at(-1).body.messages);
     assert.match(steeredRequest, /SMOKE steer start/);
     assert.match(steeredRequest, /SMOKE steer correction/);

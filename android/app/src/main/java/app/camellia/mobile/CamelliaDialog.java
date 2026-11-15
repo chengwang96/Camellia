@@ -50,7 +50,7 @@ final class CamelliaDialog extends AlertDialog {
     @Override protected void onCreate(Bundle saved) {
         super.onCreate(saved);
         LinearLayout panel = column(); panel.setTag("camelliaDialog"); style.sheetPanel(panel);
-        ScrollView scroll = new ScrollView(getContext()); scroll.setFillViewport(false);
+        ScrollView scroll = ScrollViews.plain(getContext()); scroll.setFillViewport(false);
         LinearLayout body = column(); body.setTag("camelliaDialogBody"); scroll.addView(body);
         if (options.title != null && options.title.length() > 0) {
             TextView title = text(options.title, Palette.TEXT_DISPLAY, style.ink); title.setTag("camelliaDialogTitle");
@@ -91,15 +91,7 @@ final class CamelliaDialog extends AlertDialog {
 
     private void addButton(LinearLayout parent, int which, int id, CharSequence label, DialogInterface.OnClickListener listener, boolean primary) {
         if (label == null) return;
-        Button button = new Button(getContext()); button.setId(id); button.setText(label); button.setAllCaps(false); button.setTextSize(Palette.TEXT_ROW);
-        button.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL)); button.setTextColor(primary ? style.card : style.ink);
-        button.setPadding(dp(14), dp(12), dp(14), dp(12)); button.setMinHeight(dp(52)); button.setMinimumHeight(dp(52));
-        GradientDrawable face = rounded(primary ? style.accent : style.card, Palette.RADIUS_DIALOG_ACTION);
-        face.setStroke(dp(1), primary ? style.accent : style.palette().cardBorder);
-        button.setBackground(new RippleDrawable(ColorStateList.valueOf(primary
-                ? ((style.accent & 0x00ffffff) | 0x24000000) : style.divider),
-            face, rounded(Color.WHITE, Palette.RADIUS_DIALOG_ACTION)));
-        SurfaceElevation.apply(button, primary ? 2 : 1);
+        Button button = new Button(getContext()); button.setId(id); button.setText(label); ActionStyle.dialog(button, primary);
         button.setOnClickListener(view -> { if (listener != null) listener.onClick(this, which); dismiss(); });
         LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, -2); if (parent.getChildCount() > 0) params.topMargin = dp(8);
         parent.addView(button, params); buttons.put(which, button);

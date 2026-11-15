@@ -654,6 +654,15 @@ public class WorkbenchRefreshTest extends InstrumentationTestCase {
             getInstrumentation().waitForIdleSync();
             int[] baseline = navigationGeometry();
             assertTrue(destination + " must retain navigation position and size", java.util.Arrays.equals(home, baseline));
+            getInstrumentation().runOnMainSync(() -> {
+                View navigation = activity.getWindow().getDecorView().findViewWithTag("workbenchNav");
+                View viewport = (View) navigation.getParent();
+                assertTrue("The bottom shadow must not be clipped on " + destination,
+                    viewport.getHeight() - navigation.getBottom() >= Math.round(4 * activity.getResources().getDisplayMetrics().density));
+                android.graphics.Rect visible = new android.graphics.Rect(); assertTrue(navigation.getGlobalVisibleRect(visible));
+                assertEquals("The bar's rounded sides must fit narrow windows", navigation.getWidth(), visible.width());
+            });
+            capture("navigation-consistent-" + destination);
             int[] viewportHeight = new int[1];
             getInstrumentation().runOnMainSync(() -> {
                 try { viewportHeight[0] = ((View) field("scroll")).getHeight(); }

@@ -85,7 +85,7 @@ final class ConversationSidebar extends LinearLayout {
         dividerParams.setMargins(dp(14), 0, dp(10), 0);
         addView(divider, dividerParams);
 
-        scroll = new ScrollView(context);
+        scroll = ScrollViews.plain(context);
         scroll.setTag("sidebarScroll");
         scroll.setFillViewport(true);
         scroll.setVerticalScrollBarEnabled(false);

@@ -12,6 +12,7 @@ import android.text.InputType;
 import android.view.Gravity;
 import android.view.View;
 import android.widget.EditText;
+import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
@@ -30,6 +31,8 @@ public final class SettingsActivity extends Activity {
     private PageTransitions pages;
     private LinearLayout content;
     private TextView status;
+    private TextView storageStatus;
+    private Runnable dismissStatus;
     private AlertDialog dialog;
     private java.util.concurrent.ExecutorService worker;
     private boolean computerBusy;
@@ -48,10 +51,22 @@ public final class SettingsActivity extends Activity {
         pages = new PageTransitions(this);
         worker = java.util.concurrent.Executors.newSingleThreadExecutor();
         EmbeddedNetwork.initialize(getApplicationContext());
-        getWindow().setStatusBarColor(settingsStyle.background); getWindow().setNavigationBarColor(settingsStyle.background);
+        getWindow().setStatusBarColor(settingsStyle.background);
+        getWindow().setNavigationBarColor(android.graphics.Color.TRANSPARENT);
+        if (android.os.Build.VERSION.SDK_INT >= 29) getWindow().setNavigationBarContrastEnforced(false);
+        getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_LAYOUT_STABLE | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION);
         if ((getResources().getConfiguration().uiMode & android.content.res.Configuration.UI_MODE_NIGHT_MASK) != android.content.res.Configuration.UI_MODE_NIGHT_YES)
-            getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR | View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR);
+            getWindow().getDecorView().setSystemUiVisibility(getWindow().getDecorView().getSystemUiVisibility()
+                | View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR | View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR);
         loadStore();
+    }
+
+    @Override public void onWindowFocusChanged(boolean focused) {
+        super.onWindowFocusChanged(focused);
+        if (focused) {
+            getWindow().setNavigationBarColor(android.graphics.Color.TRANSPARENT);
+            if (android.os.Build.VERSION.SDK_INT >= 29) getWindow().setNavigationBarContrastEnforced(false);
+        }
     }
 
     private void loadStore() {
@@ -79,11 +94,12 @@ public final class SettingsActivity extends Activity {
 
     @Override protected void onSaveInstanceState(Bundle saved) { super.onSaveInstanceState(saved); saved.putString("section", section); }
     @Override protected void onStop() {
+        clearStatus();
         pages.finishTransition();
         if (store != null) try { store.flush(stored(value -> {})); } catch (Exception error) { storageFailure(error); }
         super.onStop();
     }
-    @Override protected void onDestroy() { if (dialog != null) dialog.dismiss(); if (worker != null) worker.shutdownNow(); super.onDestroy(); }
+    @Override protected void onDestroy() { clearStatus(); if (dialog != null) dialog.dismiss(); if (worker != null) worker.shutdownNow(); super.onDestroy(); }
     @Override public void finish() {
         if (store == null || finishingAfterSave) { super.finish(); PageTransitions.closeActivity(this); return; }
         try { store.flush(stored(value -> { finishingAfterSave = true; finish(); })); }
@@ -102,11 +118,12 @@ public final class SettingsActivity extends Activity {
     }
     private void storageFailure(Exception error) {
         storageError = ErrorDetails.withSummary(tr("设置尚未保存，请重试。", "Settings have not been saved. Retry."), error);
-        if (status != null) status.setText(storageError);
+        clearStatus();
+        if (storageStatus != null) { storageStatus.setText(storageError); storageStatus.setVisibility(View.VISIBLE); }
         if (storageRetry != null) storageRetry.setVisibility(View.VISIBLE);
     }
     private void retryStorage() {
-        try { store.flush(stored(value -> { storageError = ""; storageRetry.setVisibility(View.GONE); status.setText(""); })); }
+        try { store.flush(stored(value -> { storageError = ""; storageRetry.setVisibility(View.GONE); storageStatus.setText(""); storageStatus.setVisibility(View.GONE); })); }
         catch (Exception error) { storageFailure(error); }
     }
 
@@ -117,19 +134,77 @@ public final class SettingsActivity extends Activity {
         TextView result = new TextView(this); result.setText(value); result.setTextSize(size); result.setTextColor(color); result.setPadding(0, dp(5), 0, dp(5)); return result;
     }
     private void shell(String title) {
+        clearStatus();
         LinearLayout root = column(); root.setBackground(settingsStyle.palette().pageBackground());
-        root.setClipChildren(false); root.setClipToPadding(false);
-        settingsStyle.pagePadding(root);
+        root.setClipChildren(true); root.setClipToPadding(true);
+        root.setPadding(dp(16), dp(6), dp(16), 0);
         root.addView(settingsStyle.header(title, tr("返回", "Back"), this::finish));
-        ScrollView scroll = new ScrollView(this); scroll.setVerticalScrollBarEnabled(false);
-        content = column(); content.setPadding(0, dp(12), 0, dp(16)); scroll.addView(content); root.addView(scroll, new LinearLayout.LayoutParams(-1, 0, 1));
-        status = text("", Palette.TEXT_NOTE, style.muted); status.setTag("settingsStatus"); status.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE); root.addView(status);
+        FrameLayout viewport = new FrameLayout(this); viewport.setTag("settingsViewport");
+        // Keep scrolling text and elevated cards inside the body, below the header and system insets.
+        viewport.setClipChildren(true); viewport.setClipToPadding(true);
+        ScrollView scroll = ScrollViews.plain(this); scroll.setTag("settingsScroll"); scroll.setVerticalScrollBarEnabled(false);
+        scroll.setClipToPadding(false); scroll.setPadding(0, 0, 0, dp(20));
+        content = column(); content.setPadding(0, dp(12), 0, dp(16)); scroll.addView(content);
+        viewport.addView(scroll, new FrameLayout.LayoutParams(-1, -1));
+        root.addView(viewport, new LinearLayout.LayoutParams(-1, 0, 1));
+        status = text("", Palette.TEXT_BODY, settingsStyle.ink); status.setTag("settingsStatus");
+        status.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
+        status.setGravity(Gravity.CENTER); status.setPadding(dp(16), dp(12), dp(16), dp(12));
+        status.setMaxWidth(dp(560)); status.setElevation(dp(6));
+        var bubble = settingsStyle.round(settingsStyle.card, Palette.RADIUS_CAPSULE);
+        bubble.setStroke(dp(1), settingsStyle.palette().cardBorder); status.setBackground(bubble);
+        status.setVisibility(View.GONE);
+        FrameLayout.LayoutParams notice = new FrameLayout.LayoutParams(-2, -2, Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL);
+        notice.setMargins(dp(8), dp(8), dp(8), dp(12)); viewport.addView(status, notice);
+        storageStatus = text(storageError, Palette.TEXT_NOTE, settingsStyle.error); storageStatus.setTag("settingsStorageError");
+        storageStatus.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
+        storageStatus.setVisibility(storageError.isEmpty() ? View.GONE : View.VISIBLE); root.addView(storageStatus);
         storageRetry = settingsStyle.secondaryButton(tr("重试保存", "Retry saving"),
             "settingsStorageRetry", this::retryStorage);
         storageRetry.setVisibility(storageError.isEmpty() ? View.GONE : View.VISIBLE); root.addView(storageRetry);
+        View retry = storageRetry;
+        root.setOnApplyWindowInsetsListener((view, insets) -> {
+            int left = insets.getSystemWindowInsetLeft(), top = insets.getSystemWindowInsetTop();
+            int right = insets.getSystemWindowInsetRight();
+            // IME resizing is handled by the window. Reserve actual system/cutout
+            // space here, not an assumed phone height or a keyboard-sized footer.
+            int bottom = Math.min(insets.getSystemWindowInsetBottom(), insets.getStableInsetBottom());
+            if (android.os.Build.VERSION.SDK_INT >= 30) {
+                android.graphics.Insets safe = insets.getInsets(android.view.WindowInsets.Type.systemBars()
+                    | android.view.WindowInsets.Type.displayCutout());
+                left = safe.left; top = safe.top; right = safe.right; bottom = safe.bottom;
+            }
+            view.setPadding(dp(16) + left, dp(6) + top, dp(16) + right, 0);
+            // The viewport reaches the physical bottom. Internal padding lets
+            // the final line scroll clear of gestures without an opaque strip.
+            scroll.setPadding(0, 0, 0, dp(20) + bottom);
+            LinearLayout.LayoutParams retryPlacement = (LinearLayout.LayoutParams) retry.getLayoutParams();
+            int margin = dp(20) + bottom;
+            if (retryPlacement.bottomMargin != margin) { retryPlacement.bottomMargin = margin; retry.setLayoutParams(retryPlacement); }
+            return insets;
+        });
         pages.show(root, section, 0); root.requestApplyInsets();
     }
-    private void failure(Exception error) { status.setText(error.getMessage() == null ? tr("无法保存，请重试。", "Could not save. Try again.") : error.getMessage()); }
+    private void clearStatus() {
+        if (status == null) return;
+        if (dismissStatus != null) status.removeCallbacks(dismissStatus);
+        dismissStatus = null; status.setText(""); status.setVisibility(View.GONE);
+    }
+    private void showStatus(String message) { showStatus(message, true); }
+    private void showStatus(String message, boolean temporary) {
+        clearStatus();
+        if (status == null || message == null || message.isEmpty() || isFinishing() || isDestroyed()) return;
+        status.setText(message); status.setVisibility(View.VISIBLE);
+        if (!temporary) return;
+        int duration = 4000;
+        if (android.os.Build.VERSION.SDK_INT >= 29) {
+            var accessibility = getSystemService(android.view.accessibility.AccessibilityManager.class);
+            if (accessibility != null) duration = accessibility.getRecommendedTimeoutMillis(duration,
+                android.view.accessibility.AccessibilityManager.FLAG_CONTENT_TEXT);
+        }
+        dismissStatus = this::clearStatus; status.postDelayed(dismissStatus, duration);
+    }
+    private void failure(Exception error) { showStatus(error.getMessage() == null ? tr("无法保存，请重试。", "Could not save. Try again.") : error.getMessage(), false); }
     private void render() throws Exception {
         if (section.equals("general")) general();
         else if (section.equals("reading")) reading();
@@ -240,7 +315,7 @@ public final class SettingsActivity extends Activity {
             directory == null ? tr("每次询问保存位置", "Ask where to save each time") : DownloadDirectory.label(this),
             "preference:downloadDirectory", false, () -> {
                 try { startActivityForResult(DownloadDirectory.picker(this), DownloadDirectory.PICK_REQUEST); }
-                catch (Exception error) { status.setText(tr("无法打开文件夹选择器。", "Cannot open the folder picker.")); }
+                catch (Exception error) { showStatus(tr("无法打开文件夹选择器。", "Cannot open the folder picker.")); }
             });
         if (directory != null) settingsStyle.action(downloads, tr("每次选择保存位置", "Choose a location each time"), "",
             "downloadDirectoryClear", false, () -> { DownloadDirectory.clear(this); general(); });
@@ -271,7 +346,7 @@ public final class SettingsActivity extends Activity {
                 DownloadDirectory.saveSelection(this, data);
                 runOnUiThread(() -> { if (!isDestroyed() && section.equals("general")) general(); });
             } catch (Exception error) {
-                runOnUiThread(() -> { if (!isDestroyed()) status.setText(tr("无法保存下载目录，请选择可写入的文件夹并允许访问。", "Cannot save this folder. Select a writable folder and allow access.")); });
+                runOnUiThread(() -> { if (!isDestroyed()) showStatus(tr("无法保存下载目录，请选择可写入的文件夹并允许访问。", "Cannot save this folder. Select a writable folder and allow access.")); });
             }
         });
     }
@@ -358,7 +433,7 @@ public final class SettingsActivity extends Activity {
     // source instead of silently reading whichever profile is active.
     private void importFromComputer() {
         List<JSONObject> computers = pairedComputers();
-        if (computers.isEmpty()) { status.setText(tr("请先在主界面连接并配对此电脑。", "Connect and pair with the computer in the main screen first.")); return; }
+        if (computers.isEmpty()) { showStatus(tr("请先在主界面连接并配对此电脑。", "Connect and pair with the computer in the main screen first.")); return; }
         if (computers.size() == 1) { confirmImport(computers.get(0)); return; }
         String[] labels = new String[computers.size()];
         for (int index = 0; index < computers.size(); index++) labels[index] = computerLabel(computers.get(index));
@@ -388,7 +463,7 @@ public final class SettingsActivity extends Activity {
         computerBusy = true;
         String address = computer.optString("address"), token = computer.optString("token");
         String name = computerLabel(computer);
-        status.setText(tr("正在读取电脑端 API 配置…", "Reading the API configuration from the computer…"));
+        showStatus(tr("正在读取电脑端 API 配置…", "Reading the API configuration from the computer…"), false);
         worker.execute(() -> {
             try {
                 JSONObject bundle = new RemoteApi(address).json("/v1/api-keys", token, null);
@@ -396,11 +471,11 @@ public final class SettingsActivity extends Activity {
                 runOnUiThread(() -> {
                     computerBusy = false;
                     if (isFinishing() || isDestroyed()) return;
-                    try { store.importConfig(config, stored(result -> { providers(); status.setText(tr("已从「" + name + "」导入 API 配置，聊天记录保留。", "Imported the API configuration from “" + name + "”. Chats are kept.")); })); }
+                    try { store.importConfig(config, stored(result -> { providers(); showStatus(tr("已从「" + name + "」导入 API 配置，聊天记录保留。", "Imported the API configuration from “" + name + "”. Chats are kept.")); })); }
                     catch (Exception error) { failure(error); }
                 });
             } catch (Exception error) {
-                runOnUiThread(() -> { computerBusy = false; if (!isFinishing() && !isDestroyed()) status.setText(RemoteApi.failureMessage(error, chinese)); });
+                runOnUiThread(() -> { computerBusy = false; if (!isFinishing() && !isDestroyed()) showStatus(RemoteApi.failureMessage(error, chinese), false); });
             }
         });
     }
@@ -462,7 +537,7 @@ public final class SettingsActivity extends Activity {
             EditText modelInput = field(form, tr("模型（每行一个 ID，或 别名=上游模型）", "Models (one ID or alias=upstream per line)"), "providerModels", modelLines.toString(), false, true);
             TextView errorLabel = text("", Palette.TEXT_NOTE, settingsStyle.error); errorLabel.setTag("providerError");
             errorLabel.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE); form.addView(errorLabel);
-            ScrollView scroll = new ScrollView(this); scroll.addView(form);
+            ScrollView scroll = ScrollViews.plain(this); scroll.addView(form);
             dialog = new CamelliaDialog.Builder(this).setTitle(index < 0 ? tr("添加供应商", "Add provider") : tr("编辑供应商", "Edit provider"))
                 .setView(scroll).setNegativeButton(tr("取消", "Cancel"), null).setPositiveButton(tr("保存", "Save"), null).create();
             dialog.setOnShowListener(shown -> dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(view -> {
@@ -520,7 +595,7 @@ public final class SettingsActivity extends Activity {
         source.setSaveEnabled(false); source.setFilters(new android.text.InputFilter[]{new android.text.InputFilter.LengthFilter(LocalChatConfig.MAX_IMPORT + 1)});
         TextView errorLabel = text("", Palette.TEXT_NOTE, settingsStyle.error); errorLabel.setTag("providerImportError");
         errorLabel.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE); form.addView(errorLabel);
-        ScrollView scroll = new ScrollView(this); scroll.addView(form);
+        ScrollView scroll = ScrollViews.plain(this); scroll.addView(form);
         dialog = new CamelliaDialog.Builder(this).setTitle(tr("粘贴导入", "Paste import")).setView(scroll)
             .setNegativeButton(tr("取消", "Cancel"), null).setPositiveButton(tr("替换配置", "Replace configuration"), null).create();
         dialog.setOnShowListener(shown -> dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(view -> {
@@ -530,7 +605,7 @@ public final class SettingsActivity extends Activity {
                 store.importConfig(config, new LocalChatStore.Callback<>() {
                     public void done(JSONObject value) {
                         if (isDestroyed()) return;
-                        try { savingDialog.dismiss(); providers(); status.setText(tr("已导入配置", "Configuration imported")); } catch (Exception error) { failure(error); }
+                        try { savingDialog.dismiss(); providers(); showStatus(tr("已导入配置", "Configuration imported")); } catch (Exception error) { failure(error); }
                     }
                     public void failed(Exception error) {
                         if (isDestroyed()) return;
@@ -554,7 +629,7 @@ public final class SettingsActivity extends Activity {
                     ClipData clip = ClipData.newPlainText("Camellia API configuration", exported);
                     android.os.PersistableBundle extras = new android.os.PersistableBundle(); extras.putBoolean("android.content.extra.IS_SENSITIVE", true); clip.getDescription().setExtras(extras);
                     ((ClipboardManager) getSystemService(CLIPBOARD_SERVICE)).setPrimaryClip(clip);
-                    status.setText(tr("已复制配置（含密钥），请妥善保管。", "Configuration copied (includes keys). Keep it private."));
+                    showStatus(tr("已复制配置（含密钥），请妥善保管。", "Configuration copied (includes keys). Keep it private."));
                 } catch (Exception error) { failure(error); }
             }).show();
     }

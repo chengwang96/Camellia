@@ -49,23 +49,34 @@ public class NavigationGlassTest extends InstrumentationTestCase {
     }
 
     private void mount(boolean dark) throws Exception {
+        mount(dark, "home");
+    }
+    private void mount(boolean dark, String selected) throws Exception {
         ui(() -> {
             ContextThemeWrapper context = new ContextThemeWrapper(activity, android.R.style.Theme_Material_Light_NoActionBar);
             Configuration configuration = new Configuration(activity.getResources().getConfiguration());
             configuration.uiMode = (configuration.uiMode & ~Configuration.UI_MODE_NIGHT_MASK)
                 | (dark ? Configuration.UI_MODE_NIGHT_YES : Configuration.UI_MODE_NIGHT_NO);
+            configuration.setLocales(android.os.LocaleList.forLanguageTags(dark ? "en" : "zh-CN"));
             context.applyOverrideConfiguration(configuration);
             FrameLayout stage = new FrameLayout(context);
             stage.setBackgroundColor(dark ? Color.BLACK : Color.WHITE);
+            stage.setOnApplyWindowInsetsListener((view, insets) -> {
+                view.setPadding(insets.getSystemWindowInsetLeft(), insets.getSystemWindowInsetTop(),
+                    insets.getSystemWindowInsetRight(), insets.getSystemWindowInsetBottom());
+                return insets;
+            });
             scroll = new ScrollView(context); scroll.setFillViewport(true); scroll.setClipToPadding(false);
             scroll.setPadding(0, 0, 0, dp(WorkbenchNavigation.HEIGHT_DP + WorkbenchNavigation.CONTENT_GAP_DP));
             stage.addView(scroll, new FrameLayout.LayoutParams(-1, -1));
             bands = new Bands(context);
             scroll.addView(bands, new ScrollView.LayoutParams(-1, 10000));
-            navigation = new WorkbenchNavigation(context, "home", () -> {}, () -> {}, () -> {}, () -> {});
-            stage.addView(navigation, new FrameLayout.LayoutParams(dp(300), dp(64), Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL));
+            navigation = new WorkbenchNavigation(context, selected, () -> {}, () -> {}, () -> {}, () -> {});
+            FrameLayout.LayoutParams placement = new FrameLayout.LayoutParams(dp(300), dp(64), Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL);
+            placement.bottomMargin = dp(4); stage.addView(navigation, placement);
             navigation.setBackdropSource(scroll);
             activity.setContentView(stage);
+            stage.requestApplyInsets();
         });
         SystemClock.sleep(150);
         ui(() -> {
@@ -131,6 +142,55 @@ public class NavigationGlassTest extends InstrumentationTestCase {
             powerSave(false);
             shell("dumpsys battery reset");
         }
+    }
+
+    public void testAllSelectedButtonsKeepTheirToneOverLightAndDarkPageContent() throws Exception {
+        String[] destinations = {"home", "sessions", "computers", "settings"};
+        for (boolean dark : new boolean[] {false, true}) {
+            int[] selectedReference = new int[2], backgroundReference = new int[2];
+            for (int index = 0; index < destinations.length; index++) {
+                String selected = destinations[index], inactive = destinations[(index + 1) % destinations.length];
+                mount(dark, selected);
+                int[] pageColors = {Color.BLACK, Color.WHITE};
+                for (int pageIndex = 0; pageIndex < pageColors.length; pageIndex++) {
+                    int pageColor = pageColors[pageIndex];
+                    ui(() -> { bands.first = pageColor; bands.invalidate(); }); awaitColor(pageColor);
+                    SystemClock.sleep(100);
+                    int[] selectedPixel = new int[2], backgroundPixel = new int[2];
+                    ui(() -> {
+                        samplePoint(navigation.findViewWithTag("nav:" + selected), selectedPixel);
+                        samplePoint(navigation.findViewWithTag("nav:" + inactive), backgroundPixel);
+                    });
+                    Bitmap frame = getInstrumentation().getUiAutomation().takeScreenshot();
+                    int selectedColor, backgroundColor;
+                    try {
+                        selectedColor = frame.getPixel(selectedPixel[0], selectedPixel[1]);
+                        backgroundColor = frame.getPixel(backgroundPixel[0], backgroundPixel[1]);
+                    } finally { frame.recycle(); }
+                    if (index == 0) { selectedReference[pageIndex] = selectedColor; backgroundReference[pageIndex] = backgroundColor; }
+                    assertTrue("Equal backdrops must give equal selected tones across destinations", distance(selectedReference[pageIndex], selectedColor) <= 8);
+                    assertTrue("Equal backdrops must give equal glass tones across destinations", distance(backgroundReference[pageIndex], backgroundColor) <= 8);
+                    assertTrue("The selected segment remains visibly distinct from the glass", distance(selectedColor, backgroundColor) >= 10);
+                    assertTrue("Selection is a neutral tonal overlay", dark
+                        ? Color.red(selectedColor) > Color.red(backgroundColor)
+                        : Color.red(selectedColor) < Color.red(backgroundColor));
+                }
+                screenshot("navigation-consistent-" + (dark ? "dark-" : "light-") + selected);
+            }
+            // Glass must transmit the backdrop. Requiring black and white
+            // backdrops to produce the same pixels would force opaque paint.
+            int transmission = distance(backgroundReference[0], backgroundReference[1]);
+            assertTrue("The pane must be translucent rather than opaque or fully clear: " + transmission,
+                transmission >= 70 && transmission <= 190);
+        }
+    }
+
+    private void samplePoint(View item, int[] point) {
+        item.getLocationOnScreen(point);
+        point[0] += item.getWidth() - dp(8); point[1] += item.getHeight() / 2;
+    }
+    private int distance(int first, int second) {
+        return Math.max(Math.abs(Color.red(first) - Color.red(second)), Math.max(Math.abs(Color.green(first) - Color.green(second)), Math.abs(Color.blue(first) - Color.blue(second))));
     }
 
     private void awaitColor(int expected) throws Exception {

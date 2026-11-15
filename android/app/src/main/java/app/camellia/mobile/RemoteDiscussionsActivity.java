@@ -109,10 +109,7 @@ public final class RemoteDiscussionsActivity extends Activity {
         TextView view = new TextView(this); view.setText(value); view.setTextSize(size); view.setTextColor(color); return view;
     }
     private TextView button(String label, String tag, Runnable action) {
-        TextView button = text(label, 14, style.ink); button.setGravity(Gravity.CENTER); button.setTag(tag);
-        button.setPadding(dp(14), dp(8), dp(14), dp(8)); button.setMinHeight(dp(48)); button.setFocusable(true);
-        button.setBackground(new android.graphics.drawable.RippleDrawable(ColorStateList.valueOf(0x224176e6),
-            style.capsule(style.surface), style.capsule(-1)));
+        TextView button = new TextView(this); button.setText(label); button.setTag(tag); ActionStyle.page(button, false);
         button.setOnClickListener(view -> action.run()); return button;
     }
     private EditText field(String hint, String value, int limit, boolean multiline, String tag) {
@@ -224,18 +221,18 @@ public final class RemoteDiscussionsActivity extends Activity {
 
     private void shell() {
         releasePageViews(); rosterSignature = "";
-        root = column(); root.setPadding(dp(18), dp(10), dp(18), dp(8)); root.setBackground(style.pageBackground()); root.setClipToPadding(false);
+        root = column(); root.setPadding(dp(ChatStyle.PAGE_SIDE_DP), dp(10), dp(ChatStyle.PAGE_SIDE_DP), dp(8)); root.setBackground(style.pageBackground()); root.setClipToPadding(false);
         getWindow().setStatusBarColor(style.background); getWindow().setNavigationBarColor(style.background);
         if (android.os.Build.VERSION.SDK_INT >= 27) getWindow().getDecorView().setSystemUiVisibility(android.graphics.Color.red(style.background) < 128 ? 0
             : View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR | View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR);
         root.setOnApplyWindowInsetsListener((view, insets) -> {
-            view.setPadding(dp(18) + insets.getSystemWindowInsetLeft(), dp(10) + insets.getSystemWindowInsetTop(),
-                dp(18) + insets.getSystemWindowInsetRight(), dp(8) + insets.getSystemWindowInsetBottom()); return insets;
+            view.setPadding(dp(ChatStyle.PAGE_SIDE_DP) + insets.getSystemWindowInsetLeft(), dp(10) + insets.getSystemWindowInsetTop(),
+                dp(ChatStyle.PAGE_SIDE_DP) + insets.getSystemWindowInsetRight(), dp(8) + insets.getSystemWindowInsetBottom()); return insets;
         });
-        LinearLayout header = new LinearLayout(this); header.setGravity(Gravity.CENTER_VERTICAL);
+        LinearLayout header = new LinearLayout(this); style.pageHeader(header);
         header.addView(style.backButton(tr("返回", "Back"), this::onBackPressed), new LinearLayout.LayoutParams(dp(48), dp(48)));
-        LinearLayout labels = column(); labels.setPadding(dp(10), 0, dp(6), 0);
-        title = text(tr("Agent 讨论 (beta)", "Agent discussions (beta)"), 19, style.ink); title.setTag("discussionTitle");
+        LinearLayout labels = column(); labels.setPadding(dp(8), 0, dp(6), 0);
+        title = text(tr("Agent 讨论 (beta)", "Agent discussions (beta)"), Palette.TEXT_CARD, style.ink); title.setTag("discussionTitle");
         title.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL)); title.setMaxLines(1); title.setEllipsize(TextUtils.TruncateAt.END);
         labels.addView(title);
         LinearLayout computer = new LinearLayout(this); computer.setGravity(Gravity.CENTER_VERTICAL);
@@ -257,12 +254,15 @@ public final class RemoteDiscussionsActivity extends Activity {
             toolbar.addView(membersButton); TextView beta = text(tr("Agent 讨论 (beta)", "Agent discussions (beta)"), 12, style.muted);
             beta.setPadding(dp(12), 0, 0, 0); beta.setMaxLines(2); toolbar.addView(beta, new LinearLayout.LayoutParams(0, -2, 1));
         }
-        scroll = new ScrollView(this); scroll.setFillViewport(true); scroll.setClipToPadding(false);
+        scroll = ScrollViews.plain(this); scroll.setFillViewport(true); scroll.setClipToPadding(false);
         content = column(); content.setPadding(0, dp(6), 0, dp(12)); scroll.addView(content);
         root.addView(scroll, new LinearLayout.LayoutParams(-1, 0, 1));
         pendingBar = column(); pendingBar.setTag("discussionPendingCommands"); root.addView(pendingBar);
+        LinearLayout discussionDock = null;
         if (groupId != null) {
-            LinearLayout dock = column(); dock.setPadding(0, dp(8), 0, 0);
+            LinearLayout dock = column(); discussionDock = dock; dock.setBackground(style.dockBackdrop());
+            dock.addView(style.dockFade("discussionComposerBar"), new LinearLayout.LayoutParams(-1, style.dockFadeHeight()));
+            root.removeView(pendingBar); dock.addView(pendingBar);
             LinearLayout bar = column(); bar.setTag("discussionComposerBar");
             composer = new ChatComposer(bar, style, chinese, tr("提出问题，或粘贴讨论材料…", "Ask a question or paste discussion material…"), 16000,
                 this::chooseMode, this::send, () -> submit("stop", groupId, new JSONObject()), () -> {});
@@ -286,12 +286,17 @@ public final class RemoteDiscussionsActivity extends Activity {
                 }
                 public void afterTextChanged(android.text.Editable s) {}
             });
-            dock.addView(bar); root.addView(dock);
+            LinearLayout.LayoutParams barParams = new LinearLayout.LayoutParams(-1, -2); barParams.bottomMargin = dp(8); dock.addView(bar, barParams);
         }
         status = text("", 11, style.muted); status.setTag("discussionStatus");
         workStatus = new ChatStatusLine(status, style, chinese);
         if (!lastError.isEmpty()) workStatus.error(lastError, false);
-        LinearLayout.LayoutParams statusLayout = new LinearLayout.LayoutParams(-1, -2); statusLayout.topMargin = dp(8); root.addView(status, statusLayout);
+        if (discussionDock == null) {
+            LinearLayout.LayoutParams statusLayout = new LinearLayout.LayoutParams(-1, -2); statusLayout.topMargin = dp(8); root.addView(status, statusLayout);
+        } else {
+            style.dockStatus(status); status.setBackgroundColor(style.background); discussionDock.addView(status, new LinearLayout.LayoutParams(-1, -2));
+            ChatDockLayout.attach(root, scroll, content, discussionDock, style, "discussionComposerBar");
+        }
         setContentView(root); root.requestApplyInsets(); controls();
     }
     private final Runnable saveDraftLater = this::saveDraft;
@@ -715,7 +720,7 @@ public final class RemoteDiscussionsActivity extends Activity {
             TextView label = button(tool.optString("name") + " · " + state, "discussionTool:" + tool.optString("id"), () -> {
                 String note = tool.optBoolean("detailsTruncated") ? tr("内容较长，仅显示部分详情；完整记录可在电脑查看。\n\n", "Showing part of a long result. Full details are available on the computer.\n\n") : "";
                 TextView details = text(note + tool.optString("inputText") + "\n\n" + tool.optString("output"), 13, style.ink); details.setTypeface(Typeface.MONOSPACE); details.setTextIsSelectable(true);
-                ScrollView scroll = new ScrollView(this); scroll.addView(details);
+                ScrollView scroll = ScrollViews.plain(this); scroll.addView(details);
                 dialog = new CamelliaDialog.Builder(this).setTitle(tool.optString("name")).setView(scroll).setPositiveButton(tr("关闭", "Close"), null).show();
             }); label.setGravity(Gravity.START | Gravity.CENTER_VERTICAL); block.addView(label);
         }

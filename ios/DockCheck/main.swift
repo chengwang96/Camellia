@@ -118,12 +118,30 @@ private struct DockListFixture: View {
                         try await compactScrollTail(dark: dark, height: height)
                     }
                 }
-                print("PASS: \(assertions) chat-dock layout/pixel assertions; controlled hosting, not touch input")
-                fflush(stdout)
-                if ProcessInfo.processInfo.environment["CAMELLIA_DOCK_CHECK_PERSIST"] != "1" { exit(0) }
+                finish()
             } catch {
-                print("FAIL: \(error)"); fflush(stdout); exit(1)
+                finish(failure: String(describing: error))
             }
+        }
+    }
+
+    private func finish(failure: String? = nil) {
+        // The final console lines can be lost when simctl detaches. A fresh,
+        // atomic verdict is available only after the checks have all finished.
+        do {
+            let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            try FileManager.default.createDirectory(at: documents, withIntermediateDirectories: true)
+            let result: [String: Any] = ["version": 1, "verdict": failure == nil ? "PASS" : "FAIL",
+                                         "checks": assertions, "failures": failure.map { [$0] } ?? []]
+            try JSONSerialization.data(withJSONObject: result).write(to: documents.appendingPathComponent("dock-result.json"), options: .atomic)
+        } catch {
+            print("FAIL: could not save dock-check verdict: \(error)"); fflush(stdout); exit(1)
+        }
+        if let failure { print("FAIL: \(failure)") }
+        else { print("PASS: \(assertions) chat-dock layout/pixel assertions; controlled hosting, not touch input") }
+        fflush(stdout)
+        if failure != nil || ProcessInfo.processInfo.environment["CAMELLIA_DOCK_CHECK_PERSIST"] != "1" {
+            exit(failure == nil ? 0 : 1)
         }
     }
 

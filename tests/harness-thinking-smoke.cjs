@@ -8,6 +8,8 @@ const os = require('node:os');
 const path = require('node:path');
 const http = require('node:http');
 const { randomUUID } = require('node:crypto');
+const { spawn } = require('node:child_process');
+const { parseArgs } = require('node:util');
 const { createEngineDrivers } = require('../src/cli/engine-drivers');
 const { createRuntimeManager } = require('../src/main/runtime-manager');
 const { isolatedEnvironment } = require('../src/engines/isolated-environment');
@@ -30,17 +32,34 @@ async function freePort() {
   const port = server.address().port; await new Promise(resolve => server.close(resolve)); return port;
 }
 
-async function main() {
-  const all = ['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'grok'];
-  const engines = process.argv.slice(2).length ? process.argv.slice(2) : all;
-  assert.ok(engines.every(engine => all.includes(engine)), 'Specify harness IDs');
+const allEngines = ['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'grok'];
+function casesFor(engines = allEngines) {
+  assert.ok(engines.length && new Set(engines).size === engines.length
+    && engines.every(engine => allEngines.includes(engine)), 'Specify distinct harness IDs');
+  return engines.flatMap(engine => profiles.flatMap(profile =>
+    ['', ...profile.values.map(value => value === false ? 'none' : value === true ? 'high' : value)]
+      .map(level => ({ engine, profile, level }))));
+}
+const caseId = row => JSON.stringify([row.engine, row.profile?.model || row.model, row.level ?? (row.selected === 'default' ? '' : row.selected)]);
+function partitionCases(cases, count) {
+  assert.ok(Number.isInteger(count) && count >= 1 && count <= 8, 'Choose 1 to 8 workers');
+  return Array.from({ length: count }, (_, index) => cases.filter((_, at) => at % count === index));
+}
+function verifyCoverage(rows, expected) {
+  assert.equal(rows.length, expected.length, 'Every native thinking case must finish');
+  assert.ok(rows.every(row => row.ok === true), 'Every native thinking case must pass');
+  assert.equal(new Set(rows.map(caseId)).size, rows.length, 'Native thinking cases must not run twice');
+  assert.deepEqual(rows.map(caseId).sort(), expected.map(caseId).sort(), 'Native thinking coverage changed');
+}
+
+async function runCases(cases, root) {
   const repo = path.resolve(__dirname, '..');
-  const root = path.join(repo, 'artifacts', 'harness-thinking-smoke-' + randomUUID());
   fs.mkdirSync(root, { recursive: true });
   const manager = createRuntimeManager({ root: repo, node: process.execPath, discoverLocal: false,
     installRoot: process.env.CAMELLIA_RUNTIME_ROOT || path.join(process.env.APPDATA || path.join(os.homedir(), '.config'), 'camellia') });
-  for (const engine of engines) assert.ok(manager.locate(engine, 'api'), `Install ${engine} or set CAMELLIA_RUNTIME_ROOT`);
-  const requests = [], rows = [];
+  for (const engine of new Set(cases.map(row => row.engine)))
+    assert.ok(manager.locate(engine, 'api'), `Install ${engine} or set CAMELLIA_RUNTIME_ROOT`);
+  const requests = [], rows = [], logs = [];
   let marker, pending;
   const server = http.createServer(async (req, res) => {
     if (req.method === 'GET') { res.writeHead(200, { 'content-type': 'application/json' }); res.end('{"data":[]}'); return; }
@@ -80,14 +99,14 @@ async function main() {
     host = createEngineDrivers({ root: repo, dataDir, runtimeManager: manager, loadConfig: () => state,
       saveConfig: patch => Object.assign(state, patch), isBusy: () => false, router: () => config,
       getRoute: () => ({ baseUrl: router.url, authToken: 'proxy-managed' }), environment: () => env,
+      log(message) { logs.push(String(message).slice(-2000)); if (logs.length > 20) logs.shift(); },
       onEvent(engine, event) {
         if (!pending || pending.engine !== engine) return;
         if (event.type === 'stream_event' && event.event?.delta?.thinking) pending.thinking++;
         if (event.type === 'result') pending.resolve(event);
       } });
-    for (const engine of engines) for (const profile of profiles) {
-      const levels = ['', ...profile.values.map(value => value === false ? 'none' : value === true ? 'high' : value)];
-      for (const level of levels) {
+    for (const { engine, profile, level } of cases) {
+        const started = performance.now();
         marker = 'THINKING_SMOKE_' + randomUUID().replaceAll('-', '_');
         const start = requests.length;
         const row = { engine, runtime: manager.locate(engine, 'api').version, model: profile.model, selected: level || 'default' };
@@ -97,7 +116,8 @@ async function main() {
           const settings = { connection: 'api', model: profile.model, permissionMode: 'ask', thinkingBudget: level };
           const session = host.drivers[engine].ensure({ conversationId: randomUUID(), cwd, settings });
           assert.notEqual(session.sendUserMessage(marker + ': Reply briefly. Do not use tools.'), false);
-          const result = await Promise.race([done, new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('Native turn timed out')), 60000); })]);
+          const result = await Promise.race([done, new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(
+            `Native turn timed out: ${engine} ${profile.model} ${level || 'Default'}; captured ${requests.length - start} requests\n${logs.slice(-8).join('\n')}`)), 60000); })]);
           assert.equal(Boolean(result.is_error), false, result.result || result.subtype);
           assert.match(String(result.result), /Thinking control passed/);
           const sent = requests.slice(start).filter(request => request.marker === marker);
@@ -113,16 +133,62 @@ async function main() {
         } catch (error) { Object.assign(row, { ok: false, error: error.stack }); throw error; }
         finally {
           clearTimeout(timer); pending = null;
-          rows.push(row); fs.writeFileSync(path.join(root, 'results.json'), JSON.stringify(rows, null, 2));
-          await host.releaseRuntime(engine);
+          row.turnMs = Math.round(performance.now() - started);
+          const closing = performance.now();
+          try { await host.releaseRuntime(engine); }
+          catch (error) { row.ok = false; row.error = error.stack; throw error; }
+          finally {
+            row.teardownMs = Math.round(performance.now() - closing);
+            rows.push(row); fs.writeFileSync(path.join(root, 'results.json'), JSON.stringify(rows, null, 2));
+          }
         }
         console.log(`PASS ${engine} ${profile.model} ${level || 'Default'}`);
-      }
     }
+    verifyCoverage(rows, cases);
     console.log(`${rows.length} native thinking-control cases passed. Evidence: ${root}`);
   } finally {
     if (host) await Promise.allSettled(Object.values(host.drivers).map(driver => driver.shutdown?.()));
     await router.stop(); server.closeAllConnections(); await new Promise(resolve => server.close(resolve));
   }
 }
-main().catch(error => { console.error(error); process.exitCode = 1; });
+
+async function runWorkers(engines, jobs, root, { executable = process.execPath, script = __filename, env = process.env } = {}) {
+  const expected = casesFor(engines), groups = partitionCases(expected, jobs);
+  const results = await Promise.allSettled(groups.map((_, index) => new Promise((resolve, reject) => {
+    const child = spawn(executable, [script, ...engines, '--worker-index', String(index), '--worker-count', String(jobs),
+      '--worker-root', path.join(root, 'worker-' + index)], { env, windowsHide: true, stdio: 'inherit' });
+    child.once('error', reject);
+    child.once('close', (code, signal) => code === 0 ? resolve()
+      : reject(new Error(`Thinking worker ${index + 1}/${jobs} failed (${signal || code})`)));
+  })));
+  const failures = results.filter(result => result.status === 'rejected').map(result => result.reason);
+  if (failures.length) throw new AggregateError(failures, 'Native thinking workers failed');
+  const rows = groups.flatMap((_, index) => JSON.parse(fs.readFileSync(path.join(root, 'worker-' + index, 'results.json'), 'utf8')));
+  verifyCoverage(rows, expected);
+  fs.writeFileSync(path.join(root, 'results.json'), JSON.stringify(rows, null, 2));
+  console.log(`PASS: all ${rows.length} native thinking-control cases across ${jobs} isolated workers. Evidence: ${root}`);
+}
+
+async function main(args = process.argv.slice(2)) {
+  const { values, positionals } = parseArgs({ args, allowPositionals: true, options: {
+    jobs: { type: 'string', default: '1' }, 'worker-index': { type: 'string' },
+    'worker-count': { type: 'string' }, 'worker-root': { type: 'string' },
+  } });
+  const engines = positionals.length ? positionals : allEngines, cases = casesFor(engines);
+  const jobs = Number(values.jobs);
+  partitionCases(cases, jobs);
+  if (values['worker-index'] !== undefined) {
+    const count = Number(values['worker-count']), index = Number(values['worker-index']);
+    const groups = partitionCases(cases, count);
+    assert.ok(Number.isInteger(index) && index >= 0 && index < count && values['worker-root'], 'Invalid thinking worker');
+    return runCases(groups[index], path.resolve(values['worker-root']));
+  }
+  assert.equal(values['worker-count'], undefined, 'Worker count requires a worker index');
+  assert.equal(values['worker-root'], undefined, 'Worker root requires a worker index');
+  const root = path.join(__dirname, '..', 'artifacts', 'harness-thinking-smoke-' + randomUUID());
+  fs.mkdirSync(root, { recursive: true });
+  if (jobs === 1) return runCases(cases, root);
+  return runWorkers(engines, jobs, root);
+}
+if (require.main === module) main().catch(error => { console.error(error); process.exitCode = 1; });
+module.exports = { casesFor, partitionCases, verifyCoverage, runCases, runWorkers };

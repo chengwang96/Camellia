@@ -5,47 +5,44 @@ import UIKit
 /// Settings and chat retain semantic names; popup and sheet geometry remains
 /// touch-sized instead of borrowing desktop control dimensions.
 enum Palette {
-    static let background = dynamic(light: 0xFFFFFF, dark: 0x151517)
+    static let background = dynamic(light: 0xF6F7F9, dark: 0x151517)
     static let surface = dynamic(light: 0xF5F6F7, dark: 0x232324)
     /// A neutral page under outlined settings cards.
     static let grouped = background
     static let raised = surface
-    static let ink = dynamic(light: 0x0F1115, dark: 0xF9FAFB)
-    static let muted = dynamic(light: 0x61666B, dark: 0xCFD3D6)
+    static let ink = dynamic(light: 0x14171A, dark: 0xF0F2F4)
+    static let muted = dynamic(light: 0x69717B, dark: 0xA4AAB2)
     /// Tertiary labels and placeholders have distinct contrast.
-    static let faint = dynamic(light: 0x81858C, dark: 0xADB2B8)
-    static let caption = dynamic(light: 0xADB2B8, dark: 0x81858C)
-    static let userBubble = dynamic(light: 0xEDF3FE, dark: 0x283142)
-    static let cardBorder = dynamic(light: 0xD6D6D8, dark: 0x424448)
+    static let faint = dynamic(light: 0x858C95, dark: 0xADB2B8)
+    static let caption = dynamic(light: 0x9AA1A9, dark: 0x81858C)
+    static let userBubble = dynamic(light: 0xEEF2FF, dark: 0x283142)
+    static let cardBorder = dynamic(light: 0xE2E6EA, dark: 0x393B40)
     static let controlFill = dynamic(light: 0xF5F6F7, dark: 0x292A2D)
     static let selectedBorder = dynamic(light: 0xADB2B8, dark: 0x737981)
     static let progressTrack = dynamic(light: 0xEBEEF2, dark: 0x353638)
-    static let accent = dynamic(light: 0x4176E6, dark: 0x679EFE)
+    static let accent = dynamic(light: 0x4D6BFE, dark: 0x8095FF)
+    static let onAccent = dynamic(light: 0xFFFFFF, dark: 0x151517)
+    static let success = dynamic(light: 0x1F8A5B, dark: 0x61D49E)
+    static let warning = dynamic(light: 0xA8610A, dark: 0xF1B45F)
     /// The outline used only by the two large choices on the home page.
-    static let homeCardEdge = dynamic(light: 0xE6E8EB, dark: 0x34363A)
+    static let homeCardEdge = dynamic(light: 0xE2E6EA, dark: 0x393B40)
     /// `ChatStyle.floatingBarEdge()`: the hairline around a floating bar.
-    static let separator = dynamic(light: 0xECEEF1, dark: 0x3B3B40)
-    /// `ChatStyle.backButton()`'s own pair: the disc is white by day and
-    /// `#29292D` at night, and its outline is a shade lighter than the disc
-    /// rather than the field hairline above — it rings a raised button, not a
-    /// field, and the two are not the same value in either appearance.
-    static let raisedFace = dynamic(light: 0xFFFFFF, dark: 0x29292D)
-    static let raisedEdge = dynamic(light: 0xF3F3F5, dark: 0x3A3A40)
+    static let separator = dynamic(light: 0xE8EBEF, dark: 0x3B3B40)
 
     // MARK: - The settings palette
     //
     /// A card on one of those pages.
-    static let card = dynamic(light: 0xFFFFFF, dark: 0x232324)
+    static let card = dynamic(light: 0xFFFFFF, dark: 0x222326)
     /// Secondary text there.
     static let secondary = muted
     /// The line between two rows of one group.
-    static let divider = dynamic(light: 0xECECEE, dark: 0x37373C)
+    static let divider = dynamic(light: 0xE8EBEF, dark: 0x37373C)
     /// A field's own fill.
     static let field = controlFill
     /// A field's outline.
     static let fieldBorder = cardBorder
     /// Destructive actions and error text.
-    static let error = dynamic(light: 0xB8323B, dark: 0xFF969A)
+    static let error = dynamic(light: 0xC93645, dark: 0xFF8791)
     /// The switch's off track: a light grey by day, a darker one at night.
     static let trackOff = dynamic(light: 0xD9DCE0, dark: 0x54575D)
 
@@ -66,16 +63,15 @@ enum Palette {
     /// A row's title in the settings vocabulary.
     static let textRow: CGFloat = 16
     /// A row's title where it is the heaviest text on the page.
-    static let textRowStrong: CGFloat = 17
+    static let textRowStrong: CGFloat = 16
     /// A confirmation dialog's item.
     static let textDialog: CGFloat = 18
-    /// A card's own title. One step below `textTitle` because a card sits *inside*
-    /// a page, and at 20 it would read as a second heading.
-    static let textCard: CGFloat = 19
+    /// A card's heading stays below the page title.
+    static let textCard: CGFloat = 18
     /// A page or sheet heading.
-    static let textTitle: CGFloat = 20
+    static let textTitle: CGFloat = 21
     /// An empty state's heading.
-    static let textDisplay: CGFloat = 21
+    static let textDisplay: CGFloat = 22
     /// A selection tick — larger than `textDisplay` on purpose, because it is a
     /// glyph rather than words and has to stay legible at a glance.
     static let textTick: CGFloat = 22
@@ -90,38 +86,35 @@ enum Palette {
 
     /// A message bubble or a plain block.
     static let radius: CGFloat = 12
-    static let userBubbleRadius: CGFloat = 18
-    static let settingsCardRadius: CGFloat = 16
+    static let userBubbleRadius: CGFloat = 16
+    static let settingsCardRadius: CGFloat = 14
     static let settingsControlRadius: CGFloat = 10
     /// A code block inside rendered Markdown.
     static let smallRadius: CGFloat = 8
     /// A settings card, a popup panel, a computer row's card.
-    static let groupRadius: CGFloat = 26
+    static let groupRadius: CGFloat = 16
     /// A bottom sheet's own panel.
-    static let sheetRadius: CGFloat = 30
+    static let sheetRadius: CGFloat = 22
     /// An input field, a choice row.
-    static let fieldRadius: CGFloat = 18
+    static let fieldRadius: CGFloat = 12
     /// The home screen's cards, and its settings entry.
-    static let homeRadius: CGFloat = 20
-    /// A dialog's action button: 20 on a 52pt button, so a rounded rectangle
-    /// rather than the pill `capsuleRadius` would make.
-    static let dialogActionRadius: CGFloat = 20
+    static let homeRadius: CGFloat = 14
+    /// A dialog action's rounded rectangle.
+    static let dialogActionRadius: CGFloat = 14
     /// A switch's track and the grip on a sheet.
     static let trackRadius: CGFloat = 14
     static let gripRadius: CGFloat = 3
 
-    /// How a "capsule" in Android is drawn: `capsule()` is `rounded()` with the
-    /// corner radius raised to 28, and 28 is under half the height of the
-    /// taller bars, so it is a very round rectangle rather than a true capsule.
-    static let capsuleRadius: CGFloat = 28
+    /// Page actions share Android's compact rounded control shape.
+    static let capsuleRadius: CGFloat = 18
 
     /// The width a message bubble may reach on its long side.
-    static let bubbleInset: CGFloat = 44
+    static let bubbleInset: CGFloat = 36
 
     /// How far the reader's own message is inset from the trailing edge. The
     /// same number on both sides, so a short reply and a long one start and end
     /// in the same place.
-    static let userInset: CGFloat = 44
+    static let userInset: CGFloat = 36
 
     /// The same two colours, as `UIColor`s, for the views UIKit draws.
     ///
@@ -129,8 +122,8 @@ enum Palette {
     /// appearance was current at the moment of the conversion; these keep the
     /// trait closure, so a text view handed one still re-resolves when the
     /// appearance changes.
-    static let inkUI = dynamicUI(light: 0x0F1115, dark: 0xF9FAFB)
-    static let mutedUI = dynamicUI(light: 0x61666B, dark: 0xCFD3D6)
+    static let inkUI = dynamicUI(light: 0x14171A, dark: 0xF0F2F4)
+    static let mutedUI = dynamicUI(light: 0x69717B, dark: 0xA4AAB2)
 
     /// One colour with an appearance-dependent value.
     private static func dynamic(light: Int, dark: Int) -> Color {
@@ -168,13 +161,15 @@ struct Surface<Content: View>: View {
     }
 }
 
-/// A capsule button that reads as iOS rather than as the Android accent block.
+/// The shared page action, including inherited disabled state.
 struct CapsuleButton: View {
     let title: String
     var systemImage: String? = nil
     var prominent = true
     var enabled = true
     let action: () -> Void
+    @Environment(\.isEnabled) private var parentEnabled
+    private var active: Bool { enabled && parentEnabled }
 
     var body: some View {
         Button(action: action) {
@@ -182,18 +177,18 @@ struct CapsuleButton: View {
                 if let systemImage = systemImage { Image(systemName: systemImage) }
                 Text(LocalizedStringKey(title))
             }
-            .font(.subheadline.weight(.medium))
+            .font(.system(size: Palette.textBody, weight: .medium))
             .padding(.horizontal, 14)
             .padding(.vertical, 8)
+            .frame(minHeight: 48)
             .background(
-                Capsule(style: .continuous)
-                    .fill(prominent && enabled ? Palette.accent : Palette.surface)
+                RoundedRectangle(cornerRadius: Palette.capsuleRadius, style: .continuous)
+                    .fill(!active ? Palette.controlFill : prominent ? Palette.accent : Palette.card)
             )
-            .foregroundColor(prominent && enabled ? .white : Palette.ink)
-            .opacity(enabled ? 1 : 0.45)
+            .foregroundColor(!active ? Palette.muted : prominent ? Palette.onAccent : Palette.ink)
         }
         .disabled(!enabled)
-        .buttonStyle(.plain)
+        .buttonStyle(ComposerPressStyle())
     }
 }
 
@@ -208,8 +203,8 @@ struct StatusLine: View {
         var color: Color {
             switch self {
             case .muted: return Palette.muted
-            case .good: return .green
-            case .bad: return .red
+            case .good: return Palette.success
+            case .bad: return Palette.error
             }
         }
     }

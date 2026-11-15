@@ -1,6 +1,6 @@
 param(
     [string]$Serial,
-    [int[]]$Dps = @(320, 360, 411),
+    [int[]]$Dps = @(360, 393, 412),
     [string[]]$FontScales = @('1.0', '1.3')
 )
 
@@ -16,7 +16,7 @@ if (-not (Test-Path -LiteralPath $adb)) { throw 'adb was not found in the local 
 if (-not (Test-Path -LiteralPath $debugApk)) { throw 'Build the debug APK first.' }
 if (-not (Test-Path -LiteralPath $testApk)) { throw 'Build the AndroidTest APK first.' }
 
-$sizes = @($Dps | ForEach-Object { @{ Dp = $_; Pixels = [int]($_ * 3) } })
+$sizes = @($Dps | ForEach-Object { @{ Dp = $_; Pixels = [int]($_ * 3); Height = [int][Math]::Round($_ * 3 * 20 / 9) } })
 
 New-Item -ItemType Directory -Force $output | Out-Null
 $deviceArgs = @()
@@ -30,7 +30,7 @@ if ($LASTEXITCODE -ne 0) { throw 'Could not install the AndroidTest APK.' }
 try {
     foreach ($size in $sizes) {
         foreach ($fontScale in $fontScales) {
-            & $adb @deviceArgs shell wm size "$($size.Pixels)x1920" | Out-Host
+            & $adb @deviceArgs shell wm size "$($size.Pixels)x$($size.Height)" | Out-Host
             & $adb @deviceArgs shell wm density 480 | Out-Host
             & $adb @deviceArgs shell settings put system font_scale $fontScale | Out-Host
             & $adb @deviceArgs shell pm clear app.camellia.mobile | Out-Host

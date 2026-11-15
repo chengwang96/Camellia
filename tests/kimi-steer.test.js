@@ -28,9 +28,11 @@ function runNative() {
 }
 `;
 
-async function fixture() {
+async function fixture(modern = false) {
   const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
-  const patched = patchKimiSteer(source);
+  const fixtureSource = modern ? source.replace('IAgentPromptChannel = createDecorator("agentPromptService")\nasync submitSteer(payload)\nactiveTurnId: this.active?.id',
+    'activeTurnId: loop?.state.turn?.id ?? active?.id\nconst { id, entry: admitted } = this.admit(entry);\nthis.sendNotification(admitted, true);\ncamelliaPromptEnded(event, aborted) {') : source;
+  const patched = patchKimiSteer(fixtureSource);
   assert.ok(patched);
   const calls = { prepared: [], submitted: [] };
   const driver = { turnId: 7, settled: false };
@@ -42,6 +44,7 @@ async function fixture() {
   const loop = {
     snapshot: () => ({ state: 'running', activeTurnId: 7, activePromptId: 'original-prompt' }),
     submit: (...args) => { calls.submitted.push(args); return { id: 'steer-prompt' }; },
+    sendNow: (...args) => { calls.submitted.push(args); return { id: 'steer-prompt' }; },
     promptHandle: () => ({ state: 'pending' }),
   };
   const agent = { accessor: { get: () => loop } };
@@ -78,6 +81,15 @@ test('Kimi steer bridge converts attachments and accepts only the current ACP an
   loop.promptHandle = () => ({ state: 'failed' });
   await assert.rejects(api.steer(server, params), /did not accept/);
   assert.equal(calls.prepared.length, 4);
+});
+
+test('Kimi 2.6 steering uses native immediate input and tracks its continuation before acknowledging', async () => {
+  const { api, server, driver, calls } = await fixture(true);
+  assert.deepEqual(await api.steer(server, { sessionId: 'session', prompt: [{ type: 'text', text: 'Correction' }] }),
+    { turnId: 7, promptId: 'steer-prompt' });
+  assert.equal(calls.submitted[0].length, 1);
+  assert.equal(calls.submitted[0][0].message.content[0].text, 'Correction');
+  assert.deepEqual([...driver.camelliaSteers], ['steer-prompt']);
 });
 
 test('Kimi steer bridge refuses an unfinished or cancelled prompt without invoking native steering', async () => {
@@ -143,6 +155,11 @@ const pinnedRuntime = path.resolve(process.env.CAMELLIA_TEST_KIMI_RUNTIME
 test('the selected Kimi runtime supports independent and composed steer bridges', { skip: !fs.existsSync(pinnedRuntime) }, () => {
   const native = fs.readFileSync(pinnedRuntime, 'utf8');
   assert.ok(patchKimiSteer(native));
+  if (native.includes('activeTurnId: loop?.state.turn?.id ?? active?.id')) {
+    assert.match(patchKimiSteer(native), /camelliaPromptEnded\(event, aborted\)/);
+    assert.equal(patchKimiSteer(native.replace('driveLaunch(launch) {', 'driveLaunch(changed) {')), null,
+      'Immediate input requires the ACP continuation adapter even when the history bridge is unavailable');
+  }
   const history = patchKimiHistory(native);
   assert.ok(history);
   const combined = patchKimiSteer(history);
@@ -154,7 +171,7 @@ test('verified Kimi upgrades load queue, error, history and steer adapters throu
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kimi-verified-runtime-'));
   t.after(() => removeTree(root));
   const native = fs.readFileSync(pinnedRuntime, 'utf8');
-  for (const version of ['2.4.0', '2.4.1', '2.5.1', '2.5.2']) {
+  for (const version of ['2.4.0', '2.4.1', '2.5.1', '2.5.2', '2.6.2']) {
     const directory = path.join(root, version);
     fs.mkdirSync(path.join(directory, 'dist'), { recursive: true });
     fs.writeFileSync(path.join(directory, 'package.json'), JSON.stringify({ name: '@moonshot-ai/kimi-code', version }));

@@ -61,7 +61,7 @@ final class RemoteApprovalDialog {
             body.addView(new SettingsField(field.custom), customParams);
         }
         TextView error = new TextView(activity); error.setTextColor(new SettingsStyle(activity).error); body.addView(error);
-        ScrollView scroll = new ScrollView(activity); scroll.addView(body);
+        ScrollView scroll = ScrollViews.plain(activity); scroll.addView(body);
         AlertDialog dialog = new CamelliaDialog.Builder(activity).setTitle((member.isEmpty() ? "" : member + " · ") + request.optString("toolName"))
             .setView(scroll).setNeutralButton(zh ? "稍后" : "Later", null)
             .setNegativeButton(fields.isEmpty() ? (zh ? "拒绝" : "Deny") : (zh ? "跳过问题" : "Skip questions"), null)

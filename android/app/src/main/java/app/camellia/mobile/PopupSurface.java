@@ -8,10 +8,17 @@ import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Paint;
+import android.graphics.LinearGradient;
+import android.graphics.PorterDuff;
+import android.graphics.PorterDuffXfermode;
 import android.graphics.Rect;
+import android.graphics.RectF;
+import android.graphics.ColorFilter;
+import android.graphics.PixelFormat;
 import android.graphics.RenderEffect;
 import android.graphics.Shader;
 import android.graphics.drawable.GradientDrawable;
+import android.graphics.drawable.Drawable;
 import android.os.Build;
 import android.os.PowerManager;
 import android.view.View;
@@ -44,6 +51,8 @@ final class PopupSurface extends FrameLayout {
     private boolean hardwareBlur;
     private final int color;
     private final boolean navigation;
+    private final boolean navigationVeil;
+    private final Paint veilMask = new Paint();
     private boolean captured;
     private int capturedScrollX, capturedScrollY, capturedSourceLeft, capturedSourceTop;
     private final int[] sourceOrigin = new int[2], panelOrigin = new int[2];
@@ -56,21 +65,56 @@ final class PopupSurface extends FrameLayout {
         return new PopupSurface(context, color, true);
     }
 
+    static PopupSurface navigationVeil(Context context, int color) {
+        return new PopupSurface(context, color, true, true);
+    }
+
     private PopupSurface(Context context, int color, boolean navigation) {
+        this(context, color, navigation, false);
+    }
+
+    private PopupSurface(Context context, int color, boolean navigation, boolean navigationVeil) {
         super(context);
         this.color = color | 0xff000000;
         this.navigation = navigation;
-        int radius = dp(navigation ? Palette.RADIUS_NAVIGATION : Palette.RADIUS_GROUP);
+        this.navigationVeil = navigationVeil;
+        int radius = navigationVeil ? 0 : dp(navigation ? Palette.RADIUS_NAVIGATION : Palette.RADIUS_GROUP);
         GradientDrawable shape = new GradientDrawable(); shape.setColor(this.color);
         shape.setCornerRadius(radius); setBackground(shape); setClipToOutline(true);
         GradientDrawable edge = new GradientDrawable(); edge.setColor(Color.TRANSPARENT);
         edge.setCornerRadius(radius);
         edge.setStroke(dp(1), navigation ? (Color.red(color) < 128 ? 0x30ffffff : 0xccffffff)
             : Color.red(color) < 128 ? 0x18ffffff : 0x1a000000);
-        setForeground(edge);
+        if (!navigationVeil) setForeground(navigation
+            ? new NavigationEdge(context, Color.red(color) < 128, radius) : edge);
+        veilMask.setXfermode(new PorterDuffXfermode(PorterDuff.Mode.DST_IN));
     }
 
     private int dp(int value) { return Math.round(value * getResources().getDisplayMetrics().density); }
+
+    /** The thin rim catches light at the crown and lower edge, not uniformly. */
+    private static final class NavigationEdge extends Drawable {
+        private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final RectF line = new RectF();
+        private final boolean dark;
+        private final float radius, stroke;
+        NavigationEdge(Context context, boolean dark, float radius) {
+            this.dark = dark; this.radius = radius;
+            stroke = Math.max(1, context.getResources().getDisplayMetrics().density * .65f);
+            paint.setStyle(Paint.Style.STROKE); paint.setStrokeWidth(stroke);
+        }
+        @Override protected void onBoundsChange(Rect bounds) {
+            line.set(bounds); line.inset(stroke / 2, stroke / 2);
+            paint.setShader(new LinearGradient(0, bounds.top, 0, Math.max(bounds.top + 1, bounds.bottom),
+                dark ? new int[] {0x66ffffff, 0x12ffffff, 0x3bffffff}
+                     : new int[] {0xf5ffffff, 0x48ffffff, 0xb8ffffff},
+                new float[] {0, .55f, 1}, Shader.TileMode.CLAMP));
+        }
+        @Override public void draw(Canvas canvas) { canvas.drawRoundRect(line, radius - stroke / 2, radius - stroke / 2, paint); }
+        @Override public void setAlpha(int alpha) { paint.setAlpha(alpha); invalidateSelf(); }
+        @Override public void setColorFilter(ColorFilter filter) { paint.setColorFilter(filter); invalidateSelf(); }
+        @Override public int getOpacity() { return PixelFormat.TRANSLUCENT; }
+    }
 
     static int menuWidth(Context context, Rect visible, int maxWidthDp) {
         float density = context.getResources().getDisplayMetrics().density;
@@ -206,14 +250,16 @@ final class PopupSurface extends FrameLayout {
     }
 
     private void captureBackdrop() {
-        snapshot = Bitmap.createBitmap(Math.max(1, sampleWidth / 3), Math.max(1, sampleHeight / 3), Bitmap.Config.ARGB_8888);
+        int downsample = navigationVeil ? 6 : 3;
+        snapshot = Bitmap.createBitmap(Math.max(1, sampleWidth / downsample), Math.max(1, sampleHeight / downsample), Bitmap.Config.ARGB_8888);
         backdrop = new ImageView(getContext()); backdrop.setImageBitmap(snapshot);
         backdrop.setScaleType(ImageView.ScaleType.FIT_XY);
         backdrop.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
         backdrop.setTag("glassBackdrop");
         hardwareBlur = supportsBlur(getContext()) && source.isHardwareAccelerated();
         if (Build.VERSION.SDK_INT >= 31 && hardwareBlur)
-            backdrop.setRenderEffect(RenderEffect.createBlurEffect(dp(12), dp(12), Shader.TileMode.CLAMP));
+            backdrop.setRenderEffect(RenderEffect.createBlurEffect(dp(navigationVeil ? 18 : navigation ? 10 : 12),
+                dp(navigationVeil ? 18 : navigation ? 10 : 12), Shader.TileMode.CLAMP));
         else scratch = Bitmap.createBitmap(Math.max(1, snapshot.getWidth() / 2), Math.max(1, snapshot.getHeight() / 2), Bitmap.Config.ARGB_8888);
         addView(backdrop, 0, new FrameLayout.LayoutParams(-1, -1));
         boolean dark = Color.red(color) < 128;
@@ -223,8 +269,12 @@ final class PopupSurface extends FrameLayout {
         // all. In the light theme use a translucent neutral wash instead, capped at
         // 50% so the blurred page still shows through while the pane stays a shade off
         // white. The dark theme keeps its deeper mask.
-        GradientDrawable wash = new GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, navigation
-            ? (dark ? new int[] { 0x99333336, 0xb3232326 } : new int[] { 0x99ffffff, 0x80f5f5f7 })
+        // Navigation keeps a neutral wash but transmits the blurred page hue.
+        // Heavy washes on both layers compound into an almost opaque white slab.
+        GradientDrawable wash = new GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, navigationVeil
+            ? new int[] { (color & 0x00ffffff) | 0x55000000, (color & 0x00ffffff) | 0x88000000 }
+            : navigation
+            ? (dark ? new int[] { 0x992c2d31, 0x80222326 } : new int[] { 0x99ffffff, 0x70f5f6f8 })
             : dark
             ? new int[] { (color & 0x00ffffff) | 0x66000000, (color & 0x00ffffff) | 0x80000000 }
             : new int[] { 0x66e6eaef, 0x80dde1e7 });
@@ -282,7 +332,21 @@ final class PopupSurface extends FrameLayout {
 
     @Override protected void onSizeChanged(int width, int height, int oldWidth, int oldHeight) {
         super.onSizeChanged(width, height, oldWidth, oldHeight);
+        if (navigationVeil) veilMask.setShader(new LinearGradient(0, 0, 0,
+            Math.max(1, Math.min(height, dp(NavigationDockLayout.FADE_HEIGHT_DP))),
+            new int[] {0x00ffffff, 0x18ffffff, 0x80ffffff, Color.WHITE},
+            new float[] {0, .35f, .75f, 1}, Shader.TileMode.CLAMP));
         refreshBackdrop();
+    }
+
+    @Override public void draw(Canvas canvas) {
+        if (!navigationVeil) { super.draw(canvas); return; }
+        // Fade the material itself, including its blurred sample. The sides,
+        // bar gap and system gesture area all belong to this same surface.
+        int layer = canvas.saveLayer(0, 0, getWidth(), getHeight(), null);
+        super.draw(canvas);
+        canvas.drawRect(0, 0, getWidth(), getHeight(), veilMask);
+        canvas.restoreToCount(layer);
     }
 
     @Override protected void onAttachedToWindow() {

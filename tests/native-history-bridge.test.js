@@ -47,6 +47,9 @@ class NativeSession {
   /** The active driver, but only for events of ITS turn. */
   driverFor(turnId) { return this.driver; }
   onTurnEnded(event) {
+    const driver = this.driverFor(event.turnId);
+\t\t\tif (driver === void 0) return;
+\t\t\tconst error = event.error;
     driver.resolve({ stopReason: turnEndReasonToStopReason(event.reason, error) });
   }
   cancel() {

@@ -48,18 +48,19 @@ final class ErrorDetails {
         status.setOnClickListener(view -> show(context, chinese, status.getText().toString()));
     }
 
-    static void show(final Context context, boolean chinese, String message) {
+    static CamelliaDialog show(final Context context, boolean chinese, String message) {
         String value = TextUtils.isEmpty(message)
             ? (chinese ? "没有可显示的错误信息。" : "No error details available.")
             : message;
         TextView details = new TextView(context);
+        details.setTextColor(Palette.of(context).ink);
         details.setText(value);
         details.setTextSize(Palette.TEXT_INPUT);
         details.setTextIsSelectable(true);
         details.setPadding(dp(context, 20), dp(context, 12), dp(context, 20), dp(context, 12));
-        ScrollView panel = new ScrollView(context);
+        ScrollView panel = ScrollViews.plain(context);
         panel.addView(details);
-        new CamelliaDialog.Builder(context)
+        return new CamelliaDialog.Builder(context)
             .setTitle(chinese ? "状态与错误详情" : "Status and error details")
             .setView(panel)
             .setNeutralButton(chinese ? "复制" : "Copy", (dialog, which) -> copy(context, value))

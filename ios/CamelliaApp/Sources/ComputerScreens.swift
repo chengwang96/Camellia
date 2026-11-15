@@ -648,7 +648,7 @@ struct PairingView: View {
                             .padding(.vertical, 4)
                     }
                 }
-                .padding(.horizontal, 20)
+                .padding(.horizontal, PageGutter.horizontal)
                 .padding(.top, 12)
                 .padding(.bottom, 24)
             }
@@ -1072,7 +1072,7 @@ struct SettingsView: View {
                         .buttonStyle(.plain)
                     }
                 }
-                .padding(.horizontal, 20)
+                .padding(.horizontal, PageGutter.horizontal)
                 .padding(.top, 12)
                 .padding(.bottom, 24)
             }
@@ -1238,7 +1238,7 @@ private struct GeneralSettingsView: View {
                 }
                 SettingsNote(text: "iOS 不允许第三方应用像 Android 前台服务一样常驻；系统可能提前结束连接，返回应用后会自动重连。")
             }
-            .padding(.horizontal, 20)
+            .padding(.horizontal, PageGutter.horizontal)
             .padding(.top, 12)
             .padding(.bottom, 24)
         }
@@ -1415,7 +1415,7 @@ struct MobileAccessView: View {
                     }
                 }
             }
-            .padding(.horizontal, 20)
+            .padding(.horizontal, PageGutter.horizontal)
             .padding(.top, 12)
             .padding(.bottom, 24)
         }

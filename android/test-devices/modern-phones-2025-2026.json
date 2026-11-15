@@ -1,0 +1,10 @@
+{
+  "description": "2025-2026 display geometries, verified 2026-11-15. Emulator densities are deliberate test settings, not claims about OEM defaults. The iPhone profile tests Android viewport geometry only, not iOS runtime behavior.",
+  "profiles": [
+    {"id":"galaxy-s26", "name":"Galaxy S26 (2026)", "width":1080, "height":2340, "density":480, "source":"https://www.samsung.com/be_fr/support/mobile-devices/comparison-specs-s26-series/"},
+    {"id":"modern-20-9", "name":"20:9, matching the supplied screenshot ratio", "width":1080, "height":2400, "density":480, "source":"User screenshot: 1382 x 3072, approximately 20:9; not an identification of the physical device."},
+    {"id":"iphone-17-pro-geometry", "name":"iPhone 17 Pro (2025) geometry reference", "width":1206, "height":2622, "density":480, "source":"https://support.apple.com/zh-hk/125090"},
+    {"id":"pura-80-pro-plus", "name":"HUAWEI Pura 80 Pro+ (2025)", "width":1276, "height":2848, "density":480, "source":"https://consumer.huawei.com/cn/phones/pura80-pro-plus/specs/"},
+    {"id":"galaxy-s26-plus-ultra", "name":"Galaxy S26+/Ultra (2026)", "width":1440, "height":3120, "density":560, "source":"https://www.samsung.com/be_fr/support/mobile-devices/comparison-specs-s26-series/"}
+  ]
+}

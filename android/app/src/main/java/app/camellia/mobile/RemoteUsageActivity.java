@@ -81,7 +81,7 @@ public final class RemoteUsageActivity extends Activity {
         tabs.addView(quotaTab, new LinearLayout.LayoutParams(0, -1, 1));
         tabs.addView(usageTab, new LinearLayout.LayoutParams(0, -1, 1));
         LinearLayout.LayoutParams tabsParams = new LinearLayout.LayoutParams(-1, -2); tabsParams.topMargin = dp(8); root.addView(tabs, tabsParams);
-        scroll = new ScrollView(this); scroll.setVerticalScrollBarEnabled(false); body = column(); body.setPadding(0, dp(12), 0, dp(16)); scroll.addView(body); root.addView(scroll, new LinearLayout.LayoutParams(-1, 0, 1));
+        scroll = ScrollViews.plain(this); scroll.setVerticalScrollBarEnabled(false); body = column(); body.setPadding(0, dp(12), 0, dp(16)); scroll.addView(body); root.addView(scroll, new LinearLayout.LayoutParams(-1, 0, 1));
         setContentView(root);
     }
     @Override protected void onStart() {

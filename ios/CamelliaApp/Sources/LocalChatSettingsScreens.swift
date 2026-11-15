@@ -22,6 +22,8 @@ struct ProviderSettingsView: View {
     @State private var editing: ProviderEditorTarget?
     @State private var choosingComputer = false
     @State private var prompt: ProviderPrompt?
+    @State private var feedback = ""
+    @State private var feedbackVersion = UUID()
 
     var body: some View {
         ZStack(alignment: .bottom) {
@@ -65,6 +67,19 @@ struct ProviderSettingsView: View {
         }
         .onAppear(perform: adoptNotice)
         .onChange(of: local.notice) { _ in adoptNotice() }
+        .overlay(alignment: .bottom) {
+            if !feedback.isEmpty, !importing, prompt == nil, !choosingComputer {
+                Text(LocalizedStringKey(feedback))
+                    .font(.system(size: Palette.textBody)).foregroundColor(Palette.ink)
+                    .multilineTextAlignment(.center).padding(.horizontal, 16).padding(.vertical, 12)
+                    .background(RoundedRectangle(cornerRadius: Palette.capsuleRadius).fill(Palette.card))
+                    .overlay(RoundedRectangle(cornerRadius: Palette.capsuleRadius).strokeBorder(Palette.cardBorder, lineWidth: 1))
+                    .shadow(color: .black.opacity(0.10), radius: 4, y: 2)
+                    .padding(.horizontal, 20).padding(.bottom, 12)
+                    .accessibilityAddTraits(.updatesFrequently).allowsHitTesting(false)
+            }
+        }
+        .onDisappear { feedbackVersion = UUID(); feedback = "" }
     }
 
     private var presentedPage: some View {
@@ -82,7 +97,7 @@ struct ProviderSettingsView: View {
                 providerSection
                 transferSection
             }
-            .padding(.horizontal, 20)
+            .padding(.horizontal, PageGutter.horizontal)
             .padding(.top, 12)
             .padding(.bottom, 24)
         }
@@ -256,7 +271,7 @@ struct ProviderSettingsView: View {
         }
         UIPasteboard.general.string = text
         DispatchQueue.main.async {
-            prompt = .notice(LocalChatModel.Notice(
+            showNotice(LocalChatModel.Notice(
                 text: "已复制配置（含密钥），请妥善保管。", serious: false))
         }
             }
@@ -265,7 +280,17 @@ struct ProviderSettingsView: View {
     private func adoptNotice() {
         guard let notice = local.notice else { return }
         local.notice = nil
-        prompt = .notice(notice)
+        showNotice(notice)
+    }
+
+    private func showNotice(_ notice: LocalChatModel.Notice) {
+        feedbackVersion = UUID(); feedback = ""
+        if notice.serious { prompt = .notice(notice); return }
+        feedback = notice.text
+        let version = feedbackVersion
+        DispatchQueue.main.asyncAfter(deadline: .now() + (UIAccessibility.isVoiceOverRunning ? 8 : 4)) {
+            if feedbackVersion == version { feedback = "" }
+        }
     }
 
 }
@@ -603,18 +628,21 @@ struct SettingsDialogAction: View {
     let title: String
     let primary: Bool
     let action: () -> Void
+    @Environment(\.isEnabled) private var enabled
 
     var body: some View {
         Button(action: action) {
             Text(LocalizedStringKey(title))
                 .font(.system(size: Palette.textRow, weight: .medium))
-                .foregroundColor(primary ? Palette.card : Palette.ink)
+                .foregroundColor(!enabled ? Palette.muted : primary ? Palette.onAccent : Palette.ink)
                 .frame(maxWidth: .infinity)
                 .frame(minHeight: 52)
                 .background(RoundedRectangle(cornerRadius: Palette.dialogActionRadius, style: .continuous)
-                    .fill(primary ? Palette.ink : Palette.card))
+                    .fill(!enabled ? Palette.field : primary ? Palette.accent : Palette.card))
+                .overlay(RoundedRectangle(cornerRadius: Palette.dialogActionRadius, style: .continuous)
+                    .strokeBorder(primary && enabled ? Palette.accent : Palette.cardBorder, lineWidth: 1))
         }
-        .buttonStyle(.plain)
+        .buttonStyle(ComposerPressStyle())
     }
 }
 

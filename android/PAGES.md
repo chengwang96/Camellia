@@ -1,6 +1,8 @@
-# 逐页补齐：内容与操作
+# Mobile page inventory and implementation history
 
-一次做一页，每页交两样：**这一页该有的内容**（缺什么、为什么缺）和**这一页能做的操作**（有没有、顺序对不对）。每页做完在模拟器上截图确认，再进下一页。
+Current workflow (2026-11-15): first inventory equivalent UI scenes, update their shared owner, and validate every caller. Then check the content and actions of each page. A corrected page screenshot does not establish family-wide consistency. See [the consistency audit](../docs/design/mobile-consistency-audit.md) for current scope, changes and remaining iOS/device validation.
+
+The page-by-page notes below are historical implementation records. Their completion markers and test counts apply to those revisions, not to all current screens or all later call sites.
 
 ## 为什么先抽 token
 
@@ -8,7 +10,7 @@
 
 ## 页面清单
 
-Android 侧共 4 个 Activity、11 个逻辑屏。`MainActivity` 用一个 String 字段 `screen` 驱动，切换时整棵视图树重建（没有 Fragment）。
+早期清单曾记录 4 个 Activity 和下列逻辑屏；后续新增入口以当前源码和一致性审查为准。`MainActivity` 用一个 String 字段 `screen` 驱动，切换时整棵视图树重建（没有 Fragment）。
 
 | # | 页面 | 位置 | 复杂度 | 状态 |
 | --- | --- | --- | --- | --- |
@@ -64,17 +66,17 @@ Android 侧共 4 个 Activity、11 个逻辑屏。`MainActivity` 用一个 Strin
 - **内容**：这一页是「这台手机进网络了吗」的问句入口，答案原先只写进共享的 `status` —— 而那个控件在三个分组、五行之后，且它的 `TextWatcher` 只对 `list`/`detail` 过滤，**`network` 屏根本不在白名单里**。新增页面顶部自己的状态条（`SettingsStyle.statusBanner`）+ `reportNetwork()` 同时写两处；该页 6 处反馈全部改走它。
 - 扫码页结构简单、已走 token，**无需改动**。只给取景框那处硬编码的深色补了注释，说明它**故意不跟 palette 变**（跟随调色板会在浅色下变成近白、二维码对比度全毁）—— 有意不 token 化的场合，补注释比改成 token 更有价值。
 
-## 当前状态
+## Historical status at the end of the original page pass
 
-**13 个页面 + 10 个弹层全部完成**（`#26`–`#33`）。全项目颜色、圆角、字号已完全走 `Palette` —— `text(…, N, …)` 与 `setTextSize(N)` 归零，只剩两处**有意不 token 化**并已写注释：扫码取景框的固定深色（跟随调色板会毁掉二维码对比度）、`SettingsChoiceDialog` 里对勾圆的几何半径 13（= 26/2，token 化它等于给「那个的一半」起名字）。
+The original pass marked 13 pages and 10 overlays implemented (`#26`–`#33`) and extracted many literal values. That did not guarantee shared behavior: the 2026-11-15 audit found duplicated action styles, chat geometry, scrolling policy and stale iOS tokens. Current verification is recorded in the audit instead of a blanket completion claim.
 
 ### 逐页结果里值得记住的三件事
 
-1. **同一模式复发三次才被认出来**：空态被塞进分组卡片，在供应商页、已归档页、电脑列表各出现一次 —— 我做完第一个页面后，第二个页面仍然是照着旧代码改的。「一次一页」的价值在这里。
+1. **同一模式复发三次才被认出来**：空态被塞进分组卡片，在供应商页、已归档页、电脑列表各出现一次 —— 我做完第一个页面后，第二个页面仍然是照着旧代码改的。这说明修完一处后应立即检查全部同类入口，不能等到逐页做到下一处才发现。
 2. **两个 Dialog 的 `text()` 刻意没合并**（原本无 lineSpacing，与 `SettingsStyle.label()` 不同）—— 换过去会改变所有现存对话框的渲染，那是视觉决定不是去重。
 3. **测试用 tag 锁死实现时，改测试而不是回退代码**：`ComputerSelectionTest` 因我换掉空态实现而失败，但它断言的**意图**仍然成立 —— 改 tag 之外还加了一条新断言，把「空态不得在卡片内」这个决定锁住。
 
-### 仍未验证
+### Historical verification limits
 
 **只有首页、设置索引、通用三页拿到过截图**，其余 10 页的视觉**未在模拟器上验证**。原因：`am start` 对 `exported=false` 的 Activity 无效、`input tap` 的坐标在 headless 模拟器上反复偏。代码正确性目前只保证到「编译 + 测试」这一层。
 

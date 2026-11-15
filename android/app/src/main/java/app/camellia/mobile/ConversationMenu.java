@@ -33,7 +33,7 @@ final class ConversationMenu {
         panel = new PopupSurface(context, color); panel.setTag("conversationMenu");
         LinearLayout rows = new LinearLayout(context); rows.setOrientation(LinearLayout.VERTICAL);
         rows.setPadding(dp(anchor, 8), dp(anchor, 8), dp(anchor, 8), dp(anchor, 8));
-        ScrollView scroll = new ScrollView(context); scroll.setFillViewport(true); scroll.setVerticalScrollBarEnabled(false);
+        ScrollView scroll = ScrollViews.plain(context); scroll.setFillViewport(true); scroll.setVerticalScrollBarEnabled(false);
         scroll.addView(rows); panel.addView(scroll);
         popup = new PopupWindow(panel, -2, -2, true);
         GradientDrawable shape = new GradientDrawable(); shape.setColor(color); shape.setCornerRadius(dp(anchor, 26));

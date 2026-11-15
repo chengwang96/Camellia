@@ -37,7 +37,7 @@ final class ComputerPickerPopup {
         panel = new PopupSurface(anchor.getContext(), style.background); panel.setTag("computerPicker");
         LinearLayout rows = new LinearLayout(anchor.getContext()); rows.setOrientation(LinearLayout.VERTICAL);
         rows.setPadding(dp(8), dp(8), dp(8), dp(8));
-        ScrollView scroll = new ScrollView(anchor.getContext()); scroll.setVerticalScrollBarEnabled(false);
+        ScrollView scroll = ScrollViews.plain(anchor.getContext()); scroll.setVerticalScrollBarEnabled(false);
         scroll.addView(rows); panel.addView(scroll);
         popup = new PopupWindow(panel, -2, -2, true);
         GradientDrawable face = new GradientDrawable(); face.setColor(style.background); face.setCornerRadius(dp(Palette.RADIUS_GROUP));

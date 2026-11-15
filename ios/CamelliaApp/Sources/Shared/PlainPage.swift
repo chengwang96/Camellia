@@ -3,15 +3,9 @@ import UIKit
 
 /// The geometry `MainActivity.shell()` gives every chat page.
 ///
-/// `shell()` builds the root with `dp(22)` of side padding and then replaces it
-/// from an insets listener with `dp(18) + insets`, and `requestApplyInsets()`
-/// runs before the page is drawn — so 18, not 22, is what a phone in portrait
-/// actually shows. It matters that this is the *root*: the scrolling content and
-/// the dock `bottomBar()` swaps in at the bottom are both children of it, so the
-/// gutter applies to the composer and the search field as much as to the rows.
+/// The gutter applies to the transcript, its header and its composer together.
 enum PageGutter {
-    /// `root.setPadding(dp(18) + insets…)` on a portrait phone.
-    static let horizontal: CGFloat = 18
+    static let horizontal: CGFloat = 16
     /// `content.setPadding(0, 0, 0, dp(16))`.
     static let contentBottom: CGFloat = 16
     /// `dockBottomPadding()`: the root's own bottom padding on list and detail.

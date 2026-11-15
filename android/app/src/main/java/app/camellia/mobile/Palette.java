@@ -43,7 +43,7 @@ final class Palette {
     final int success, warning;
 
     /** Business accent shared with desktop. */
-    final int accent;
+    final int accent, onAccent;
 
     /** Whether these values are the dark set, for the few sites that ask. */
     final boolean dark;
@@ -61,7 +61,8 @@ final class Palette {
     /** A bottom sheet's own panel. */
     static final int RADIUS_SHEET = 22;
     /** The floating bottom navigation and its selected segment. */
-    static final int RADIUS_NAVIGATION = 22;
+    static final int RADIUS_NAVIGATION = 32;
+    static final int RADIUS_NAVIGATION_ITEM = 28;
     /** An input field, a computer row, a choice row's mask. */
     static final int RADIUS_FIELD = 12;
     /** A code block inside rendered Markdown. */
@@ -176,6 +177,7 @@ final class Palette {
         warning = color(dark, "#F1B45F", "#A8610A");
 
         accent = color(dark, "#8095FF", "#4D6BFE");
+        onAccent = dark ? background : Color.WHITE;
 
         trackOff = color(dark, "#54575D", "#D9DCE0");
     }

@@ -365,13 +365,13 @@ distro==1.9.0 \
     --hash=sha256:2fa77c6fd8940f116ee1d6b94a2f90b13b5ea8d019b98bc8bafdcabcdd9bdbed \
     --hash=sha256:7bffd925d65168f85027d8da9af6bddab658135b840670a223589bc0c8ef02b2
     # via google-genai
-google-antigravity==0.1.20 \
-    --hash=sha256:1583b59ab45952231403da823e706a91d67f827cb2fbf27f97c2b9a26a803f09 \
-    --hash=sha256:2c931b0a5cdd5c121a7ae663969ee9f9b9109fc219c71c56273a4d646e30c114 \
-    --hash=sha256:5138da9ec775f7c2c0ad13e0cd93949d76430fc2f972c4005dac16a29c065125 \
-    --hash=sha256:8beba12288733e9f3f53e11103318c86dbd6814115890b8767eb4b5976f363a6 \
-    --hash=sha256:a9df0f117407a7d39c4a03de97f4e082e1c2f24650dcca876706c23574118159 \
-    --hash=sha256:ff95642ea4e0a65d6e8d8d8b991ce22868d04717005cdc4a60abf2a6af52c2fc
+google-antigravity==0.1.23 \
+    --hash=sha256:17b2d26575ef168bb3ccd74ddf39ebfe4c528ea426e4bedee8621ea7a41cf527 \
+    --hash=sha256:5a99fd8993f13f03e43a7da9ba62b4114c05d952f6f933e86f33c3fc79e80b8e \
+    --hash=sha256:6b1dfa14090ce8cf10395074eecab2bf20cb49ceed3a2603d39803951c9884e2 \
+    --hash=sha256:92dc71a52afde0ff8424534e728cc6e168489773b61457b88dcd1c634af4ff6c \
+    --hash=sha256:cbbcbf920b433b2c6db7ea9ed5b4b234a72f574647effa5e3e67f0d97c1793df \
+    --hash=sha256:e587980e3e220b7f24fcddbaa8af55a7b46a9e59443c13e782458718a67c2fba
     # via -r requirements.in
 google-auth==2.58.0 \
     --hash=sha256:55e30cf15e737de92c5323d78cda8a83fcd57e7ffbaf900c4600039fd60a80fd \

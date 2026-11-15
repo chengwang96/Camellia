@@ -54,7 +54,7 @@ struct SettingsAppearanceChoices: View {
                                 .multilineTextAlignment(.center)
                                 .fixedSize(horizontal: false, vertical: true)
                         }
-                        .frame(maxWidth: .infinity, minHeight: 56)
+                        .frame(maxWidth: .infinity, minHeight: 56, maxHeight: .infinity)
                         .padding(.horizontal, 4)
                         .padding(.vertical, 12)
                         .background(RoundedRectangle(cornerRadius: Palette.settingsCardRadius)
@@ -66,7 +66,7 @@ struct SettingsAppearanceChoices: View {
                     .accessibilityAddTraits(selection == theme ? [.isSelected] : [])
                     .accessibilityIdentifier("appearance:" + theme.rawValue)
                 }
-            }
+            }.fixedSize(horizontal: false, vertical: true)
         }
         .foregroundColor(Palette.ink)
         .padding(.horizontal, 16)
@@ -145,7 +145,8 @@ struct SettingsRowLabel: View {
                 Text(LocalizedStringKey(title))
                     .font(.system(size: Palette.textRowStrong))
                     .foregroundColor(destructive ? Palette.error : Palette.ink)
-                    .lineLimit(1)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
                 if !detail.isEmpty {
                     Text(LocalizedStringKey(detail))
                         .font(.system(size: Palette.textNote))
@@ -215,7 +216,7 @@ private struct SettingsPageModifier: ViewModifier {
                         .accessibilityAddTraits(.isHeader)
                     Color.clear.frame(width: 48, height: 1)
                 }
-                .padding(.horizontal, 20)
+                .padding(.horizontal, PageGutter.horizontal)
                 .padding(.top, 16)
                 .padding(.bottom, 16)
                 .background(background)

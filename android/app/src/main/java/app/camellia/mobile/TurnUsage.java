@@ -53,7 +53,7 @@ final class TurnUsage {
         TextView title = style.label(chinese ? "本轮用量" : "Turn usage", Palette.TEXT_TITLE, style.ink); panel.addView(title);
         TextView total = style.label(TurnDetails.tokens(details.displayTotal()), Palette.TEXT_ROW, style.secondary);
         total.setPadding(0, style.dp(8), 0, style.dp(16)); panel.addView(total);
-        ScrollView scroll = new ScrollView(anchor.getContext()); scroll.setVerticalScrollBarEnabled(false);
+        ScrollView scroll = ScrollViews.plain(anchor.getContext()); scroll.setVerticalScrollBarEnabled(false);
         LinearLayout rows = new LinearLayout(anchor.getContext()); rows.setOrientation(LinearLayout.VERTICAL); scroll.addView(rows);
         if (!details.model.isEmpty()) row(rows, style, chinese ? "模型" : "Model", details.model);
         if (details.cacheHit() != null) row(rows, style, chinese ? "缓存命中率" : "Cache hit rate", String.format(Locale.US, "%.1f%%", details.cacheHit()));

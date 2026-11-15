@@ -154,6 +154,41 @@ test('Kimi queue adapter refuses changed runtime contracts', { skip: !source }, 
   assert.equal(patchKimiAcpTurns(source.replace('driveLaunch(launch) {', 'driveLaunch(changed) {')), null);
 });
 
+test('Kimi steering keeps the response open across native turn changes and ignores a late launch acknowledgement', { skip: !source }, async () => {
+  const h = await fixture(); let acknowledge, finished = false;
+  h.agent.prompt = input => { h.submissions.push(input); return new Promise(resolve => { acknowledge = resolve; }); };
+  const result = h.native.driveTurn([]).then(value => { finished = true; return value; });
+  h.emit('turn.started', { turnId: 10, promptId: h.submissions[0].promptId });
+  h.native.driver.camelliaSteers = new Set(['correction']);
+  h.emit('turn.ended', { turnId: 10, reason: 'completed' });
+  await settle();
+  assert.equal(finished, false);
+  h.emit('turn.started', { turnId: 11, promptId: 'correction' });
+  acknowledge({ turn_id: 10 }); await settle();
+  assert.equal(h.native.driver.turnId, 11);
+  h.emit('assistant.delta', { turnId: 11, delta: 'Corrected response' });
+  h.emit('turn.ended', { turnId: 10, reason: 'completed' });
+  await settle(); assert.equal(finished, false);
+  h.emit('turn.ended', { turnId: 11, reason: 'completed' });
+  assert.equal((await result).stopReason, 'end_turn');
+  assert.equal(h.updates.at(-1).update.content.text, 'Corrected response');
+});
+
+test('Kimi pending steering propagates cancellation, blocked prompts and failures instead of hanging', { skip: !source }, async () => {
+  for (const reason of ['blocked', 'aborted', 'failed']) {
+    const h = await fixture();
+    const result = h.native.driveTurn([]);
+    h.emit('turn.started', { turnId: 1, promptId: h.submissions[0].promptId });
+    h.native.driver.camelliaSteers = new Set(['correction']);
+    h.emit('turn.ended', { turnId: 1, reason: 'completed' });
+    const checked = reason === 'failed' ? assert.rejects(result, /instruction ended without launching/) : result;
+    h.emit(reason === 'aborted' ? 'prompt.aborted' : 'prompt.completed', { promptId: 'correction', reason });
+    if (reason === 'failed') await checked;
+    else assert.equal((await checked).stopReason, reason === 'blocked' ? 'refusal' : 'cancelled');
+    assert.equal(h.native.driver, undefined);
+  }
+});
+
 test('Kimi queue adapter supports the async ACP server registration contract', { skip: !source }, () => {
   const modern = patchKimiAcpTurns(source.replace('getServer().prompt(ctx.params, ctx.signal)', '(await getServer()).prompt(ctx.params, ctx.signal)'));
   assert.ok(modern.includes('(await getServer()).camelliaPrompt(ctx.params, ctx.signal)'));

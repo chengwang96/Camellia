@@ -53,6 +53,11 @@ function patchKimiAcpTurns(source) {
           return;
         }
         const driver = this.driver;
+        if (driver?.camelliaSteers?.delete(event.promptId)) {
+          driver.turnId = event.turnId;
+          if (driver.cancelRequested) this.agent.cancel({ turnId: event.turnId }).catch(() => {});
+          return;
+        }
         if (driver?.promptId === void 0 || driver.promptId !== event.promptId || driver.settled) return;
         driver.turnId = event.turnId;
         if (driver.cancelRequested) this.agent.cancel({ turnId: event.turnId }).catch(() => {});
@@ -71,6 +76,14 @@ function patchKimiAcpTurns(source) {
       if (this.camelliaBackgroundDriver) this.agent.cancel({ turnId: this.camelliaBackgroundDriver.turnId }).catch(() => {});`],
     ['/** The active driver, but only for events of ITS turn. */', `camelliaPromptEnded(event, aborted) {
       const driver = this.driver;
+      if (driver?.camelliaSteers?.delete(event.promptId)) {
+        this.settleDriver(driver, () => {
+          if (aborted || driver.cancelRequested) driver.resolve({ stopReason: "cancelled" });
+          else if (event.reason === "blocked") driver.resolve({ stopReason: "refusal" });
+          else driver.reject(RequestError$1.internalError(void 0, "Kimi instruction ended without launching a turn"));
+        });
+        return;
+      }
       if (!driver || driver.promptId !== event.promptId || driver.turnId !== void 0) return;
       this.settleDriver(driver, () => {
         if (aborted || driver.cancelRequested) driver.resolve({ stopReason: "cancelled" });
@@ -105,6 +118,10 @@ function patchKimiAcpTurns(source) {
     if (source.split(before).length !== 2) return null;
     source = source.replace(before, after);
   }
+  const ended = 'const driver = this.driverFor(event.turnId);\n\t\t\tif (driver === void 0) return;\n\t\t\tconst error = event.error;';
+  if (source.split(ended).length !== 2) return null;
+  source = source.replace(ended, ended.replace('const error = event.error;',
+    'if (event.reason === "completed" && driver.camelliaSteers?.size > 0) return;\n\t\t\tconst error = event.error;'));
   const legacyPrompt = 'getServer().prompt(ctx.params, ctx.signal)';
   const asyncPrompt = '(await getServer()).prompt(ctx.params, ctx.signal)';
   const legacy = source.split(legacyPrompt).length === 2, modern = source.split(asyncPrompt).length === 2;

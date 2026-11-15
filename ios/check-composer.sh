@@ -28,6 +28,7 @@ mkdir -p "$APP"
 
 swiftc -o "$APP/CamelliaComposerCheck" -target "$TARGET" -sdk "$SDK" \
   CamelliaApp/Sources/Shared/Palette.swift \
+  CamelliaApp/Sources/Shared/ComposerPressStyle.swift \
   CamelliaApp/Sources/Shared/ComposerField.swift \
   ComposerCheck/main.swift
 cp ComposerCheck/Info.plist "$APP/Info.plist"

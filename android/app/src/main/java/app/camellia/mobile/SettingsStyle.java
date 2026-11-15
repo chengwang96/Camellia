@@ -141,6 +141,7 @@ final class SettingsStyle {
 
     LinearLayout header(String title, String backLabel, Runnable back) {
         LinearLayout header = new LinearLayout(context); header.setGravity(Gravity.CENTER_VERTICAL);
+        header.setTag("settingsHeader"); header.setBackgroundColor(background);
         header.setClipChildren(false); header.setClipToPadding(false);
         header.setPadding(0, dp(2), 0, dp(8));
         if (back != null) {
@@ -161,6 +162,7 @@ final class SettingsStyle {
 
     LinearLayout topLevelHeader(String title) {
         LinearLayout header = new LinearLayout(context);
+        header.setBackgroundColor(background);
         header.setGravity(Gravity.CENTER_VERTICAL);
         header.setPadding(0, dp(2), 0, dp(8));
         TextView heading = new TextView(context);
@@ -559,17 +561,7 @@ final class SettingsStyle {
     TextView secondaryButton(String label, String tag, Runnable action) {
         TextView button = new TextView(context);
         button.setText(label);
-        button.setTextColor(ink);
-        button.setTextSize(Palette.TEXT_INPUT);
-        button.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
-        button.setGravity(Gravity.CENTER);
-        button.setMinHeight(dp(48));
-        button.setPadding(dp(20), dp(10), dp(20), dp(10));
-        GradientDrawable face = round(card, Palette.RADIUS_CAPSULE);
-        face.setStroke(dp(1), palette.cardBorder);
-        button.setBackground(new RippleDrawable(ColorStateList.valueOf(Palette.RIPPLE_ON_PAGE),
-            face, round(Color.WHITE, Palette.RADIUS_CAPSULE)));
-        SurfaceElevation.apply(button, 1);
+        ActionStyle.page(button, false);
         button.setFocusable(true);
         button.setTag(tag);
         button.setOnClickListener(view -> action.run());

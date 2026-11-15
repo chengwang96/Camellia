@@ -42,7 +42,7 @@ function configureApiModel(config, home, model, contextWindow) {
     if (managed) delete config.model_catalog_json;
     return;
   }
-  // Match 0.160.1's unknown-model defaults, adding only its native patch tool.
+  // Match 0.169.0's unknown-model defaults, adding only its native patch tool.
   // Without this metadata Codex invokes apply_patch.bat through PowerShell;
   // Windows batch argument parsing truncates valid multiline patches.
   const fallback = {

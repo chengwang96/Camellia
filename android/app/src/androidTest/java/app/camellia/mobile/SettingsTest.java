@@ -520,6 +520,94 @@ public class SettingsTest extends InstrumentationTestCase {
         return new android.graphics.Rect(location[0], location[1], location[0] + view.getWidth(), location[1] + view.getHeight());
     }
 
+    public void testProviderHeaderDoesNotChangeWhenContentScrollsUnderIt() throws Throwable {
+        Context context = getInstrumentation().getTargetContext();
+        MobilePreferences.set(context, "language", "zh-CN");
+        new LocalChatFixture(context).importConfig(feedbackConfig());
+        for (String theme : new String[]{"light", "dark"}) {
+            MobilePreferences.set(context, "theme", theme);
+            Activity activity = launch("providers");
+            android.graphics.Bitmap[] before = new android.graphics.Bitmap[1];
+            try {
+                ui(() -> {
+                    View header = root(activity).findViewWithTag("settingsHeader");
+                    assertNotNull("The header must have its own opaque background", header.getBackground());
+                    before[0] = headerPixels(activity);
+                    android.widget.ScrollView scroll = root(activity).findViewWithTag("settingsScroll");
+                    scroll.scrollTo(0, Math.round(280 * activity.getResources().getDisplayMetrics().density));
+                    assertTrue("The fixture must actually scroll", scroll.getScrollY() > 0);
+                });
+                ui(() -> {
+                    android.graphics.Bitmap after = headerPixels(activity);
+                    try { assertTrue("Scrolled text must not paint over the title or its background", before[0].sameAs(after)); }
+                    finally { after.recycle(); }
+                });
+                capture(activity, "settings-providers-scrolled-header-" + theme);
+            } finally { if (before[0] != null) before[0].recycle(); ui(activity::finish); }
+        }
+    }
+
+    public void testImportNoticeFloatsWithoutResizingContentAndDisappears() throws Throwable {
+        Context context = getInstrumentation().getTargetContext();
+        MobilePreferences.set(context, "language", "zh-CN");
+        for (String theme : new String[]{"light", "dark"}) {
+            MobilePreferences.set(context, "theme", theme);
+            Activity activity = launch("providers");
+            int[] viewportHeight = new int[1];
+            try {
+                ui(() -> {
+                    viewportHeight[0] = root(activity).findViewWithTag("settingsViewport").getHeight();
+                    root(activity).findViewWithTag("providerImport").performClick();
+                });
+                ui(() -> {
+                    AlertDialog prompt = dialog(activity);
+                    try { field(prompt.getWindow().getDecorView(), "providerImportText", LocalChatConfig.export(feedbackConfig())); }
+                    catch (Exception error) { throw new AssertionError(error); }
+                    prompt.getButton(AlertDialog.BUTTON_POSITIVE).performClick();
+                });
+                ui(() -> {
+                    TextView notice = root(activity).findViewWithTag("settingsStatus");
+                    assertEquals("已导入配置", notice.getText().toString());
+                    assertEquals(View.VISIBLE, notice.getVisibility());
+                    assertNotNull(notice.getBackground());
+                    assertSame("Feedback overlays the body instead of occupying a footer row",
+                        root(activity).findViewWithTag("settingsViewport"), notice.getParent());
+                    assertEquals(viewportHeight[0], root(activity).findViewWithTag("settingsViewport").getHeight());
+                    assertNotNull(root(activity).findViewWithTag("providerEdit:3"));
+                });
+                capture(activity, "settings-import-floating-notice-" + theme);
+                android.os.SystemClock.sleep(4400);
+                ui(() -> {
+                    TextView notice = root(activity).findViewWithTag("settingsStatus");
+                    assertEquals(View.GONE, notice.getVisibility()); assertEquals("", notice.getText().toString());
+                    assertEquals("Dismissing feedback must not move the list", viewportHeight[0],
+                        root(activity).findViewWithTag("settingsViewport").getHeight());
+                });
+                capture(activity, "settings-import-notice-dismissed-" + theme);
+            } finally { ui(activity::finish); }
+        }
+    }
+
+    private JSONObject feedbackConfig() throws Exception {
+        org.json.JSONArray providers = new org.json.JSONArray();
+        for (int index = 0; index < 4; index++) providers.put(new JSONObject()
+            .put("id", "feedback-" + index).put("name", "测试供应商 " + (index + 1))
+            .put("protocol", "openai").put("baseUrl", "https://example.com/v1")
+            .put("keys", new org.json.JSONArray().put(new JSONObject().put("key", "fake-test-key")))
+            .put("models", new org.json.JSONArray().put(new JSONObject().put("id", "test-model").put("upstream", "test-model"))));
+        return new JSONObject().put("providers", providers);
+    }
+
+    private android.graphics.Bitmap headerPixels(Activity activity) {
+        View page = activity.findViewById(android.R.id.content), header = root(activity).findViewWithTag("settingsHeader");
+        int[] origin = new int[2], location = new int[2]; page.getLocationInWindow(origin); header.getLocationInWindow(location);
+        android.graphics.Bitmap bitmap = android.graphics.Bitmap.createBitmap(page.getWidth(), page.getHeight(), android.graphics.Bitmap.Config.ARGB_8888);
+        page.draw(new android.graphics.Canvas(bitmap));
+        android.graphics.Bitmap crop = android.graphics.Bitmap.createBitmap(bitmap, location[0] - origin[0], location[1] - origin[1], header.getWidth(), header.getHeight());
+        if (crop != bitmap) bitmap.recycle();
+        return crop;
+    }
+
     private View root(Activity activity) { return activity.getWindow().getDecorView(); }
 
     public void testDetailCardsInBothThemes() throws Throwable {

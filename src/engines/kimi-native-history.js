@@ -73,12 +73,34 @@ function patchKimiHistory(source) {
   const owner = '\tlet closePromise;\n\tconst close = async () => {';
   // Pin the integration to the verified engine/ACP contracts. A changed
   // runtime retains portable editing instead of guessing at private APIs.
-  if (source.split(anchor).length !== 2 || source.split(chain).length !== 2 || source.split(owner).length !== 2
-      || !source.includes('async undoHistory(count = 1)') || !source.includes('function precheckUndo(history, count)')
+  const modernContracts = ['activeUndoChain() {', 'undoResult(turns) {', 'return cutTurnUndo(chain, pairedLegacyUndoLines, turns);'];
+  // 2.6 derives undo boundaries from the active journal branch. Ask the
+  // native undo service for its cut and hash that branch, including turns
+  // that do not survive in the projected conversation context.
+  const modern = modernContracts.every(marker => source.split(marker).length === 2);
+  const legacy = source.split('function precheckUndo(history, count)').length === 2;
+  if (modern === legacy || source.split(anchor).length !== 2 || source.split(chain).length !== 2 || source.split(owner).length !== 2
+      || !source.includes('async undoHistory(count = 1)')
       || !source.includes('async unstable_forkSession(params)')) return null;
   source = patchKimiAcpTurns(source);
   if (!source) return null;
+  const bridgeHandlers = modern ? handlers.replace(
+    /  const history = \(await server\.klient[\s\S]*?return \{ undoCount: 1,[^\n]+\n/,
+    '  return server.camelliaHistoryState(params.sessionId);\n') : handlers;
   return source.replace(owner, `
+  ${modern ? `server.camelliaHistoryState = async sessionId => {
+    const native = getLiveSessionById(core.accessor, sessionId);
+    const agent = native?.accessor.get(IAgentLifecycleService).handleOf("main");
+    if (!agent) throw new Error("Main agent is not live");
+    const undo = agent.accessor.get(IAgentConversationUndoService);
+    await undo.wire.drainPersisted();
+    const boundary = undo.undoResult(1);
+    if (!boundary.cut) return { unavailable: boundary.stoppedAtCompaction ? "compaction_boundary" : "empty" };
+    const { chain } = undo.activeUndoChain();
+    const { createHash } = await import("node:crypto");
+    const text = boundary.cut.anchor.input.filter(part => part.type === "text").map(part => part.text).join("\\n");
+    return { undoCount: 1, undoDigest: createHash("sha256").update(JSON.stringify(chain)).digest("hex"), text };
+  };` : ''}
   server.camelliaUndo = async sessionId => {
     const session = getLiveSessionById(core.accessor, sessionId);
     const agent = session?.accessor.get(IAgentLifecycleService).handleOf("main");
@@ -91,7 +113,7 @@ function patchKimiHistory(source) {
     if (!titles) throw new Error("Kimi native title service is unavailable");
     return titles.generateAndApply("user: " + prompt, force);
   };
-` + owner).replace(anchor, handlers + '\n' + anchor).replace(chain, chain
+` + owner).replace(anchor, bridgeHandlers + '\n' + anchor).replace(chain, chain
     + '.onRequest("session/camellia_history_boundary", camelliaHistoryParams, async ctx => camelliaHistoryState(await getServer(), ctx.params))'
     + '.onRequest("session/camellia_fork_undo", camelliaHistoryParams, async ctx => camelliaForkUndo(await getServer(), ctx.params))'
     + '.onRequest("session/camellia_generate_title", camelliaTitleParams, async ctx => camelliaGenerateTitle(await getServer(), ctx.params))');
@@ -101,7 +123,7 @@ const cache = new Map();
 function prepareKimiHistory(runtime) {
   try {
     const metadata = JSON.parse(fs.readFileSync(path.resolve(path.dirname(runtime), '../package.json'), 'utf8'));
-    if (metadata.name !== '@moonshot-ai/kimi-code' || !['2.4.0', '2.4.1', '2.5.1', '2.5.2'].includes(metadata.version)) return null;
+    if (metadata.name !== '@moonshot-ai/kimi-code' || !['2.4.0', '2.4.1', '2.5.1', '2.5.2', '2.6.2'].includes(metadata.version)) return null;
     const stat = fs.statSync(runtime), key = runtime + ':' + stat.size + ':' + stat.mtimeMs;
     if (cache.has(key) && fs.existsSync(cache.get(key))) return cache.get(key);
     const source = fs.readFileSync(runtime, 'utf8'), patched = patchKimiHistory(source);

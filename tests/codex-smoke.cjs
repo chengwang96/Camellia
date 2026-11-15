@@ -156,7 +156,12 @@ async function main() {
       // fallback omits the update_plan sections while a catalog entry keeps
       // them (fallback-ness cannot be expressed in catalog JSON). Normalize
       // those sections so only genuine upstream drift fails here.
-      const dropPlanSections = text => {
+      const dropPlanSections = content => {
+        const text = typeof content === 'string' ? content : (() => {
+          assert.ok(Array.isArray(content) && content.every(part => part.type === 'text' && typeof part.text === 'string'),
+            'Native system instructions must contain only text blocks');
+          return content.map(part => part.text).join('\n');
+        })();
         const out = []; let skipping = false;
         for (const line of text.replaceAll('\r\n', '\n').split('\n')) {
           if (/^#{1,2} /.test(line)) skipping = ['## Planning', '## `update_plan`'].some(heading => line.startsWith(heading));

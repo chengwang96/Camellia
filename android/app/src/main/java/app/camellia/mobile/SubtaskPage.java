@@ -57,7 +57,7 @@ final class SubtaskPage extends Dialog {
         summary = text(Palette.TEXT_SMALL); summary.setTag("subtaskSummary"); summary.setTextColor(style.muted);
         summary.setPadding(0, dp(3), 0, 0);
         titles.addView(heading); titles.addView(summary); header.addView(titles, new LinearLayout.LayoutParams(0, -2, 1)); page.addView(header);
-        scroll = new ScrollView(activity); scroll.setTag("subtaskScroll"); scroll.setFillViewport(true); scroll.setClipToPadding(false);
+        scroll = ScrollViews.plain(activity); scroll.setTag("subtaskScroll"); scroll.setFillViewport(true); scroll.setClipToPadding(false);
         content = column(); content.setPadding(dp(20), dp(4), dp(20), dp(20)); scroll.addView(content);
         page.addView(scroll, new LinearLayout.LayoutParams(-1, 0, 1));
 
@@ -283,14 +283,9 @@ final class SubtaskPage extends Dialog {
     }
     private void updateSection(LinearLayout section, TextView view, String value) { view.setText(value); section.setVisibility(value.trim().isEmpty() ? View.GONE : View.VISIBLE); }
     private Button actionButton(String label, int foreground, int background) {
-        Button button = new Button(activity); button.setText(label); button.setAllCaps(false); button.setTextSize(Palette.TEXT_INPUT); medium(button);
-        button.setTextColor(foreground); button.setMinHeight(dp(48)); button.setMinimumHeight(dp(48)); button.setMinWidth(dp(72)); button.setMinimumWidth(dp(72));
-        button.setPadding(dp(16), dp(12), dp(16), dp(12));
-        GradientDrawable face = shape(background, Palette.RADIUS_CAPSULE);
-        face.setStroke(dp(1), background == style.accent ? Color.argb(58, 255, 255, 255) : palette.cardBorder);
-        button.setBackground(new RippleDrawable(ColorStateList.valueOf(background == style.accent
-            ? Palette.RIPPLE_ON_ACCENT_LIGHT : Palette.RIPPLE_ON_CARD), face, shape(Color.WHITE, Palette.RADIUS_CAPSULE)));
-        SurfaceElevation.apply(button, background == style.accent ? 2 : 1);
+        Button button = new Button(activity); button.setText(label); ActionStyle.page(button, background == style.accent);
+        if (background != style.accent) button.setTextColor(new ColorStateList(new int[][]{{-android.R.attr.state_enabled}, {}}, new int[]{palette.muted, foreground}));
+        button.setMinWidth(dp(72)); button.setMinimumWidth(dp(72));
         return button;
     }
     private void updateDisclosure() {

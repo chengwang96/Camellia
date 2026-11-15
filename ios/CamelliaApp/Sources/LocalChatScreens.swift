@@ -665,15 +665,7 @@ private struct LocalConversationDeletePanel: View {
     }
 
     private func action(_ title: String, primary: Bool, _ perform: @escaping () -> Void) -> some View {
-        Button(action: perform) {
-            Text(LocalizedStringKey(title))
-                .font(.system(size: Palette.textInput, weight: .medium))
-                .foregroundColor(primary ? .white : Palette.ink)
-                .frame(maxWidth: .infinity, minHeight: 48)
-                .background(Capsule(style: .continuous)
-                    .fill(primary ? Palette.accent : Palette.card))
-        }
-        .buttonStyle(.plain)
+        SettingsDialogAction(title: title, primary: primary, action: perform)
     }
 }
 
@@ -1297,17 +1289,7 @@ struct LocalChatComposer: View {
 
     private func actionButton(_ symbol: String, label: String, enabled: Bool,
                               action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Image(systemName: symbol)
-                .font(.system(size: Palette.textDisplay, weight: .semibold))
-                .foregroundColor(enabled ? .white : Palette.muted)
-                .frame(width: 48, height: 48)
-                .background(Capsule(style: .continuous)
-                    .fill(enabled ? Palette.accent : Palette.surface))
-        }
-        .buttonStyle(.plain)
-        .disabled(!enabled)
-        .accessibilityLabel(Text(LocalizedStringKey(label)))
+        ComposerActionButton(symbol: symbol, label: label, enabled: enabled, action: action)
     }
 
     private var canSend: Bool {

@@ -2,9 +2,9 @@ name: Android
 on:
   push:
     branches: [main]
-    paths: ['android/**', 'src/**', 'tests/**', 'assets/**', '.node-version', '.github/workflows/android.yml']
+    paths: ['android/**', 'src/**', 'tests/**', 'scripts/android-ci-shards.cjs', 'assets/**', '.node-version', '.github/workflows/android.yml']
   pull_request:
-    paths: ['android/**', 'src/**', 'tests/**', 'assets/**', '.node-version', '.github/workflows/android.yml']
+    paths: ['android/**', 'src/**', 'tests/**', 'scripts/android-ci-shards.cjs', 'assets/**', '.node-version', '.github/workflows/android.yml']
   workflow_dispatch:
 permissions:
   contents: read
@@ -12,7 +12,7 @@ concurrency:
   group: android-${{ github.ref }}
   cancel-in-progress: true
 jobs:
-  build:
+  package:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
@@ -20,6 +20,7 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version-file: .node-version
+          cache: npm
       - name: Install host test dependencies
         run: npm ci --ignore-scripts
       - uses: actions/setup-go@v6
@@ -36,7 +37,75 @@ jobs:
           echo "ANDROID_NDK_HOME=$ANDROID_NDK_HOME" >> "$GITHUB_ENV"
           printf '%s\n' "$JAVA_HOME/bin" "$android_tools" "$ANDROID_HOME/platform-tools" >> "$GITHUB_PATH"
           sdkmanager --version
-          sdkmanager 'platforms;android-35' 'build-tools;35.0.0' 'ndk;27.2.12479018' 'system-images;android-35;default;x86_64'
+          sdkmanager 'platforms;android-35' 'build-tools;35.0.0' 'ndk;27.2.12479018'
+      - name: Cache Gradle dependencies
+        uses: actions/cache@v4
+        with:
+          path: |-
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: ${{ runner.os }}-android-gradle-${{ hashFiles('android/**/*.gradle', 'android/gradle.properties', 'android/gradle/wrapper/gradle-wrapper.properties') }}
+          restore-keys: ${{ runner.os }}-android-gradle-
+      - name: Build embedded networking
+        run: bash android/build-tailnet.sh
+      - name: Android build, unit tests and lint
+        working-directory: android
+        run: bash gradlew assembleDebug testDebugUnitTest lintDebug assembleDebugAndroidTest
+      - name: Remote protocol tests
+        run: node --test tests/android-integration-cleanup.test.js tests/mobile-ui-consistency.test.js tests/remote-access.test.js tests/remote-desktop.test.js tests/remote-approvals.test.js tests/remote-discussions.test.js tests/remote-settings.test.js tests/remote-account-usage.test.js tests/remote-conversation-preview.test.js
+      - name: Share instrumentation APKs
+        uses: actions/upload-artifact@v7
+        with:
+          name: android-instrumentation-apks
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
+          path: |-
+            android/app/build/outputs/apk/debug/*.apk
+            android/app/build/outputs/apk/androidTest/debug/*.apk
+      - name: Save Android package and test reports
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: camellia-android-debug-and-reports
+          include-hidden-files: true
+          path: |-
+            android/app/build/outputs/apk/debug/*.apk
+            android/app/build/reports/
+          retention-days: 14
+    name: Package, unit tests and lint
+  ui:
+    name: UI and gateway / shard ${{ matrix.shard }}
+    needs: package
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        shard:
+          - 1
+          - 2
+          - 3
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .node-version
+          cache: npm
+      - name: Install host test dependencies
+        run: npm ci --ignore-scripts
+      - name: Prepare emulator SDK
+        run: |-
+          export JAVA_HOME="$JAVA_HOME_17_X64"
+          echo "JAVA_HOME=$JAVA_HOME" >> "$GITHUB_ENV"
+          export PATH="$JAVA_HOME/bin:$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools:$PATH"
+          printf '%s\n' "$JAVA_HOME/bin" "$ANDROID_HOME/cmdline-tools/latest/bin" "$ANDROID_HOME/platform-tools" >> "$GITHUB_PATH"
+          sdkmanager 'platform-tools' 'system-images;android-35;default;x86_64'
+      - name: Download this run's instrumentation APKs
+        uses: actions/download-artifact@v8
+        with:
+          name: android-instrumentation-apks
+          path: android/app/build/outputs/apk
       - name: Pin Android emulator
         run: |
           sudo apt-get update -qq
@@ -49,18 +118,13 @@ jobs:
           unzip -q "$archive" -d "$RUNNER_TEMP/camellia-emulator"
           echo "EMULATOR=$RUNNER_TEMP/camellia-emulator/emulator/emulator" >> "$GITHUB_ENV"
           "$RUNNER_TEMP/camellia-emulator/emulator/emulator" -version
-      - name: Build embedded networking
-        run: bash android/build-tailnet.sh
-      - name: Android build, unit tests and lint
-        working-directory: android
-        run: bash gradlew assembleDebug testDebugUnitTest lintDebug assembleDebugAndroidTest
-      - name: Remote protocol tests
-        run: node --test tests/android-integration-cleanup.test.js tests/remote-access.test.js tests/remote-desktop.test.js tests/remote-approvals.test.js tests/remote-discussions.test.js tests/remote-settings.test.js tests/remote-account-usage.test.js tests/remote-conversation-preview.test.js
       - name: Android UI and gateway integration
         timeout-minutes: 30
         shell: bash
         env:
           ANDROID_SERIAL: emulator-5584
+          SHARD: ${{ matrix.shard }}
+          SHARD_COUNT: "3"
         run: |
           export ADB="$ANDROID_HOME/platform-tools/adb"
           export ANDROID_USER_HOME="$RUNNER_TEMP/camellia-android"
@@ -89,9 +153,13 @@ jobs:
             sleep 2
           done
           test "$(timeout 10 "$ADB" -s "$ANDROID_SERIAL" shell id -u | tr -d '\r')" = 0
-          node tests/android-pairing-smoke.cjs 2>&1 | tee .ci-logs/android-pairing.log
-          node tests/android-gateway-smoke.cjs 2>&1 | tee .ci-logs/android-gateway.log
-          node tests/android-discussions-smoke.cjs 2>&1 | tee .ci-logs/android-discussions.log
+          "$ADB" -s "$ANDROID_SERIAL" install -r android/app/build/outputs/apk/debug/app-debug.apk
+          "$ADB" -s "$ANDROID_SERIAL" install -r android/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
+          if [ "$SHARD" = 1 ]; then
+            node tests/android-pairing-smoke.cjs 2>&1 | tee .ci-logs/android-pairing.log
+            node tests/android-gateway-smoke.cjs 2>&1 | tee .ci-logs/android-gateway.log
+            node tests/android-discussions-smoke.cjs 2>&1 | tee .ci-logs/android-discussions.log
+          fi
           ui_classes=(
             ArtifactInstallTest ChatPreferencesTest InlineVideoTest ModelMenuWidthTest NavigationGlassTest
             RemoteHistoryLoadingTest RemoteUsageTest SentImageGalleryTest WorkbenchScrollTest
@@ -103,22 +171,37 @@ jobs:
             InlineImageTest InlineImageGalleryTest RemoteApiDownloadRetryTest ChatEmptyStateTest
             LocalImageComposerTest MarkdownTest PermissionToolTest PopupCoordinatesTest
             RemoteApiResponseTest RemoteFeedbackTest RemoteSettingsLayoutTest SettingsTest
+            UiConsistencyTest SettingsControlsTest SubtaskPageLayoutTest ModernSettingsLayoutTest NavigationVeilTest
           )
-          printf -v ui_selection 'app.camellia.mobile.%s,' "${ui_classes[@]}"
-          if ! "$ADB" -s "$ANDROID_SERIAL" shell am instrument -w -e class "${ui_selection%,}" app.camellia.mobile.test/android.test.InstrumentationTestRunner | tee .ci-logs/android-ui.log; then
+          ui_selection="$(node scripts/android-ci-shards.cjs --index "$SHARD" --total "$SHARD_COUNT" "${ui_classes[@]}")"
+          printf '%s\n' "$ui_selection" > .ci-logs/android-ui-selection.txt
+          if ! "$ADB" -s "$ANDROID_SERIAL" shell am instrument -w -e class "$ui_selection" app.camellia.mobile.test/android.test.InstrumentationTestRunner | tee .ci-logs/android-ui.log; then
             "$ADB" -s "$ANDROID_SERIAL" logcat -d -t 3000 > .ci-logs/android-logcat.txt
             exit 1
           fi
           "$ADB" -s "$ANDROID_SERIAL" logcat -d -t 3000 > .ci-logs/android-logcat.txt
-          grep -q '^OK (' .ci-logs/android-ui.log
-      - name: Save Android package and test reports
+          grep -Eq '^OK \([1-9][0-9]* tests\)' .ci-logs/android-ui.log
+      - name: Save shard evidence
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: camellia-android-debug-and-reports
+          name: android-ui-shard-${{ matrix.shard }}
           include-hidden-files: true
-          path: |
-            android/app/build/outputs/apk/debug/*.apk
-            android/app/build/reports/
-            .ci-logs/
           retention-days: 14
+          path: .ci-logs/
+  build:
+    name: build
+    needs:
+      - package
+      - ui
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Require package and every UI shard to pass
+        env:
+          PACKAGE_RESULT: ${{ needs.package.result }}
+          UI_RESULT: ${{ needs.ui.result }}
+        run: |-
+          test "$PACKAGE_RESULT" = success
+          test "$UI_RESULT" = success

@@ -4,14 +4,18 @@ const { removeTree } = require('./test-fs.cjs');
 // using its Node/npm and no global Node, Python, or harness installations.
 const fs = require('node:fs'), path = require('node:path'), os = require('node:os');
 const assert = require('node:assert/strict');
-const { createRuntimeManager, ENGINES } = require('../src/main/runtime-manager');
+const { createRuntimeManager, ENGINES, run } = require('../src/main/runtime-manager');
 const { spawnSync } = require('node:child_process');
 async function main() {
   const isMac = process.platform === 'darwin';
   const root = path.resolve(process.argv[2] || (isMac ? 'dist/mac-arm64/Camellia.app/Contents/Resources' : 'dist/win-unpacked/resources'));
   const engines = process.argv[3] === '--all' ? Object.keys(ENGINES) : process.argv.slice(3);
   if (!engines.length) engines.push('claude');
-  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'workbench-install-test-'));
+  // Hosted Windows runners put RUNNER_TEMP on the workspace drive. Keeping
+  // this large fresh install there avoids the slower system-profile temp
+  // tree, while retaining an empty app profile and the symlink regression.
+  const tempBase = path.resolve(process.env.RUNNER_TEMP || os.tmpdir());
+  const tempRoot = fs.mkdtempSync(path.join(tempBase, 'workbench-install-test-'));
   const profile = path.join(tempRoot, 'App Data'), installRoot = path.join(tempRoot, 'Profile Link');
   fs.mkdirSync(profile);
   // Reproduce macOS /var-style aliases on both platforms, including npm 11's
@@ -23,7 +27,13 @@ async function main() {
     path.join(process.env.SystemRoot, 'System32/WindowsPowerShell/v1.0'), process.env.SystemRoot].join(path.delimiter);
   try {
     const progress = new Map();
-    const manager = createRuntimeManager({ root, installRoot, node, npm, discoverLocal: false, onChange: rows => {
+    let timing;
+    const manager = createRuntimeManager({ root, installRoot, node, npm, discoverLocal: false,
+      runCommand: async (...args) => {
+        const started = performance.now();
+        try { return await run(...args); }
+        finally { if (timing) timing.installerMs += Math.round(performance.now() - started); }
+      }, onChange: rows => {
       for (const row of rows) if (row.status === 'installing' && progress.get(row.id) !== row.message) {
         progress.set(row.id, row.message); console.log(row.name + ': ' + row.message);
       }
@@ -38,11 +48,17 @@ async function main() {
       return result.stdout + (includeStderr ? result.stderr : '');
     };
     for (const engine of engines) {
+      timing = { engine, installerMs: 0 };
       console.log('Downloading selected engine: ' + engine);
+      const started = performance.now();
       const installed = await manager.ensure(engine); selected.add(engine);
+      timing.installMs = Math.round(performance.now() - started);
       assert.ok(installed.file.startsWith(installRoot));
+      const reusing = performance.now();
       assert.equal((await manager.ensure(engine)).file, installed.file);
+      timing.reuseMs = Math.round(performance.now() - reusing);
       assert.ok(manager.state().filter(row => !selected.has(row.id)).every(row => row.status === 'missing'), 'Unselected engines stay uninstalled');
+      const verifying = performance.now();
       if (engine === 'antigravity') {
         assert.match(check(node, [path.join(__dirname, 'antigravity-smoke.cjs'), installed.dir]), /PASS:/);
         const google = await manager.ensure('antigravity', 'subscription');
@@ -68,12 +84,16 @@ async function main() {
           }
         }
       }
+      timing.verifyMs = Math.round(performance.now() - verifying);
       console.log('PASS: downloaded and reused ' + engine + ' with shared installer tools; unselected engines remain missing');
+      console.log('TIMING runtime-install ' + JSON.stringify(timing));
     }
   } finally {
     process.env.PATH = previous;
-    assert.equal(path.dirname(tempRoot), os.tmpdir()); assert.ok(path.basename(tempRoot).startsWith('workbench-install-test-'));
+    assert.equal(path.dirname(tempRoot), tempBase); assert.ok(path.basename(tempRoot).startsWith('workbench-install-test-'));
+    const cleaning = performance.now();
     removeTree(tempRoot);
+    console.log('TIMING runtime-cleanup ' + JSON.stringify({ ms: Math.round(performance.now() - cleaning) }));
   }
 }
 main().catch(error => { console.error(error); process.exitCode = 1; });

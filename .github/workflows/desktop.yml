@@ -18,6 +18,8 @@ jobs:
     name: ${{ matrix.platform }} / ${{ matrix.arch }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
+    env: &desktop-build-env
+      npm_config_prefer_offline: 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -25,14 +27,10 @@ jobs:
           - platform: windows
             runner: windows-latest
             arch: x64
+            thinking_jobs: 2
             command: dist:win
             bundle: dist/win-unpacked
-          - platform: macos
-            runner: macos-15
-            arch: arm64
-            command: dist:mac
-            bundle: dist/mac-arm64/Camellia.app
-    steps:
+    steps: &desktop-build-steps
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
         with:
@@ -87,14 +85,6 @@ jobs:
       - name: Unit tests
         timeout-minutes: 10
         run: node --test --test-force-exit tests/*.test.js
-      - name: Native API thinking controls
-        timeout-minutes: 20
-        env:
-          CAMELLIA_RUNTIME_ROOT: ${{ github.workspace }}
-        run: node tests/harness-thinking-smoke.cjs
-      - name: Native image input across all six harnesses
-        timeout-minutes: 10
-        run: npm run test:images
       - name: Diagnostic pipe disconnection
         run: node tests/diagnostic-output-electron.cjs
       - name: Electron smoke test
@@ -107,6 +97,14 @@ jobs:
         run: node tests/data-directory-progress-electron.cjs
       - name: Native DSH settings
         run: node tests/native-settings-electron.cjs
+      - name: Native API thinking controls
+        timeout-minutes: 20
+        env:
+          CAMELLIA_RUNTIME_ROOT: ${{ github.workspace }}
+        run: node tests/harness-thinking-smoke.cjs --jobs ${{ matrix.thinking_jobs }}
+      - name: Native image input across all six harnesses
+        timeout-minutes: 10
+        run: npm run test:images
       - name: Kimi ACP smoke test
         run: npm run test:kimi
       - name: Grok ACP smoke test
@@ -164,7 +162,7 @@ jobs:
             dist/antigravity-sdk-diagnostics.json
             dist/antigravity-subscription-diagnostics.json
             dist/grok-smoke-diagnostics.json
-            artifacts/harness-thinking-smoke-*/results.json
+            artifacts/harness-thinking-smoke-*/**/results.json
       - name: Upload desktop candidates for acceptance
         uses: actions/upload-artifact@v7
         with:
@@ -176,6 +174,25 @@ jobs:
             dist/*.exe
             dist/*.dmg
             dist/*.zip
+
+  # Separate dependency edges let macOS acceptance start as soon as its own
+  # package is ready. Step anchors keep the two platform pipelines identical.
+  build-macos:
+    name: ${{ matrix.platform }} / ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    env: *desktop-build-env
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos
+            runner: macos-15
+            arch: arm64
+            thinking_jobs: 4
+            command: dist:mac
+            bundle: dist/mac-arm64/Camellia.app
+    steps: *desktop-build-steps
 
   acceptance:
     name: Acceptance / ${{ matrix.platform }} / ${{ matrix.arch }}
@@ -190,11 +207,7 @@ jobs:
             runner: windows-latest
             arch: x64
             bundle: dist/win-unpacked
-          - platform: macos
-            runner: macos-15
-            arch: arm64
-            bundle: dist/mac-arm64/Camellia.app
-    steps:
+    steps: &desktop-acceptance-steps
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
         with:
@@ -277,3 +290,18 @@ jobs:
             dist/*.exe
             dist/*.dmg
             dist/*.zip
+
+  acceptance-macos:
+    name: Acceptance / ${{ matrix.platform }} / ${{ matrix.arch }}
+    needs: build-macos
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 50
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos
+            runner: macos-15
+            arch: arm64
+            bundle: dist/mac-arm64/Camellia.app
+    steps: *desktop-acceptance-steps

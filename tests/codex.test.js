@@ -850,7 +850,7 @@ test('Codex API metadata adds native patch support without overriding known mode
   const next = JSON.parse(fs.readFileSync(read().model_catalog_json, 'utf8'));
   assert.ok(next.models.some(m => m.slug === 'deepseek-v4.1-flash'));
   assert.ok(!next.models.some(m => m.slug === 'kimi-k3'));
-  for (const native of ['gpt-6.1-sol', 'gpt-6-sol', 'gpt-6-luna', 'gpt-5.5', 'openai/gpt-5.5-2026']) {
+  for (const native of ['gpt-6.1-sol', 'gpt-6.1-terra', 'gpt-6-sol', 'gpt-6-luna', 'gpt-5.5', 'openai/gpt-5.5-2026']) {
     const spec = codexSpawnSpec({ ...options, model: native });
     if (native.startsWith('gpt-6')) {
       assert.equal(spec.model, toolModelId(native));
@@ -882,7 +882,7 @@ test('Codex API metadata adds native patch support without overriding known mode
   fs.writeFileSync(path.join(home, 'config.toml'), TOML.stringify({ developer_instructions: 'Use short replies.' }));
   assert.equal(codexSpawnSpec({ ...options, allowUserQuestions: true }).developerInstructions,
     'Use short replies.\n\n' + QUESTION_INSTRUCTIONS + '\n\n' + COMPLETION_INSTRUCTIONS);
-  assert.equal(require('../runtimes/codex/package.json').dependencies['@openai/codex'], '0.160.1', 'Review native metadata when upgrading Codex');
+  assert.equal(require('../runtimes/codex/package.json').dependencies['@openai/codex'], '0.169.0', 'Review native metadata when upgrading Codex');
 });
 
 test('Codex API window ignores an accepted lower bound but honors explicit route limits', () => {

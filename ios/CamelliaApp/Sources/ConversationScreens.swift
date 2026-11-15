@@ -2586,17 +2586,7 @@ struct Composer: View {
     /// at 22dp.
     private func actionButton(symbol: String, label: String, enabled: Bool,
                               action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Image(systemName: symbol)
-                .font(.system(size: Palette.textDisplay, weight: .semibold))
-                .foregroundColor(enabled ? .white : Palette.muted)
-                .frame(width: 48, height: 48)
-                .background(Capsule(style: .continuous)
-                    .fill(enabled ? Palette.accent : Palette.surface))
-        }
-        .buttonStyle(.plain)
-        .disabled(!enabled)
-        .accessibilityLabel(Text(LocalizedStringKey(label)))
+        ComposerActionButton(symbol: symbol, label: label, enabled: enabled, action: action)
     }
 
     /// Whether the attach button is usable. Android gates it on the device being

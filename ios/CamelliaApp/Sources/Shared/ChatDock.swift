@@ -106,11 +106,8 @@ struct ChatSearchBar: View {
             .overlay(Capsule(style: .continuous).stroke(Palette.separator, lineWidth: 1))
             Button(action: onNewConversation) {
                 MobileLineIcon(name: "plus.bubble", size: 22)
-                    .foregroundColor(Palette.ink)
+                    .foregroundColor(Palette.accent)
                     .frame(width: 48, height: 48)
-                    .background(Circle().fill(Palette.raisedFace)
-                        .overlay(Circle().stroke(Palette.raisedEdge, lineWidth: 1))
-                        .shadow(color: .black.opacity(0.16), radius: 4, y: 1))
                     .contentShape(Circle())
             }
             .buttonStyle(ComposerPressStyle())
@@ -118,5 +115,28 @@ struct ChatSearchBar: View {
         }
         .padding(.vertical, 6)
         .padding(.bottom, ChatDockLayout.barBottom)
+    }
+}
+
+/// Shared send/stop action for local and remote composers, including disabled state.
+struct ComposerActionButton: View {
+    let symbol: String
+    let label: String
+    let enabled: Bool
+    let action: () -> Void
+    @Environment(\.isEnabled) private var parentEnabled
+    private var active: Bool { enabled && parentEnabled }
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: symbol)
+                .font(.system(size: Palette.textDisplay, weight: .semibold))
+                .foregroundColor(active ? Palette.onAccent : Palette.muted)
+                .frame(width: 38, height: 38)
+                .background(Circle().fill(active ? Palette.accent : Palette.controlFill))
+                .frame(width: 48, height: 48).contentShape(Rectangle())
+        }
+        .buttonStyle(ComposerPressStyle()).disabled(!enabled)
+        .accessibilityLabel(Text(LocalizedStringKey(label)))
     }
 }

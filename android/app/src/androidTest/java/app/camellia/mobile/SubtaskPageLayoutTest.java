@@ -49,7 +49,7 @@ public class SubtaskPageLayoutTest extends InstrumentationTestCase {
     }
     private JSONObject task(String id, String engine, String status, String progress) throws Exception {
         return new JSONObject().put("id", id).put("engine", engine).put("userSeq", 1L)
-            .put("title", "v3 native scope worker " + id.replace("worker-", "w") + " continuation")
+            .put("title", "v3 native scope worker " + id.replace("worker-", "w") + " continuation with a deliberately long descriptive task name for layout verification")
             .put("goal", "检查子任务的执行范围，并将检查结果同步到主会话。")
             .put("progress", progress).put("result", status.equals("completed") ? progress : "")
             .put("status", status).put("canReply", true).put("canStop", status.equals("running"))

@@ -269,7 +269,13 @@ public final class MainActivity extends Activity {
 
     @Override public void onWindowFocusChanged(boolean focused) {
         super.onWindowFocusChanged(focused);
-        if (focused) notifyApprovalRequests();
+        if (focused) {
+            // Window attachment/theme resolution can reapply the platform's
+            // navigation scrim after shell() has configured the destination.
+            if (workbenchNavigation != null && android.os.Build.VERSION.SDK_INT >= 29)
+                getWindow().setNavigationBarContrastEnforced(false);
+            notifyApprovalRequests();
+        }
     }
 
     @Override protected void onPostResume() {
@@ -568,19 +574,7 @@ public final class MainActivity extends Activity {
     }
 
     private Button button(String label, Runnable action, boolean primary) {
-        Button button = new Button(this); button.setText(label); button.setAllCaps(false); button.setTextSize(Palette.TEXT_BODY);
-        button.setTextColor(enabledColors(primary ? Color.WHITE : ink, muted));
-        GradientDrawable enabledFace = capsule(primary ? accent : surface);
-        enabledFace.setStroke(dp(1), primary ? accent : Palette.of(this).cardBorder);
-        GradientDrawable disabledFace = capsule(surface);
-        disabledFace.setStroke(dp(1), Palette.of(this).cardBorder);
-        android.graphics.drawable.StateListDrawable faces = new android.graphics.drawable.StateListDrawable();
-        faces.addState(new int[]{-android.R.attr.state_enabled}, disabledFace);
-        faces.addState(new int[]{}, enabledFace);
-        button.setBackground(new RippleDrawable(ColorStateList.valueOf((accent & 0x00ffffff) | 0x22000000), faces, capsule(Color.WHITE)));
-        SurfaceElevation.apply(button, primary ? 2 : 1);
-        button.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
-        button.setMinHeight(dp(48)); button.setPadding(dp(14), dp(8), dp(14), dp(8));
+        Button button = new Button(this); button.setText(label); ActionStyle.page(button, primary);
         LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, -2); params.setMargins(0, dp(8), 0, dp(8)); button.setLayoutParams(params);
         button.setOnClickListener(view -> action.run()); return button;
     }
@@ -592,14 +586,19 @@ public final class MainActivity extends Activity {
         boolean settingsPage = screen.equals("settings") || screen.equals("network") || screen.equals("pair");
         boolean showNavigation = screen.equals("home") || screen.equals("list") || screen.equals("computers") || screen.equals("settings");
         int bottomPadding = screen.equals("list") || screen.equals("detail") ? chatStyle.dockBottomPadding() : dp(24);
-        if (showNavigation) bottomPadding = dp(8);
+        if (showNavigation) bottomPadding = 0;
         final int pageBottomPadding = bottomPadding;
         SettingsStyle settingsStyle = new SettingsStyle(this);
         int pageBackground = settingsPage || screen.equals("computers") ? settingsStyle.background : background;
         splitDetail = screen.equals("detail") && MobileLayout.useDetailSplit(getResources().getConfiguration());
         root = column(); root.setBackground(Palette.of(this).pageBackground());
-        root.setPadding(dp(16), dp(10), dp(16), bottomPadding);
-        root.setBackgroundColor(pageBackground); getWindow().setStatusBarColor(pageBackground); getWindow().setNavigationBarColor(pageBackground);
+        root.setPadding(dp(ChatStyle.PAGE_SIDE_DP), dp(10), dp(ChatStyle.PAGE_SIDE_DP), bottomPadding);
+        root.setBackgroundColor(pageBackground); getWindow().setStatusBarColor(pageBackground);
+        getWindow().setNavigationBarColor(showNavigation ? Color.TRANSPARENT : pageBackground);
+        if (android.os.Build.VERSION.SDK_INT >= 29) getWindow().setNavigationBarContrastEnforced(!showNavigation);
+        int systemUi = getWindow().getDecorView().getSystemUiVisibility();
+        int bottomLayout = View.SYSTEM_UI_FLAG_LAYOUT_STABLE | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION;
+        getWindow().getDecorView().setSystemUiVisibility(showNavigation ? systemUi | bottomLayout : systemUi & ~bottomLayout);
         root.setClipToPadding(false);
         if (screen.equals("list") || screen.equals("detail")) { root.setFocusableInTouchMode(true); root.requestFocus(); }
         View page = root;
@@ -629,7 +628,11 @@ public final class MainActivity extends Activity {
         } else {
             sidebarScrollRestore = -1;
         }
-        if (settingsPage) settingsStyle.pagePadding(root, showNavigation ? 8 : 20);
+        if (showNavigation) {
+            // The dock installs destination insets after its scrolling stage exists.
+            root.setPadding(dp(ChatStyle.PAGE_SIDE_DP), dp(settingsPage ? 6 : 10), dp(ChatStyle.PAGE_SIDE_DP), 0);
+        }
+        else if (settingsPage) settingsStyle.pagePadding(root, 20);
         else if (splitDetail) {
             LinearLayout splitPage = split;
             ConversationSidebar sidebar = detailSidebar;
@@ -643,7 +646,7 @@ public final class MainActivity extends Activity {
             });
         }
         else root.setOnApplyWindowInsetsListener((view, insets) -> {
-            view.setPadding(dp(16) + insets.getSystemWindowInsetLeft(), dp(10) + insets.getSystemWindowInsetTop(), dp(16) + insets.getSystemWindowInsetRight(), pageBottomPadding + insets.getSystemWindowInsetBottom());
+            view.setPadding(dp(ChatStyle.PAGE_SIDE_DP) + insets.getSystemWindowInsetLeft(), dp(10) + insets.getSystemWindowInsetTop(), dp(ChatStyle.PAGE_SIDE_DP) + insets.getSystemWindowInsetRight(), pageBottomPadding + insets.getSystemWindowInsetBottom());
             return insets;
         });
         if (pages == null) pages = new PageTransitions(this);
@@ -657,8 +660,7 @@ public final class MainActivity extends Activity {
             LinearLayout header = settingsStyle.topLevelHeader(title);
             header.findViewWithTag("settingsTitle").setTag("remoteControlTitle"); root.addView(header);
         } else if (screen.equals("list") || screen.equals("detail")) {
-            LinearLayout header = new LinearLayout(this); header.setGravity(Gravity.CENTER_VERTICAL); header.setPadding(0, 0, 0, dp(12));
-            header.setClipChildren(false); header.setClipToPadding(false);
+            LinearLayout header = new LinearLayout(this); chatStyle.pageHeader(header);
             boolean detail = screen.equals("detail");
             if (detail) {
                 header.addView(chatStyle.backButton(tr("返回上一级", "Back"), this::onBackPressed),
@@ -667,7 +669,7 @@ public final class MainActivity extends Activity {
             boolean paired = credentials.has("token");
             LinearLayout titles = column(); titles.setPadding(detail ? dp(8) : 0, 0, 0, 0);
             TextView pageTitle = text(detail ? conversationTitle : tr("会话", "Conversations"),
-                detail ? Palette.TEXT_ROW : Palette.TEXT_HERO, ink);
+                detail ? Palette.TEXT_CARD : Palette.TEXT_HERO, ink);
             pageTitle.setTag("pageTitle"); pageTitle.setMaxLines(1); pageTitle.setEllipsize(android.text.TextUtils.TruncateAt.END);
             pageTitle.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL)); titles.addView(pageTitle);
             LinearLayout computer = new LinearLayout(this); computer.setGravity(Gravity.CENTER_VERTICAL);
@@ -746,20 +748,11 @@ public final class MainActivity extends Activity {
             });
             scroll.addOnLayoutChangeListener((view, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom) -> requestPrefetchViewport());
         }
-        android.widget.FrameLayout navigationViewport = null;
+        NavigationDockLayout navigationViewport = null;
         if (showNavigation) {
-            navigationViewport = new android.widget.FrameLayout(this);
+            navigationViewport = new NavigationDockLayout(this, scroll);
             navigationViewport.setTag(screen.equals("list") ? "remoteListViewport" : "workbenchViewport");
-            // Content may flow behind the floating bar inside this viewport,
-            // but must never paint over the header above it.
-            navigationViewport.setClipChildren(true);
-            navigationViewport.setClipToPadding(true);
-            navigationViewport.addView(scroll, new android.widget.FrameLayout.LayoutParams(-1, -1));
             root.addView(navigationViewport, new LinearLayout.LayoutParams(-1, 0, 1));
-            // Keep content flowing behind the floating glass, but allow the
-            // final row to scroll fully above it instead of hiding an action.
-            scroll.setClipToPadding(false);
-            scroll.setPadding(0, 0, 0, dp(WorkbenchNavigation.HEIGHT_DP + WorkbenchNavigation.CONTENT_GAP_DP));
         } else root.addView(scroll, new LinearLayout.LayoutParams(-1, 0, 1));
         content = column(); content.setPadding(0, 0, 0, dp(16)); scroll.addView(content);
         if (settingsPage) { content.setPadding(0, dp(4), 0, dp(16)); scroll.setVerticalScrollBarEnabled(false); }
@@ -768,27 +761,23 @@ public final class MainActivity extends Activity {
             String navigationSelection = screen.equals("list") ? "sessions" : screen;
             workbenchNavigation = new WorkbenchNavigation(this, navigationSelection,
                 this::navigateHome, this::navigateSessions, this::navigateComputers, this::openSettingsPage);
-            android.widget.FrameLayout.LayoutParams navigationParams = new android.widget.FrameLayout.LayoutParams(
-                navigationWidth(), dp(WorkbenchNavigation.HEIGHT_DP), Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL);
-            navigationViewport.addView(workbenchNavigation, navigationParams);
-            workbenchNavigation.setBackdropSource(scroll);
+            navigationViewport.setNavigation(workbenchNavigation);
+            NavigationDockLayout dock = navigationViewport;
+            root.setOnApplyWindowInsetsListener((view, insets) -> {
+                int left = dp(ChatStyle.PAGE_SIDE_DP) + insets.getSystemWindowInsetLeft();
+                int right = dp(ChatStyle.PAGE_SIDE_DP) + insets.getSystemWindowInsetRight();
+                view.setPadding(left, dp(settingsPage ? 6 : 10) + insets.getSystemWindowInsetTop(), right, 0);
+                dock.setInsets(left, right, insets.getSystemWindowInsetBottom());
+                return insets;
+            });
+            dock.setInsets(root.getPaddingLeft(), root.getPaddingRight(), 0);
+            root.requestApplyInsets();
         }
     }
 
-    private int navigationWidth() {
-        return Math.min(dp(440), Math.max(dp(300),
-            Math.round(getResources().getDisplayMetrics().widthPixels * .78f)));
-    }
-
     private void updateNavigationWidth() {
-        if (workbenchNavigation == null) return;
-        ViewGroup.LayoutParams params = workbenchNavigation.getLayoutParams();
-        if (!(params instanceof android.widget.FrameLayout.LayoutParams)) return;
-        android.widget.FrameLayout.LayoutParams updated = (android.widget.FrameLayout.LayoutParams) params;
-        int width = navigationWidth();
-        if (updated.width == width) return;
-        updated.width = width;
-        workbenchNavigation.setLayoutParams(updated);
+        if (workbenchNavigation != null && workbenchNavigation.getParent() instanceof NavigationDockLayout dock)
+            dock.updateGeometry();
     }
 
     private ImageButton lineButton(String icon, String label, Runnable action) {
@@ -809,15 +798,6 @@ public final class MainActivity extends Activity {
         chatStyle.dockStatus(status);
         status.setSingleLine(true); status.setMinLines(1); status.setEllipsize(android.text.TextUtils.TruncateAt.END);
         root.removeView(status);
-        int scrollIndex = root.indexOfChild(scroll);
-        LinearLayout.LayoutParams stageParams = (LinearLayout.LayoutParams) scroll.getLayoutParams();
-        root.removeView(scroll);
-        android.widget.FrameLayout stage = new android.widget.FrameLayout(this); stage.setTag(tag + "Stage");
-        stage.setClipChildren(false); stage.setClipToPadding(false);
-        android.widget.FrameLayout viewport = new android.widget.FrameLayout(this);
-        viewport.setClipChildren(true); viewport.setClipToPadding(true);
-        viewport.addView(scroll, new android.widget.FrameLayout.LayoutParams(-1, -1));
-        stage.addView(viewport, new android.widget.FrameLayout.LayoutParams(-1, -1));
         LinearLayout dock = column(); dock.setTag(tag + "Dock"); dock.setBackground(chatStyle.dockBackdrop());
         dock.setClipChildren(false); dock.setClipToPadding(false);
         dock.addView(chatStyle.dockFade(tag), new LinearLayout.LayoutParams(-1, chatStyle.dockFadeHeight()));
@@ -828,9 +808,7 @@ public final class MainActivity extends Activity {
         LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, -2); params.setMargins(0, 0, 0, dp(8));
         dock.addView(bar, params);
         status.setBackgroundColor(background); status.setLayoutParams(new LinearLayout.LayoutParams(-1, -2)); dock.addView(status);
-        android.widget.FrameLayout.LayoutParams dockParams = new android.widget.FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM);
-        chatStyle.reserveDockSpace(dock, content);
-        stage.addView(dock, dockParams); root.addView(stage, scrollIndex, stageParams); return bar;
+        ChatDockLayout.attach(root, scroll, content, dock, chatStyle, tag); return bar;
     }
 
     private EditText input(String label, String value, int type) {
@@ -4622,7 +4600,7 @@ public final class MainActivity extends Activity {
         close.setTag("workSheetClose");
         LinearLayout.LayoutParams closeParams = new LinearLayout.LayoutParams(-1, -2);
         closeParams.topMargin = dp(12); panel.addView(close, closeParams);
-        ScrollView sheetScroll = new ScrollView(this);
+        ScrollView sheetScroll = ScrollViews.plain(this);
         sheetScroll.setVerticalScrollBarEnabled(false);
         sheetScroll.addView(panel);
         dialog.setContentView(sheetScroll);
@@ -4891,15 +4869,7 @@ public final class MainActivity extends Activity {
             queueSheetPanel.addView(resume, resumeParams);
         }
 
-        android.widget.ScrollView list = new android.widget.ScrollView(this) {
-            @Override protected void onMeasure(int widthSpec, int heightSpec) {
-                int limit = dp(getResources().getConfiguration().fontScale > 1.15f ? 260 : 320);
-                if (View.MeasureSpec.getMode(heightSpec) != View.MeasureSpec.UNSPECIFIED) {
-                    limit = Math.min(limit, View.MeasureSpec.getSize(heightSpec));
-                }
-                super.onMeasure(widthSpec, View.MeasureSpec.makeMeasureSpec(limit, View.MeasureSpec.AT_MOST));
-            }
-        };
+        android.widget.ScrollView list = ScrollViews.capped(this, () -> dp(getResources().getConfiguration().fontScale > 1.15f ? 260 : 320));
         list.setVerticalScrollBarEnabled(false);
         list.setTag("remoteQueueList");
         LinearLayout rows = column();
@@ -5925,7 +5895,7 @@ public final class MainActivity extends Activity {
                     bytes.write('\n');
                 }
                 TextView licenses = text(bytes.toString("UTF-8"), Palette.TEXT_SMALL, ink); licenses.setTextIsSelectable(true); licenses.setPadding(dp(16), dp(12), dp(16), dp(12));
-                ScrollView page = new ScrollView(this); page.addView(licenses);
+                ScrollView page = ScrollViews.plain(this); page.addView(licenses);
                 new CamelliaDialog.Builder(this).setTitle(tr("开源许可", "Open-source licenses")).setView(page).setPositiveButton(tr("关闭", "Close"), null).show();
             } catch (Exception error) { reportError("无法读取许可文件。", "Could not read licenses.", error); }
         });

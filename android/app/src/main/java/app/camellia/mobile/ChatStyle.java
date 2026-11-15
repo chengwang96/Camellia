@@ -19,6 +19,14 @@ import java.util.Locale;
 import java.util.function.Supplier;
 
 final class ChatStyle {
+    static final int PAGE_SIDE_DP = 16;
+
+    void pageHeader(LinearLayout header) {
+        header.setGravity(Gravity.CENTER_VERTICAL);
+        header.setPadding(0, dp(4), 0, dp(12));
+        header.setBackgroundColor(background);
+        header.setClipChildren(false); header.setClipToPadding(false);
+    }
     final int background, surface, ink, muted, faint, accent;
     private final Context context;
     private final Palette palette;
@@ -171,7 +179,8 @@ final class ChatStyle {
         faces.addState(new int[]{}, new InsetDrawable(enabledFace, inset, inset, inset, inset));
         button.setBackground(new RippleDrawable(ColorStateList.valueOf(Palette.RIPPLE_ON_ACCENT_LIGHT),
             faces, new InsetDrawable(circle(Color.WHITE), inset, inset, inset, inset)));
-        button.setImageTintList(enabledColors(Color.WHITE, muted));
+        button.setImageTintList(enabledColors(palette.onAccent, muted));
+        faces.setState(button.getDrawableState());
         button.setElevation(0f);
         button.setOnClickListener(view -> action.run()); return button;
     }

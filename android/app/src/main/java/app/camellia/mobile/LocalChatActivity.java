@@ -226,22 +226,11 @@ public final class LocalChatActivity extends Activity {
         view.setPadding(0, dp(6), 0, dp(6)); view.setLineSpacing(dp(3), 1); return view;
     }
     private Button button(String label, String tag, Runnable action) {
-        Button button = new Button(this); button.setText(label); button.setTag(tag); button.setAllCaps(false);
-        button.setTextSize(Palette.TEXT_BODY); button.setTextColor(new ColorStateList(new int[][] { {-android.R.attr.state_enabled}, {} }, new int[] {muted, ink}));
-        GradientDrawable face = chatStyle.outlinedCapsule(surface);
-        button.setBackground(new RippleDrawable(ColorStateList.valueOf(Palette.RIPPLE_ON_PAGE), face, chatStyle.capsule(Color.WHITE)));
-        button.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
-        button.setPadding(dp(14), dp(8), dp(14), dp(8)); button.setMinHeight(dp(48));
-        SurfaceElevation.apply(button, 1);
+        Button button = new Button(this); button.setText(label); button.setTag(tag); ActionStyle.page(button, false);
         button.setOnClickListener(view -> action.run()); return button;
     }
     private TextView dialogAction(String label, String tag, boolean primary, Runnable action) {
-        TextView view = text(label, Palette.TEXT_INPUT, primary ? Color.WHITE : ink); view.setTag(tag); view.setGravity(Gravity.CENTER);
-        view.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL)); view.setMinHeight(dp(48));
-        GradientDrawable face = chatStyle.capsule(primary ? accent : new SettingsStyle(this).card);
-        face.setStroke(dp(1), primary ? accent : new SettingsStyle(this).palette().cardBorder);
-        view.setBackground(new RippleDrawable(ColorStateList.valueOf(Palette.RIPPLE_ON_PAGE), face, chatStyle.capsule(Color.WHITE)));
-        SurfaceElevation.apply(view, primary ? 2 : 1);
+        TextView view = new TextView(this); view.setText(label); view.setTag(tag); ActionStyle.dialog(view, primary);
         view.setOnClickListener(clicked -> action.run()); return view;
     }
     private void showStyledDialog(LinearLayout panel) {
@@ -258,22 +247,21 @@ public final class LocalChatActivity extends Activity {
         releasePageViews();
         if (conversationId == null) composerAttachments.replace();
         root = column(); root.setBackground(chatStyle.pageBackground());
-        root.setPadding(dp(18), dp(12), dp(18), chatStyle.dockBottomPadding());
+        root.setPadding(dp(ChatStyle.PAGE_SIDE_DP), dp(10), dp(ChatStyle.PAGE_SIDE_DP), chatStyle.dockBottomPadding());
         root.setClipToPadding(false);
         if (conversationId != null) { root.setFocusableInTouchMode(true); root.requestFocus(); }
         root.setOnApplyWindowInsetsListener((view, insets) -> {
-            view.setPadding(dp(18) + insets.getSystemWindowInsetLeft(), dp(12) + insets.getSystemWindowInsetTop(),
-                dp(18) + insets.getSystemWindowInsetRight(), chatStyle.dockBottomPadding() + insets.getSystemWindowInsetBottom());
+            view.setPadding(dp(ChatStyle.PAGE_SIDE_DP) + insets.getSystemWindowInsetLeft(), dp(10) + insets.getSystemWindowInsetTop(),
+                dp(ChatStyle.PAGE_SIDE_DP) + insets.getSystemWindowInsetRight(), chatStyle.dockBottomPadding() + insets.getSystemWindowInsetBottom());
             return insets;
         });
         if (pages == null) pages = new PageTransitions(this);
         pages.show(root, conversationId == null ? "list" : "detail:" + conversationId, conversationId == null ? 0 : 1);
         root.requestApplyInsets();
-        LinearLayout header = new LinearLayout(this); header.setGravity(Gravity.CENTER_VERTICAL); header.setPadding(0, 0, 0, dp(18));
-        header.setClipChildren(false); header.setClipToPadding(false);
+        LinearLayout header = new LinearLayout(this); chatStyle.pageHeader(header);
         ImageButton back = chatStyle.backButton(tr("返回上一级", "Back"), this::onBackPressed); back.setTag("localBack");
         header.addView(back, new LinearLayout.LayoutParams(dp(48), dp(48)));
-        LinearLayout titles = column(); titles.setPadding(dp(10), 0, 0, 0);
+        LinearLayout titles = column(); titles.setPadding(dp(8), 0, 0, 0);
         TextView heading = text(title, Palette.TEXT_CARD, ink); heading.setSingleLine(true); heading.setEllipsize(android.text.TextUtils.TruncateAt.END);
         if (conversationId != null) heading.setTag("localChatTitle");
         heading.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL)); titles.addView(heading);
@@ -307,15 +295,6 @@ public final class LocalChatActivity extends Activity {
     private LinearLayout bottomBar(String tag) {
         chatStyle.dockStatus(status);
         root.removeView(status);
-        int scrollIndex = root.indexOfChild(scroll);
-        LinearLayout.LayoutParams stageParams = (LinearLayout.LayoutParams) scroll.getLayoutParams();
-        root.removeView(scroll);
-        android.widget.FrameLayout stage = new android.widget.FrameLayout(this); stage.setTag(tag + "Stage");
-        stage.setClipChildren(false); stage.setClipToPadding(false);
-        android.widget.FrameLayout viewport = new android.widget.FrameLayout(this);
-        viewport.setClipChildren(true); viewport.setClipToPadding(true);
-        viewport.addView(scroll, new android.widget.FrameLayout.LayoutParams(-1, -1));
-        stage.addView(viewport, new android.widget.FrameLayout.LayoutParams(-1, -1));
         LinearLayout dock = column(); dock.setTag(tag + "Dock"); dock.setBackground(chatStyle.dockBackdrop());
         dock.setClipChildren(false); dock.setClipToPadding(false);
         dock.addView(chatStyle.dockFade(tag), new LinearLayout.LayoutParams(-1, chatStyle.dockFadeHeight()));
@@ -326,9 +305,7 @@ public final class LocalChatActivity extends Activity {
         LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, -2); params.setMargins(0, 0, 0, dp(8));
         dock.addView(bar, params);
         status.setBackgroundColor(background); dock.addView(status, new LinearLayout.LayoutParams(-1, -2));
-        android.widget.FrameLayout.LayoutParams dockParams = new android.widget.FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM);
-        chatStyle.reserveDockSpace(dock, content);
-        stage.addView(dock, dockParams); root.addView(stage, scrollIndex, stageParams); return bar;
+        ChatDockLayout.attach(root, scroll, content, dock, chatStyle, tag); return bar;
     }
     private void failure(Exception error) {
         String detail = ErrorDetails.describe(error);

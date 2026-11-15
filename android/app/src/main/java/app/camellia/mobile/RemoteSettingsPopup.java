@@ -37,7 +37,7 @@ final class RemoteSettingsPopup {
         this.muted = muted; this.accent = accent; this.settings = settings; this.listener = listener;
         body = new LinearLayout(context); body.setOrientation(LinearLayout.VERTICAL); body.setPadding(dp(12), dp(14), dp(12), dp(10));
         surface = new PopupSurface(context, background); surface.setTag("remoteSettingsPanel");
-        scroll = new ScrollView(context); scroll.setFillViewport(false); scroll.setVerticalScrollBarEnabled(false); scroll.setClipToPadding(false); scroll.addView(body);
+        scroll = ScrollViews.plain(context); scroll.setFillViewport(false); scroll.setVerticalScrollBarEnabled(false); scroll.setClipToPadding(false); scroll.addView(body);
         surface.addView(scroll, new android.widget.FrameLayout.LayoutParams(-1, -1));
         scrollFade = PopupSurface.scrollFade(context, background);
         scrollFade.setVisibility(View.GONE);

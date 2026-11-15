@@ -13,8 +13,7 @@ struct ComposerPressStyle: ButtonStyle {
 
     static func feedback(isPressed: Bool) -> some View {
         RoundedRectangle(cornerRadius: Palette.capsuleRadius)
-            .fill(Color(red: 65.0/255, green: 118.0/255, blue: 230.0/255)
-                .opacity(isPressed ? 34.0/255 : 0))
+            .fill(Palette.accent.opacity(isPressed ? 34.0/255 : 0))
             .allowsHitTesting(false)
     }
 }

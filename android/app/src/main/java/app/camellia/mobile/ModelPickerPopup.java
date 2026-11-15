@@ -128,7 +128,7 @@ final class ModelPickerPopup {
 
     private PopupSurface surface(LinearLayout body) {
         PopupSurface layer = new PopupSurface(context, background);
-        ScrollView viewport = new ScrollView(context); viewport.setVerticalScrollBarEnabled(false); viewport.addView(body);
+        ScrollView viewport = ScrollViews.plain(context); viewport.setVerticalScrollBarEnabled(false); viewport.addView(body);
         viewport.setPadding(dp(12), dp(14), dp(12), dp(10)); viewport.setClipToPadding(false);
         layer.addView(viewport, new FrameLayout.LayoutParams(-1, -1));
         View fade = PopupSurface.scrollFade(context, background);

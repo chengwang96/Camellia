@@ -34,7 +34,7 @@ final class ArtifactSheet extends Dialog {
         LinearLayout.LayoutParams grip = new LinearLayout.LayoutParams(dp(36), dp(4)); grip.gravity = Gravity.CENTER_HORIZONTAL; grip.bottomMargin = dp(12); panel.addView(handle, grip);
         panel.addView(style.header(title, context.getResources().getConfiguration().getLocales().get(0).getLanguage().equals("zh") ? "返回" : "Back", this::dismiss));
         if (!subtitle.isEmpty()) style.note(panel, subtitle);
-        content = column(); ScrollView scroll = new ScrollView(context); scroll.setFillViewport(false); scroll.addView(content);
+        content = column(); ScrollView scroll = ScrollViews.plain(context); scroll.setFillViewport(false); scroll.addView(content);
         panel.addView(scroll, new LinearLayout.LayoutParams(-1, 0, 1));
         actions = column(); panel.addView(actions); setContentView(panel);
         getWindow().setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
@@ -56,14 +56,7 @@ final class ArtifactSheet extends Dialog {
         text.setLineSpacing(dp(3), 1); return text;
     }
     TextView action(String value, boolean primary, Runnable action) {
-        TextView button = text(value, Palette.TEXT_ROW, primary ? style.card : style.ink); button.setGravity(Gravity.CENTER);
-        button.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL)); button.setPadding(dp(16), dp(14), dp(16), dp(14));
-        button.setMinHeight(dp(52)); button.setFocusable(true);
-        GradientDrawable face = rounded(primary ? style.ink : style.card, Palette.RADIUS_DIALOG_ACTION);
-        face.setStroke(dp(1), primary ? style.ink : style.palette().cardBorder);
-        button.setBackground(new RippleDrawable(ColorStateList.valueOf(style.divider),
-            face, rounded(Color.WHITE, Palette.RADIUS_DIALOG_ACTION)));
-        SurfaceElevation.apply(button, primary ? 2 : 1);
+        TextView button = new TextView(getContext()); button.setText(value); ActionStyle.dialog(button, primary);
         button.setOnClickListener(view -> action.run());
         button.setAccessibilityDelegate(new View.AccessibilityDelegate() {
             @Override public void onInitializeAccessibilityNodeInfo(View host, android.view.accessibility.AccessibilityNodeInfo info) {

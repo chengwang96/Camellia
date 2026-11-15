@@ -78,13 +78,7 @@ struct SwitchComputerIcon: View {
     }
 }
 
-/// `ChatStyle.backButton()`: a raised white disc with a dark arrow in it.
-///
-/// Not the system's back chevron, which is why it is drawn here at all. Android
-/// puts a 48dp circle with a hairline, a 4dp elevation and a pressed state that
-/// sinks 2dp into every chat page's header, and the two apps sitting on one desk
-/// makes that the thing a person compares first — the system chevron is the
-/// wrong colour, the wrong size and in the wrong place.
+/// The shared flat 48-point back control used by settings and conversation headers.
 struct RoundBackButton: View {
     var isPageBack = true
     let action: () -> Void
@@ -94,19 +88,11 @@ struct RoundBackButton: View {
     var body: some View {
         Button { if isPageBack { back.perform(action) } else { action() } } label: {
             MobileLineIcon(name: "back", size: 20)
-                .foregroundColor(Palette.ink)
+                .foregroundColor(Palette.accent)
                 .frame(width: 48, height: 48)
-                .background(
-                    Circle()
-                        .fill(Palette.raisedFace)
-                        .overlay(Circle().stroke(Palette.raisedEdge, lineWidth: 1))
-                        .shadow(color: .black.opacity(0.16), radius: 4, y: 1)
-                )
-                // `button.setPadding(dp(14))` around a 20dp glyph: the tap
-                // target is the disc, and the disc is 48 across.
                 .contentShape(Circle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(ComposerPressStyle())
         .accessibilityLabel("返回上一级")
         .background {
             if isPageBack {

@@ -17,6 +17,7 @@ import android.widget.TextView;
 final class WorkbenchNavigation extends FrameLayout {
     static final int HEIGHT_DP = 64;
     static final int CONTENT_GAP_DP = 8;
+    static final int SHADOW_GAP_DP = 4;
     private final PopupSurface glass;
     private View backdropSource;
     private int capturedWidth, capturedHeight;
@@ -31,7 +32,11 @@ final class WorkbenchNavigation extends FrameLayout {
         face.setCornerRadius(dp(Palette.RADIUS_NAVIGATION));
         setBackground(face);
         setClipToOutline(true);
-        setElevation(dp(4));
+        setElevation(dp(6));
+        if (android.os.Build.VERSION.SDK_INT >= 28) {
+            setOutlineAmbientShadowColor(0x40000000);
+            setOutlineSpotShadowColor(0x30000000);
+        }
         glass = PopupSurface.navigation(context, palette.card);
         glass.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS);
         addView(glass, new FrameLayout.LayoutParams(-1, -1));
@@ -57,7 +62,7 @@ final class WorkbenchNavigation extends FrameLayout {
             || (capturedWidth == getWidth() && capturedHeight == getHeight())) return;
         capturedWidth = getWidth(); capturedHeight = getHeight();
         int[] position = new int[2]; getLocationOnScreen(position);
-        // Capture only the scrolling sibling, never the glass or its buttons.
+        // Capture only the backdrop sibling, never this glass or its buttons.
         glass.capture(backdropSource, position[0], position[1], capturedWidth, capturedHeight);
     }
 
@@ -72,21 +77,24 @@ final class WorkbenchNavigation extends FrameLayout {
         item.setSelected(active);
         item.setContentDescription(chinese() ? zh : en);
         GradientDrawable selectedFace = new GradientDrawable();
-        selectedFace.setColor(active ? (palette.dark ? 0x24ffffff : 0x14000000) : Color.TRANSPARENT);
-        selectedFace.setCornerRadius(dp(Palette.RADIUS_NAVIGATION));
+        // A light tonal overlay lets the shared glass remain visible rather
+        // than replacing it with a nearly opaque grey tile.
+        selectedFace.setColor(active ? (palette.dark ? 0x24ffffff : 0x1c000000) : Color.TRANSPARENT);
+        selectedFace.setCornerRadius(dp(Palette.RADIUS_NAVIGATION_ITEM));
         GradientDrawable rippleMask = new GradientDrawable();
         rippleMask.setColor(Color.WHITE);
-        rippleMask.setCornerRadius(dp(Palette.RADIUS_NAVIGATION));
+        rippleMask.setCornerRadius(dp(Palette.RADIUS_NAVIGATION_ITEM));
         item.setBackground(new RippleDrawable(ColorStateList.valueOf(Palette.RIPPLE_ON_CARD), selectedFace,
             rippleMask));
-        int color = active ? palette.accent : palette.muted;
+        int color = active ? palette.accent : (palette.dark ? 0xffe1e3e8 : 0xff292c32);
         ImageView image = new ImageView(getContext());
         image.setImageDrawable(new LineIcon(icon, color));
         image.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
-        item.addView(image, new LinearLayout.LayoutParams(dp(22), dp(22)));
+        item.addView(image, new LinearLayout.LayoutParams(dp(24), dp(24)));
         TextView label = new TextView(getContext());
         label.setText(chinese() ? zh : en);
-        label.setTextSize(10);
+        label.setTextSize(11);
+        label.setTypeface(android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.NORMAL));
         label.setIncludeFontPadding(false);
         label.setTextColor(color);
         label.setGravity(Gravity.CENTER);
