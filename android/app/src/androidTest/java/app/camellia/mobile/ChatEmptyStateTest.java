@@ -245,7 +245,7 @@ public class ChatEmptyStateTest extends InstrumentationTestCase {
     }
 
     public void testWelcomeActionsRemainReachableAboveFooterOnShortScreens() throws Exception {
-        local();
+        localFixture(); local();
         ui(() -> ((PageTransitions) field("pages")).finishTransition()); getInstrumentation().waitForIdleSync();
         ui(() -> {
             android.widget.ScrollView scroll = (android.widget.ScrollView) field("scroll"); scroll.setSmoothScrollingEnabled(false); scroll.fullScroll(View.FOCUS_DOWN);
@@ -272,8 +272,10 @@ public class ChatEmptyStateTest extends InstrumentationTestCase {
             android.graphics.Rect visible = new android.graphics.Rect(); View create = view("newDiscussion");
             assertTrue("Discussion creation button is outside the scroll viewport", create.getGlobalVisibleRect(visible));
             assertEquals("Discussion creation button is clipped", create.getHeight(), visible.height());
-            View status = (View) field("status"); int[] position = new int[2]; status.getLocationOnScreen(position);
-            assertEquals(View.VISIBLE, status.getVisibility()); assertTrue(visible.bottom <= position[1]);
+            View status = (View) field("status");
+            assertNull("Destination pages must not attach a status footer", status.getParent());
+            View navigation = view("workbenchNav"); int[] position = new int[2]; navigation.getLocationOnScreen(position);
+            assertTrue(visible.bottom <= position[1]);
         }); screenshot("remote-actions-scrolled");
     }
 }

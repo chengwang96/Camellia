@@ -31,6 +31,26 @@ public class RemoteApiResponseTest extends InstrumentationTestCase {
         } finally { EmbeddedNetwork.setEnabled(old); }
     }
 
+    public void testConversationEventsForwardCompleteHeartbeatsAlongsideSnapshots() throws Exception {
+        var context = getInstrumentation().getTargetContext(); EmbeddedNetwork.initialize(context);
+        boolean old = EmbeddedNetwork.enabled(); EmbeddedNetwork.setEnabled(false);
+        String id = "00000000-0000-0000-0000-000000000001";
+        byte[] body = (": heartbeat\n\nevent: snapshot\ndata: {\"conversation\":{\"id\":\"" + id
+            + "\"},\"messages\":[]}\n\n:heartbeat\n\n").getBytes(StandardCharsets.UTF_8);
+        try (Server server = new Server(body, "text/event-stream")) {
+            RemoteApi client = client(server); client.incremental(true);
+            var snapshots = new java.util.concurrent.atomic.AtomicInteger();
+            var heartbeats = new java.util.concurrent.atomic.AtomicInteger();
+            try {
+                client.events(id, "a".repeat(43), value -> {
+                    assertEquals(id, value.optJSONObject("conversation").optString("id")); snapshots.incrementAndGet();
+                }, heartbeats::incrementAndGet);
+                assertEquals(1, snapshots.get()); assertEquals(2, heartbeats.get());
+                assertEquals("GET /v1/conversations/" + id + "/events?incremental=1 HTTP/1.1", server.requestLine);
+            } finally { client.cancel(); }
+        } finally { EmbeddedNetwork.setEnabled(old); }
+    }
+
     private RemoteApi client(Server server) throws Exception {
         RemoteApi client = new RemoteApi("http://100.80.1.2:" + server.socket.getLocalPort());
         // This private fixture alone uses loopback; the production Endpoint validator remains unchanged.
@@ -41,14 +61,17 @@ public class RemoteApiResponseTest extends InstrumentationTestCase {
     private static final class Server implements AutoCloseable {
         final ServerSocket socket = new ServerSocket(0, 1, InetAddress.getByName("127.0.0.1"));
         final ExecutorService worker = Executors.newSingleThreadExecutor(); final Future<?> served;
-        Server(byte[] body) throws IOException {
+        volatile String requestLine;
+        Server(byte[] body) throws IOException { this(body, "application/json"); }
+        Server(byte[] body, String contentType) throws IOException {
             served = worker.submit(() -> {
                 try (Socket peer = socket.accept()) {
                     peer.setSoTimeout(5000);
                     BufferedReader input = new BufferedReader(new InputStreamReader(peer.getInputStream(), StandardCharsets.US_ASCII));
+                    requestLine = input.readLine();
                     String line; while ((line = input.readLine()) != null && !line.isEmpty()) { }
                     OutputStream output = peer.getOutputStream();
-                    output.write(("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " + body.length + "\r\nConnection: close\r\n\r\n").getBytes(StandardCharsets.US_ASCII));
+                    output.write(("HTTP/1.1 200 OK\r\nContent-Type: " + contentType + "\r\nContent-Length: " + body.length + "\r\nConnection: close\r\n\r\n").getBytes(StandardCharsets.US_ASCII));
                     output.write(body); output.flush();
                 } catch (IOException expectedWhenClientStopsReading) { }
             });

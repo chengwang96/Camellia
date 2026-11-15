@@ -11,6 +11,7 @@ struct ComputersView: View {
     @State private var resumePendingPairing = false
     @State private var pairingComputer: PairedComputer?
     @State private var managingComputer: PairedComputer?
+    @State private var usageComputer: PairedComputer?
     @State private var managePanelHeight: CGFloat = 360
     @State private var openAfterPairing = false
 
@@ -121,6 +122,7 @@ struct ComputersView: View {
                         ScrollView(.vertical, showsIndicators: false) {
                             ComputerManagePanel(computer: computer,
                                                 availableHeight: max(160, geometry.size.height - 32),
+                                                onUsage: { managingComputer = nil; usageComputer = computer },
                                                 onClose: { managingComputer = nil })
                                 .environmentObject(model)
                                 .background(GeometryReader { panel in
@@ -137,6 +139,11 @@ struct ComputersView: View {
                     .frame(width: geometry.size.width, height: geometry.size.height)
                 }
             }
+        }
+        .pageCover(isPresented: Binding(get: { usageComputer != nil }, set: { if !$0 { usageComputer = nil } })) {
+            NavigationView {
+                RemoteUsageView(initialAddress: usageComputer?.address ?? "", onClose: { usageComputer = nil }).environmentObject(model)
+            }.navigationViewStyle(.stack)
         }
     }
 
@@ -282,6 +289,7 @@ private struct ComputerRow: View {
 private struct ComputerManagePanel: View {
     let computer: PairedComputer
     let availableHeight: CGFloat
+    var onUsage: () -> Void = {}
     let onClose: () -> Void
     @EnvironmentObject private var model: AppModel
     @FocusState private var nameFocused: Bool
@@ -302,6 +310,11 @@ private struct ComputerManagePanel: View {
                 header(computer.displayName, description: computerDescription)
                 SettingsCard {
                     if computer.isPaired {
+                        Button(action: onUsage) {
+                            SettingsRowLabel(icon: "", title: "额度与用量", detail: "查看这台电脑的订阅额度、API 余额和调用记录")
+                        }
+                        .buttonStyle(.plain)
+                        SettingsDivider(leading: 16)
                         Button { mode = .restart } label: {
                             SettingsRowLabel(icon: "", title: "重启桌面端 Camellia",
                                              detail: "保存设置并重新启动电脑上的 Camellia")
@@ -1019,6 +1032,12 @@ struct SettingsView: View {
                             .environmentObject(local).environmentObject(model),
                                        isActive: launchBinding("providers")) {
                             SettingsRowLabel(icon: "key", title: "供应商与 Key")
+                        }
+                        .buttonStyle(.plain)
+                        SettingsDivider()
+                        NavigationLink(destination: RemoteUsageView().environmentObject(model),
+                                       isActive: launchBinding("usage")) {
+                            SettingsRowLabel(icon: "chart.bar", title: "额度与用量", detail: "查看电脑端订阅与 API")
                         }
                         .buttonStyle(.plain)
                         SettingsDivider()

@@ -29,8 +29,8 @@ async function body(request, limit = 4096) {
 }
 
 class RemoteGateway {
-  constructor({ access, reader, commands, apiRoutes = null, apiImport = null, nativeSettings = null, management = null, desktopRestart = null, discussions = null, validateHost = isTailscaleIPv4 }) {
-    Object.assign(this, { access, reader, commands, apiRoutes, apiImport, nativeSettings, management, desktopRestart, discussions, validateHost });
+  constructor({ access, reader, commands, apiRoutes = null, apiImport = null, nativeSettings = null, management = null, desktopRestart = null, discussions = null, accountUsage = null, validateHost = isTailscaleIPv4 }) {
+    Object.assign(this, { access, reader, commands, apiRoutes, apiImport, nativeSettings, management, desktopRestart, discussions, accountUsage, validateHost });
     this.streams = new Set();
     this.downloads = new Set();
     this.sequence = 0;
@@ -114,6 +114,20 @@ class RemoteGateway {
     const authorization = request.headers.authorization || '';
     if (!/^Bearer [A-Za-z0-9_-]{43}$/.test(authorization)) fail(401, 'Device authentication required');
     const device = this.access.authenticate(authorization.slice(7));
+    if (this.accountUsage && ['/v1/account-usage', '/v1/account-usage/refresh'].includes(url.pathname)) {
+      if (device.permission !== 'control' || device.allWorkspaces !== true) fail(403, 'Full-device control permission required');
+      if (url.search) fail(400, 'Unsupported usage query');
+      const refresh = url.pathname.endsWith('/refresh');
+      if (request.method !== (refresh ? 'POST' : 'GET')) fail(405, 'Unsupported usage method');
+      if (refresh) {
+        const payload = await body(request);
+        if (!payload || typeof payload !== 'object' || Array.isArray(payload) || Object.keys(payload).length) fail(400, 'Empty object required');
+        const current = this.access.authenticate(authorization.slice(7));
+        if (current.permission !== 'control' || current.allWorkspaces !== true) fail(403, 'Full-device control permission required');
+      }
+      this.json(response, 200, { ...(refresh ? this.accountUsage.refresh() : this.accountUsage.state()), ...this.stamp() });
+      return;
+    }
     if (url.pathname === '/v1/desktop/restart' && this.desktopRestart) {
       const validate = () => {
         const current = this.access.authenticate(authorization.slice(7));
@@ -297,6 +311,7 @@ class RemoteGateway {
     const capabilities = this.commands ? ['artifacts', 'attachments', 'expanded-attachments', 'send', 'stop', 'approve', 'create', 'image', 'multi-image', 'configure', 'move', 'archive', 'restore', 'conversation-actions',
       ...(fullControl ? ['create-workspace', 'delete-workspace', 'rename-workspace'] : [])] : ['artifacts'];
     if (this.apiRoutes && fullControl) capabilities.push('api-keys');
+    if (this.accountUsage && fullControl) capabilities.push('account-usage');
     if (this.apiImport && fullControl) capabilities.push('api-import');
     if (this.nativeSettings && fullControl) capabilities.push('native-settings');
     if (this.management && fullControl) capabilities.push('server-management');

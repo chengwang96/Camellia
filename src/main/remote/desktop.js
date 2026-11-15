@@ -5,7 +5,7 @@ const { EmbeddedNetwork } = require('./embedded-network');
 const { createRemoteService } = require('./service');
 
 function createRemoteDesktop({ app, BrowserWindow, ipcMain, nativeTheme, windowChrome, manager, rendererRoot, loadConfig, getSettingsWindow = () => null, getMainWindow = () => null, networkFactory, apiRoutes = null, getDiscussions = null,
-  computerName = () => '', saveComputerName = () => {}, prepareRestart = async () => {}, log = () => {} }) {
+  computerName = () => '', saveComputerName = () => {}, prepareRestart = async () => {}, accountUsage = null, log = () => {} }) {
   let window = null;
   // Pairing stores the display name on the invitation; an explicit edit stores it
   // as a local preference. Both funnel through here so the snapshot is never empty.
@@ -15,7 +15,7 @@ function createRemoteDesktop({ app, BrowserWindow, ipcMain, nativeTheme, windowC
   };
   const desktopRestart = require('./desktop-restart').createDesktopRestart({ file: path.join(app.getPath('userData'), 'remote', 'desktop-restarts.json'),
     prepare: prepareRestart, restart: () => { app.relaunch(); app.quit(); }, log });
-  const service = createRemoteService({ dataDir: app.getPath('userData'), manager, apiRoutes, setComputerName, getDiscussions, desktopRestart,
+  const service = createRemoteService({ dataDir: app.getPath('userData'), manager, apiRoutes, setComputerName, getDiscussions, desktopRestart, accountUsage,
     preferences: () => ({ closeToTray: loadConfig().closeToTray === true, theme: loadConfig().theme || 'system', language: loadConfig().language || 'zh-CN',
       computerName: computerName() }),
     networkFactory: ({ onFailure }) => {

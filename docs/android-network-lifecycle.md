@@ -18,14 +18,24 @@ Settings completion binds only to the current page's control. Leaving that page 
 
 ## Background retention and downloads
 
-Foreground/background hooks and transfer leases only update state or enqueue work. Backgrounding keeps a five-minute retention window. A queued expiry rechecks the deadline and active downloads before detaching the node, so returning to the foreground or starting a download can cancel a pending idle shutdown. Returning after an expired window rebuilds the node unless a download has retained it. Releasing the final download lease schedules an expiry check when a background deadline remains.
+Foreground/background hooks and transfer leases only update state or enqueue work. Backgrounding keeps a 30-minute retention window. A queued expiry rechecks the deadline and active downloads before detaching the node, so returning to the foreground or starting a download can cancel a pending idle shutdown. Returning after an expired window rebuilds the node unless a download has retained it. Releasing the final download lease schedules an expiry check when a background deadline remains.
 
 Startup that finishes after an unretained background window expires is also closed without publication. Foregrounding clears the deadline; no identity deletion or automatic login retry accompanies idle reclamation.
+
+## Conversation stream recovery
+
+Remote detail connections open their event stream independently of history workers. Unknown capabilities are discovered in parallel on status workers while the first connection uses the compatible full-snapshot format. Metadata from another address or credential is cleared before connecting. Metadata alone never authorizes a command; controls require the current conversation's fresh snapshot and permission.
+
+Each connection generation owns a single event executor. Stopping that generation interrupts and shuts down its executor and closes its API client off the main thread. A replacement gets a new executor, so a socket or native read that observes cancellation late cannot hold up the next connection. Generation checks reject late snapshots and metadata callbacks. A coalesced refresh checks its generation before taking the shared pending snapshot: an old worker can post after callback cleanup, and that delayed callback must leave the replacement's initial snapshot intact.
+
+`RemoteStreamHealth` uses elapsed realtime. A usable first snapshot must arrive within 30 seconds; heartbeats alone cannot complete startup. After synchronization, complete snapshots and heartbeat frames extend a 35-second idle deadline. Expiry starts a replacement connection and displays the sync timeout or lost-connection reason while retaining the visible transcript and draft. A retained foreground service is checked again on return, covering time spent asleep even when no network-route callback arrives. Existing authorization failures and retry backoff remain in effect.
 
 ## Verification
 
 `NetworkLifecycleTest` uses controlled startup, shutdown and persistence barriers to verify concurrent initialization, independent caller cancellation, route and mode changes, identity removal, directory ownership, persistence failure, foreground recovery, download leases and callback execution outside the state lock.
 
 `NetworkLifecycleUiTest` places barriers around the production JNI adapter and exercises Android's main looper while startup, native close or mode persistence is blocked. `EmbeddedNetworkTest` verifies native replacement, encrypted identity retention, explicit identity removal and preference persistence. Related settings, navigation, recovery, keep-alive and chat-view tests cover integration with existing screens.
+
+`RemoteStartupTest` blocks read workers, capability discovery and old stream cancellation, then checks independent startup, timeout replacement and rejection of late frames. A controlled Handler reproduces an old refresh posting after cleanup and running before the replacement's initial refresh. `RemoteStreamHealthTest` checks startup deadlines, quiet-conversation heartbeats and elapsed sleep time. The keep-alive tests cover both healthy reuse and replacement of a stalled stream before service retention expires; the HTTP response fixture checks the conversation endpoint's snapshot and heartbeat callbacks.
 
 These checks use a disposable emulator and a development APK. They do not establish physical-phone Wi-Fi/cellular handover, browser sign-in or real Tailnet download continuity. The optional online login test runs only when instrumentation is started with `-e onlineLogin true`.

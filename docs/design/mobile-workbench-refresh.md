@@ -11,14 +11,16 @@ Build 117 applies the phone visual layer:
 - Runtime design tokens in `Palette`, with compact radii and the neutral workbench background.
 - `AgentBadge`, `StatusPill`, and `WorkbenchNavigation` shared views.
 - Compact session rows with file/workspace/time context and all/running/waiting/files/archived filters that wrap to two rows on narrow phones.
-- A Running section followed by an idle-only Recent section, both painted from cache and refreshed from the paired computer when Workbench opens or returns to the foreground, with local chat, remote control, and settings grouped into a compact shortcut card.
+- A Running section followed by an idle-only Recent section, both painted from cache and kept current by a live conversation-list subscription while Workbench is visible. Returning from the background reopens the subscription and refreshes from the paired computer; desktops without the event endpoint fall back to a 15-second poll. Local chat and settings share a compact shortcut card; computer management lives in the Computers destination.
 - A four-destination phone navigation bar for Workbench, Sessions, Computers, and Settings.
 - A priority-folded `remoteWorkSummary` row for approvals, failed commands, goals/tasks, background work, and queue, backed by a WorkSheet with direct approval/background actions and section details. A plain running turn is already shown by the transcript/status line, so it does not create this row.
+- The Goal/tasks section reads the conversation's automation snapshot independently of its live turn. It shows full selectable objectives/instructions and existing pause/resume controls directly in the scrollable sheet, updates when automation changes, and applies the same completed-goal visibility rule as the inline bar.
 - Compact ToolActivity and Artifact rows.
 - Compact Settings groups for account/connection, application/permissions, data/diagnostics and about.
 - Shared attachment sheets with a labelled source row and 48dp-or-larger source tiles.
 - A docked queue tray with status, next-message preview and a dedicated management sheet; queued items expose explicit edit, insert-now and remove actions with safe handling for starting, paused and failed states.
-- Model and permission pickers use a bottom-anchored glass sheet with a grip and rise-in animation. The sheet is horizontally centered on the composer trigger, not on the full-width model row, so it no longer appears to grow from the left edge.
+- Model and permission pickers open as glass menus above the composer trigger, with a grip and rise-in animation. The trigger remains visible and can be tapped again to dismiss the menu. Menus are horizontally centered on the trigger and constrain their scrollable height to the available space above it, including when the keyboard is open.
+- On tablet-width windows, long model menus can use up to 72% of the visible height with a 720dp cap; short menus still hug their content. Phone menus retain their 56% / 420dp limit. Both remain bounded by the space above the trigger.
 - Remote conversations use a persistent left session sidebar in tablet landscape when the window is at least `840×600dp`. The sidebar shows engine, activity, time and unread state, supports direct conversation switching, and preserves the existing chat page on the right.
 
 Phone remains portrait-only. The tablet split is implemented for the remote conversation view; tablet navigation-rail composition and iOS runtime validation remain future work.
@@ -152,6 +154,12 @@ Four destinations initially:
 
 Each item has a 24dp icon, label, selected treatment, and a badge slot for approvals or unread work. A later tablet navigation-rail composition can reuse this order; the current wide split keeps the bar on destination screens.
 
+The selected background and press-ripple mask share the 22dp navigation corner radius. Sustained presses must keep all four corners clear while still showing feedback inside the rounded shape.
+
+The bar floats over the scrolling page, with a live blurred backdrop, a translucent neutral wash and a fine light edge. The selected segment adds a separate translucent neutral grey layer; only its icon and label use the accent. Neither the whole control nor its labels have reduced opacity. The scroll viewport extends behind the bar, with 72dp of internal bottom padding so the last row can clear the 64dp bar and an 8dp gap. Navigation stays anchored above the system inset on all four destinations. Power saver uses an opaque surface and stops backdrop capture.
+
+Workbench, Sessions, Computers and Settings have no status footer above the navigation bar or refresh spinner above the content. Refreshing does not translate the content or reserve a loading gap. Pull-to-refresh, its threshold haptic and accessibility action still work, and automatic synchronization continues. Status updates leave the bar's position and size, and the scrolling viewport's height, unchanged. Connection state stays in the existing header or computer row. Conversation detail retains its composer status line and older-message loading indicator.
+
 ### `AgentBadge`
 
 Uses the desktop engine mark or a neutral text fallback. Variants: 20dp inline, 28dp row, 32dp hero. Never invent a new engine logo; keep brand assets in one shared source.
@@ -221,7 +229,7 @@ Grouped list with a section label, 52–56dp rows, leading icon, title, optional
 
 ### `ModelPickerSheet`
 
-Both local and remote model pickers open above the bottom safe area, centered on the composer trigger. Use a visible grip, a maximum width of `420dp`, and a short content rise-in animation. Do not anchor the sheet to the left edge of a full-width composer row; that positioning makes a wide menu read as a detached panel from the left.
+Both local and remote model pickers open above the composer trigger, centered on that trigger and bounded by the visible frame. Size model menus from their actual title text, row/panel padding and a reserved selection-mark column, with a `220dp` minimum and `340dp` maximum, further limited by the viewport gutters. Supporting descriptions wrap within that width. Keep width stable when the selected model changes. Use a visible grip and a short content rise-in animation. Permission sheets keep their separate sizing policy.
 
 ### `ConversationSidebar`
 
@@ -238,12 +246,13 @@ Brand/engine mark, one short heading, one explanatory sentence, and at most two 
 - Compact brand header: Camellia mark only. The paired-computer context and new-conversation action live in Sessions/Computers instead of a duplicate bar on Workbench.
 - Back from a conversation returns to the screen that opened it: Workbench for a home row, Sessions for a session-list row.
 - Switching among the four bottom destinations is an in-place content swap: the navigation bar keeps its geometry and does not slide. Horizontal push/pop transitions remain reserved for entering and leaving a conversation or other nested page.
-- Sessions and Computers are sibling top-level destinations, not a parent chain. Neither shows a header back button. System Back from Sessions returns to Workbench, not Computers.
+- Sessions, Computers and Settings are sibling top-level destinations, not a parent chain. None shows a header back button; the Settings title stays centered. Settings subpages retain their back buttons. System Back from Sessions returns to Workbench, not Computers.
 - Hero title: continue working.
 - The shortcut group contains only **Local chat** and **Settings**. Computer management uses the bottom **Computers** destination; Workbench has no duplicate computer shortcut, connection-state label or connection-retry actions.
 - No count subtitle and no duplicate continue card. The first card is not repeated again below itself.
 - `运行中` section for running, permission/question and background-work conversations. It omits itself when nothing is active.
-- `最近` section for idle conversations only. It paints the existing cache first, then requests `/v1/conversations?offset=0` when Workbench becomes visible and is online and paired. Requests are coalesced and throttled to five seconds; the page is rebuilt only when the cache changes, and its scroll position is preserved.
+- `最近` section for idle conversations only. It paints the existing cache first, then requests `/v1/conversations?offset=0` when Workbench becomes visible and is online and paired. Requests are coalesced and throttled to five seconds. Pulls and live pushes update the existing list without rebuilding the page, navigation or scrolling container. Cards are reused by conversation identity and visible presentation, so changes to undisplayed stream metadata do not detach them.
+- List changes are coalesced during a touch gesture and its fling, then applied after 180ms without scrolling. The cache and subscription remain current while the gesture runs. Inserts, removals and reordering preserve the surviving visible card's offset; leaving the page discards pending UI work. Expanding/collapsing Running uses the same list update and does not restart the subscription.
 - Each running/recent row owns its own activity label. There is no page-level running/waiting total, so a completed run cannot leave a separate summary claiming that some other conversation is still running.
 - Bottom navigation.
 

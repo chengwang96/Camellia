@@ -53,15 +53,113 @@ public class RemoteAutomationTest extends InstrumentationTestCase {
     }
 
     private void render(JSONObject automation, JSONArray rows) throws Exception {
+        render(automation, rows, null, "control");
+    }
+
+    private void render(JSONObject automation, JSONArray rows, JSONObject live, String permission) throws Exception {
         var apply = MainActivity.class.getDeclaredMethod("applySnapshot", JSONObject.class); apply.setAccessible(true);
         JSONObject snapshot = new JSONObject().put("instanceId", "test").put("cursor", 1)
             .put("conversation", new JSONObject().put("id", "automation-test").put("title", "自动化"))
-            .put("messages", rows).put("nextBefore", JSONObject.NULL);
+            .put("messages", rows).put("nextBefore", JSONObject.NULL).put("permission", permission);
+        if (live != null) snapshot.put("live", live);
         if (automation != null) snapshot.put("automation", automation);
         apply.invoke(activity, snapshot);
     }
 
     private ViewGroup bar() { return activity.getWindow().getDecorView().findViewWithTag("remoteAutomation"); }
+
+    private android.app.Dialog workSheet() throws Exception {
+        var member = MainActivity.class.getDeclaredField("workDialog"); member.setAccessible(true);
+        return (android.app.Dialog) member.get(activity);
+    }
+
+    private View openWorkSheet() throws Exception {
+        View summary = activity.getWindow().getDecorView().findViewWithTag("remoteWorkSummary");
+        assertTrue(summary.isShown());
+        assertTrue(summary.performClick());
+        assertTrue(workSheet().isShowing());
+        return workSheet().getWindow().getDecorView();
+    }
+
+    public void testWorkSheetShowsRootGoalDuringLiveTurnAndUpdatesInPlace() {
+        ui(() -> {
+            String objective = "核对原文后建立从零起转的十秒脚本基线，保存每一步证据与进度，随后验证因果反馈和扰动恢复。";
+            JSONObject goal = new JSONObject().put("id", "live-goal").put("objective", objective)
+                .put("phase", "active").put("armed", true).put("roundsStarted", 3);
+            JSONObject automation = new JSONObject().put("goal", goal);
+            JSONObject live = new JSONObject().put("runId", 3).put("text", "正在核对原文");
+            render(automation, new JSONArray(), live, "control");
+            View sheet = openWorkSheet();
+            TextView detail = sheet.findViewWithTag("remoteGoalObjective");
+            assertNotNull("The summary must open the goal from snapshot.automation, not live.automation", detail);
+            assertEquals(objective, detail.getText().toString());
+            assertEquals(Integer.MAX_VALUE, detail.getMaxLines());
+            assertEquals("目标进行中", ((TextView) sheet.findViewWithTag("remoteGoalState")).getText().toString());
+            assertTrue(sheet.findViewWithTag("remoteGoalToggle").isEnabled());
+            live.put("text", "原文核对仍在进行");
+            render(automation, new JSONArray(), live, "control");
+            assertSame("Live text updates must preserve selectable goal content", detail, sheet.findViewWithTag("remoteGoalObjective"));
+            goal.put("phase", "paused").put("armed", false);
+            render(automation, new JSONArray(), null, "control");
+            assertTrue(workSheet().isShowing());
+            assertEquals("目标已暂停", ((TextView) sheet.findViewWithTag("remoteGoalState")).getText().toString());
+            assertEquals("恢复", ((TextView) sheet.findViewWithTag("remoteGoalToggle")).getText().toString());
+            render(automation, new JSONArray(), null, "view");
+            assertFalse("Read-only devices cannot control the goal", sheet.findViewWithTag("remoteGoalToggle").isEnabled());
+            render(null);
+            assertNull("Removing automation must clear an open sheet", sheet.findViewWithTag("remoteGoal"));
+            assertEquals(View.GONE, activity.getWindow().getDecorView().findViewWithTag("remoteWorkSummary").getVisibility());
+        });
+    }
+
+    public void testWorkSheetShowsWaitingGoalWithoutLiveTurn() throws Exception {
+        ui(() -> {
+            render(new JSONObject().put("goal", new JSONObject().put("id", "waiting-sheet")
+                .put("objective", "完成十秒基线验证后，继续因果反馈和扰动恢复研究，并保存可复查的进度。")
+                .put("phase", "active").put("armed", true).put("waiting", new JSONObject()
+                    .put("reason", "仿真仍在运行，等待结果后继续核对。").put("until", System.currentTimeMillis() + 120000))));
+            View sheet = openWorkSheet();
+            assertNotNull(sheet.findViewWithTag("remoteGoalObjective"));
+            assertEquals("目标等待中", ((TextView) sheet.findViewWithTag("remoteGoalState")).getText().toString());
+            assertNotNull(sheet.findViewWithTag("remoteGoalWaitingReason"));
+            assertNotNull(sheet.findViewWithTag("remoteGoalNextCheck"));
+            assertEquals("暂停", ((TextView) sheet.findViewWithTag("remoteGoalToggle")).getText().toString());
+        });
+        getInstrumentation().waitForIdleSync();
+        android.os.SystemClock.sleep(300);
+        java.io.File directory = new java.io.File(activity.getExternalFilesDir(null), "workbench-visuals");
+        assertTrue(directory.isDirectory() || directory.mkdirs());
+        android.graphics.Bitmap screenshot = getInstrumentation().getUiAutomation().takeScreenshot();
+        try (var output = new java.io.FileOutputStream(new java.io.File(directory, "goal-work-sheet.png"))) {
+            assertTrue(screenshot.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, output));
+        } finally { screenshot.recycle(); }
+    }
+
+    public void testWorkSheetKeepsTasksButDoesNotReviveAnOldCompletedGoal() {
+        ui(() -> {
+            JSONObject task = new JSONObject().put("id", "task-sheet").put("instruction", "每十分钟检查构建与测试结果，失败时保留完整日志。")
+                .put("status", "scheduled").put("intervalMinutes", 10);
+            JSONObject automation = new JSONObject().put("goal", new JSONObject().put("id", "old-goal")
+                .put("objective", "旧目标").put("phase", "complete").put("completedAt", 2000))
+                .put("tasks", new JSONArray().put(task));
+            render(automation, new JSONArray().put(message(1, "user", 3000)));
+            View sheet = openWorkSheet();
+            assertNull(sheet.findViewWithTag("remoteGoal"));
+            assertEquals(task.optString("instruction"), ((TextView) sheet.findViewWithTag("remoteTaskInstruction")).getText().toString());
+            assertEquals("暂停", ((TextView) sheet.findViewWithTag("remoteTaskToggle")).getText().toString());
+            task.put("status", "paused"); render(automation);
+            assertEquals("恢复", ((TextView) sheet.findViewWithTag("remoteTaskToggle")).getText().toString());
+            var rebuild = MainActivity.class.getDeclaredMethod("rebuildDetailForConfiguration"); rebuild.setAccessible(true); rebuild.invoke(activity);
+            assertNull("Rebuilding the page must dismiss its old sheet", workSheet());
+            sheet = openWorkSheet();
+            assertNotNull("Retained automation must survive a layout rebuild", sheet.findViewWithTag("remoteTask"));
+            assertNull(sheet.findViewWithTag("remoteGoal"));
+            var detail = MainActivity.class.getDeclaredMethod("detailScreen"); detail.setAccessible(true); detail.invoke(activity);
+            assertNull(workSheet());
+            render(null);
+            assertEquals(View.GONE, activity.getWindow().getDecorView().findViewWithTag("remoteWorkSummary").getVisibility());
+        });
+    }
 
     private JSONObject message(long seq, String role, long at) throws Exception {
         return new JSONObject().put("seq", seq).put("role", role).put("at", at).put("text", "会话内容 " + seq);

@@ -77,7 +77,8 @@ public class ComputerSelectionTest extends InstrumentationTestCase {
             assertTrue(row.getContentDescription().toString().contains(failure));
             assertFalse(online == ((GradientDrawable) dot.getBackground()).getColor().getDefaultColor());
             TextView footer = (TextView) field("status"); footer.setText("电脑状态已更新"); assertEquals(View.GONE, footer.getVisibility());
-            footer.setText("无法检查电脑状态，请下拉重试。"); assertEquals(View.VISIBLE, footer.getVisibility());
+            footer.setText("无法检查电脑状态，请下拉重试。"); assertEquals(View.GONE, footer.getVisibility());
+            assertNull("Computer states stay in their rows, outside navigation", footer.getParent());
         });
     }
 

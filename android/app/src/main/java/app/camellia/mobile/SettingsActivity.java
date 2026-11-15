@@ -5,6 +5,7 @@ import android.app.AlertDialog;
 import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.Context;
+import android.content.Intent;
 import android.graphics.Typeface;
 import android.os.Bundle;
 import android.text.InputType;
@@ -130,7 +131,87 @@ public final class SettingsActivity extends Activity {
     }
     private void failure(Exception error) { status.setText(error.getMessage() == null ? tr("无法保存，请重试。", "Could not save. Try again.") : error.getMessage()); }
     private void render() throws Exception {
-        if (section.equals("general")) general(); else if (section.equals("archived")) archived(); else providers();
+        if (section.equals("general")) general();
+        else if (section.equals("reading")) reading();
+        else if (section.equals("notifications")) notifications();
+        else if (section.equals("archived")) archived(); else providers();
+    }
+
+    private void reading() {
+        shell(tr("阅读与显示", "Reading & display"));
+        LinearLayout group = settingsStyle.group(content, "");
+        preference(group, "chatFontSize", tr("聊天字号", "Chat text size"),
+            new String[]{tr("小 · 90%", "Small · 90%"), tr("标准 · 100%", "Standard · 100%"),
+                tr("大 · 115%", "Large · 115%"), tr("特大 · 130%", "Extra large · 130%")},
+            new String[]{"small", "system", "large", "largest"});
+        settingsStyle.toggle(group, tr("代码自动换行", "Wrap code"),
+            tr("长代码按屏幕宽度换行，复制时保留原文。", "Fit long code lines to the screen. Copied code stays unchanged."),
+            "preference:codeWrap", MobilePreferences.codeWrap(this), (view, checked) -> {
+                MobilePreferences.codeWrap(this, checked); reading();
+            });
+        preference(group, "processMode", tr("执行过程", "Execution process"),
+            new String[]{tr("默认折叠", "Collapsed by default"), tr("执行时展开，完成后折叠", "Expand while running; collapse when finished"),
+                tr("默认展开", "Expanded by default")}, new String[]{"system", "live", "expanded"});
+        settingsStyle.note(content, tr("应用于这台手机的本地与远程聊天，字号随系统字体大小一起缩放。执行过程仍可手动展开或收起。",
+            "Applies to local and remote chats on this phone. Text also follows system font scaling. You can still expand or collapse each process."));
+        LinearLayout preview = settingsStyle.group(content, tr("预览", "Preview"));
+        LinearLayout sample = column(); sample.setPadding(dp(14), dp(8), dp(14), dp(8)); sample.setTag("readingPreview");
+        View rendered = new MarkdownView(this, settingsStyle.ink, settingsStyle.secondary, settingsStyle.field, settingsStyle.accent)
+            .render(tr("这是聊天内容的字号预览。\n\n```java\nString message = \"Long code lines follow your word wrap setting.\";\n```",
+                "Preview of chat text at the selected size.\n\n```java\nString message = \"Long code lines follow your word wrap setting.\";\n```"));
+        rendered.findViewWithTag("markdownCodeWrap").setVisibility(View.GONE);
+        rendered.findViewWithTag("markdownCodeCopy").setVisibility(View.GONE);
+        sample.addView(rendered);
+        preview.addView(sample);
+    }
+
+    private void notifications() {
+        shell(tr("通知控制", "Notifications"));
+        LinearLayout group = settingsStyle.group(content, "");
+        settingsStyle.toggle(group, tr("会话通知", "Chat notifications"),
+            tr("提醒新的回复、审批和执行失败。", "Notify about new replies, approval requests and failures."),
+            "preference:chatNotifications", ChatNotifications.enabled(this), (view, checked) -> {
+                MobilePreferences.set(this, "chatNotifications", checked ? "enabled" : "disabled");
+                if (!checked) ChatNotifications.clear(this);
+                if (checked && android.os.Build.VERSION.SDK_INT >= 33
+                        && checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED)
+                    requestPermissions(new String[]{android.Manifest.permission.POST_NOTIFICATIONS}, 74);
+            });
+        LinearLayout events = settingsStyle.group(content, tr("提醒内容", "Notify me about"));
+        notificationToggle(events, "reply", tr("回复完成", "Reply completed"));
+        notificationToggle(events, "approval", tr("等待审批或回答问题", "Approval or answer needed"));
+        notificationToggle(events, "error", tr("执行失败", "Execution failed"));
+        settingsStyle.toggle(events, tr("查看会话时也提醒", "Also notify while viewing the chat"), "",
+            "preference:notifyForeground", MobilePreferences.get(this, "notifyForeground").equals("enabled"),
+            (view, checked) -> MobilePreferences.set(this, "notifyForeground", checked ? "enabled" : "disabled"));
+        LinearLayout system = settingsStyle.group(content, tr("系统权限", "System permission"));
+        settingsStyle.action(system, tr("系统通知设置", "System notification settings"),
+            ChatNotifications.allowed(this) ? tr("已允许 · 声音与震动由系统管理", "Allowed · sound and vibration are managed by Android")
+                : tr("系统通知未开启，开启后才能收到提醒。", "Notifications are blocked by Android. Enable them to receive alerts."),
+            "notificationSystemSettings", false, () -> {
+                try { startActivity(new Intent(android.provider.Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, getPackageName())); }
+                catch (Exception error) { failure(error); }
+            });
+        settingsStyle.note(content, tr("远程通知在连接保持期间接收；后台接收需要开启“短暂离开时保持连接”。应用被系统关闭后不接收推送。下载和连接保活通知独立管理。",
+            "Remote alerts arrive while connected. Enable “Keep connection while away” to receive them in the background. No push alerts arrive after Android closes the app. Download and connection-service notifications are managed separately."));
+    }
+
+    private void notificationToggle(LinearLayout group, String type, String title) {
+        settingsStyle.toggle(group, title, "", "preference:notify:" + type, ChatNotifications.categoryEnabled(this, type),
+            (view, checked) -> {
+                MobilePreferences.set(this, "notify:" + type, checked ? "enabled" : "disabled");
+                if (!checked) ChatNotifications.clear(this, type);
+            });
+    }
+
+    @Override protected void onResume() {
+        super.onResume();
+        if (store != null && section.equals("notifications")) notifications();
+    }
+
+    @Override public void onRequestPermissionsResult(int request, String[] permissions, int[] grants) {
+        super.onRequestPermissionsResult(request, permissions, grants);
+        if (request == 74 && store != null && section.equals("notifications")) notifications();
     }
 
     private void general() {
@@ -200,9 +281,11 @@ public final class SettingsActivity extends Activity {
         // The choice goes on a second line, not in the narrow right-hand column:
         // these labels are sentences ("Enter sends; hold for newline"), and a
         // 100dp single-line slot truncated them to "Enter sends; h…".
-        settingsStyle.preference(group, key.equals("theme") ? "appearance" : key.equals("enterMode") ? "settings" : "language", title, labels[current], "preference:" + key, () -> {
+        String icon = key.equals("theme") ? "appearance" : key.equals("language") ? "language" : key.equals("chatFontSize") ? "file" : "settings";
+        settingsStyle.preference(group, icon, title, labels[current], "preference:" + key, () -> {
             dialog = new SettingsChoiceDialog(this, title, labels, current, tr("取消", "Cancel"), which -> {
-                MobilePreferences.set(this, key, values[which]); recreate();
+                MobilePreferences.set(this, key, values[which]);
+                if (key.equals("chatFontSize") || key.equals("processMode")) reading(); else recreate();
             });
             dialog.show();
         });

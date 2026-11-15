@@ -15,6 +15,7 @@ import android.os.Bundle;
 final class RefreshScrollView extends ChatScrollView {
     private float startX, startY;
     private boolean eligible, pulling, armed, refreshing;
+    private boolean refreshIndicatorVisible = true;
     private Runnable refresh;
     private java.util.function.Consumer<Boolean> hint;
     private final float threshold;
@@ -41,6 +42,14 @@ final class RefreshScrollView extends ChatScrollView {
         setOverScrollMode(action == null ? OVER_SCROLL_IF_CONTENT_SCROLLS : OVER_SCROLL_NEVER);
     }
 
+    void setRefreshIndicatorVisible(boolean visible) {
+        refreshIndicatorVisible = visible;
+        if (!visible) {
+            if (settle != null) settle.cancel();
+            reveal(0);
+        } else if (refreshing) animateReveal(52 * density);
+    }
+
     void setRefreshing(boolean value) {
         value = value && refresh != null;
         if (refreshing == value && (value || reveal == 0)) return;
@@ -50,14 +59,14 @@ final class RefreshScrollView extends ChatScrollView {
     }
 
     private void reveal(float value) {
-        reveal = value;
-        if (getChildCount() > 0) getChildAt(0).setTranslationY(value);
+        reveal = refreshIndicatorVisible ? value : 0;
+        if (getChildCount() > 0) getChildAt(0).setTranslationY(reveal);
         invalidate();
     }
 
     private void animateReveal(float target) {
         if (settle != null) settle.cancel();
-        if (!ValueAnimator.areAnimatorsEnabled()) { reveal(target); return; }
+        if (!refreshIndicatorVisible || !ValueAnimator.areAnimatorsEnabled()) { reveal(target); return; }
         settle = ValueAnimator.ofFloat(reveal, target);
         settle.setDuration(240);
         settle.setInterpolator(new DecelerateInterpolator());

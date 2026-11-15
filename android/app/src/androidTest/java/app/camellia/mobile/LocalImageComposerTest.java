@@ -112,9 +112,16 @@ public class LocalImageComposerTest extends InstrumentationTestCase {
                 ViewGroup tray = (ViewGroup) row;
                 assertEquals(1, tray.getChildCount());
                 ViewGroup tile = (ViewGroup) tray.getChildAt(0);
-                assertTrue(tile.getChildAt(0) instanceof android.widget.ImageView);
+                assertTrue(tile.getChildAt(0) instanceof AttachmentImageView);
                 assertTrue(tile.getChildAt(0).getContentDescription().toString().startsWith("图片"));
                 assertEquals("A sent picture has no remove button", 1, tile.getChildCount());
+                assertTrue(tile.getChildAt(0).performClick());
+                try {
+                    var active = InlineImageGallery.class.getDeclaredField("active"); active.setAccessible(true);
+                    InlineImageGallery.GalleryView gallery = (InlineImageGallery.GalleryView) active.get(null);
+                    assertNotNull("Sent local images open Camellia's gallery", gallery);
+                    assertEquals("1 / 1", gallery.counter.getText().toString()); gallery.dialog.dismiss();
+                } catch (Exception error) { throw new AssertionError(error); }
             });
             screenshot(activity, "local-image-message");
         } finally {

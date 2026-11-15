@@ -18,10 +18,20 @@ final class RemoteHistoryPage {
     private long bytes;
     private int pages, visible;
     private boolean limited;
+    private final int recordLimit, visibleLimit;
+    private final long byteLimit;
     Long nextBefore;
 
     RemoteHistoryPage(Collection<Long> cached, long before) {
+        this(cached, before, MAX_RECORDS, MAX_BYTES, Integer.MAX_VALUE);
+    }
+
+    RemoteHistoryPage(Collection<Long> cached, long before, int recordLimit, long byteLimit, int visibleLimit) {
+        if (recordLimit < 1 || byteLimit < 1 || visibleLimit < 1) throw new IllegalArgumentException("Invalid history budget");
         known = new HashSet<>(cached); nextBefore = before;
+        this.recordLimit = Math.min(MAX_RECORDS, recordLimit);
+        this.byteLimit = Math.min(MAX_BYTES, byteLimit);
+        this.visibleLimit = visibleLimit;
     }
 
     void append(JSONObject snapshot, long before) throws IOException {
@@ -40,19 +50,20 @@ final class RemoteHistoryPage {
             if (known.contains(seq)) continue;
             long weight = weight(row);
             if (weight > MAX_BYTES) throw new IOException("Earlier-message record exceeds the display budget");
-            if (atLimit(rows.size(), bytes) || bytes + weight > MAX_BYTES) { limited = true; break; }
+            if (atBatchLimit() || bytes + weight > byteLimit) { limited = true; break; }
             known.add(seq); rows.put(seq, row); bytes += weight;
             if (visible(row)) visible++;
         }
         pages++;
         // A partial page resumes at the earliest admitted row, including when
         // the server said this was the final page. Never skip its unread rows.
-        nextBefore = limited ? rows.firstKey() : next;
-        if (nextBefore != null && atLimit(rows.size(), bytes)) limited = true;
+        nextBefore = limited ? Long.valueOf(rows.isEmpty() ? before : rows.firstKey()) : next;
+        if (nextBefore != null && atBatchLimit()) limited = true;
     }
 
     boolean needsNext() { return visible == 0 && nextBefore != null && !limited && pages < MAX_PAGES; }
     boolean limited() { return limited; }
+    private boolean atBatchLimit() { return rows.size() >= recordLimit || bytes >= byteLimit || visible >= visibleLimit; }
     static boolean atLimit(int records, long bytes) { return records >= MAX_RECORDS || bytes >= MAX_BYTES; }
     static boolean visible(JSONObject row) { return Set.of("user", "assistant", "notice").contains(row.optString("role")); }
 

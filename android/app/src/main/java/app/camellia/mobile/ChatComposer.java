@@ -40,7 +40,7 @@ final class ChatComposer {
         cancelEdit.setTag("composerCancelEdit");
         editing.addView(cancelEdit, new LinearLayout.LayoutParams(dp(48), dp(48)));
         editing.setVisibility(View.GONE); bar.addView(editing);
-        input = new ComposerInput(context); input.setTextColor(style.ink); input.setTextSize(Palette.TEXT_ROW);
+        input = new ComposerInput(context); input.setTextColor(style.ink); input.setTextSize(MobilePreferences.chatTextSize(context, Palette.TEXT_ROW));
         input.setMaxLines(4); input.setMinHeight(dp(48)); input.setVerticalScrollBarEnabled(false);
         input.setHint(hint); input.setHintTextColor(style.muted);
         input.setContentDescription(chinese ? "消息输入框" : "Message input");

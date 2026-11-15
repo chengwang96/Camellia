@@ -46,10 +46,11 @@ final class ModelPickerPopup {
     private PopupSurface thinkingSurface;
     private View retreat;
     private View backdropSource;
-    private int heightLimit, modelHeight;
+    private int heightLimit, modelHeight, modelWidth;
     private int popupLeft, popupBottom;
     private int updateOffsetY;
     private int requestedTop;
+    private Rect visibleFrame;
 
     ModelPickerPopup(Context context, boolean chinese, int background, int surface, int ink, int muted, int accent,
             List<LocalChatConfig.Route> routes, LocalChatConfig.Route selected, String level, Listener listener) {
@@ -76,13 +77,16 @@ final class ModelPickerPopup {
     @android.annotation.SuppressLint("RtlHardcoded")
     void show(View anchor) {
         Rect visible = PopupSurface.visibleFrame(anchor);
+        visibleFrame = visible;
         int[] location = new int[2]; anchor.getLocationOnScreen(location);
         int width = PopupSurface.modelMenuWidth(context, visible);
         int anchorCenter = location[0] + anchor.getWidth() / 2;
         popupLeft = PopupSurface.sheetLeft(anchorCenter, width, visible.left, visible.right, dp(PopupSurface.BOTTOM_SHEET_GUTTER_DP));
-        popupBottom = visible.bottom - dp(PopupSurface.BOTTOM_SHEET_BOTTOM_GAP_DP);
-        heightLimit = PopupSurface.menuHeightLimit(context, visible);
+        popupBottom = PopupSurface.menuBottom(context, visible, location[1]);
+        heightLimit = PopupSurface.menuHeightLimit(context, visible, popupBottom);
         popup.setWidth(width); models();
+        width = popup.getWidth();
+        popupLeft = PopupSurface.sheetLeft(anchorCenter, width, visible.left, visible.right, dp(PopupSurface.BOTTOM_SHEET_GUTTER_DP));
         backdropSource = anchor.getRootView();
         modelSurface.capture(backdropSource, popupLeft, popupBottom - modelHeight, width, modelHeight);
         requestedTop = popupBottom - modelHeight;
@@ -155,6 +159,7 @@ final class ModelPickerPopup {
 
     private void models() {
         if (modelSurface != null) {
+            popup.setWidth(modelWidth);
             if (thinkingSurface != null) {
                 thinkingSurface.animate().cancel(); panel.removeView(thinkingSurface); thinkingSurface = null;
                 panel.removeView(retreat); retreat = null;
@@ -183,6 +188,8 @@ final class ModelPickerPopup {
         body.addView(row(tr("思考等级", "Thinking level"), LocalChatThinking.label(level, chinese), "right", false, "thinkingSettings", this::thinking));
         divider(body);
         body.addView(row(tr("管理 API 配置", "API configuration"), "", "right", false, "pickerImport", () -> { dismiss(); listener.onImport(); }));
+        modelWidth = PopupSurface.modelMenuWidth(context, visibleFrame, body, dp(12) * 2);
+        popup.setWidth(modelWidth);
         modelSurface = surface(body); modelSurface.setTag("modelPickerModels"); modelHeight = height(modelSurface);
         panel.addView(modelSurface, new FrameLayout.LayoutParams(-1, modelHeight)); resize(modelHeight);
     }

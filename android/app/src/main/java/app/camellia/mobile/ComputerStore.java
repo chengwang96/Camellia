@@ -80,5 +80,6 @@ final class ComputerStore {
         saved.put("computers", profiles);
         store.save(saved);
         if (!removed.isEmpty()) { for (String key : removed) discussionState.remove(key); discussions.save(discussionState); }
+        new AccountUsageCache(store.context).remove(address);
     }
 }

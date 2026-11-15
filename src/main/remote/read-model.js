@@ -204,8 +204,12 @@ class RemoteReadModel {
   summary(conversation, meta = this.manager.workspaces.sessionMeta(), includePreview = false) {
     const filePreview = includePreview ? this.filePreview(conversation) : null;
     const backgroundWork = this.manager.backgroundStatus?.(conversation.id) || null;
+    const selected = this.manager.settings?.(conversation.currentEngine, conversation.id);
+    const model = typeof selected?.model === 'string' ? selected.model : '';
+    const choice = model && this.manager.conversationModels?.(conversation.currentEngine, selected).find(choice => choice.id === model);
+    const modelName = typeof choice?.name === 'string' && choice.name.trim() ? choice.name : model;
     return { id: conversation.id, title: String(meta.titles[conversation.id] || conversation.title).slice(0, 200),
-      engine: conversation.currentEngine, pinned: Boolean(meta.pinned[conversation.id]), workspaceId: meta.sessionWorkspace[conversation.id] || null,
+      engine: conversation.currentEngine, model, modelName, pinned: Boolean(meta.pinned[conversation.id]), workspaceId: meta.sessionWorkspace[conversation.id] || null,
       workspaceName: meta.workspaces.find(workspace => workspace.id === meta.sessionWorkspace[conversation.id])?.name || null,
       updatedAt: conversation.updatedAt, seq: conversation.seq, lastReplyAt: conversation.lastReplyAt || 0, replyReadAt: conversation.replyReadAt || 0,
       activity: this.manager.activity(conversation.id), ...(backgroundWork ? { backgroundWork } : {}), ...(filePreview ? { filePreview } : {}) };

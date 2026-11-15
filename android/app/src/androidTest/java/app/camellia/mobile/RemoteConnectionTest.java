@@ -175,6 +175,9 @@ public class RemoteConnectionTest extends InstrumentationTestCase {
                 invoke("stopNetwork");
                 field("credentials", new JSONObject().put("address", "http://100.64.0.1:43128"));
                 invoke("listScreen");
+                // listScreen stopped the preceding connection. This fixture
+                // starts the replacement stream directly instead of via begin().
+                field("eventWorker", java.util.concurrent.Executors.newSingleThreadExecutor());
                 field("foreground", true); field("listCursor", 7L); field("listInstance", "server");
                 var generation = MainActivity.class.getDeclaredField("generation"); generation.setAccessible(true);
                 var method = MainActivity.class.getDeclaredMethod("streamList", RemoteApi.class, int.class, int.class);

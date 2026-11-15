@@ -99,6 +99,12 @@ final class RemoteSettingsPopup {
         row(tr("思考等级", "Thinking level"), LocalChatThinking.display(settings.optString("thinking"), chinese), false, "remoteThinkingSettings", this::thinking);
         if (resetCreditsAvailable) row(tr("重置 Codex 额度", "Reset Codex usage"), tr("查看并使用电脑账号的重置卡", "View and use this computer account's reset credits"),
             false, "remoteCodexReset", () -> choose("codexReset", ""));
+        Rect visible = PopupSurface.visibleFrame(anchor);
+        width = PopupSurface.modelMenuWidth(context, visible, body, 0);
+        popup.setWidth(width);
+        int[] location = new int[2]; anchor.getLocationOnScreen(location);
+        left = PopupSurface.sheetLeft(location[0] + anchor.getWidth() / 2, width, visible.left, visible.right,
+            dp(PopupSurface.BOTTOM_SHEET_GUTTER_DP));
         position();
     }
     private boolean hasConnection(JSONArray models, String connection) {
@@ -157,8 +163,8 @@ final class RemoteSettingsPopup {
         width = permissions ? PopupSurface.sheetWidth(context, visible) : PopupSurface.modelMenuWidth(context, visible);
         int anchorCenter = location[0] + anchor.getWidth() / 2;
         left = PopupSurface.sheetLeft(anchorCenter, width, visible.left, visible.right, dp(PopupSurface.BOTTOM_SHEET_GUTTER_DP));
-        bottom = visible.bottom - dp(PopupSurface.BOTTOM_SHEET_BOTTOM_GAP_DP);
-        heightLimit = PopupSurface.menuHeightLimit(context, visible);
+        bottom = PopupSurface.menuBottom(context, visible, location[1]);
+        heightLimit = PopupSurface.menuHeightLimit(context, visible, bottom);
         updateOffsetY = 0;
         popup.setWidth(width);
         if (permissions) permissions(); else models();
@@ -181,6 +187,7 @@ final class RemoteSettingsPopup {
         surface.post(this::updateScrollFade);
     }
     void dismiss() { popup.dismiss(); }
+    boolean isShowing(View trigger) { return popup.isShowing() && anchor == trigger; }
 
     private void updateScrollFade() {
         scrollFade.setVisibility(scroll.canScrollVertically(1) ? View.VISIBLE : View.GONE);

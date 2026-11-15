@@ -8,7 +8,7 @@ const { RemoteGateway } = require('./gateway');
 const { RemoteCommands } = require('./commands');
 const { RemoteMessageQueue } = require('./message-queue');
 
-function createRemoteService({ dataDir, manager, networkFactory, apiRoutes = null, apiImport = null, nativeSettings = null, management = null, desktopRestart = null, getDiscussions = null,
+function createRemoteService({ dataDir, manager, networkFactory, apiRoutes = null, apiImport = null, nativeSettings = null, management = null, desktopRestart = null, getDiscussions = null, accountUsage = null,
   preferences = () => ({}), setComputerName = () => '' }) {
   let gateway = null, access = null, network = null, busy = false, enabled = false, closed = false;
   let startupChecked = false, monitor = null, attachmentMaintenance = null, retryDelay = 1000, retryAt = 0;
@@ -32,7 +32,7 @@ function createRemoteService({ dataDir, manager, networkFactory, apiRoutes = nul
     const discussions = getDiscussions ? new (require('./discussions').RemoteDiscussions)({
       file: path.join(dataDir, 'remote', 'discussion-commands.json'), getService: getDiscussions, access,
       publish: () => { gateway?.publish(); attachmentMaintenance?.markDirty(); } }) : null;
-    gateway = new RemoteGateway({ access, reader, commands, apiRoutes, apiImport, nativeSettings, management, desktopRestart, discussions });
+    gateway = new RemoteGateway({ access, reader, commands, apiRoutes, apiImport, nativeSettings, management, desktopRestart, discussions, accountUsage });
     try { network = networkFactory({ onFailure: () => {
       if (closed || !enabled) return;
       recovering = gateway.stop();

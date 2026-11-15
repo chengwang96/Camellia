@@ -22,6 +22,15 @@ final class ChatImageTray {
         tray.removeAllViews();
         for (int index = 0; index < images.size(); index++) {
             final int position = index;
+            if (remover == null) {
+                AttachmentImageView preview = new AttachmentImageView(context, new ChatStyle(context),
+                    (chinese ? "图片 " : "Image ") + (index + 1), AttachmentImages.local(context, images.get(index)), false);
+                FrameLayout tile = new FrameLayout(context);
+                FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(dp(context, 72), dp(context, 72));
+                params.setMargins(dp(context, 4), dp(context, 8), 0, 0); tile.addView(preview, params);
+                tray.addView(tile, new LinearLayout.LayoutParams(dp(context, 88), dp(context, 88)));
+                continue;
+            }
             byte[] bytes;
             try { bytes = AttachmentStore.preview(context, images.get(index)); }
             catch (java.io.IOException error) { bytes = new byte[0]; }

@@ -113,18 +113,29 @@ public class PopupCoordinatesTest extends InstrumentationTestCase {
                 if (!kind.equals("conversation")) {
                     int bottomGap = Math.round(PopupSurface.BOTTOM_SHEET_BOTTOM_GAP_DP
                         * activity.getResources().getDisplayMetrics().density);
-                    assertTrue("Picker sheets must attach to the visible bottom edge: top=" + location[1]
-                        + " height=" + content.getHeight() + " bottom=" + (location[1] + content.getHeight())
-                        + " visibleBottom=" + visible.bottom + " gap=" + bottomGap,
-                        Math.abs(location[1] + content.getHeight() - (visible.bottom - bottomGap)) <= 2);
+                    assertTrue("Picker menus must leave their trigger visible below the menu",
+                        location[1] + content.getHeight() <= anchorLocation[1] - bottomGap + 2);
                 }
                 if (direction == View.LAYOUT_DIRECTION_LTR) {
                     previous[0] = location[0]; previous[1] = location[1];
                 } else {
                     assertEquals(previous[0], location[0]); assertEquals(previous[1], location[1]);
                 }
-                popup.dismiss(); popup = null;
+                if (kind.equals("conversation")) { popup.dismiss(); popup = null; }
             });
+            if (!kind.equals("conversation")) {
+                int[] point = new int[2];
+                ui(() -> {
+                    anchor.getLocationOnScreen(point);
+                    point[0] += anchor.getWidth() / 2; point[1] += anchor.getHeight() / 2;
+                });
+                long at = android.os.SystemClock.uptimeMillis();
+                android.view.MotionEvent down = android.view.MotionEvent.obtain(at, at, android.view.MotionEvent.ACTION_DOWN, point[0], point[1], 0);
+                android.view.MotionEvent up = android.view.MotionEvent.obtain(at, at + 50, android.view.MotionEvent.ACTION_UP, point[0], point[1], 0);
+                try { getInstrumentation().sendPointerSync(down); getInstrumentation().sendPointerSync(up); }
+                finally { down.recycle(); up.recycle(); }
+                ui(() -> { assertFalse("Tapping the original trigger must close the menu", popup.isShowing()); popup = null; });
+            }
         }
     }
 

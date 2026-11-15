@@ -17,11 +17,11 @@ public final class CameraFileProvider extends ContentProvider {
             String root = directory.getCanonicalPath(), path = file.getCanonicalPath();
             if (!path.startsWith(root + File.separator)) throw new IllegalArgumentException("Invalid camera file");
         } catch (java.io.IOException error) { throw new IllegalArgumentException(error); }
-        return new Uri.Builder().scheme("content").authority("app.camellia.mobile.camera").appendPath(file.getName()).build();
+        return new Uri.Builder().scheme("content").authority(context.getPackageName() + ".camera").appendPath(file.getName()).build();
     }
 
     private File file(Uri uri) throws FileNotFoundException {
-        if (!"app.camellia.mobile.camera".equals(uri.getAuthority()) || uri.getPathSegments().size() != 1) throw new FileNotFoundException();
+        if (!(getContext().getPackageName() + ".camera").equals(uri.getAuthority()) || uri.getPathSegments().size() != 1) throw new FileNotFoundException();
         File directory = new File(getContext().getCacheDir(), "camera"), file = new File(directory, uri.getLastPathSegment());
         try {
             if (!file.getCanonicalPath().startsWith(directory.getCanonicalPath() + File.separator)) throw new FileNotFoundException();

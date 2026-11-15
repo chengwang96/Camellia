@@ -452,9 +452,9 @@ public class GatewayIntegrationTest extends InstrumentationTestCase {
             advanceListFixture(credential.getString("token"), "add");
             awaitConversationCount(activity, 2, 22_000);
             getInstrumentation().runOnMainSync(() -> {
-                android.widget.TextView status = activity.getWindow().getDecorView().findViewWithTag("connectionStatus");
-                String message = status.getText().toString();
-                assertTrue(message, message.contains("periodically") || message.contains("定时刷新"));
+                assertNull("Polling must not insert a footer above navigation",
+                    activity.getWindow().getDecorView().findViewWithTag("connectionStatus"));
+                assertNotNull(activity.getWindow().getDecorView().findViewWithTag("headerConnectionState"));
             });
         } finally {
             getInstrumentation().runOnMainSync(activity::finish);

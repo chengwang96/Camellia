@@ -326,7 +326,7 @@ public class NavigationTest extends InstrumentationTestCase {
                     invoke(activity, "stopNetwork");
                     var failure = MainActivity.class.getDeclaredMethod("showFailure", Exception.class, boolean.class);
                     failure.setAccessible(true); failure.invoke(activity, new java.io.IOException(), true);
-                    assertSingleLineFooter(activity, null);
+                    assertNavigationHasNoFooter(activity);
                     invoke(activity, "detailScreen"); invoke(activity, "stopNetwork");
                     failure.invoke(activity, new java.io.IOException(), true);
                     assertSingleLineFooter(activity, "composerBar");
@@ -380,15 +380,21 @@ public class NavigationTest extends InstrumentationTestCase {
 
     public void testPullThresholdCancelBusyAndAccessibility() {
         getInstrumentation().runOnMainSync(() -> {
-            RefreshScrollView scroll = new RefreshScrollView(getInstrumentation().getTargetContext());
-            int[] refreshed = {0}; scroll.setRefreshAction(() -> refreshed[0]++, ready -> {});
-            float density = scroll.getResources().getDisplayMetrics().density;
-            gesture(scroll, 90 * density, MotionEvent.ACTION_UP); assertEquals(1, refreshed[0]);
-            gesture(scroll, 35 * density, MotionEvent.ACTION_UP); assertEquals(1, refreshed[0]);
-            gesture(scroll, 90 * density, MotionEvent.ACTION_CANCEL); assertEquals(1, refreshed[0]);
-            scroll.setRefreshing(true); gesture(scroll, 90 * density, MotionEvent.ACTION_UP); assertEquals(1, refreshed[0]);
-            scroll.setRefreshing(false); assertTrue(scroll.performAccessibilityAction(android.R.id.button1, null)); assertEquals(2, refreshed[0]);
-            scroll.setRefreshing(true); scroll.performAccessibilityAction(android.R.id.button1, null); assertEquals(2, refreshed[0]);
+            for (boolean indicatorVisible : new boolean[] {true, false}) {
+                RefreshScrollView scroll = new RefreshScrollView(getInstrumentation().getTargetContext());
+                scroll.setRefreshIndicatorVisible(indicatorVisible);
+                View content = new View(getInstrumentation().getTargetContext()); scroll.addView(content);
+                int[] refreshed = {0}; scroll.setRefreshAction(() -> refreshed[0]++, ready -> {});
+                float density = scroll.getResources().getDisplayMetrics().density;
+                gesture(scroll, 90 * density, MotionEvent.ACTION_UP); assertEquals(1, refreshed[0]);
+                if (!indicatorVisible) assertEquals(0f, content.getTranslationY(), 0f);
+                scroll.setRefreshing(false);
+                gesture(scroll, 35 * density, MotionEvent.ACTION_UP); assertEquals(1, refreshed[0]);
+                gesture(scroll, 90 * density, MotionEvent.ACTION_CANCEL); assertEquals(1, refreshed[0]);
+                scroll.setRefreshing(true); gesture(scroll, 90 * density, MotionEvent.ACTION_UP); assertEquals(1, refreshed[0]);
+                scroll.setRefreshing(false); assertTrue(scroll.performAccessibilityAction(android.R.id.button1, null)); assertEquals(2, refreshed[0]);
+                scroll.setRefreshing(true); scroll.performAccessibilityAction(android.R.id.button1, null); assertEquals(2, refreshed[0]);
+            }
         });
     }
 
@@ -401,7 +407,8 @@ public class NavigationTest extends InstrumentationTestCase {
                     invoke(activity, "listScreen");
                     var failure = MainActivity.class.getDeclaredMethod("showFailure", Exception.class, boolean.class); failure.setAccessible(true);
                     failure.invoke(activity, new RemoteApi.Failure(404), true);
-                    TextView status = activity.getWindow().getDecorView().findViewWithTag("connectionStatus");
+                    var statusField = MainActivity.class.getDeclaredField("status"); statusField.setAccessible(true);
+                    TextView status = (TextView) statusField.get(activity);
                     assertTrue(status.getText().toString().contains("endpoint") || status.getText().toString().contains("接口"));
                     var unavailable = MainActivity.class.getDeclaredField("listEventsUnavailable"); unavailable.setAccessible(true); unavailable.setBoolean(activity, true);
                     var watch = MainActivity.class.getDeclaredMethod("watchList", RemoteApi.class, int.class); watch.setAccessible(true); watch.invoke(activity, null, -1);
@@ -412,13 +419,12 @@ public class NavigationTest extends InstrumentationTestCase {
             getInstrumentation().runOnMainSync(() -> {
                 View root = activity.getWindow().getDecorView();
                 View search = root.findViewWithTag("remoteSearchBar");
-                View status = root.findViewWithTag("connectionStatus");
                 assertEquals(View.GONE, search.getVisibility());
-                assertSame(status.getParent(), search.getParent());
+                assertSame(root.findViewWithTag("workbenchNav").getParent().getParent(), search.getParent());
                 assertNull(root.findViewWithTag("searchBarDock"));
                 assertNull(root.findViewWithTag("searchBarFade"));
                 assertTrue(root.findViewWithTag("remoteSearchButton").getHeight() >= new ChatStyle(activity).dp(48));
-                assertSingleLineFooter(activity, null);
+                assertNavigationHasNoFooter(activity);
             });
             android.graphics.Bitmap screenshot = getInstrumentation().getUiAutomation().takeScreenshot(); assertNotNull(screenshot);
             try (var output = new java.io.FileOutputStream(new java.io.File(activity.getExternalCacheDir(), "list-footer.png"))) {
@@ -436,6 +442,14 @@ public class NavigationTest extends InstrumentationTestCase {
                 } catch (Exception error) { throw new AssertionError(error); }
             });
         } finally { getInstrumentation().runOnMainSync(activity::finish); }
+    }
+
+    private void assertNavigationHasNoFooter(Activity activity) {
+        View root = activity.getWindow().getDecorView();
+        assertNull(root.findViewWithTag("connectionStatus"));
+        View navigation = root.findViewWithTag("workbenchNav");
+        ViewGroup parent = (ViewGroup) navigation.getParent();
+        assertEquals(parent.getChildCount() - 1, parent.indexOfChild(navigation));
     }
 
     private void gesture(RefreshScrollView scroll, float distance, int end) {
@@ -464,12 +478,12 @@ public class NavigationTest extends InstrumentationTestCase {
                     View title = root.findViewWithTag("remoteControlTitle"); assertNotNull(title);
                     assertEquals(1, countText(root, "Computers & connections", "电脑与连接"));
                     assertNull("A top-level destination must not look pushed", root.findViewWithTag("pageBack"));
-                    for (String page : new String[]{"computersScreen", "listScreen"}) {
+                    for (String page : new String[]{"computersScreen", "listScreen", "settingsScreen"}) {
                         invoke(activity, page); invoke(activity, "stopNetwork");
                         assertNull("Top-level destination " + page + " must not show a back button",
                             root.findViewWithTag(page.equals("listScreen") ? "pageBack" : "settingsBack"));
                     }
-                    for (String page : new String[]{"detailScreen", "pairScreen", "settingsScreen", "showNetwork"}) {
+                    for (String page : new String[]{"detailScreen", "pairScreen", "showNetwork"}) {
                         invoke(activity, page); invoke(activity, "stopNetwork");
                         View back = root.findViewWithTag(page.equals("detailScreen") ? "pageBack" : "settingsBack");
                         assertNotNull(page + " needs a nested-page back button", back);

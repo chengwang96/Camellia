@@ -25,7 +25,28 @@ final class MobilePreferences {
         return model == null || model.trim().isEmpty() ? "Android" : model.trim();
     }
 
-    static String signature(Context context) { return get(context, "language") + ":" + get(context, "theme"); }
+    static float chatTextSize(Context context, float base) {
+        String size = get(context, "chatFontSize");
+        return base * (size.equals("small") ? .9f : size.equals("large") ? 1.15f : size.equals("largest") ? 1.3f : 1f);
+    }
+
+    static boolean codeWrap(Context context) {
+        return context.getSharedPreferences("markdown", Context.MODE_PRIVATE).getBoolean("codeWrap", false);
+    }
+
+    static void codeWrap(Context context, boolean enabled) {
+        context.getSharedPreferences("markdown", Context.MODE_PRIVATE).edit().putBoolean("codeWrap", enabled).apply();
+    }
+
+    static boolean processExpanded(Context context, boolean live) {
+        String mode = get(context, "processMode");
+        return mode.equals("expanded") || mode.equals("live") && live;
+    }
+
+    static String signature(Context context) {
+        return get(context, "language") + ":" + get(context, "theme") + ":" + get(context, "chatFontSize")
+            + ":" + codeWrap(context) + ":" + get(context, "processMode");
+    }
 
     static Context wrap(Context context) {
         // Override only preferences. Copying the current configuration also pins

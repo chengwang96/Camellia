@@ -18,8 +18,11 @@ final class ExecutionProcessView extends LinearLayout {
         private final Map<String, Boolean> opened = new HashMap<>();
         private final Map<String, Boolean> running = new HashMap<>();
         boolean open(String key, boolean live) {
+            return open(key, live, false);
+        }
+        boolean open(String key, boolean live, boolean defaultOpen) {
             if (Boolean.TRUE.equals(running.get(key)) && !live) opened.remove(key);
-            running.put(key, live); return Boolean.TRUE.equals(opened.get(key));
+            running.put(key, live); return opened.getOrDefault(key, defaultOpen);
         }
         void set(String key, boolean value) { opened.put(key, value); }
         void clear() { opened.clear(); running.clear(); }
@@ -58,7 +61,7 @@ final class ExecutionProcessView extends LinearLayout {
 
     private String tr(String zh, String en) { return chinese ? zh : en; }
     private TextView label(String value, int size) {
-        TextView text = new TextView(getContext()); text.setText(value); text.setTextSize(size); text.setTextColor(style.muted); text.setLineSpacing(style.dp(3), 1); return text;
+        TextView text = new TextView(getContext()); text.setText(value); text.setTextSize(MobilePreferences.chatTextSize(getContext(), size)); text.setTextColor(style.muted); text.setLineSpacing(style.dp(3), 1); return text;
     }
 
     void update(JSONArray process, boolean live) {
@@ -72,7 +75,7 @@ final class ExecutionProcessView extends LinearLayout {
     void update(JSONArray process, boolean live, TurnDetails details, int files) {
         entries = process == null ? new JSONArray() : process;
         fileCount = Math.max(0, files);
-        expanded = state.open(key, live);
+        expanded = state.open(key, live, MobilePreferences.processExpanded(getContext(), live));
         int tools = 0; boolean onlyThinking = entries.length() > 0;
         for (int index = 0; index < entries.length(); index++) {
             JSONObject entry = entries.optJSONObject(index); if (entry == null) continue;

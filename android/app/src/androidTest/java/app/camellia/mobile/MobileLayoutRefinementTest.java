@@ -98,6 +98,8 @@ public class MobileLayoutRefinementTest extends InstrumentationTestCase {
             invoke("listScreen"); field("canCreate", true); field("allowIndependent", true);
             @SuppressWarnings("unchecked") java.util.Map<String, JSONObject> rows = (java.util.Map<String, JSONObject>) field("conversations");
             rows.put("layout-chat", new JSONObject().put("id", "layout-chat").put("title", "整理项目设计方案与移动端功能对照评审记录")
+                .put("engine", "codex").put("model", "gpt-6.1-sol").put("modelName", "GPT-6.1 Sol")
+                .put("updatedAt", System.currentTimeMillis())
                 .put("activity", "running").put("pinned", true).put("lastReplyAt", 1000)
                 .put("filePreview", new JSONObject().put("name", "移动端设计评审报告.pdf").put("count", 2)));
             invoke("renderConversations");
@@ -106,6 +108,8 @@ public class MobileLayoutRefinementTest extends InstrumentationTestCase {
         ui(() -> {
             View row = root().findViewWithTag("conversation:layout-chat");
             TextView title = row.findViewWithTag("conversationRowTitle"), state = row.findViewWithTag("conversationStatus:layout-chat");
+            TextView meta = row.findViewWithTag("conversationRowMeta"), time = row.findViewWithTag("conversationRowTime");
+            assertEquals("CODEX · GPT-6.1 Sol", meta.getText().toString());
             for (int width : new int[]{280, 320, 360}) {
                 row.measure(View.MeasureSpec.makeMeasureSpec(Math.round(width * activity.getResources().getDisplayMetrics().density), View.MeasureSpec.EXACTLY),
                     View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED));
@@ -114,6 +118,9 @@ public class MobileLayoutRefinementTest extends InstrumentationTestCase {
                 assertEquals(1, title.getLineCount()); assertEquals(1, state.getLineCount());
                 assertTrue(title.getRight() <= state.getLeft());
                 assertTrue(Math.abs(title.getTop() + title.getHeight() / 2 - state.getTop() - state.getHeight() / 2) <= 1);
+                assertEquals(1, meta.getLineCount());
+                assertTrue(meta.getWidth() > 0);
+                assertTrue(meta.getRight() <= time.getLeft());
             }
             assertNull(row.findViewWithTag("conversationFilePreview"));
             assertFalse(row.getContentDescription().toString().contains("移动端设计评审报告.pdf"));

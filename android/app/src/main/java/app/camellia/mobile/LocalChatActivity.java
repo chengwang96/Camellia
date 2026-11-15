@@ -76,6 +76,8 @@ public final class LocalChatActivity extends Activity {
     private final java.util.IdentityHashMap<JSONObject, LocalMessage> messageBindings = new java.util.IdentityHashMap<>();
     private AlertDialog dialog;
     private boolean reloadSettings;
+    private String preferenceSignature;
+    private final ChatNotifications chatNotifications = new ChatNotifications();
     private LocalChatStore.Reply replyHandle;
     private int storageRevision;
     private boolean foreground, sendPending, closeRequested, finishingAfterSave;
@@ -86,12 +88,14 @@ public final class LocalChatActivity extends Activity {
     @Override public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
         locationConsent.permissionResult(requestCode);
+        InlineImageGallery.permissionResult(this, requestCode, grantResults);
     }
 
     @Override protected void attachBaseContext(android.content.Context context) { super.attachBaseContext(MobilePreferences.wrap(context)); }
 
     @Override protected void onResume() {
         super.onResume();
+        if (preferenceSignature != null && !preferenceSignature.equals(MobilePreferences.signature(this))) { recreate(); return; }
         if (reloadSettings) {
             reloadSettings = false;
             loadStore(false);
@@ -155,6 +159,7 @@ public final class LocalChatActivity extends Activity {
 
     @Override protected void onCreate(Bundle saved) {
         super.onCreate(saved);
+        preferenceSignature = MobilePreferences.signature(this);
         MobileOrientation.lockPhonePortrait(this);
         composerAttachments = AttachmentMaintenance.protect(this);
         PageTransitions.configureActivity(this);
@@ -165,6 +170,7 @@ public final class LocalChatActivity extends Activity {
         getWindow().setStatusBarColor(background); getWindow().setNavigationBarColor(background);
         if (!dark) getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR | View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR);
         if (saved != null) { conversationId = saved.getString("conversationId"); query = saved.getString("query", ""); }
+        else conversationId = getIntent().getStringExtra("conversationId");
         loadStore(true);
     }
 
@@ -186,6 +192,7 @@ public final class LocalChatActivity extends Activity {
     }
 
     @Override protected void onDestroy() {
+        InlineImageGallery.close(this);
         if (pages != null) { pages.finishTransition(); pages = null; }
         releasePageViews();
         if (composerAttachments != null) composerAttachments.close();
@@ -830,6 +837,9 @@ public final class LocalChatActivity extends Activity {
     }
 
     private void chooseModel() {
+        if (modelPicker != null && modelPicker.isShowing()) {
+            modelPicker.dismiss(); modelPicker = null; return;
+        }
         if (runningId != null || conversationId == null) return;
         try {
             List<LocalChatConfig.Route> routes = LocalChatConfig.routes(store.config());
@@ -1159,7 +1169,7 @@ public final class LocalChatActivity extends Activity {
                         : ErrorDetails.withSummary(tr("API 回复格式不受支持。", "Unsupported API response format."), error);
                 }
                 String result = problem;
-                handler.post(() -> { if (generation == ticket) finishRun(result, result == null ? "complete" : "interrupted"); });
+                handler.post(() -> { if (generation == ticket) finishRun(result, result == null ? "complete" : "error"); });
             });
                     } catch (Exception error) { storageFailure(error); }
                 }
@@ -1173,6 +1183,10 @@ public final class LocalChatActivity extends Activity {
         LocalChatClient previous = client; client = null; generation++;
         previous.requestCancel();
         new Thread(previous::cancel, "local-chat-cancel").start();
+        JSONObject finishedConversation = store.conversation(runningId);
+        chatNotifications.local(this, runningId, runningReply.optLong("at"),
+            finishedConversation == null ? "" : finishedConversation.optString("title"), state,
+            foreground && runningId.equals(conversationId) && hasWindowFocus());
         try {
             JSONArray process = runningReply.optJSONArray("process");
             if (process != null) for (int index = 0; index < process.length(); index++) {

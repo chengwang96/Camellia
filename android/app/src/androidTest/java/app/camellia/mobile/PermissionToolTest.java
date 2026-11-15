@@ -50,6 +50,45 @@ public class PermissionToolTest extends InstrumentationTestCase {
         });
     }
 
+    public void testPermissionControlStaysClearAtRestAndAfterPickerFocus() {
+        getInstrumentation().runOnMainSync(() -> {
+            for (boolean expanded : new boolean[] { false, true }) {
+                PermissionTool tool = new PermissionTool(activity, new ChatStyle(activity), false, expanded, () -> {});
+                for (String level : new String[] { "ask", "auto", "full" }) {
+                    tool.level(level, true);
+                    assertEquals("No permanent permission background at " + level, 0,
+                        paintedBackgroundPixels(tool, android.R.attr.state_enabled));
+                    assertEquals("Returning focus from the picker must not leave a grey fill at " + level, 0,
+                        paintedBackgroundPixels(tool, android.R.attr.state_enabled, android.R.attr.state_focused));
+                    assertNull("The shield must not have a separate filled disc",
+                        tool.findViewWithTag("permissionIconDisc").getBackground());
+                    tool.level(level, false);
+                    assertEquals("A disabled permission control must also stay clear", 0,
+                        paintedBackgroundPixels(tool));
+                }
+            }
+        });
+    }
+
+    private int paintedBackgroundPixels(View view, int... states) {
+        int size = Math.round(48 * activity.getResources().getDisplayMetrics().density);
+        var background = view.getBackground();
+        background.setBounds(0, 0, size, size);
+        background.setState(states);
+        background.jumpToCurrentState();
+        Bitmap bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888);
+        try {
+            background.draw(new Canvas(bitmap));
+            int[] pixels = new int[size * size];
+            bitmap.getPixels(pixels, 0, size, 0, 0, size, size);
+            int painted = 0;
+            for (int pixel : pixels) if ((pixel >>> 24) != 0) painted++;
+            return painted;
+        } finally {
+            bitmap.recycle();
+        }
+    }
+
     private int paintedPixels(View view, int sizeDp) {
         int size = Math.round(sizeDp * activity.getResources().getDisplayMetrics().density);
         view.measure(View.MeasureSpec.makeMeasureSpec(size, View.MeasureSpec.EXACTLY),

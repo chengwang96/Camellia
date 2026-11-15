@@ -51,7 +51,7 @@ public final class MainActivity extends Activity {
         InlineImageGallery.permissionResult(this, requestCode, grantResults);
     }
     private final ExecutorService worker = Executors.newFixedThreadPool(2);
-    private final ExecutorService eventWorker = Executors.newSingleThreadExecutor();
+    private ExecutorService eventWorker = Executors.newSingleThreadExecutor();
     private final ExecutorService commandWorker = Executors.newFixedThreadPool(2);
     private final ExecutorService urgentWorker = Executors.newSingleThreadExecutor();
     private final java.util.Set<String> commandRequests = new java.util.HashSet<>();
@@ -95,6 +95,8 @@ public final class MainActivity extends Activity {
     private RemoteApi api;
     private ConnectionTestDialog connectionTest;
     private Future<?> job;
+    private RemoteStreamHealth streamHealth;
+    private final Runnable inspectStream = this::inspectStream;
     private volatile int generation;
     private boolean foreground;
     private boolean backgroundConnection;
@@ -114,6 +116,8 @@ public final class MainActivity extends Activity {
     private volatile boolean homeRefreshBusy;
     private long homeRefreshAt;
     private boolean homeRunningExpanded;
+    private WorkbenchList homeConversations;
+    private TextView homeHeading, homeEmptyHint;
     private ConversationSidebar detailSidebar;
     private int sidebarScrollRestore = -1;
     private boolean splitDetail;
@@ -141,6 +145,11 @@ public final class MainActivity extends Activity {
     private boolean historyDetached;
     private String historyInstance = "";
     private boolean olderLoading;
+    private boolean olderAutomatic;
+    private RemoteHistoryLoad historyLoad = new RemoteHistoryLoad();
+    private String historyVersion = "";
+    private boolean automaticHistoryScheduled;
+    private final Runnable automaticHistoryLoad = () -> { automaticHistoryScheduled = false; loadOlder(true); };
     private int nextOffset;
     private final LinkedHashMap<String, JSONObject> conversations = new LinkedHashMap<>();
     private final LinkedHashMap<String, JSONObject> archivedConversations = new LinkedHashMap<>();
@@ -148,7 +157,7 @@ public final class MainActivity extends Activity {
     private int archivedNextOffset = -1;
     private String conversationFilter = "all";
     private final LinkedHashMap<String, Boolean> collapsedGroups = new LinkedHashMap<>();
-    private Button older, latest;
+    private Button older;
     private String instance = "";
     private long cursor = -1;
     private JSONObject pendingSnapshot;
@@ -164,6 +173,11 @@ public final class MainActivity extends Activity {
     private TextView retryMessage;
     private LinearLayout approvals;
     private LinearLayout automationBar;
+    private JSONObject remoteGoal;
+    private JSONArray remoteTasks = new JSONArray();
+    private android.app.Dialog workDialog;
+    private LinearLayout workAutomationSection;
+    private String workAutomationSignature = "";
     private LinearLayout queueBar;
     private LinearLayout queueSheetPanel;
     private android.app.Dialog queueDialog;
@@ -213,6 +227,7 @@ public final class MainActivity extends Activity {
     private RemoteSettingsPopup settingsPopup;
     private String screen = "home", networkReturn = "settings";
     private String preferenceSignature;
+    private final ChatNotifications chatNotifications = new ChatNotifications();
     private final Runnable searchRemote = () -> { if (screen.equals("list")) loadList(false); };
     private final LinkedHashMap<String, String> computerStates = new LinkedHashMap<>();
     private final java.util.Set<RemoteApi> statusClients = java.util.concurrent.ConcurrentHashMap.newKeySet();
@@ -269,6 +284,23 @@ public final class MainActivity extends Activity {
 
     @Override protected void onNewIntent(android.content.Intent intent) {
         super.onNewIntent(intent); setIntent(intent);
+        openNotificationConversation();
+    }
+
+    private void openNotificationConversation() {
+        String id = getIntent().getStringExtra("noticeConversation");
+        String address = getIntent().getStringExtra("noticeAddress");
+        getIntent().removeExtra("noticeConversation"); getIntent().removeExtra("noticeAddress");
+        if (id == null || address == null) return;
+        if (id.equals(conversationId) && address.equals(credentials.optString("address")) && screen.equals("detail")) return;
+        try {
+            for (JSONObject computer : store.all()) if (address.equals(computer.optString("address")) && computer.has("token")) {
+                persistDraft(); stopNetwork(); store.save(computer); credentials = store.load();
+                conversationId = id; conversationTitle = ""; detailScreen();
+                if (foreground) connectEvents();
+                return;
+            }
+        } catch (Exception error) { reportError("无法打开通知中的会话。", "Could not open the chat from this notification.", error); }
     }
 
     @Override public void onCreate(Bundle saved) {
@@ -312,6 +344,7 @@ public final class MainActivity extends Activity {
         else if (restored.equals("settings")) settingsScreen();
         else homeScreen();
         if (recovery != null) setStatusNotice(recovery);
+        openNotificationConversation();
     }
 
     @Override protected void onStart() {
@@ -325,6 +358,9 @@ public final class MainActivity extends Activity {
         EmbeddedNetwork.foreground();
         resumePendingCommands();
         if (retained) {
+            // Deep sleep can suspend callbacks without changing the route.
+            // Inspect monotonic age before reusing the retained connection.
+            inspectStream();
             if (screen.equals("detail") && displayedConversation != null) {
                 replies().markRead(credentials, displayedConversation);
                 replyReadSync.retry();
@@ -468,14 +504,18 @@ public final class MainActivity extends Activity {
         handler.removeCallbacks(prefetchViewportUpdate); prefetchViewportPosted = false;
         prefetch.cancel();
         olderLoading = false;
+        olderAutomatic = false;
+        automaticHistoryScheduled = false;
         if (settingsPopup != null) { settingsPopup.dismiss(); settingsPopup = null; }
         connected = false;
         commandBusy = false;
         if (scroll instanceof RefreshScrollView) ((RefreshScrollView) scroll).setRefreshing(false);
         generation++;
+        streamHealth = null;
         statusWorker.getQueue().clear();
         handler.removeCallbacksAndMessages(null);
         if (job != null) job.cancel(true);
+        eventWorker.shutdownNow();
         if (listRefreshJob != null) listRefreshJob.cancel(true);
         listRefreshBusy = false; listRefreshSnapshot = null;
         RemoteApi previous = api;
@@ -490,6 +530,9 @@ public final class MainActivity extends Activity {
         stopNetwork();
         connectionBlocked = false;
         updateControls();
+        // A socket/native read may take time to observe cancellation. Its
+        // executor belongs to the old generation and cannot delay this one.
+        eventWorker = Executors.newSingleThreadExecutor();
         api = remoteClientFactory.apply(credentials.optString("address"));
         return api;
     }
@@ -608,7 +651,8 @@ public final class MainActivity extends Activity {
             : screen.equals("detail") || (screen.equals("network") && networkReturn.equals("pair")) ? 3 : 2;
         pages.show(page, screen, depth, destinationSwitch); page.requestApplyInsets();
         if (settingsPage) {
-            root.addView(settingsStyle.header(title, tr("返回上一级", "Back"), this::onBackPressed));
+            root.addView(screen.equals("settings") ? settingsStyle.header(title)
+                : settingsStyle.header(title, tr("返回上一级", "Back"), this::onBackPressed));
         } else if (screen.equals("computers")) {
             LinearLayout header = settingsStyle.topLevelHeader(title);
             header.findViewWithTag("settingsTitle").setTag("remoteControlTitle"); root.addView(header);
@@ -688,47 +732,46 @@ public final class MainActivity extends Activity {
         if (!subtitle.isEmpty()) root.addView(text(subtitle, Palette.TEXT_SMALL, muted));
         }
         status = text("", Palette.TEXT_TINY, muted); status.setTag("connectionStatus"); status.setGravity(Gravity.CENTER); status.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
-        status.addTextChangedListener(new android.text.TextWatcher() {
-            public void beforeTextChanged(CharSequence value, int start, int count, int after) {}
-            public void onTextChanged(CharSequence value, int start, int before, int count) {}
-            public void afterTextChanged(android.text.Editable value) {
-                if (screen.equals("computers")) {
-                    String label = value.toString();
-                    boolean quiet = label.isEmpty() || label.equals(tr("电脑状态已更新", "Computer status updated"))
-                        || label.equals(tr("尚未添加电脑", "No computers added"));
-                    status.setVisibility(quiet ? View.GONE : View.VISIBLE); return;
-                }
-                if (screen.equals("detail")) status.setVisibility(View.VISIBLE);
-                else if (screen.equals("list")) status.setVisibility(value.length() == 0 ? View.GONE : View.VISIBLE);
-            }
-        });
+        // Destination pages keep a fixed navigation area; their status updates
+        // must not insert a footer between the scrolling content and navigation.
+        status.setVisibility(showNavigation ? View.GONE : View.VISIBLE);
         bindStatusDetails();
         if (screen.equals("detail")) workStatus = new ChatStatusLine(status, chatStyle, chinese);
         updateConnectionHeader();
         scroll = new RefreshScrollView(this); scroll.setFillViewport(true); scroll.setVerticalScrollBarEnabled(false);
+        ((RefreshScrollView) scroll).setRefreshIndicatorVisible(!showNavigation);
         if (screen.equals("list")) {
             scroll.setOnScrollChangeListener((view, x, y, oldX, oldY) -> {
                 prefetch.interaction(); requestPrefetchViewport();
             });
             scroll.addOnLayoutChangeListener((view, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom) -> requestPrefetchViewport());
         }
-        if (screen.equals("list")) {
-            android.widget.FrameLayout viewport = new android.widget.FrameLayout(this);
-            viewport.setTag("remoteListViewport"); viewport.setClipChildren(true); viewport.setClipToPadding(true);
-            viewport.addView(scroll, new android.widget.FrameLayout.LayoutParams(-1, -1));
-            root.addView(viewport, new LinearLayout.LayoutParams(-1, 0, 1));
+        android.widget.FrameLayout navigationViewport = null;
+        if (showNavigation) {
+            navigationViewport = new android.widget.FrameLayout(this);
+            navigationViewport.setTag(screen.equals("list") ? "remoteListViewport" : "workbenchViewport");
+            // Content may flow behind the floating bar inside this viewport,
+            // but must never paint over the header above it.
+            navigationViewport.setClipChildren(true);
+            navigationViewport.setClipToPadding(true);
+            navigationViewport.addView(scroll, new android.widget.FrameLayout.LayoutParams(-1, -1));
+            root.addView(navigationViewport, new LinearLayout.LayoutParams(-1, 0, 1));
+            // Keep content flowing behind the floating glass, but allow the
+            // final row to scroll fully above it instead of hiding an action.
+            scroll.setClipToPadding(false);
+            scroll.setPadding(0, 0, 0, dp(WorkbenchNavigation.HEIGHT_DP + WorkbenchNavigation.CONTENT_GAP_DP));
         } else root.addView(scroll, new LinearLayout.LayoutParams(-1, 0, 1));
         content = column(); content.setPadding(0, 0, 0, dp(16)); scroll.addView(content);
         if (settingsPage) { content.setPadding(0, dp(4), 0, dp(16)); scroll.setVerticalScrollBarEnabled(false); }
-        root.addView(status);
+        if (!showNavigation) root.addView(status);
         if (showNavigation) {
             String navigationSelection = screen.equals("list") ? "sessions" : screen;
             workbenchNavigation = new WorkbenchNavigation(this, navigationSelection,
                 this::navigateHome, this::navigateSessions, this::navigateComputers, this::openSettingsPage);
-            LinearLayout.LayoutParams navigationParams = new LinearLayout.LayoutParams(navigationWidth(), dp(64));
-            navigationParams.gravity = Gravity.CENTER_HORIZONTAL;
-            navigationParams.setMargins(0, dp(8), 0, 0);
-            root.addView(workbenchNavigation, navigationParams);
+            android.widget.FrameLayout.LayoutParams navigationParams = new android.widget.FrameLayout.LayoutParams(
+                navigationWidth(), dp(WorkbenchNavigation.HEIGHT_DP), Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL);
+            navigationViewport.addView(workbenchNavigation, navigationParams);
+            workbenchNavigation.setBackdropSource(scroll);
         }
     }
 
@@ -740,8 +783,8 @@ public final class MainActivity extends Activity {
     private void updateNavigationWidth() {
         if (workbenchNavigation == null) return;
         ViewGroup.LayoutParams params = workbenchNavigation.getLayoutParams();
-        if (!(params instanceof LinearLayout.LayoutParams)) return;
-        LinearLayout.LayoutParams updated = (LinearLayout.LayoutParams) params;
+        if (!(params instanceof android.widget.FrameLayout.LayoutParams)) return;
+        android.widget.FrameLayout.LayoutParams updated = (android.widget.FrameLayout.LayoutParams) params;
         int width = navigationWidth();
         if (updated.width == width) return;
         updated.width = width;
@@ -854,19 +897,35 @@ public final class MainActivity extends Activity {
 
     private void renderHomeContent() {
         shell("", "");
-        JSONArray cached = homeCachedConversations();
-        TextView heading = text(tr("继续工作", "Continue working"), Palette.TEXT_HERO, ink);
-        heading.setPadding(0, dp(8), 0, cached.length() > 0 ? dp(12) : dp(5)); content.addView(heading);
-        if (cached.length() == 0) {
-            TextView description = text(tr("本地聊天和远程电脑，从这里继续。",
-                "Continue with local chat or a remote computer."), Palette.TEXT_BODY, muted);
-            description.setPadding(0, 0, 0, dp(14)); description.setTag("homeEmptyHint"); content.addView(description);
-        }
-        java.util.Set<String> shown = new java.util.LinkedHashSet<>();
-        renderHomeRunning(cached, shown);
-        renderHomeRecent(cached, shown);
+        homeHeading = text(tr("继续工作", "Continue working"), Palette.TEXT_HERO, ink);
+        content.addView(homeHeading);
+        homeEmptyHint = text(tr("本地聊天和远程电脑，从这里继续。",
+            "Continue with local chat or a remote computer."), Palette.TEXT_BODY, muted);
+        homeEmptyHint.setPadding(0, 0, 0, dp(14)); homeEmptyHint.setTag("homeEmptyHint");
+        content.addView(homeEmptyHint);
+        homeConversations = new WorkbenchList(this, scroll);
+        content.addView(homeConversations, new LinearLayout.LayoutParams(-1, -2));
+        updateHomeConversations();
         renderHomeShortcuts();
         status.setVisibility(View.GONE);
+    }
+
+    private void refreshHomeContent() {
+        if (!screen.equals("home") || homeConversations == null) return;
+        ((ChatScrollView) scroll).whenScrollIdle(this::updateHomeConversations);
+    }
+
+    private void updateHomeConversations() {
+        if (!screen.equals("home") || homeConversations == null) return;
+        JSONArray cached = homeCachedConversations();
+        int padding = cached.length() > 0 ? dp(12) : dp(5);
+        if (homeHeading.getPaddingBottom() != padding) homeHeading.setPadding(0, dp(8), 0, padding);
+        homeEmptyHint.setVisibility(cached.length() == 0 ? View.VISIBLE : View.GONE);
+        java.util.Set<String> shown = new java.util.LinkedHashSet<>();
+        ArrayList<WorkbenchList.Item> items = new ArrayList<>();
+        renderHomeRunning(cached, shown, items);
+        renderHomeRecent(cached, shown, items);
+        homeConversations.show(items);
     }
 
     private JSONArray homeCachedConversations() {
@@ -876,13 +935,25 @@ public final class MainActivity extends Activity {
         return rows == null ? new JSONArray() : rows;
     }
 
-    private int renderHomeRunning(JSONArray cached, java.util.Set<String> shown) {
+    private void renderHomeRunning(JSONArray cached, java.util.Set<String> shown, ArrayList<WorkbenchList.Item> items) {
         ArrayList<JSONObject> active = new ArrayList<>();
         for (int index = 0; index < cached.length(); index++) {
             JSONObject conversation = cached.optJSONObject(index);
             if (conversation != null && homeConversationActive(conversation)) active.add(conversation);
         }
-        if (active.isEmpty()) return 0;
+        if (active.isEmpty()) return;
+        items.add(new WorkbenchList.Item("running", active.size() > 3 ? active.size() + ":" + homeRunningExpanded : "",
+            () -> homeRunningHeader(active.size())));
+        int count = homeRunningExpanded ? active.size() : Math.min(3, active.size());
+        for (int index = 0; index < count; index++) {
+            JSONObject conversation = active.get(index);
+            String id = conversation.optString("id");
+            shown.add(id);
+            items.add(homeConversationItem(conversation, true, "homeActive:" + id, "homeActiveStatus:" + id));
+        }
+    }
+
+    private View homeRunningHeader(int count) {
         LinearLayout section = new LinearLayout(this);
         section.setTag("homeRunningSection");
         section.setGravity(Gravity.CENTER_VERTICAL);
@@ -890,9 +961,9 @@ public final class MainActivity extends Activity {
         TextView label = text(tr("运行中", "Running"), Palette.TEXT_CARD, ink);
         label.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
         section.addView(label, new LinearLayout.LayoutParams(0, -2, 1));
-        if (active.size() > 3) {
+        if (count > 3) {
             TextView toggle = text(homeRunningExpanded ? tr("收起", "Collapse")
-                    : tr("展开全部 " + active.size(), "Show all " + active.size()),
+                    : tr("展开全部 " + count, "Show all " + count),
                 Palette.TEXT_SMALL, accent);
             toggle.setGravity(Gravity.CENTER);
             toggle.setMinHeight(dp(48));
@@ -900,20 +971,11 @@ public final class MainActivity extends Activity {
             toggle.setTag("homeRunningToggle");
             toggle.setOnClickListener(view -> {
                 homeRunningExpanded = !homeRunningExpanded;
-                homeScreen();
+                refreshHomeContent();
             });
             section.addView(toggle);
         }
-        content.addView(section);
-        int count = homeRunningExpanded ? active.size() : Math.min(3, active.size());
-        for (int index = 0; index < count; index++) {
-            JSONObject conversation = active.get(index);
-            String id = conversation.optString("id");
-            shown.add(id);
-            content.addView(homeConversationRow(conversation, true,
-                "homeActive:" + id, "homeActiveStatus:" + id));
-        }
-        return active.size();
+        return section;
     }
 
     private boolean homeConversationActive(JSONObject conversation) {
@@ -922,25 +984,28 @@ public final class MainActivity extends Activity {
             || RemoteWorkStatus.backgroundCount(conversation) > 0;
     }
 
-    private ConversationRow homeConversationRow(JSONObject conversation, boolean active, String tag, String statusTag) {
+    private WorkbenchList.Item homeConversationItem(JSONObject conversation, boolean active, String tag, String statusTag) {
         Palette palette = Palette.of(this);
         String state = conversation.optString("activity");
         int statusColor = state.equals("running") ? palette.success
             : state.equals("permission") || state.equals("question") ? palette.warning
             : RemoteWorkStatus.backgroundCount(conversation) > 0 ? palette.accent : palette.muted;
         String indicator = active ? activity(conversation) : "";
-        return new ConversationRow(this, chatStyle, false, conversationEngine(conversation),
-            conversation.optString("title"), conversationMeta(conversation), indicator, statusColor,
-            conversationTime(conversation), tag, statusTag, () -> {
+        String engine = conversationEngine(conversation), title = conversation.optString("title");
+        String meta = conversationMeta(conversation), time = conversationTime(conversation);
+        // Ignore stream counters, previews and other metadata that this page does not display.
+        String presentation = new JSONArray().put(engine).put(title).put(meta).put(indicator).put(statusColor).put(time).toString();
+        return new WorkbenchList.Item(tag, presentation, () -> new ConversationRow(this, chatStyle, false, engine,
+            title, meta, indicator, statusColor, time, tag, statusTag, () -> {
                 conversationId = conversation.optString("id");
                 conversationTitle = conversation.optString("title");
                 detailReturn = "home";
                 detailScreen();
                 connectEvents();
-            }, () -> {});
+            }, () -> {}));
     }
 
-    private void renderHomeRecent(JSONArray cached, java.util.Set<String> shown) {
+    private void renderHomeRecent(JSONArray cached, java.util.Set<String> shown, ArrayList<WorkbenchList.Item> items) {
         boolean available = false;
         for (int index = 0; index < cached.length(); index++) {
             JSONObject conversation = cached.optJSONObject(index);
@@ -948,6 +1013,19 @@ public final class MainActivity extends Activity {
                 && !shown.contains(conversation.optString("id"))) { available = true; break; }
         }
         if (!available) return;
+        items.add(new WorkbenchList.Item("recent", "", this::homeRecentHeader));
+        int added = 0;
+        for (int index = 0; index < cached.length() && added < 3; index++) {
+            JSONObject conversation = cached.optJSONObject(index);
+            if (conversation == null) continue;
+            String id = conversation.optString("id");
+            if (id.isEmpty() || shown.contains(id) || homeConversationActive(conversation)) continue;
+            shown.add(id); added++;
+            items.add(homeConversationItem(conversation, false, "homeRecent:" + id, "homeRecentStatus:" + id));
+        }
+    }
+
+    private View homeRecentHeader() {
         LinearLayout section = new LinearLayout(this);
         section.setTag("homeRecentSection");
         section.setGravity(Gravity.CENTER_VERTICAL);
@@ -959,17 +1037,7 @@ public final class MainActivity extends Activity {
         all.setGravity(Gravity.CENTER); all.setMinHeight(dp(48)); all.setPadding(dp(12), 0, dp(2), 0); all.setTag("homeRecentAll");
         all.setOnClickListener(view -> navigateSessions());
         section.addView(all);
-        content.addView(section);
-        int added = 0;
-        for (int index = 0; index < cached.length() && added < 3; index++) {
-            JSONObject conversation = cached.optJSONObject(index);
-            if (conversation == null) continue;
-            String id = conversation.optString("id");
-            if (id.isEmpty() || shown.contains(id) || homeConversationActive(conversation)) continue;
-            shown.add(id); added++;
-            content.addView(homeConversationRow(conversation, false,
-                "homeRecent:" + id, "homeRecentStatus:" + id));
-        }
+        return section;
     }
 
     private void renderHomeShortcuts() {
@@ -1104,9 +1172,7 @@ public final class MainActivity extends Activity {
                     JSONObject after = listCache.get(snapshot);
                     boolean changed = before == null ? after != null : after != null && !before.toString().equals(after.toString());
                     if (!changed) return;
-                    int position = scroll == null ? 0 : scroll.getScrollY();
-                    renderHomeContent();
-                    if (scroll != null) scroll.post(() -> scroll.scrollTo(0, position));
+                    refreshHomeContent();
                 });
             } catch (Exception ignored) {
                 // Keep the cached list; the next home resume will retry.
@@ -1121,21 +1187,21 @@ public final class MainActivity extends Activity {
         stopNetwork(); screen = "settings"; networkScreen = false; conversationId = null;
         shell(tr("设置", "Settings"), "");
         SettingsStyle settingsStyle = new SettingsStyle(this);
-        int computers = 0;
-        try { computers = store.all().size(); } catch (Exception ignored) { }
         LinearLayout summary = settingsStyle.group(content, tr("账户与连接", "Account & connection"));
         settingsStyle.row(summary, "key", tr("模型服务", "Model services"),
             tr("API、订阅与 Key", "APIs & keys"), "settings:summaryModels", () -> openSettingsSection("providers"));
-        settingsStyle.row(summary, "computer", tr("远程电脑", "Remote computers"),
-            tr(computers + " 台已配对", computers + " paired"), "settings:summaryComputers", () -> {
-                navigateComputers();
-            });
+        settingsStyle.row(summary, "archive", tr("额度与用量", "Quota & usage"),
+            tr("查看电脑端订阅与 API", "Desktop subscriptions & APIs"), "settings:usage", () -> openAccountUsage(null));
         settingsStyle.row(summary, "phone", tr("手机访问", "Mobile access"), mobileAccessState(), "settings:network", this::showNetwork);
         settingsRowMobileAccess = (LinearLayout) summary.findViewWithTag("settings:network");
 
         LinearLayout application = settingsStyle.group(content, tr("应用与权限", "Application & permissions"));
         settingsStyle.row(application, "settings", tr("通用与外观", "General & appearance"), "", "settings:general",
             () -> openSettingsSection("general"));
+        settingsStyle.row(application, "file", tr("阅读与显示", "Reading & display"),
+            tr("字号、代码与过程", "Text, code & process"), "settings:reading", () -> openSettingsSection("reading"));
+        settingsStyle.row(application, "settings", tr("通知控制", "Notifications"), "", "settings:notifications",
+            () -> openSettingsSection("notifications"));
         settingsStyle.row(application, "phone", tr("本机名称", "Phone name"), MobilePreferences.deviceName(this),
             "settings:deviceName", this::editDeviceName);
         settingsStyle.info(application, tr("会话权限", "Conversation permissions"),
@@ -1144,9 +1210,6 @@ public final class MainActivity extends Activity {
         LinearLayout data = settingsStyle.group(content, tr("数据与诊断", "Data & diagnostics"));
         settingsStyle.row(data, "archive", tr("已归档", "Archived"), "", "settings:archived",
             () -> openSettingsSection("archived"));
-        settingsStyle.row(data, "computer", tr("连接稳定性", "Connection stability"), "", "settings:diagnostics", () -> {
-            navigateComputers();
-        });
 
         LinearLayout about = settingsStyle.group(content, tr("关于", "About"));
         String version;
@@ -1158,6 +1221,12 @@ public final class MainActivity extends Activity {
 
     private void openSettingsSection(String section) {
         startActivity(new android.content.Intent(this, SettingsActivity.class).putExtra("section", section));
+        PageTransitions.openActivity(this);
+    }
+
+    private void openAccountUsage(JSONObject computer) {
+        startActivity(new android.content.Intent(this, RemoteUsageActivity.class)
+            .putExtra("address", computer == null ? credentials.optString("address") : computer.optString("address")));
         PageTransitions.openActivity(this);
     }
 
@@ -1313,6 +1382,9 @@ public final class MainActivity extends Activity {
         LinearLayout panel = computerDialogPanel(computerName(computer), address + (state.isEmpty() ? "" : "\n" + state));
         android.app.Dialog dialog = createComputerDialog(panel);
         LinearLayout group = style.group(panel, "");
+        if (computer.has("token")) style.action(group, tr("额度与用量", "Quota & usage"),
+            tr("查看这台电脑的订阅额度、API 余额和调用记录", "View subscription quota, API balances and usage on this computer"),
+            "manageUsage", false, () -> { dialog.dismiss(); openAccountUsage(computer); });
         style.action(group, tr("连接稳定性测试", "Connection stability test"), tr("检测手机与电脑的连接，约 30 秒", "Test the phone-to-computer connection for about 30 seconds"),
             "manageConnectionTest", false, () -> { dialog.dismiss(); testComputerConnection(computer); });
         if (computer.has("token")) style.action(group, tr("重启桌面端 Camellia", "Restart desktop Camellia"),
@@ -2198,7 +2270,8 @@ public final class MainActivity extends Activity {
                 } else if (archived) restoreArchivedConversation(conversation);
                 else { conversationId = id; conversationTitle = title; detailReturn = "list"; detailScreen(); connectEvents(); }
             }, () -> { if (archived) restoreArchivedConversation(conversation); else conversationMenu(conversation); });
-        card.setContentDescription(title + " · " + activity(conversation) + (unread ? " · " + tr("新消息", "New reply") : ""));
+        card.setContentDescription(title + (meta.isEmpty() ? "" : " · " + meta) + " · " + activity(conversation)
+            + (unread ? " · " + tr("新消息", "New reply") : ""));
         card.selection(selectingConversations, selectedConversations.contains(conversation.optString("id")));
         if (!archived) prefetchRows.add(card);
         return card;
@@ -2208,12 +2281,9 @@ public final class MainActivity extends Activity {
         java.util.ArrayList<String> parts = new java.util.ArrayList<>();
         String engine = RemoteEngines.label(conversationEngine(conversation));
         if (!engine.isEmpty()) parts.add(engine);
-        JSONObject file = conversation.optJSONObject("filePreview");
-        if (file != null) {
-            String name = file.optString("name");
-            int count = Math.max(1, file.optInt("count", 1));
-            if (!name.isEmpty()) parts.add(name + (count > 1 ? " +" + (count - 1) : ""));
-        }
+        String model = conversation.optString("modelName", "").trim();
+        if (model.isEmpty() || model.equals("null")) model = conversation.optString("model", "").trim();
+        if (!model.isEmpty() && !model.equals("null")) parts.add(model);
         return String.join(" · ", parts);
     }
 
@@ -2291,7 +2361,8 @@ public final class MainActivity extends Activity {
             : waiting ? palette.warning
             : background > 0 ? (RemoteWorkStatus.backgroundUnknown(conversation) ? palette.warning : palette.accent)
             : 0;
-        String status = active ? activity(conversation) : conversationMeta(conversation);
+        String status = conversationMeta(conversation);
+        if (active) status += (status.isEmpty() ? "" : " · ") + activity(conversation);
         String time = conversationTime(conversation);
         String detail = status.isEmpty() ? time : time.isEmpty() ? status : status + " · " + time;
         if (detail.isEmpty()) detail = tr("空闲", "Idle");
@@ -2999,6 +3070,7 @@ public final class MainActivity extends Activity {
     private void scheduleListRefresh(RemoteApi client, int ticket, JSONObject snapshot) {
         if (ticket != generation || !screen.equals("list")) return;
         JSONObject page = snapshot.optJSONObject("conversationList");
+        notifyConversationPage(page);
         JSONArray rows = page == null ? null : page.optJSONArray("conversations");
         boolean searching = searchInput != null && !searchInput.getText().toString().trim().isEmpty();
         if (!listRefreshBusy && rows != null && !searching
@@ -3075,6 +3147,7 @@ public final class MainActivity extends Activity {
         remoteSettings = null;
         remotePreparation = null;
         remoteCompaction = null;
+        remoteGoal = null; remoteTasks = new JSONArray();
         remoteQueue = new JSONArray(); canQueue = false; queueVersion = -1; queueSignature = ""; queueSteeringGoalId = "";
         displayedConversation = null;
         outgoingMessage = pendingCommand();
@@ -3151,9 +3224,6 @@ public final class MainActivity extends Activity {
         queueBar.setVisibility(View.GONE);
         LinearLayout.LayoutParams queueParams = new LinearLayout.LayoutParams(-1, -2);
         dock.addView(queueBar, dock.indexOfChild(composerBar), queueParams);
-        latest = button(tr("回到最新消息", "Back to latest messages"), this::loadLatest, false);
-        latest.setTag("remoteLatestMessages"); latest.setVisibility(View.GONE);
-        latest.setBackgroundColor(Color.TRANSPARENT); latest.setTextSize(Palette.TEXT_SMALL); composerBar.addView(latest);
         chatComposer = new ChatComposer(composerBar, chatStyle, chinese, tr("发消息，继续任务…", "Message your computer…"), 16000,
             () -> showRemoteSettings(false), this::sendMessage, this::stopRun, this::cancelEdit);
         composer = chatComposer.input; composer.setTag("remoteComposer");
@@ -3191,6 +3261,7 @@ public final class MainActivity extends Activity {
             if (edit > 0) editingSeq = edit;
         }
         renderMessages(preserveLiveState ? lastLive : null);
+        if (preserveLiveState) renderAutomationViews();
         if (!preserveLiveState) showPrefetchedConversation();
         updateControls();
         // The background list stream supplies the fresh sidebar. Starting a
@@ -3271,12 +3342,17 @@ public final class MainActivity extends Activity {
             stream(client, ticket, 0);
             return;
         }
-        job = worker.submit(() -> {
+        // Optional capability discovery must not gate the first transcript.
+        // Clear another computer's flags; the legacy stream is always valid.
+        updateCapabilities(new JSONObject()); capabilityAddress = ""; capabilityToken = "";
+        statusWorker.submit(() -> {
+            if (ticket != generation) return;
             try {
                 JSONObject info = client.json("/v1/status", token, null);
-                deliver(ticket, () -> { updateCapabilities(info); client.incremental(canIncremental); stream(client, ticket, 0); });
-            } catch (Exception error) { deliver(ticket, () -> stream(client, ticket, 0)); }
+                deliver(ticket, () -> { updateCapabilities(info); client.incremental(canIncremental); updateControls(); });
+            } catch (Exception ignored) { /* The stream reports connection and authorization failures. */ }
         });
+        stream(client, ticket, 0);
     }
 
     private void startConversationSync() {
@@ -3291,6 +3367,7 @@ public final class MainActivity extends Activity {
             JSONArray rows = page.optJSONArray("conversations");
             if (rows == null) return;
             if (page.optInt("protocol") == 1) updateCapabilities(page);
+            notifyConversationPage(page);
             conversationListRevision++;
             JSONObject cached = listCache.get(target);
             JSONArray workspaces = page.optJSONArray("workspaces");
@@ -3301,26 +3378,45 @@ public final class MainActivity extends Activity {
             JSONObject updated = listCache.get(target);
             if (cached != null && updated != null && cached.toString().equals(updated.toString())) return;
             if (screen.equals("home")) {
-                int position = scroll == null ? 0 : scroll.getScrollY();
-                renderHomeContent();
-                if (scroll != null) scroll.post(() -> scroll.scrollTo(0, position));
+                refreshHomeContent();
             } else if (detailSidebar != null) detailSidebar.update(detailSidebarItems());
         }));
+    }
+
+    private void notifyConversationPage(JSONObject page) {
+        JSONArray rows = page == null ? null : page.optJSONArray("conversations");
+        for (int i = 0; rows != null && i < rows.length(); i++) {
+            JSONObject row = rows.optJSONObject(i); if (row == null) continue;
+            // The detail stream supplies terminal state and approvals for the open chat.
+            if (screen.equals("detail") && row.optString("id").equals(conversationId)) continue;
+            chatNotifications.conversation(this, credentials, page.optString("instanceId", screen.equals("list") ? listInstance : instance), row, null, null, false);
+        }
     }
 
     private void stream(RemoteApi client, int ticket, int attempt) {
         if (!networkActive() || ticket != generation) return;
         replyReadSync.retry();
         String id = conversationId, token = credentials.optString("token");
+        RemoteStreamHealth health = new RemoteStreamHealth(android.os.SystemClock.elapsedRealtime());
+        streamHealth = health;
+        inspectStream();
         job = eventWorker.submit(() -> {
             boolean[] received = { false };
             Exception failure = null;
             try {
-                client.events(id, token, snapshot -> { received[0] = true; queueSnapshot(ticket, snapshot); });
+                client.events(id, token, snapshot -> {
+                    JSONObject conversation = snapshot.optJSONObject("conversation");
+                    if (conversation == null || !id.equals(conversation.optString("id"))
+                            || !received[0] && snapshot.optJSONArray("messages") == null) throw new IOException("Invalid snapshot");
+                    received[0] = true;
+                    queueSnapshot(ticket, snapshot);
+                }, () -> health.heartbeat(android.os.SystemClock.elapsedRealtime()));
             } catch (Exception error) { failure = error; }
             final Exception error = failure;
             int nextAttempt = received[0] ? 0 : Math.min(attempt + 1, 5);
             deliver(ticket, () -> {
+                if (streamHealth != health) return;
+                streamHealth = null; handler.removeCallbacks(inspectStream);
                 if (!received[0] && error instanceof RemoteApi.Failure && ((RemoteApi.Failure) error).status == 400 && client.incremental()) {
                     // The desktop may have been downgraded since the cached
                     // capability was read. Retry the legacy stream once.
@@ -3339,6 +3435,20 @@ public final class MainActivity extends Activity {
         });
     }
 
+    private void inspectStream() {
+        handler.removeCallbacks(inspectStream);
+        if (!networkActive() || !screen.equals("detail") || streamHealth == null) return;
+        long remaining = streamHealth.remaining(android.os.SystemClock.elapsedRealtime());
+        if (remaining > 0) { handler.postDelayed(inspectStream, remaining); return; }
+        boolean synced = streamHealth.synced();
+        // Start a new generation so late frames from the stalled stream are
+        // ignored and cancellation cannot block the replacement connection.
+        connectEvents();
+        connectionFailure(synced
+            ? tr("实时连接已失去响应，正在重新同步会话。", "The live connection stopped responding. Reconnecting to sync the conversation.")
+            : tr("会话同步超时，正在重新连接。请确认电脑保持在线。", "Conversation sync timed out. Reconnecting; check that the computer stays online."));
+    }
+
     private void queueSnapshot(int ticket, JSONObject snapshot) {
         synchronized (this) {
             if (ticket != generation) return;
@@ -3355,8 +3465,16 @@ public final class MainActivity extends Activity {
         }
         handler.postDelayed(() -> {
             JSONObject latest;
-            synchronized (this) { latest = pendingSnapshot; pendingSnapshot = null; snapshotPosted = false; }
-            if (networkActive() && ticket == generation && latest != null) applySnapshot(latest);
+            synchronized (this) {
+                // An old worker can post after stopNetwork removes callbacks.
+                // It must not consume the replacement generation's first frame.
+                if (ticket != generation) return;
+                latest = pendingSnapshot; pendingSnapshot = null; snapshotPosted = false;
+            }
+            if (networkActive() && ticket == generation && latest != null) {
+                applySnapshot(latest);
+                if (connected && streamHealth != null) streamHealth.snapshot(android.os.SystemClock.elapsedRealtime());
+            }
         }, 120);
     }
 
@@ -3385,6 +3503,7 @@ public final class MainActivity extends Activity {
         remoteSettings = settings;
         JSONArray rows = snapshot.optJSONArray("messages");
         if (rows != null && !server.equals(historyInstance)) { clearHistory(); historyInstance = server; }
+        if (rows != null) historyVersion = snapshot.optString("historyVersion");
         // Live metadata and controls continue updating while the reader browses
         // an older window. A latest-page snapshot must not evict that window.
         if (rows != null && !historyDetached) {
@@ -3408,6 +3527,8 @@ public final class MainActivity extends Activity {
         remotePreparation = snapshot.optJSONObject("preparation");
         remoteCompaction = ContextCompactionView.fromSnapshot(snapshot, remoteCompaction, conversationSeq);
         displayedConversation = conversation;
+        chatNotifications.conversation(this, credentials, instance, conversation, lastLive, rows,
+            foreground && screen.equals("detail") && hasWindowFocus());
         canQueue = snapshot.has("queue");
         JSONObject queueSteering = snapshot.optJSONObject("queueSteering");
         queueSteeringGoalId = queueSteering == null ? "" : queueSteering.optString("goalId");
@@ -3419,13 +3540,14 @@ public final class MainActivity extends Activity {
         syncReplyRead(conversation);
         renderApprovals(); updateControls();
         updateOlderControl();
-        if (following && !olderLoading) positionMessages(Integer.MAX_VALUE);
+        if (following && (!olderLoading || olderAutomatic)) positionMessages(Integer.MAX_VALUE);
         if (reconnect && foreground) {
             commandCheckDeadline = android.os.SystemClock.elapsedRealtime() + COMMAND_CONFIRM_TIMEOUT_MS;
             if (pendingCommand() != null) retryCommand(false);
             JSONObject stop = RemotePendingCommands.get(credentials, conversationId, true);
             if (stop != null) retryPendingCommand(stop, false, true);
         }
+        scheduleAutomaticHistory();
     }
 
     private void syncReplyRead(JSONObject conversation) {
@@ -3552,6 +3674,10 @@ public final class MainActivity extends Activity {
     }
 
     private void positionMessages(int position) {
+        positionMessages(position, null);
+    }
+
+    private void positionMessages(int position, View anchor) {
         clearMessageScroll();
         ScrollView target = scroll;
         pendingScrollView = target;
@@ -3564,6 +3690,8 @@ public final class MainActivity extends Activity {
                 pendingMessageScroll = null;
                 if (scroll == target && screen.equals("detail")) {
                     int destination = position == Integer.MAX_VALUE && target.getChildCount() > 0 ? target.getChildAt(0).getHeight() : position;
+                    if (anchor != null) destination = anchor.getParent() == messages
+                        ? messages.getTop() + anchor.getTop() + position : target.getChildAt(0).getHeight();
                     target.scrollTo(0, destination);
                 }
                 return true;
@@ -3958,11 +4086,13 @@ public final class MainActivity extends Activity {
         if (computerPicker != null) { computerPicker.dismiss(); computerPicker = null; }
         if (computerDialog != null) { computerDialog.dismiss(); computerDialog = null; }
         if (queueDialog != null) { queueDialog.dismiss(); queueDialog = null; }
+        if (workDialog != null) { workDialog.dismiss(); workDialog = null; }
+        workAutomationSection = null;
         queueSheetPanel = null;
         if (remoteApprovalDialog != null) { remoteApprovalDialog.dismiss(); remoteApprovalDialog = null; }
         if (visualizationDialog != null) { visualizationDialog.dismiss(); visualizationDialog = null; }
         remoteApprovalKey = ""; locationConsent.cancel();
-        messages = null; older = null; latest = null; remoteEmptyState = null;
+        messages = null; older = null; remoteEmptyState = null;
         composer = null; chatComposer = null; sendButton = null; stopButton = null;
         retryMessage = null; approvals = null; automationBar = null; queueBar = null; workInline = null;
         backgroundWorkBar = null; backgroundWorkLabel = null; backgroundWorkStop = null; workSummaryBar = null;
@@ -3970,6 +4100,7 @@ public final class MainActivity extends Activity {
         addressInput = null; portInput = null; nameInput = null; codeInput = null; pairButton = null; scanButton = null;
         handler.removeCallbacks(searchRemote); searchInput = null; searchBar = null;
         detailSidebar = null; splitDetail = false; workbenchNavigation = null;
+        homeConversations = null; homeHeading = null; homeEmptyHint = null;
         root = null; content = null; scroll = null; status = null; headerConnection = null;
     }
 
@@ -3977,28 +4108,60 @@ public final class MainActivity extends Activity {
         boolean available = nextBefore != null;
         older.setEnabled(available && !olderLoading);
         older.setVisibility(available ? View.VISIBLE : View.GONE);
-        latest.setVisibility(historyDetached ? View.VISIBLE : View.GONE);
-        latest.setEnabled(!olderLoading);
         ((RefreshScrollView) scroll).setRefreshAction(available ? this::loadOlder : null, ready -> {
             if (ready) setStatusNotice(tr("松开加载更早消息", "Release to load earlier messages"));
         });
     }
 
     private void loadOlder() {
-        if (olderLoading) return;
-        if (!foreground || nextBefore == null || api == null) {
-            ((RefreshScrollView) scroll).setRefreshing(false); return;
+        loadOlder(false);
+    }
+
+    private int visibleHistoryMessages() {
+        int count = 0;
+        for (JSONObject row : history.values()) if (RemoteHistoryPage.visible(row)) count++;
+        return count;
+    }
+
+    private void scheduleAutomaticHistory() {
+        if (foreground && screen.equals("detail") && connected && !olderLoading && !historyDetached
+                && historyLoad.shouldLoad(visibleHistoryMessages(), history.size(), historyBytes, nextBefore != null)) {
+            // Let the latest reply draw before fetching anything else.
+            if (!automaticHistoryScheduled) {
+                automaticHistoryScheduled = true; handler.postDelayed(automaticHistoryLoad, 180);
+            }
+        } else {
+            handler.removeCallbacks(automaticHistoryLoad); automaticHistoryScheduled = false;
         }
+    }
+
+    private void loadOlder(boolean automatic) {
+        if (olderLoading) return;
+        if (!foreground || !screen.equals("detail") || nextBefore == null || api == null) {
+            if (scroll instanceof RefreshScrollView) ((RefreshScrollView) scroll).setRefreshing(false);
+            return;
+        }
+        if (automatic && (!connected || historyDetached || !historyLoad.shouldLoad(
+                visibleHistoryMessages(), history.size(), historyBytes, true))) return;
+        handler.removeCallbacks(automaticHistoryLoad); automaticHistoryScheduled = false;
+        if (!automatic) historyLoad.stop();
         RemoteApi client = api; int ticket = generation; long before = nextBefore;
-        RemoteHistoryPage page = new RemoteHistoryPage(history.keySet(), before);
+        RemoteHistoryLoad load = historyLoad;
+        RemoteHistoryPage page = automatic ? new RemoteHistoryPage(history.keySet(), before,
+            RemoteHistoryPage.MAX_RECORDS - history.size(), RemoteHistoryPage.MAX_BYTES - historyBytes,
+            load.remainingMessages(visibleHistoryMessages())) : new RemoteHistoryPage(history.keySet(), before);
+        String version = historyVersion;
         String server = instance;
         String id = conversationId, token = credentials.optString("token"); older.setEnabled(false);
-        olderLoading = true;
-        latest.setEnabled(false);
-        ((RefreshScrollView) scroll).setRefreshing(true);
-        setStatusNotice(tr("正在加载更早消息…", "Loading earlier messages…"));
+        olderLoading = true; olderAutomatic = automatic;
+        if (!automatic) {
+            ((RefreshScrollView) scroll).setRefreshing(true);
+            setStatusNotice(tr("正在加载更早消息…", "Loading earlier messages…"));
+        }
         worker.submit(() -> {
             try {
+                long started = android.os.SystemClock.elapsedRealtime();
+                String[] responseVersion = {version};
                 do {
                     if (ticket != generation) return;
                     long pageBefore = page.nextBefore;
@@ -4007,15 +4170,27 @@ public final class MainActivity extends Activity {
                     if (!server.equals(snapshot.optString("instanceId", server)) || conversation == null || !id.equals(conversation.optString("id"))) {
                         throw new IOException("Conversation changed while loading earlier messages");
                     }
+                    responseVersion[0] = snapshot.optString("historyVersion");
+                    if (automatic && !version.equals(responseVersion[0])) break;
                     page.append(snapshot, pageBefore);
-                } while (page.needsNext());
+                } while (!automatic && page.needsNext());
+                long duration = android.os.SystemClock.elapsedRealtime() - started;
                 deliver(ticket, () -> {
-                    olderLoading = false;
+                    olderLoading = false; olderAutomatic = false;
                     ((RefreshScrollView) scroll).setRefreshing(false);
+                    if (automatic) {
+                        load.received(duration);
+                        if (load != historyLoad || !version.equals(historyVersion) || !version.equals(responseVersion[0]) || !server.equals(instance)
+                                || historyDetached || !java.util.Objects.equals(nextBefore, before)) {
+                            updateOlderControl(); scheduleAutomaticHistory(); return;
+                        }
+                    }
                     if (!server.equals(instance)) {
                         updateOlderControl();
                         setStatusNotice(tr("会话已更新，请重新加载更早消息。", "Conversation updated. Load earlier messages again.")); return;
                     }
+                    boolean followBottom = automatic && (pendingScrollView == scroll && pendingScrollPosition == Integer.MAX_VALUE
+                        || !scroll.canScrollVertically(1));
                     View anchor = null;
                     for (int index = 0; index < messages.getChildCount(); index++) {
                         View candidate = messages.getChildAt(index);
@@ -4029,16 +4204,14 @@ public final class MainActivity extends Activity {
                         if (!history.containsKey(seq)) { retainHistory(seq, row); added.add(seq); }
                     }
                     nextBefore = page.nextBefore;
-                    trimHistory(true);
+                    // Automatic warmup must never displace the latest reply.
+                    // Live rows may have arrived while the page was in flight.
+                    trimHistory(!automatic);
+                    if (automatic && (page.rows.isEmpty() || page.limited() && visibleHistoryMessages() < RemoteHistoryLoad.PROBE_MESSAGES)) load.stop();
                     renderMessages(lastLive); updateOlderControl();
-                    ScrollView targetScroll = scroll;
-                    viewHandler.post(() -> {
-                        if (ticket == generation && scroll == targetScroll && retainedAnchor != null && retainedAnchor.getParent() == messages) {
-                            targetScroll.scrollTo(0, messages.getTop() + retainedAnchor.getTop() - anchorOffset);
-                        } else if (ticket == generation && scroll == targetScroll && retainedAnchor != null) {
-                            targetScroll.fullScroll(View.FOCUS_DOWN);
-                        }
-                    });
+                    if (followBottom) positionMessages(Integer.MAX_VALUE);
+                    else if (retainedAnchor != null) positionMessages(-anchorOffset, retainedAnchor);
+                    if (automatic) { scheduleAutomaticHistory(); return; }
                     int addedMessages = 0, addedProcess = 0;
                     for (long seq : added) {
                         JSONObject row = history.get(seq);
@@ -4052,38 +4225,12 @@ public final class MainActivity extends Activity {
                     setStatusNotice(notice);
                 });
             } catch (Exception error) { deliver(ticket, () -> {
-                olderLoading = false; ((RefreshScrollView) scroll).setRefreshing(false);
-                updateOlderControl(); showFailure(error, true);
-            }); }
-        });
-    }
-
-    private void loadLatest() {
-        if (olderLoading || !foreground || api == null || !historyDetached) return;
-        RemoteApi client = api; int ticket = generation;
-        String server = instance, id = conversationId, token = credentials.optString("token");
-        olderLoading = true; updateOlderControl();
-        setStatusNotice(tr("正在加载最新消息…", "Loading latest messages…"));
-        worker.submit(() -> {
-            try {
-                JSONObject snapshot = client.json("/v1/conversations/" + id, token, null);
-                JSONObject conversation = snapshot.optJSONObject("conversation");
-                if (!server.equals(snapshot.optString("instanceId", server)) || conversation == null || !id.equals(conversation.optString("id"))
-                        || snapshot.optJSONArray("messages") == null || !snapshot.has("nextBefore")) {
-                    throw new IOException("Invalid latest-message page");
-                }
-                deliver(ticket, () -> {
-                    olderLoading = false;
-                    if (!server.equals(instance) || snapshot.optLong("cursor", -1) < cursor) {
-                        updateOlderControl();
-                        setStatusNotice(tr("会话已更新，请重新加载最新消息。", "Conversation updated. Load latest messages again.")); return;
-                    }
-                    clearHistory(); initialMessageScroll = true;
-                    applySnapshot(snapshot);
-                    setStatusNotice(tr("已回到最新消息", "Back at the latest messages"));
-                });
-            } catch (Exception error) { deliver(ticket, () -> {
-                olderLoading = false; updateOlderControl(); showFailure(error, true);
+                olderLoading = false; olderAutomatic = false; ((RefreshScrollView) scroll).setRefreshing(false);
+                updateOlderControl();
+                if (automatic) {
+                    load.stop();
+                    if (error instanceof RemoteApi.Failure && java.util.Set.of(401, 403, 404).contains(((RemoteApi.Failure) error).status)) showFailure(error, true);
+                } else showFailure(error, true);
             }); }
         });
     }
@@ -4101,6 +4248,7 @@ public final class MainActivity extends Activity {
     private void clearHistory() {
         disposeMessageViews(); history.clear(); historyBytes = 0; historyInstance = "";
         nextBefore = null; historyDetached = false; goalVisibility.reset();
+        historyLoad = new RemoteHistoryLoad(); historyVersion = "";
     }
 
     private void retainHistory(long seq, JSONObject row) {
@@ -4285,6 +4433,7 @@ public final class MainActivity extends Activity {
         }
         renderQueue();
         refreshWorkSummaryBar();
+        renderWorkAutomation();
     }
 
     private boolean remoteBusy() {
@@ -4375,8 +4524,10 @@ public final class MainActivity extends Activity {
 
     private void showWorkSheet() {
         if (!screen.equals("detail")) return;
+        if (workDialog != null && workDialog.isShowing()) return;
         SettingsStyle style = new SettingsStyle(this);
         android.app.Dialog dialog = new android.app.Dialog(this);
+        workDialog = dialog;
         LinearLayout panel = column();
         style.sheetPanel(panel);
         panel.setTag("workSheet");
@@ -4428,21 +4579,12 @@ public final class MainActivity extends Activity {
             Button retry = button(tr("重新查询", "Check again"), () -> { dialog.dismiss(); retryCommand(); }, false);
             panel.addView(retry);
         }
-        JSONObject automation = lastLive == null ? null : lastLive.optJSONObject("automation");
-        JSONObject goal = automation == null ? null : automation.optJSONObject("goal");
-        JSONArray tasks = automation == null ? null : automation.optJSONArray("tasks");
-        if (goal != null || tasks != null && tasks.length() > 0) {
+        workAutomationSection = column();
+        workAutomationSignature = "";
+        panel.addView(workAutomationSection);
+        renderWorkAutomation();
+        if (remoteGoal != null || remoteTasks.length() > 0) {
             added = true;
-            panel.addView(sheetSection(tr("目标与任务", "Goal and tasks")));
-            if (goal != null && !goal.optString("objective").isEmpty()) panel.addView(text(goal.optString("objective"), Palette.TEXT_NOTE, ink));
-            if (tasks != null && tasks.length() > 0) {
-                TextView count = text(tr("定时任务 " + tasks.length(), "Scheduled tasks " + tasks.length()), Palette.TEXT_SMALL, muted);
-                count.setPadding(0, dp(6), 0, dp(6)); panel.addView(count);
-            }
-            TextView open = style.label(tr("打开目标与任务详情", "Open goal and task details"), Palette.TEXT_NOTE, accent);
-            open.setPadding(0, dp(6), 0, dp(4)); open.setFocusable(true);
-            open.setOnClickListener(view -> { dialog.dismiss(); revealWorkView(automationBar); });
-            panel.addView(open);
         }
         if (RemoteWorkStatus.backgroundCount(displayedConversation) > 0) {
             added = true;
@@ -4480,9 +4622,59 @@ public final class MainActivity extends Activity {
         close.setTag("workSheetClose");
         LinearLayout.LayoutParams closeParams = new LinearLayout.LayoutParams(-1, -2);
         closeParams.topMargin = dp(12); panel.addView(close, closeParams);
-        dialog.setContentView(panel);
-        style.sheetWindow(dialog.getWindow(), panel);
+        ScrollView sheetScroll = new ScrollView(this);
+        sheetScroll.setVerticalScrollBarEnabled(false);
+        sheetScroll.addView(panel);
+        dialog.setContentView(sheetScroll);
+        dialog.setOnDismissListener(dismissed -> {
+            if (workDialog == dialog) { workDialog = null; workAutomationSection = null; }
+        });
+        style.sheetWindow(dialog.getWindow(), sheetScroll);
         dialog.show();
+    }
+
+    private void renderWorkAutomation() {
+        if (workAutomationSection == null) return;
+        boolean enabled = connected && controlAllowed && !commandBusy && pendingCommand() == null;
+        String signature = String.valueOf(remoteGoal) + ":" + remoteTasks + ":" + enabled + ":" + chinese;
+        if (signature.equals(workAutomationSignature)) return;
+        workAutomationSignature = signature;
+        workAutomationSection.removeAllViews();
+        boolean show = remoteGoal != null || remoteTasks.length() > 0;
+        workAutomationSection.setVisibility(show ? View.VISIBLE : View.GONE);
+        if (!show) return;
+        workAutomationSection.addView(sheetSection(tr("目标与任务", "Goal and tasks")));
+        if (remoteGoal != null) {
+            View card = automationCard(remoteGoal);
+            expandAutomationText(card, "remoteGoalObjective");
+            enableAutomationControl(card, "remoteGoalToggle", enabled);
+            workAutomationSection.addView(card);
+        }
+        for (int index = 0; index < remoteTasks.length(); index++) {
+            JSONObject task = remoteTasks.optJSONObject(index);
+            if (task == null) continue;
+            View card = automationTask(task);
+            expandAutomationText(card, "remoteTaskInstruction");
+            enableAutomationControl(card, "remoteTaskToggle", enabled);
+            workAutomationSection.addView(card);
+        }
+    }
+
+    private void expandAutomationText(View card, String tag) {
+        TextView detail = card.findViewWithTag(tag);
+        LinearLayout row = (LinearLayout) detail.getParent();
+        int index = row.indexOfChild(detail);
+        row.removeView(detail);
+        row.addView(new View(this), index, new LinearLayout.LayoutParams(0, 1, 1));
+        detail.setSingleLine(false); detail.setEllipsize(null);
+        detail.setTextIsSelectable(true);
+        detail.setPadding(dp(12), 0, dp(12), dp(12));
+        ((LinearLayout) card).addView(detail, 1, new LinearLayout.LayoutParams(-1, -2));
+    }
+
+    private void enableAutomationControl(View card, String tag, boolean enabled) {
+        View toggle = card.findViewWithTag(tag);
+        if (toggle != null) { toggle.setEnabled(enabled); toggle.setAlpha(enabled ? 1f : .45f); }
     }
 
     private TextView sheetSection(String label) {
@@ -4980,8 +5172,8 @@ public final class MainActivity extends Activity {
     }
 
     private void renderAutomation(JSONObject snapshot) {
-        if (automationBar == null) return;
-        automationBar.removeAllViews();
+        // Automation belongs to the conversation snapshot, not its optional
+        // live turn. Keep the same filtered state for the bar and work sheet.
         JSONObject automation = snapshot.optJSONObject("automation");
         JSONObject goal = automation == null ? null : automation.optJSONObject("goal");
         JSONArray tasks = automation == null ? null : automation.optJSONArray("tasks");
@@ -4994,20 +5186,28 @@ public final class MainActivity extends Activity {
         if (goal != null && goalKey.isEmpty()) goalKey = goal.optString("objective", "");
         boolean hasGoal = goalVisibility.show(goalKey, goal == null ? "" : goal.optString("phase", ""),
             goal == null ? 0 : goal.optLong("completedAt"), latestUserSeq, latestUserAt);
-        int taskCount = tasks == null ? 0 : tasks.length();
-        automationBar.setVisibility(hasGoal || taskCount > 0 ? View.VISIBLE : View.GONE);
-        if (!hasGoal && taskCount == 0) return;
+        remoteGoal = hasGoal ? goal : null;
+        remoteTasks = tasks == null ? new JSONArray() : tasks;
+        renderAutomationViews();
+    }
+
+    private void renderAutomationViews() {
+        if (automationBar == null) return;
+        automationBar.removeAllViews();
+        int taskCount = remoteTasks.length();
+        automationBar.setVisibility(remoteGoal != null || taskCount > 0 ? View.VISIBLE : View.GONE);
         automationBar.setPadding(0, dp(4), 0, dp(4));
-        if (hasGoal) automationBar.addView(automationCard(goal));
+        if (remoteGoal != null) automationBar.addView(automationCard(remoteGoal));
         if (taskCount > 0) {
             TextView heading = text(String.format(tr("定时任务 · %d", "Scheduled · %d"), taskCount), Palette.TEXT_SMALL, muted);
             heading.setPadding(dp(12), dp(2), dp(12), 0); automationBar.addView(heading);
             for (int index = 0; index < taskCount; index++) {
-                JSONObject task = tasks.optJSONObject(index);
+                JSONObject task = remoteTasks.optJSONObject(index);
                 if (task != null) automationBar.addView(automationTask(task));
             }
         }
         refreshWorkSummaryBar();
+        renderWorkAutomation();
     }
 
     private View automationCard(JSONObject goal) {
@@ -5169,7 +5369,11 @@ public final class MainActivity extends Activity {
     private void showRemoteSettings(boolean permissions) {
         if (!connected || !controlAllowed || commandBusy || (pendingCommand() != null) || remoteSettings == null
             || !(permissions ? remoteSettings.optBoolean("editable") : remoteSettings.optBoolean("modelEditable", remoteSettings.optBoolean("editable")))) return;
-        if (settingsPopup != null) settingsPopup.dismiss();
+        if (settingsPopup != null) {
+            boolean sameTrigger = settingsPopup.isShowing(permissions ? permissionButton : modelButton);
+            settingsPopup.dismiss(); settingsPopup = null;
+            if (sameTrigger) return;
+        }
         String version = remoteSettings.optString("version"), server = instance, target = conversationId;
         settingsPopup = new RemoteSettingsPopup(this, chinese, background, ink, muted, accent, remoteSettings, (key, value) -> {
             if (!target.equals(conversationId) || !server.equals(instance) || remoteSettings == null || !version.equals(remoteSettings.optString("version"))) return;
@@ -5494,7 +5698,9 @@ public final class MainActivity extends Activity {
         catch (Exception error) { if (sameComputer(owner)) reportError("无法读取操作记录，请重试同一请求。", "Could not read the action record. Retry the same request.", error); return; }
         JSONObject currentPending = RemotePendingCommands.find(credentials, payload.optString("requestId"));
         if (sameComputer(owner) && foreground && !isDestroyed() && screen.equals("detail") && currentPending != null && conversationId.equals(currentPending.optString("conversationId"))) {
-            commandCheckDeadline = Math.max(commandCheckDeadline, deadline);
+            // A receipt may arrive after this window expired or the user
+            // changed it. Only restore an unset window; never re-arm it here.
+            if (commandCheckDeadline == 0) commandCheckDeadline = deadline;
             finishCommand(payload, result); return;
         }
         try {

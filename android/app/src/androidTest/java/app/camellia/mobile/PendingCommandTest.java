@@ -63,7 +63,15 @@ public class PendingCommandTest extends InstrumentationTestCase {
                     assertEquals("accepted", ((JSONObject) field(activity, "outgoingMessage")).getString("delivery"));
                 } catch (Exception error) { throw new AssertionError(error); }
             });
-            ExecutorService streams = (ExecutorService) field(activity, "eventWorker");
+            // detailScreen closes the previous connection generation, including
+            // its event executor. Give this controlled stream its own generation.
+            ExecutorService streams = java.util.concurrent.Executors.newSingleThreadExecutor();
+            getInstrumentation().runOnMainSync(() -> {
+                try {
+                    var member = MainActivity.class.getDeclaredField("eventWorker"); member.setAccessible(true);
+                    member.set(activity, streams);
+                } catch (Exception error) { throw new AssertionError(error); }
+            });
             CountDownLatch occupied = new CountDownLatch(1), dispatched = new CountDownLatch(1);
             streams.submit(() -> {
                 occupied.countDown();

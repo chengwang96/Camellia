@@ -219,4 +219,5 @@
 "选择一种方式，继续你的工作。" = "Choose how you want to continue.";
 "重试连接" = "Retry connection";
 "队列已暂停" = "Queue paused";
+"等待审批或回答问题" = "Waiting for approval or answers";
 "（重试同一请求，不会重复执行）" = " (retries the same request without duplicate execution)";

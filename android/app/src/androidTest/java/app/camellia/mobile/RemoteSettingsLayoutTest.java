@@ -185,12 +185,15 @@ public class RemoteSettingsLayoutTest extends InstrumentationTestCase {
             PopupWindow popup = (PopupWindow) field("popup");
             Rect visible = new Rect();
             anchor.getWindowVisibleDisplayFrame(visible);
-            int expected = PopupSurface.menuHeightLimit(activity, visible);
+            int[] anchorLocation = new int[2]; anchor.getLocationOnScreen(anchorLocation);
+            int expected = PopupSurface.menuHeightLimit(activity, visible,
+                PopupSurface.menuBottom(activity, visible, anchorLocation[1]));
             assertEquals(expected, ((Integer) field("heightLimit")).intValue());
-            assertEquals(PopupSurface.modelMenuWidth(activity, visible), popup.getWidth());
+            assertTrue(popup.getWidth() <= PopupSurface.modelMenuWidth(activity, visible));
             assertTrue(popup.getHeight() <= expected);
+            boolean tabletWindow = visible.width() >= Math.round(600 * activity.getResources().getDisplayMetrics().density);
             assertTrue("A long model list must leave conversation context visible",
-                popup.getHeight() < Math.round(visible.height() * .62f));
+                popup.getHeight() < Math.round(visible.height() * (tabletWindow ? .76f : .62f)));
             View fade = popup.getContentView().findViewWithTag("glassScrollFade");
             assertNotNull(fade);
             assertEquals("A clipped list needs a cue that it can keep scrolling",
@@ -199,9 +202,11 @@ public class RemoteSettingsLayoutTest extends InstrumentationTestCase {
             float density = activity.getResources().getDisplayMetrics().density;
             Rect tablet = new Rect(0, 0, Math.round(900 * density), Math.round(1200 * density));
             int tabletLimit = PopupSurface.menuHeightLimit(activity, tablet);
-            assertTrue(tabletLimit <= Math.round(400 * density));
-            assertTrue("A tablet menu must not use half the screen either",
-                tabletLimit < tablet.height() / 2);
+            assertTrue(tabletLimit <= Math.round(720 * density));
+            assertTrue("Tall tablets should display more of a long model list",
+                tabletLimit > Math.round(400 * density));
+            assertTrue("The tablet menu must still leave some conversation visible",
+                tabletLimit < tablet.height() * .76f);
         });
         Bitmap image = getInstrumentation().getUiAutomation().takeScreenshot();
         assertNotNull(image);

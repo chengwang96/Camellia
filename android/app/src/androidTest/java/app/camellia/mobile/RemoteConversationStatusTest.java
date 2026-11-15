@@ -122,6 +122,27 @@ public class RemoteConversationStatusTest extends InstrumentationTestCase {
         return (View) method.invoke(activity, conversation);
     }
 
+    public void testHarnessAndModelMetadataUsesSelectionInsteadOfAttachments() {
+        ui(() -> {
+            JSONObject conversation = conversation().put("engine", "codex").put("model", "gpt-6.1-sol")
+                .put("modelName", "GPT-6.1 Sol").put("filePreview", new JSONObject().put("name", "private.jpg"));
+            for (String state : new String[] { "idle", "running", "permission", "question" }) {
+                conversation.put("activity", state);
+                View row = card(conversation);
+                TextView meta = row.findViewWithTag("conversationRowMeta");
+                assertEquals("CODEX · GPT-6.1 Sol", meta.getText().toString());
+                assertTrue(row.getContentDescription().toString().contains("GPT-6.1 Sol"));
+                assertFalse(row.getContentDescription().toString().contains("private.jpg"));
+            }
+            conversation.put("modelName", JSONObject.NULL).put("model", "custom-model");
+            assertEquals("CODEX · custom-model", ((TextView) card(conversation).findViewWithTag("conversationRowMeta")).getText().toString());
+            conversation.put("model", JSONObject.NULL);
+            assertEquals("CODEX", ((TextView) card(conversation).findViewWithTag("conversationRowMeta")).getText().toString());
+            conversation.remove("engine"); conversation.put("currentEngine", "grok").put("modelName", "Grok Model");
+            assertEquals("Grok Build · Grok Model", ((TextView) card(conversation).findViewWithTag("conversationRowMeta")).getText().toString());
+        });
+    }
+
     public void testRunningWaitingAndUnreadVisibleTogether() {
         ui(() -> {
             JSONObject conversation = conversation().put("activity", "running");

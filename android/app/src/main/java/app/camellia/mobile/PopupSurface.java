@@ -24,15 +24,14 @@ final class PopupSurface extends FrameLayout {
     static final int COMPACT_MENU_MAX_WIDTH_DP = 264;
     static final int BOTTOM_SHEET_MAX_WIDTH_DP = 420;
     static final int MODEL_MENU_MAX_WIDTH_DP = 340;
-    static final int MODEL_MENU_MIN_WIDTH_DP = 280;
-    static final float MODEL_MENU_WIDTH_FRACTION = .82f;
+    static final int MODEL_MENU_MIN_WIDTH_DP = 220;
     static final int BOTTOM_SHEET_GUTTER_DP = 12;
     static final int BOTTOM_SHEET_BOTTOM_GAP_DP = 10;
     static final int PHONE_MENU_MAX_HEIGHT_DP = 420;
-    static final int TABLET_MENU_MAX_HEIGHT_DP = 400;
+    static final int TABLET_MENU_MAX_HEIGHT_DP = 720;
     static final int MENU_MIN_HEIGHT_DP = 240;
     static final float PHONE_MENU_HEIGHT_FRACTION = .56f;
-    static final float TABLET_MENU_HEIGHT_FRACTION = .42f;
+    static final float TABLET_MENU_HEIGHT_FRACTION = .72f;
     private Bitmap snapshot;
     private Bitmap scratch;
     private ImageView backdrop;
@@ -44,14 +43,30 @@ final class PopupSurface extends FrameLayout {
     private int sampleLeft, sampleTop, sampleWidth, sampleHeight;
     private boolean hardwareBlur;
     private final int color;
+    private final boolean navigation;
+    private boolean captured;
+    private int capturedScrollX, capturedScrollY, capturedSourceLeft, capturedSourceTop;
+    private final int[] sourceOrigin = new int[2], panelOrigin = new int[2];
 
     PopupSurface(Context context, int color) {
+        this(context, color, false);
+    }
+
+    static PopupSurface navigation(Context context, int color) {
+        return new PopupSurface(context, color, true);
+    }
+
+    private PopupSurface(Context context, int color, boolean navigation) {
         super(context);
         this.color = color | 0xff000000;
+        this.navigation = navigation;
+        int radius = dp(navigation ? Palette.RADIUS_NAVIGATION : Palette.RADIUS_GROUP);
         GradientDrawable shape = new GradientDrawable(); shape.setColor(this.color);
-        shape.setCornerRadius(dp(Palette.RADIUS_GROUP)); setBackground(shape); setClipToOutline(true);
+        shape.setCornerRadius(radius); setBackground(shape); setClipToOutline(true);
         GradientDrawable edge = new GradientDrawable(); edge.setColor(Color.TRANSPARENT);
-        edge.setCornerRadius(dp(Palette.RADIUS_GROUP)); edge.setStroke(dp(1), Color.red(color) < 128 ? 0x18ffffff : 0x1a000000);
+        edge.setCornerRadius(radius);
+        edge.setStroke(dp(1), navigation ? (Color.red(color) < 128 ? 0x30ffffff : 0xccffffff)
+            : Color.red(color) < 128 ? 0x18ffffff : 0x1a000000);
         setForeground(edge);
     }
 
@@ -68,13 +83,18 @@ final class PopupSurface extends FrameLayout {
     }
 
     static int modelMenuWidth(Context context, Rect visible) {
-        float density = context.getResources().getDisplayMetrics().density;
-        int gutter = Math.round(BOTTOM_SHEET_GUTTER_DP * density);
-        int available = Math.max(1, visible.width() - gutter * 2);
-        int minimum = Math.min(Math.round(MODEL_MENU_MIN_WIDTH_DP * density), available);
-        return Math.max(minimum, Math.min(available, Math.min(
-            Math.round(MODEL_MENU_MAX_WIDTH_DP * density),
-            Math.round(visible.width() * MODEL_MENU_WIDTH_FRACTION))));
+        return menuWidth(context, visible, MODEL_MENU_MAX_WIDTH_DP);
+    }
+
+    static int modelMenuWidth(Context context, Rect visible, android.view.ViewGroup content, int outerPadding) {
+        int limit = modelMenuWidth(context, visible);
+        int preferred = Math.round(MODEL_MENU_MIN_WIDTH_DP * context.getResources().getDisplayMetrics().density);
+        int padding = content.getPaddingLeft() + content.getPaddingRight() + outerPadding;
+        for (int index = 0; index < content.getChildCount(); index++) {
+            View row = content.getChildAt(index);
+            if (row instanceof ChatChoiceRow choice) preferred = Math.max(preferred, choice.preferredWidth() + padding);
+        }
+        return Math.min(limit, preferred);
     }
 
     /**
@@ -105,8 +125,8 @@ final class PopupSurface extends FrameLayout {
      * near-full-screen sheet just because many models are configured.
      *
      * <p>Phones may use up to 56% of the visible frame, with a 420dp cap. A
-     * tablet uses 42% and a 400dp cap, so portrait tablets keep most of the
-     * conversation visible and landscape tablets still show a useful list.
+     * tablet uses up to 72% with a 720dp cap, so tall tablets expose more models.
+     * The anchored overload also keeps the trigger and visible-frame gutter clear.
      */
     static int menuHeightLimit(Context context, Rect visible) {
         float density = context.getResources().getDisplayMetrics().density;
@@ -119,6 +139,16 @@ final class PopupSurface extends FrameLayout {
             * (tablet ? TABLET_MENU_HEIGHT_FRACTION : PHONE_MENU_HEIGHT_FRACTION));
         int minimum = Math.min(available, Math.round(MENU_MIN_HEIGHT_DP * density));
         return Math.max(minimum, Math.min(available, Math.min(cap, fraction)));
+    }
+
+    static int menuBottom(Context context, Rect visible, int anchorTop) {
+        int gap = Math.round(BOTTOM_SHEET_BOTTOM_GAP_DP * context.getResources().getDisplayMetrics().density);
+        return Math.max(visible.top + 1, Math.min(visible.bottom - gap, anchorTop - gap));
+    }
+
+    static int menuHeightLimit(Context context, Rect visible, int bottom) {
+        int gutter = Math.round(BOTTOM_SHEET_GUTTER_DP * context.getResources().getDisplayMetrics().density);
+        return Math.max(1, Math.min(menuHeightLimit(context, visible), bottom - visible.top - gutter));
     }
 
     static int sheetLeft(int anchorCenter, int width, int visibleLeft, int visibleRight, int gutter) {
@@ -193,7 +223,9 @@ final class PopupSurface extends FrameLayout {
         // all. In the light theme use a translucent neutral wash instead, capped at
         // 50% so the blurred page still shows through while the pane stays a shade off
         // white. The dark theme keeps its deeper mask.
-        GradientDrawable wash = new GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, dark
+        GradientDrawable wash = new GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, navigation
+            ? (dark ? new int[] { 0x99333336, 0xb3232326 } : new int[] { 0x99ffffff, 0x80f5f5f7 })
+            : dark
             ? new int[] { (color & 0x00ffffff) | 0x66000000, (color & 0x00ffffff) | 0x80000000 }
             : new int[] { 0x66e6eaef, 0x80dde1e7 });
         milk.setBackground(wash);
@@ -208,14 +240,27 @@ final class PopupSurface extends FrameLayout {
 
     private void refreshBackdrop() {
         if (source == null || snapshot == null) return;
-        int[] origin = new int[2]; source.getLocationOnScreen(origin);
+        source.getLocationOnScreen(sourceOrigin);
         if (isLaidOut() && isAttachedToWindow()) {
-            int[] position = new int[2]; getLocationOnScreen(position);
-            sampleLeft = position[0]; sampleTop = position[1];
+            getLocationOnScreen(panelOrigin);
+        } else {
+            panelOrigin[0] = sampleLeft; panelOrigin[1] = sampleTop;
         }
+        // A persistent navigation bar must go idle with its page. Scrolls,
+        // content invalidations and geometry changes still refresh the frost.
+        if (navigation && captured && !source.isDirty()
+            && source.getScrollX() == capturedScrollX && source.getScrollY() == capturedScrollY
+            && sourceOrigin[0] == capturedSourceLeft && sourceOrigin[1] == capturedSourceTop
+            && panelOrigin[0] == sampleLeft && panelOrigin[1] == sampleTop) return;
+        sampleLeft = panelOrigin[0]; sampleTop = panelOrigin[1];
+        capturedSourceLeft = sourceOrigin[0]; capturedSourceTop = sourceOrigin[1];
+        capturedScrollX = source.getScrollX(); capturedScrollY = source.getScrollY(); captured = true;
         Canvas canvas = new Canvas(snapshot); canvas.drawColor(color);
         canvas.scale(snapshot.getWidth() / (float) sampleWidth, snapshot.getHeight() / (float) sampleHeight);
-        canvas.translate(origin[0] - sampleLeft, origin[1] - sampleTop);
+        canvas.translate(sourceOrigin[0] - sampleLeft, sourceOrigin[1] - sampleTop);
+        // View.draw() is local to the view's content; its parent's normal draw
+        // would subtract the scroll offset. Mirror that transform for sampling.
+        canvas.translate(-source.getScrollX(), -source.getScrollY());
         source.draw(canvas);
         if (!hardwareBlur) soften();
         backdrop.invalidate();
@@ -254,6 +299,7 @@ final class PopupSurface extends FrameLayout {
     private void clearBackdrop() {
         if (sourceObserver != null && sourceObserver.isAlive()) sourceObserver.removeOnPreDrawListener(refresh);
         sourceObserver = null; refresh = null;
+        captured = false;
         if (backdrop != null) { backdrop.setImageDrawable(null); removeView(backdrop); backdrop = null; }
         if (tint != null) { removeView(tint); tint = null; }
         if (snapshot != null) { snapshot.recycle(); snapshot = null; }

@@ -254,11 +254,13 @@ public class MarkdownTest extends InstrumentationTestCase {
                 android.graphics.drawable.Drawable unwrappedIcon = ((android.widget.ImageButton) wrap).getDrawable();
                 HorizontalScrollView horizontal = rendered.findViewWithTag("markdownCodeScroll");
                 assertFalse(wrap.isSelected()); assertTrue(code.getWidth() > horizontal.getWidth());
+                assertTrue(wrap.getContentDescription().toString().matches("Word wrap: off|自动换行：已关闭"));
                 wrap.performClick();
                 assertNotSame(unwrappedIcon, ((android.widget.ImageButton) wrap).getDrawable());
                 rendered.measure(View.MeasureSpec.makeMeasureSpec(width, View.MeasureSpec.EXACTLY), View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED));
                 rendered.layout(0, 0, width, rendered.getMeasuredHeight());
                 assertTrue(wrap.isSelected()); assertEquals(View.GONE, horizontal.getVisibility());
+                assertTrue(wrap.getContentDescription().toString().matches("Word wrap: on|自动换行：已开启"));
                 assertTrue(code.getWidth() < width); assertTrue(code.getLineCount() > 2);
                 assertEquals(value.substring(0, value.length() - 1), code.getText().toString());
                 findDescription(rendered, "Copy code", "复制代码").performClick();
@@ -272,6 +274,7 @@ public class MarkdownTest extends InstrumentationTestCase {
                 rendered.measure(View.MeasureSpec.makeMeasureSpec(width, View.MeasureSpec.EXACTLY), View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED));
                 rendered.layout(0, 0, width, rendered.getMeasuredHeight());
                 assertFalse(wrap.isSelected()); assertEquals(View.VISIBLE, horizontal.getVisibility());
+                assertTrue(wrap.getContentDescription().toString().matches("Word wrap: off|自动换行：已关闭"));
                 assertTrue(code.getWidth() > horizontal.getWidth());
                 assertEquals(value.substring(0, value.length() - 1), code.getText().toString());
             });

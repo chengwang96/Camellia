@@ -8,7 +8,7 @@ import android.widget.ImageView;
 import android.widget.TextView;
 
 @android.annotation.SuppressLint("ViewConstructor")
-final class InlineImageView extends FrameLayout {
+final class InlineImageView extends FrameLayout implements InlineImageGallery.ImageSource {
     private final Context context;
     private final String alt, reference;
     private final MarkdownView.ImageLoader loader;
@@ -29,7 +29,7 @@ final class InlineImageView extends FrameLayout {
 
     private int dp(float value) { return Math.round(value * context.getResources().getDisplayMetrics().density); }
 
-    void show(Bitmap value) {
+    @Override public void show(Bitmap value) {
         if (bitmap != null) return;
         bitmap = value; removeAllViews();
         ImageView image = new ImageView(context); image.setTag("markdownInlineImageBitmap");
@@ -40,9 +40,9 @@ final class InlineImageView extends FrameLayout {
         setOnClickListener(open); image.setOnClickListener(open); setClickable(true); setFocusable(true);
     }
 
-    Bitmap bitmap() { return bitmap; }
-    String alt() { return alt; }
-    void load(MarkdownView.ImageCallback callback) { loader.load(reference, callback); }
+    @Override public Bitmap bitmap() { return bitmap; }
+    @Override public String alt() { return alt; }
+    @Override public void load(MarkdownView.ImageCallback callback) { loader.load(reference, callback); }
 
     private void preview() {
         if (bitmap == null || !(context instanceof Activity)) return;

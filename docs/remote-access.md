@@ -56,6 +56,8 @@ Every event subscription begins with a current snapshot, so clients can use it d
 | GET | `/v1/conversations/{id}/events` | Server-sent snapshot when the conversation changes. |
 | GET | `/v1/conversations/events` | Server-sent list snapshots with `listVersion`, `instanceId`, cursor, and a current first page in `conversationList`. |
 | GET | `/v1/api-keys` | Plaintext API-route export; requires all-access control permission and the `api-keys` capability. |
+| GET | `/v1/account-usage` | Sanitized subscription quotas, API balances and local usage aggregates; requires all-access control and the `account-usage` capability. |
+| POST | `/v1/account-usage/refresh` | Submit `{}` to start a coalesced account refresh; returns immediately with the current snapshot. |
 
 User rows may include `attachedFiles` with each file's display name, image flag and, for newly uploaded files, byte size. The attachment endpoint resolves the named message and index again, serves only files this gateway stored under its `device-attachments` or `mobile-images` folders, and never exposes a phone or desktop filesystem path. Desktop-local files that appear in the same history row remain name-only on the phone.
 
@@ -68,6 +70,16 @@ The `next-turn-settings` capability allows a model, thinking-level, or supported
 Queued messages offer **Send now** during an active Goal, including the wait between rounds and completion verification. A snapshot's `queueSteering.goalId` binds `queue-steer` to that goal, so a round finishing during a phone request does not leave the instruction targeting an expired run. An instruction between rounds starts the selected message as the next Goal round and cancels the earlier completion verification. Other queued messages retain their order. Older hosts continue to use `runId` for current-reply instructions.
 
 Command results are persisted by request ID. A retry must use the **same** ID and parameters; `pending` means the action is still being prepared, while `unknown` or `interrupted` after a crash must be reconciled before the user chooses another action. HTTP 200 alone does not mean an engine turn completed. A reconnect replaces the current snapshot instead of appending it. `instanceId` changes when the gateway restarts, so old cursors and unconfirmed controls must not be treated as current. The client does not automatically resend a timed-out send, stop, or approval.
+
+### Account quota and usage
+
+Android and iOS expose **Settings → Quota & usage**, with a shortcut in each paired computer's management menu. Choose a computer, then **Quota & balances** or **Usage history**. History supports today, the last 7/30 days and lifetime totals, filtered by subscription/API, account/key and model. Periods follow the computer's local calendar. Removed-key records and legacy counters remain available in lifetime totals; missing tokens are identified rather than filled with estimates.
+
+The desktop advertises `account-usage` only to all-access control devices. The version-1 snapshot explicitly projects account labels, reported balances and quota windows, reading timestamps, and period/model counters. It omits raw keys, endpoints, native account payloads, upstream error strings and quota histories. A refresh submits `{}`, coalesces concurrent requests and starts at most once per minute. Clients read the current result without waiting for provider checks and poll for at most one minute while the page is visible. Opening a page reads existing data; it does not start provider queries.
+
+Clients probe `/v1/status` before the first read and on a manual refresh. Without `account-usage`, they use GET rather than POST so an older host's generic `405 Remote access is read-only` response is not mistaken for a permission denial. Missing endpoints (404/405) show an update/restart instruction, while 401 requires pairing again and 403 requires full-device control. Diagnostic details are collapsed. The compact computer row contains source, sync time and refresh; history keeps type/account/model filters collapsed until opened, showing the active filter count.
+
+Snapshots are encrypted on the phone and bound to the computer and pairing credential. Connection failures retain the last snapshot and its timestamp. HTTP 401/403 clears it, rotated credentials cannot reuse it, and forgetting a computer removes its cache. Account quotas may be shared across devices; usage statistics cover only calls recorded by the selected computer. Balances are never summed across keys or currencies. Subscription cost is an API-equivalent estimate, not an actual charge.
 
 ### Codex reset credits
 
@@ -87,13 +99,30 @@ records, and about 1 MiB of text and serialized process detail. Long records can
 reduce the page count. Tool records contribute to reply process panels rather
 than separate chat bubbles, so 200 records do not imply 200 visible messages.
 
+Starting with Android build 131, the latest page appears first, followed by
+automatic history loading. The first extra page admits at most eight visible
+messages. Actual end-to-end history request times then determine the
+target: up to 30 visible messages when every page takes at most 800 ms, or 12
+when pages take at most two seconds. A slower page stops further automatic
+requests. Tool-only pages do not satisfy the visible-message target. This uses
+the paired computer's real request path, including a direct Tailscale tunnel,
+rather than assuming that Wi-Fi or a VPN implies a fast connection.
+
+The automatic walk stops after eight requests, six seconds of completed request
+time, the start of history, a failure, or the display budget below. One in-flight
+request can outlast that time budget. It preserves the latest reply and the
+reader's scroll anchor, stays quiet on transient failures, and does not resume
+after a manual earlier-message request. **Load earlier messages** and pull to
+refresh remain available for older history. Late pages from another connection,
+computer, conversation or history version cannot replace the current view.
+
 Android retains at most 600 records and 4 MiB of estimated text/process weight.
 This is a sliding display window, not an end to accessible history. Loading older
 pages releases records from the newer end when necessary, keeping the requested
 older records and their next cursor. Latest-page snapshots keep updating live
-controls without replacing a detached older window. **Back to latest messages**
-fetches the current latest page and resumes transcript updates. A failed or stale
-response leaves the older window and the return action available.
+controls without replacing a detached older window. The composer has no
+**Back to latest messages** action. Reopening the conversation loads its current
+latest page; incoming snapshots do not interrupt deliberate history reading.
 
 A tool-only or already-cached page continues toward a new chat message, the end
 of history, a bounded batch, or eight requests per click. A partial batch resumes

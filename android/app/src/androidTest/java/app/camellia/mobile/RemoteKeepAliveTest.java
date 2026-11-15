@@ -146,6 +146,30 @@ public class RemoteKeepAliveTest extends InstrumentationTestCase {
         getInstrumentation().waitForIdleSync();
     }
 
+    public void testReturningBeforeRetentionExpiresStillReplacesAStalledStream() {
+        ui(() -> {
+            prepareRemote();
+            Object previous = field("api");
+            long now = android.os.SystemClock.elapsedRealtime();
+            RemoteStreamHealth stale = new RemoteStreamHealth(now - 60_000);
+            stale.snapshot(now - RemoteStreamHealth.IDLE_TIMEOUT_MS - 1);
+            field("streamHealth", stale);
+            field("remoteClientFactory", (java.util.function.Function<String, RemoteApi>) address -> new RemoteApi(address) {
+                @Override public JSONObject json(String path, String token, JSONObject payload) { return new JSONObject(); }
+                @Override void events(String id, String token, SnapshotListener listener, SseReader.HeartbeatListener heartbeat) throws java.io.IOException {
+                    throw new java.io.IOException("Test stream unavailable");
+                }
+                @Override public void listEvents(String token, SnapshotListener listener) throws java.io.IOException { throw new java.io.IOException("Test stream unavailable"); }
+            });
+            invoke("onPause"); invoke("onStop");
+            assertTrue(RemoteKeepAliveService.active());
+            invoke("onStart");
+            assertNotSame("A retained service alone does not prove the stream is alive", previous, field("api"));
+            assertFalse((boolean) field("connected"));
+            assertTrue((boolean) field("reconnecting"));
+        });
+    }
+
     public void testDisablingStopsSessionImmediately() {
         ui(() -> {
             prepareRemote(); invoke("onPause"); invoke("onStop");

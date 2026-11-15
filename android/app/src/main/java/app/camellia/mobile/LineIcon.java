@@ -21,6 +21,9 @@ final class LineIcon extends Drawable {
         canvas.scale(getBounds().width() / 24f, getBounds().height() / 24f);
         Path path = new Path();
         switch (kind) {
+            case "refresh":
+                canvas.drawArc(4, 4, 20, 20, 45, 285, false, paint);
+                path.moveTo(20, 3); path.lineTo(20, 9); path.lineTo(14, 9); canvas.drawPath(path, paint); break;
             case "edit":
                 path.moveTo(4, 16); path.lineTo(16, 4); path.lineTo(20, 8); path.lineTo(8, 20); path.lineTo(3, 21); path.close();
                 path.moveTo(14, 6); path.lineTo(18, 10); canvas.drawPath(path, paint); break;

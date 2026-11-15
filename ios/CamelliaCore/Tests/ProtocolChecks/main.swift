@@ -6781,6 +6781,53 @@ do {
 } catch { failures.append("selected artifact references: \(error)") }
 
 // MARK: - Report
+// Account usage: filtering and cache writes must stay within one pairing.
+do {
+    let endpoint = try Endpoint("http://100.64.0.1:43127")
+    for path in ["/v1/account-usage", "/v1/account-usage/refresh"] {
+        check(endpoint.isAllowed(path: path), "account usage endpoint is allowed")
+    }
+    for path in ["/v1/account-usage/", "/v1/account-usage?key=secret", "/v1/account-usage/refresh?force=true"] {
+        check(!endpoint.isAllowed(path: path), "usage rejects arbitrary subpaths and queries")
+    }
+    let json = JSONObject(dictionary: ["version": 1,
+        "accounts": [["id": "a", "source": "api"], ["id": "b", "source": "subscription"]],
+        "ranges": ["1": [], "30": [], "7": [["accountId": "a", "model": "m1", "requests": 3, "inputTokens": 20, "cacheReadTokens": 10],
+                          ["accountId": "b", "model": "m2", "requests": 4, "outputTokens": 50]],
+                   "all": [["accountId": "a", "model": "", "requests": 12]]]])
+    let data = AccountUsage(json)!
+    checkEqual(data.accounts(source: "api").count, 1, "usage filters source accounts")
+    checkEqual(AccountUsage.sum(data.rows(range: "7"), ["requests"]), 7, "usage sums requests in selected period")
+    checkEqual(AccountUsage.sum(data.rows(range: "7", source: "api"), ["inputTokens", "cacheReadTokens"]), 30, "usage includes reported cache tokens")
+    check(data.rows(range: "7", source: "api", account: "b").isEmpty, "usage cannot mix an account from a different source")
+    check(data.rows(range: "7", model: "unknown").isEmpty, "usage filters model exactly")
+    checkEqual(AccountUsage.sum(data.rows(range: "all"), ["requests"]), 12, "usage retains ungrouped lifetime totals")
+    check(AccountUsage(JSONObject()) == nil, "usage rejects an unsupported snapshot")
+    let store = ComputerStore(vault: MemoryCredentialVault())
+    let a = PairedComputer(address: "http://100.64.0.1:43127", token: String(repeating: "a", count: 43), deviceId: uuid)
+    let b = PairedComputer(address: "http://100.64.0.2:43127", token: String(repeating: "b", count: 43), deviceId: uuid)
+    try store.save(a); try store.save(b)
+    _ = try store.update(address: a.address) { $0.drafts = JSONObject(dictionary: ["chat": "newer draft"]) }
+    check(try store.saveAccountUsage(json, for: a), "usage cache merges into existing pairing")
+    checkEqual(try store.current().address, b.address, "usage cache never changes selected computer")
+    let cached = try store.all().first { $0.address == a.address }!
+    checkEqual(cached.accountUsage, json, "usage cache survives sealed-profile read")
+    checkEqual(cached.drafts?.text("chat"), "newer draft", "usage cache preserves newer drafts")
+    var newer = json.raw; newer["updatedAt"] = "newer"
+    try store.saveAccountUsage(JSONObject(dictionary: newer), for: a)
+    try store.save(cached)
+    checkEqual(try store.current().accountUsage?.text("updatedAt"), "newer", "ordinary profile save cannot roll back a newer usage cache")
+    try store.saveAccountUsage(nil, for: a)
+    try store.save(cached)
+    check(try store.current().accountUsage == nil, "ordinary profile save cannot restore a cache cleared after access denial")
+    try store.saveAccountUsage(json, for: a)
+    _ = try store.update(address: a.address) { $0.token = String(repeating: "c", count: 43) }
+    check(try store.all().first { $0.address == a.address }?.accountUsage == nil, "rotated pairing cannot read old account usage")
+    check(try !store.saveAccountUsage(json, for: a), "late usage response cannot overwrite rotated pairing")
+    try store.remove(a.address)
+    check(try !store.saveAccountUsage(json, for: a), "late usage response cannot restore a forgotten pairing")
+}
+
 if failures.isEmpty {
     print("PASS: all \(checks) protocol checks passed")
 } else {

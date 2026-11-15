@@ -83,6 +83,8 @@ public final class RemoteDiscussionsActivity extends Activity {
     private LinearLayout attachmentTray;
     private android.widget.HorizontalScrollView attachmentStrip;
     private boolean loadingAttachments, rich;
+    private String preferenceSignature;
+    private final ChatNotifications chatNotifications = new ChatNotifications();
     private String pickerGroup, approvalKey = "";
     private java.io.File cameraFile;
     private ArtifactDownloads downloads;
@@ -125,6 +127,7 @@ public final class RemoteDiscussionsActivity extends Activity {
 
     @Override public void onCreate(Bundle saved) {
         super.onCreate(saved); MobileOrientation.lockPhonePortrait(this); EmbeddedNetwork.initialize(getApplicationContext());
+        preferenceSignature = MobilePreferences.signature(this);
         composerAttachments = AttachmentMaintenance.protect(this); stateAttachments = AttachmentMaintenance.protect(this);
         chinese = getResources().getConfiguration().getLocales().get(0).getLanguage().equals("zh");
         style = new ChatStyle(this); settingsStyle = new SettingsStyle(this);
@@ -155,6 +158,10 @@ public final class RemoteDiscussionsActivity extends Activity {
         AttachmentMaintenance.foreground(this);
         if (!stateReady) return;
         EmbeddedNetwork.setNetworkListener(() -> handler.post(() -> { if (foreground) connect(); })); connect();
+    }
+    @Override protected void onResume() {
+        super.onResume();
+        if (preferenceSignature != null && !preferenceSignature.equals(MobilePreferences.signature(this))) recreate();
     }
     @Override public void onWindowFocusChanged(boolean focused) {
         super.onWindowFocusChanged(focused);
@@ -364,6 +371,7 @@ public final class RemoteDiscussionsActivity extends Activity {
                 if (approvalDialog != null && !approvalPending) { approvalDialog.dismiss(); approvalDialog = null; }
             }
             history.merge(next, older); group = history.group;
+            if (!older) chatNotifications.discussion(this, credentials, instance, next, foreground && hasWindowFocus());
             if (history.limited()) nextBefore = -1;
             else if (older || messages.size() <= rows(next.optJSONArray("messages")).size()) nextBefore = snapshot.optLong("nextBefore", -1);
             renderGroup(position);

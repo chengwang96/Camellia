@@ -158,7 +158,8 @@ public class RemoteFeedbackTest extends InstrumentationTestCase {
         long deadline = android.os.SystemClock.elapsedRealtime() + 3000;
         var pending = new java.util.concurrent.atomic.AtomicBoolean(true);
         do {
-            getInstrumentation().waitForIdleSync();
+            // A loading indicator can keep the UI queue busy until the entire
+            // confirmation window expires. Wait for the receipt, not global idleness.
             ui(() -> pending.set(!((java.util.Set<?>) field("commandRequests")).isEmpty()));
             if (pending.get()) Thread.sleep(10);
         } while (pending.get() && android.os.SystemClock.elapsedRealtime() < deadline);
@@ -227,8 +228,10 @@ public class RemoteFeedbackTest extends InstrumentationTestCase {
             invoke("applySnapshot", snapshot);
             View messages = (View) field("messages");
             assertEquals(0, waitingReplies());
-            assertEquals(1, visibleText(messages, activity.getString(R.string.turn_stopped)));
             View toggle = messages.findViewWithTag("processToggle:" + ID + ":turn:11");
+            String caption = ((TextView) ((ViewGroup) toggle).getChildAt(1)).getText().toString();
+            assertTrue(caption, caption.startsWith(activity.getString(R.string.turn_stopped) + " · "));
+            assertTrue(caption, caption.contains("1"));
             assertTrue(toggle.isClickable()); toggle.performClick();
             assertEquals(View.VISIBLE, messages.findViewWithTag("processBody:" + ID + ":turn:11").getVisibility());
             assertEquals(View.VISIBLE, messages.findViewWithTag("markdown").getVisibility());
@@ -239,7 +242,8 @@ public class RemoteFeedbackTest extends InstrumentationTestCase {
 
     public void testEmptyFinishedAndLegacyRepliesNeverShowWaiting() {
         ui(() -> {
-            int[] labels = {R.string.turn_stopped, R.string.turn_failed, R.string.turn_completed};
+            String[] labels = (boolean) field("chinese") ? new String[]{"已停止", "失败", "已完成"}
+                : new String[]{"Stopped", "Failed", "Completed"};
             String[] states = {"stopped", "error", "complete", ""};
             for (int i = 0; i < states.length; i++) {
                 JSONObject snapshot = snapshot().put("cursor", i + 1);
@@ -248,7 +252,7 @@ public class RemoteFeedbackTest extends InstrumentationTestCase {
                 snapshot.getJSONArray("messages").put(reply);
                 invoke("applySnapshot", snapshot);
                 assertEquals(0, waitingReplies());
-                if (i < labels.length) assertEquals(1, visibleText((View) field("messages"), activity.getString(labels[i])));
+                if (i < labels.length) assertEquals(1, visibleText((View) field("messages"), labels[i]));
             }
         });
     }
@@ -772,8 +776,7 @@ public class RemoteFeedbackTest extends InstrumentationTestCase {
         // The automatic follow-up check must reuse the window opened by the user
         // action; extending it on every poll kept the wait spinning forever.
         assertTrue(client.retried.await(5, TimeUnit.SECONDS));
-        ((ExecutorService) field("commandWorker")).submit(() -> {}).get(3, TimeUnit.SECONDS);
-        getInstrumentation().waitForIdleSync();
+        awaitResult();
         ui(() -> {
             assertEquals(armed[0], (long) field("commandCheckDeadline"));
             assertEquals("preparing", ((JSONObject) field("outgoingMessage")).getString("delivery"));
@@ -958,7 +961,7 @@ public class RemoteFeedbackTest extends InstrumentationTestCase {
             assertTrue((Boolean) field("historyDetached")); assertEquals(371L, field("nextBefore"));
             assertEquals(View.VISIBLE, ((View) field("older")).getVisibility());
             assertTrue(((View) field("older")).isEnabled());
-            assertEquals(View.VISIBLE, ((View) field("latest")).getVisibility());
+            assertNull(activity.getWindow().getDecorView().findViewWithTag("remoteLatestMessages"));
         });
     }
 
@@ -987,7 +990,7 @@ public class RemoteFeedbackTest extends InstrumentationTestCase {
         assertTrue(client.entered.await(2, TimeUnit.SECONDS)); awaitOlder();
     }
 
-    public void testLiveSnapshotsKeepTheOlderWindowUntilTheReaderReturnsToLatest() throws Exception {
+    public void testLiveSnapshotsKeepTheOlderWindowWithoutAComposerJumpButton() throws Exception {
         moveHistoryWindowBack();
         JSONObject latest = historySnapshot(1001, 1001L).put("cursor", 11)
             .put("live", new JSONObject().put("text", "Current live reply"));
@@ -999,47 +1002,7 @@ public class RemoteFeedbackTest extends InstrumentationTestCase {
             assertEquals(1001L, field("conversationSeq")); assertEquals(400L, field("nextBefore"));
             assertEquals(0, countText((View) field("messages"), "Current live reply"));
             assertEquals(0, countText((View) field("messages"), "History 1001"));
-            assertTrue(((View) field("latest")).isEnabled());
-        });
-        client.result = latest;
-        ui(() -> ((View) field("latest")).performClick()); awaitOlder();
-        // The live reply parses on its worker after a delayed dispatch. Network
-        // completion and main-thread idleness do not mean its text is visible yet.
-        long deadline = android.os.SystemClock.uptimeMillis() + 5000;
-        boolean[] liveVisible = {false};
-        while (!liveVisible[0] && android.os.SystemClock.uptimeMillis() < deadline) {
-            ui(() -> liveVisible[0] = countText((View) field("messages"), "Current live reply") == 1);
-            if (!liveVisible[0]) android.os.SystemClock.sleep(20);
-        }
-        assertTrue(liveVisible[0]);
-        ui(() -> {
-            java.util.TreeMap<?, ?> history = (java.util.TreeMap<?, ?>) field("history");
-            assertEquals(java.util.List.of(1001L), new java.util.ArrayList<>(history.keySet()));
-            assertFalse((Boolean) field("historyDetached")); assertEquals(1001L, field("nextBefore"));
-            assertEquals(View.GONE, ((View) field("latest")).getVisibility());
-            assertEquals(1, countText((View) field("messages"), "History 1001"));
-            assertEquals(1, countText((View) field("messages"), "Current live reply"));
-        });
-    }
-
-    public void testFailedReturnToLatestPreservesTheOlderWindowAndRetry() throws Exception {
-        moveHistoryWindowBack(); client.failure = new IOException("Latest page unavailable");
-        ui(() -> ((View) field("latest")).performClick()); awaitOlder();
-        ui(() -> {
-            java.util.TreeMap<?, ?> history = (java.util.TreeMap<?, ?>) field("history");
-            assertEquals(400L, history.firstKey()); assertEquals(999L, history.lastKey());
-            assertTrue((Boolean) field("historyDetached")); assertEquals(400L, field("nextBefore"));
-            assertTrue(((View) field("latest")).isEnabled()); assertTrue(((View) field("older")).isEnabled());
-        });
-    }
-
-    public void testAStaleLatestResponseDoesNotClearTheOlderWindow() throws Exception {
-        moveHistoryWindowBack(); client.result = historySnapshot(1000, 1000L).put("cursor", 9);
-        ui(() -> ((View) field("latest")).performClick()); awaitOlder();
-        ui(() -> {
-            java.util.TreeMap<?, ?> history = (java.util.TreeMap<?, ?>) field("history");
-            assertEquals(400L, history.firstKey()); assertTrue((Boolean) field("historyDetached"));
-            assertTrue(((View) field("latest")).isEnabled());
+            assertNull(activity.getWindow().getDecorView().findViewWithTag("remoteLatestMessages"));
         });
     }
 
@@ -1050,7 +1013,7 @@ public class RemoteFeedbackTest extends InstrumentationTestCase {
             java.util.TreeMap<?, ?> history = (java.util.TreeMap<?, ?>) field("history");
             assertEquals(java.util.List.of(2L), new java.util.ArrayList<>(history.keySet()));
             assertFalse((Boolean) field("historyDetached")); assertNull(field("nextBefore"));
-            assertEquals(View.GONE, ((View) field("latest")).getVisibility());
+            assertNull(activity.getWindow().getDecorView().findViewWithTag("remoteLatestMessages"));
         });
     }
 

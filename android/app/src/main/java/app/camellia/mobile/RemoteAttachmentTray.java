@@ -1,9 +1,6 @@
 package app.camellia.mobile;
 
 import android.content.Context;
-import android.graphics.Bitmap;
-import android.graphics.BitmapFactory;
-import android.graphics.drawable.GradientDrawable;
 import android.text.TextUtils;
 import android.view.Gravity;
 import android.view.View;
@@ -14,13 +11,18 @@ import android.widget.LinearLayout;
 import android.widget.TextView;
 import org.json.JSONArray;
 import org.json.JSONObject;
-import java.util.Locale;
 
 final class RemoteAttachmentTray {
     private RemoteAttachmentTray() {}
 
     static View create(Context context, ChatStyle style, JSONArray files, long seq,
                        String address, String token, String conversation, boolean chinese) {
+        return create(context, style, files, seq, address, token, conversation, chinese, RemoteApi::new);
+    }
+
+    static View create(Context context, ChatStyle style, JSONArray files, long seq,
+                       String address, String token, String conversation, boolean chinese,
+                       java.util.function.Function<String, RemoteApi> clients) {
         if (files == null || files.length() == 0) return null;
         LinearLayout tray = new LinearLayout(context);
         tray.setOrientation(LinearLayout.VERTICAL);
@@ -33,7 +35,7 @@ final class RemoteAttachmentTray {
             String name = file.optString("name");
             if (name.isEmpty()) continue;
             if (file.optBoolean("isImage")) {
-                images.addView(image(context, style, file, index, seq, address, token, conversation),
+                images.addView(image(context, style, file, index, seq, address, token, conversation, clients),
                     new LinearLayout.LayoutParams(dp(context, 88), dp(context, 88)));
             } else {
                 documents.addView(document(context, style, name, chinese),
@@ -46,40 +48,13 @@ final class RemoteAttachmentTray {
     }
 
     private static View image(Context context, ChatStyle style, JSONObject file, int index, long seq,
-                              String address, String token, String conversation) {
-        FrameLayout tile = new FrameLayout(context);
+                              String address, String token, String conversation, java.util.function.Function<String, RemoteApi> clients) {
+        String reference = file.optString("data");
+        AttachmentImages.Source source = reference.isEmpty()
+            ? AttachmentImages.remote(address, token, conversation, seq, index, file.optLong("size", -1), clients)
+            : AttachmentImages.local(context, reference);
+        AttachmentImageView tile = new AttachmentImageView(context, style, file.optString("name"), source, true);
         tile.setTag("remoteAttachmentImage:" + index);
-        tile.setClipToOutline(true);
-        GradientDrawable background = style.rounded(style.surface);
-        background.setCornerRadius(dp(context, 14));
-        tile.setBackground(background);
-        tile.setContentDescription(file.optString("name"));
-
-        Bitmap preview = localPreview(context, file.optString("data"));
-        if (preview != null) {
-            showImage(context, tile, preview, file.optString("name"));
-        } else {
-            LinearLayout placeholder = new LinearLayout(context);
-            placeholder.setOrientation(LinearLayout.VERTICAL);
-            placeholder.setGravity(Gravity.CENTER);
-            ImageView icon = new ImageView(context);
-            icon.setImageDrawable(new LineIcon("image", style.muted));
-            placeholder.addView(icon, new LinearLayout.LayoutParams(dp(context, 30), dp(context, 30)));
-            TextView extension = new TextView(context);
-            extension.setText(extension(file.optString("name")));
-            extension.setTextColor(style.muted);
-            extension.setTextSize(10);
-            extension.setGravity(Gravity.CENTER);
-            extension.setMaxLines(1);
-            placeholder.addView(extension, new LinearLayout.LayoutParams(-2, -2));
-            tile.addView(placeholder, new FrameLayout.LayoutParams(-1, -1));
-            addCaption(context, tile, file.optString("name"));
-            RemoteAttachmentThumbnails.load(address, token, conversation, seq, index, file.optLong("size", -1),
-                new MarkdownView.ImageCallback() {
-                    @Override public void loaded(Bitmap bitmap) { showImage(context, tile, bitmap, file.optString("name")); }
-                    @Override public void failed() { }
-                });
-        }
         return tile;
     }
 
@@ -105,45 +80,6 @@ final class RemoteAttachmentTray {
         return chip;
     }
 
-    private static void showImage(Context context, FrameLayout tile, Bitmap bitmap, String name) {
-        tile.removeAllViews();
-        ImageView image = new ImageView(context);
-        image.setImageBitmap(bitmap);
-        image.setScaleType(ImageView.ScaleType.CENTER_CROP);
-        tile.addView(image, new FrameLayout.LayoutParams(-1, -1));
-        addCaption(context, tile, name);
-    }
-
-    private static void addCaption(Context context, FrameLayout tile, String name) {
-        TextView caption = new TextView(context);
-        caption.setText(name);
-        caption.setTextColor(android.graphics.Color.WHITE);
-        caption.setTextSize(9);
-        caption.setMaxLines(1);
-        caption.setEllipsize(TextUtils.TruncateAt.MIDDLE);
-        caption.setPadding(dp(context, 4), dp(context, 2), dp(context, 4), dp(context, 2));
-        caption.setBackgroundColor(0x99000000);
-        tile.addView(caption, new FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM));
-    }
-
-    private static Bitmap localPreview(Context context, String reference) {
-        if (!AttachmentStore.isReference(reference)) return null;
-        try {
-            byte[] bytes = AttachmentStore.preview(context, reference);
-            BitmapFactory.Options bounds = new BitmapFactory.Options();
-            bounds.inJustDecodeBounds = true;
-            BitmapFactory.decodeByteArray(bytes, 0, bytes.length, bounds);
-            if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null;
-            BitmapFactory.Options options = new BitmapFactory.Options();
-            options.inSampleSize = 1;
-            while (Math.max(bounds.outWidth, bounds.outHeight) / options.inSampleSize > 288)
-                options.inSampleSize *= 2;
-            return BitmapFactory.decodeByteArray(bytes, 0, bytes.length, options);
-        } catch (Exception error) {
-            return null;
-        }
-    }
-
     private static LinearLayout row(Context context, String tag) {
         LinearLayout row = new LinearLayout(context);
         row.setGravity(Gravity.CENTER_VERTICAL);
@@ -159,12 +95,6 @@ final class RemoteAttachmentTray {
         scroll.setPadding(0, 0, 0, dp(context, 4));
         scroll.addView(row, new FrameLayout.LayoutParams(-2, -2));
         return scroll;
-    }
-
-    private static String extension(String name) {
-        int dot = name.lastIndexOf('.');
-        String value = dot < 0 ? "IMG" : name.substring(dot + 1).toUpperCase(Locale.ROOT);
-        return value.length() > 5 ? value.substring(0, 5) : value;
     }
 
     private static int dp(Context context, int value) {

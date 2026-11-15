@@ -38,3 +38,34 @@ test('list previews respect authorization and cache transcripts without adding w
   assert.equal(reader.list(device).conversations[0].filePreview, undefined);
   device.workspaceIds = []; assert.deepEqual(reader.list(device).conversations, []);
 });
+
+test('conversation summaries expose the selected harness model and track model changes in list versions', () => {
+  const visible = { id: 'visible', title: 'Report', currentEngine: 'codex', seq: 1, updatedAt: 1 };
+  const hidden = { id: 'hidden', title: 'Private', currentEngine: 'kimi', seq: 1, updatedAt: 1 };
+  const meta = { workspaces: [{ id: 'a', name: 'A' }, { id: 'b', name: 'B' }],
+    sessionWorkspace: { visible: 'a', hidden: 'b' }, archived: {}, pinned: {}, titles: {}, sessionOrder: {} };
+  let selected = { model: 'first-model', connection: 'subscription', apiKey: 'PRIVATE_KEY', subscriptionId: 'PRIVATE_ACCOUNT' };
+  const manager = { items: new Map([['visible', visible], ['hidden', hidden]]),
+    workspaces: { sessionMeta: () => meta }, activity: () => 'running', rows: () => [],
+    settings: (engine, id) => { assert.equal(engine, visible.currentEngine); assert.equal(id, visible.id); return selected; },
+    conversationModels: (engine, settings) => {
+      assert.equal(engine, visible.currentEngine); assert.equal(settings, selected);
+      return [{ id: 'first-model', name: 'First Model', apiKey: 'CATALOG_SECRET' }];
+    } };
+  const reader = new RemoteReadModel(manager), device = { workspaceIds: ['a'] };
+  let summary = reader.list(device).conversations[0];
+  assert.equal(summary.engine, 'codex');
+  assert.equal(summary.model, 'first-model');
+  assert.equal(summary.modelName, 'First Model');
+  assert.doesNotMatch(JSON.stringify(summary), /PRIVATE|SECRET|subscriptionId|apiKey/);
+  const initial = reader.listSnapshot(device).listVersion;
+  selected = { model: 'custom-model', connection: 'api' };
+  summary = reader.list(device).conversations[0];
+  assert.equal(summary.model, 'custom-model');
+  assert.equal(summary.modelName, 'custom-model', 'models outside the catalog retain their real identifier');
+  assert.notEqual(reader.listSnapshot(device).listVersion, initial, 'a model switch refreshes the list without a new message');
+  meta.archived.visible = 1000;
+  assert.equal(reader.archived(device).conversations[0].modelName, 'custom-model');
+  selected = {};
+  assert.equal(reader.summary(visible).modelName, '', 'missing selections do not invent a model');
+});

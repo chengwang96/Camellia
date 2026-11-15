@@ -347,7 +347,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
   let codeWrap = readUi('code-wrap') === true;
   function codeWrapLabel() { return window.CamelliaI18n.t('Word wrap'); }
   function codeWrapIcon() {
-    const path = codeWrap ? 'M12 3v5m0 8v5M3 12h18m-4-4 4 4-4 4' : 'M21 3v18M3 7h8a4 4 0 0 1 0 8H3m4-4-4 4 4 4';
+    const path = codeWrap ? 'M21 3v18M3 7h8a4 4 0 0 1 0 8H3m4-4-4 4 4 4' : 'M12 3v5m0 8v5M3 12h18m-4-4 4 4-4 4';
     return '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="' + path + '"/></svg>';
   }
   function refreshCodeWrap() {

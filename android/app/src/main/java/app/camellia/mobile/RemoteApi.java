@@ -46,7 +46,7 @@ public class RemoteApi {
     private final android.content.Context context;
     private final Set<HttpURLConnection> connections = ConcurrentHashMap.newKeySet();
     private volatile boolean cancelled;
-    private boolean incremental;
+    private volatile boolean incremental;
     void incremental(boolean enabled) { incremental = enabled; }
     boolean incremental() { return incremental; }
     private final Set<tailnet.Response> embeddedResponses = ConcurrentHashMap.newKeySet();
@@ -203,7 +203,11 @@ public class RemoteApi {
     }
 
     public void events(String id, String token, SnapshotListener listener) throws IOException {
-        eventsAt("/v1/conversations/" + id + "/events" + (incremental ? "?incremental=1" : ""), token, listener);
+        events(id, token, listener, null);
+    }
+
+    void events(String id, String token, SnapshotListener listener, SseReader.HeartbeatListener heartbeat) throws IOException {
+        eventsAt("/v1/conversations/" + id + "/events" + (incremental ? "?incremental=1" : ""), token, listener, heartbeat);
     }
 
     public void listEvents(String token, SnapshotListener listener) throws IOException {

@@ -450,8 +450,8 @@ public class SettingsTest extends InstrumentationTestCase {
                     View archived = root.findViewWithTag("settings:archived"), network = root.findViewWithTag("settings:network");
                     assertNotNull(providers); assertNotNull(general); assertNotNull(archived); assertNotNull(network);
                     assertNotNull(root.findViewWithTag("settings:summaryModels"));
-                    assertNotNull(root.findViewWithTag("settings:summaryComputers"));
-                    assertNotNull(root.findViewWithTag("settings:diagnostics"));
+                    assertNull(root.findViewWithTag("settings:summaryComputers"));
+                    assertNull(root.findViewWithTag("settings:diagnostics"));
                     View about = root.findViewWithTag("settings:about");
                     assertNotNull(about);
                     assertFalse("The version is read-only, not a destination", about.isClickable());
@@ -461,14 +461,14 @@ public class SettingsTest extends InstrumentationTestCase {
                     View title = root.findViewWithTag("settingsTitle");
                     android.view.ViewGroup header = (android.view.ViewGroup) title.getParent();
                     assertEquals(header.getWidth() / 2f, title.getLeft() + title.getWidth() / 2f, 1f);
-                    assertEquals("Header back buttons use the shared flat icon style",
-                        0f, root.findViewWithTag("settingsBack").getElevation(), 0f);
+                    assertNull("The Settings destination uses the bottom navigation, not a header back button",
+                        root.findViewWithTag("settingsBack"));
                 });
                 android.graphics.Bitmap screenshot = getInstrumentation().getUiAutomation().takeScreenshot();
                 try (var output = new java.io.FileOutputStream(new java.io.File(activity.getExternalCacheDir(), "settings-grouped-" + theme + ".png"))) {
                     screenshot.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, output);
                 } finally { screenshot.recycle(); }
-                ui(() -> root(activity).findViewWithTag("settingsBack").performClick());
+                ui(() -> root(activity).findViewWithTag("nav:home").performClick());
                 ui(() -> assertNotNull(root(activity).findViewWithTag("localChatEntry")));
             } finally { ui(activity::finish); }
         }
@@ -488,19 +488,21 @@ public class SettingsTest extends InstrumentationTestCase {
                     ui(() -> root(index).findViewWithTag("settingsEntry").performClick());
                     capture(index, "settings-index-" + language + "-" + theme);
                     ui(() -> {
-                        reference[0] = bounds(root(index).findViewWithTag("settingsBack"));
+                        assertNull(root(index).findViewWithTag("settingsBack"));
                         reference[1] = bounds((View) root(index).findViewWithTag("settingsTitle").getParent());
                         reference[2] = bounds(root(index).findViewWithTag("settingsGroup"));
                         assertTrue("The settings index must retain its side margins", reference[2].left > 0);
                     });
                 } finally { ui(index::finish); }
-                for (String section : new String[]{"general", "providers", "archived"}) {
+                for (String section : new String[]{"general", "reading", "notifications", "providers", "archived"}) {
                     Activity detail = launch(section);
                     try {
                         capture(detail, "settings-" + section + "-" + language + "-" + theme);
                         ui(() -> {
                             View page = root(detail);
-                            assertEquals(section + " back button", reference[0], bounds(page.findViewWithTag("settingsBack")));
+                            android.graphics.Rect back = bounds(page.findViewWithTag("settingsBack"));
+                            if (reference[0] == null) reference[0] = back;
+                            else assertEquals(section + " back button", reference[0], back);
                             assertEquals(section + " header", reference[1], bounds((View) page.findViewWithTag("settingsTitle").getParent()));
                             android.graphics.Rect group = bounds(page.findViewWithTag("settingsGroup"));
                             assertEquals(section + " card left", reference[2].left, group.left);

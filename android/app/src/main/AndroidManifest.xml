@@ -8,6 +8,7 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="28" />
     <application
@@ -23,10 +24,12 @@
         <service android:name=".RemoteKeepAliveService" android:exported="false" android:foregroundServiceType="dataSync" />
         <provider
             android:name=".CameraFileProvider"
-            android:authorities="app.camellia.mobile.camera"
+            android:authorities="${applicationId}.camera"
             android:exported="false"
             android:grantUriPermissions="true" />
         <activity android:name=".SettingsActivity" android:exported="false" android:enableOnBackInvokedCallback="false" tools:ignore="UnusedAttribute" android:windowSoftInputMode="adjustResize" />
+        <activity android:name=".RemoteUsageActivity" android:exported="false" android:enableOnBackInvokedCallback="false" tools:ignore="UnusedAttribute" />
+        <activity android:name=".ArtifactInstallActivity" android:exported="false" android:theme="@android:style/Theme.Translucent.NoTitleBar" />
         <activity android:name=".QrScanActivity" android:exported="false" android:enableOnBackInvokedCallback="false" tools:ignore="UnusedAttribute" android:theme="@style/AppTheme" />
         <activity android:name=".LocalChatActivity" android:exported="false" android:enableOnBackInvokedCallback="false" tools:ignore="UnusedAttribute" android:windowSoftInputMode="adjustResize" />
         <activity android:name=".RemoteDiscussionsActivity" android:exported="false" android:enableOnBackInvokedCallback="false" tools:ignore="UnusedAttribute" android:windowSoftInputMode="adjustResize" />

@@ -199,7 +199,14 @@ final class ChatStyle {
         return block;
     }
 
-    void messageTypography(TextView view) { view.setLineSpacing(dp(7), 1); }
+    void messageTypography(TextView view) {
+        var metrics = context.getResources().getDisplayMetrics();
+        float base = android.os.Build.VERSION.SDK_INT >= 34
+            ? android.util.TypedValue.deriveDimension(android.util.TypedValue.COMPLEX_UNIT_SP, view.getTextSize(), metrics)
+            : view.getTextSize() / metrics.scaledDensity;
+        view.setTextSize(MobilePreferences.chatTextSize(context, base));
+        view.setLineSpacing(dp(7), 1);
+    }
 
     LinearLayout messageWithFooter(LinearLayout block, boolean user, Supplier<String> content, long at, boolean chinese) {
         LinearLayout wrapper = new LinearLayout(context); wrapper.setOrientation(LinearLayout.VERTICAL);

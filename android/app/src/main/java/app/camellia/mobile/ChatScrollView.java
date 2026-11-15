@@ -1,6 +1,7 @@
 package app.camellia.mobile;
 
 import android.content.Context;
+import android.os.SystemClock;
 import android.view.MotionEvent;
 import android.widget.ScrollView;
 
@@ -10,10 +11,36 @@ class ChatScrollView extends ScrollView {
     private boolean touching;
     private boolean laidOut;
     private int previousBottom;
+    private long lastScroll;
+    private Runnable idleAction;
+    private final Runnable checkIdle = this::runIdleAction;
+    private static final long SCROLL_IDLE_MS = 180;
 
     ChatScrollView(Context context) { super(context); }
 
     void setFollowBottomOnLayout(boolean enabled) { followBottomOnLayout = enabled; }
+
+    /** Coalesce live list changes until both the gesture and its fling have settled. */
+    void whenScrollIdle(Runnable action) {
+        idleAction = action;
+        runIdleAction();
+    }
+
+    private void runIdleAction() {
+        removeCallbacks(checkIdle);
+        if (idleAction == null || touching) return;
+        long remaining = SCROLL_IDLE_MS - (SystemClock.uptimeMillis() - lastScroll);
+        if (remaining > 0) { postDelayed(checkIdle, remaining); return; }
+        Runnable action = idleAction;
+        idleAction = null;
+        action.run();
+    }
+
+    @Override protected void onScrollChanged(int x, int y, int oldX, int oldY) {
+        super.onScrollChanged(x, y, oldX, oldY);
+        lastScroll = SystemClock.uptimeMillis();
+        if (idleAction != null) runIdleAction();
+    }
 
     @Override protected void onLayout(boolean changed, int left, int top, int right, int bottom) {
         // Compare with the PREVIOUS layout. Measuring the gap after an image
@@ -31,12 +58,18 @@ class ChatScrollView extends ScrollView {
         if (event.getActionMasked() == MotionEvent.ACTION_DOWN) touching = true;
         try { return super.dispatchTouchEvent(event); }
         finally {
-            if (event.getActionMasked() == MotionEvent.ACTION_UP || event.getActionMasked() == MotionEvent.ACTION_CANCEL) touching = false;
+            if (event.getActionMasked() == MotionEvent.ACTION_UP || event.getActionMasked() == MotionEvent.ACTION_CANCEL) {
+                touching = false;
+                lastScroll = SystemClock.uptimeMillis();
+                if (idleAction != null) runIdleAction();
+            }
         }
     }
 
     @Override protected void onDetachedFromWindow() {
         touching = false;
+        idleAction = null;
+        removeCallbacks(checkIdle);
         super.onDetachedFromWindow();
     }
 }

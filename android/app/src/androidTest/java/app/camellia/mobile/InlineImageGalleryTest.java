@@ -41,6 +41,7 @@ public class InlineImageGalleryTest extends InstrumentationTestCase {
                     gallery.measure(android.view.View.MeasureSpec.makeMeasureSpec(width, android.view.View.MeasureSpec.EXACTLY), android.view.View.MeasureSpec.makeMeasureSpec(height, android.view.View.MeasureSpec.EXACTLY));
                     gallery.layout(0, 0, width, height);
                     assertEquals(width, gallery.image.getWidth()); assertEquals(height, gallery.image.getHeight());
+                    assertActionVisible(gallery.share); assertActionVisible(gallery.save);
                     assertTrue(gallery.share.isEnabled()); assertTrue(gallery.save.isEnabled());
                     assertTrue(gallery.share instanceof android.widget.ImageButton);
                     assertTrue(gallery.save instanceof android.widget.ImageButton);
@@ -179,7 +180,7 @@ public class InlineImageGalleryTest extends InstrumentationTestCase {
             Bitmap bitmap = Bitmap.createBitmap(64, 32, Bitmap.Config.ARGB_8888); bitmap.eraseColor(Color.BLUE);
             Uri uri = InlineImageGallery.writeShare(activity, bitmap, "Test");
             try {
-                assertEquals("content", uri.getScheme()); assertEquals("app.camellia.mobile.camera", uri.getAuthority());
+                assertEquals("content", uri.getScheme()); assertEquals(activity.getPackageName() + ".camera", uri.getAuthority());
                 assertEquals("image/jpeg", activity.getContentResolver().getType(uri));
                 try (var input = activity.getContentResolver().openInputStream(uri)) {
                     Bitmap decoded = BitmapFactory.decodeStream(input); assertNotNull(decoded);
@@ -214,6 +215,21 @@ public class InlineImageGalleryTest extends InstrumentationTestCase {
             activity.getContentResolver().delete(uri, null, null);
             getInstrumentation().runOnMainSync(activity::finish);
         }
+    }
+
+    private void assertActionVisible(android.widget.ImageButton action) {
+        Bitmap rendered = Bitmap.createBitmap(action.getWidth(), action.getHeight(), Bitmap.Config.ARGB_8888);
+        try {
+            action.draw(new android.graphics.Canvas(rendered));
+            int bright = 0;
+            for (int y = 0; y < rendered.getHeight(); y++) for (int x = 0; x < rendered.getWidth(); x++) {
+                int color = rendered.getPixel(x, y);
+                if (Color.alpha(color) > 128 && Color.red(color) > 200 && Color.green(color) > 200 && Color.blue(color) > 200) bright++;
+            }
+            assertTrue("Gallery action icon: bright=" + bright + ", bounds=" + action.getDrawable().getBounds()
+                + ", size=" + action.getWidth() + "x" + action.getHeight() + ", color=" + Integer.toHexString(((LineIcon) action.getDrawable()).color())
+                + ", tint=" + action.getImageTintList() + ", padding=" + action.getPaddingLeft() + ", alpha=" + action.getImageAlpha(), bright > 10);
+        } finally { rendered.recycle(); }
     }
 
     private void await(java.util.function.BooleanSupplier condition) throws Exception {

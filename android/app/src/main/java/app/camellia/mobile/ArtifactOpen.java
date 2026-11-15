@@ -57,6 +57,18 @@ final class ArtifactOpen {
     }
 
     static Intent intent(Context context, Uri uri, String name) {
+        if ("apk".equals(extension(name))) {
+            Intent install = new Intent(context, ArtifactInstallActivity.class)
+                .setDataAndType(uri, mimeType(name))
+                .putExtra(Intent.EXTRA_TITLE, name)
+                .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            install.setClipData(ClipData.newRawUri(name, uri));
+            return install;
+        }
+        return viewIntent(context, uri, name);
+    }
+
+    static Intent viewIntent(Context context, Uri uri, String name) {
         Intent view = new Intent(Intent.ACTION_VIEW)
             .setDataAndType(uri, mimeType(context, uri, name))
             .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);

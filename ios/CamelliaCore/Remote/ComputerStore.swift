@@ -65,6 +65,10 @@ public struct PairedComputer: Equatable, Sendable {
     /// Android edits its raw JSONObject in place, so dropping these on iOS
     /// would make an ordinary draft save a destructive schema migration.
     fileprivate var extraFields = JSONObject()
+    public var accountUsage: JSONObject? {
+        guard let token, extraFields.text("accountUsageIdentity") == token.sha256 else { return nil }
+        return extraFields.object("accountUsage")
+    }
 
     private static let knownFields: Set<String> = [
         "address", "name", "computerName", "token", "deviceId", "permission",
@@ -349,6 +353,25 @@ public final class ComputerStore {
         try commit(saved)
     }
 
+    /// Merge a disposable usage snapshot into the sealed profile. Never select
+    /// another computer, restore a removed pairing or overwrite a newer draft.
+    @discardableResult
+    public func saveAccountUsage(_ data: JSONObject?, for expected: PairedComputer) throws -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        var saved = (try vault.load()).raw
+        var known = try profiles(JSONObject(dictionary: saved))
+        guard var entry = known[expected.address], let token = expected.token,
+              entry["token"] as? String == token else { return false }
+        if let data { entry["accountUsage"] = data.raw; entry["accountUsageIdentity"] = token.sha256 }
+        else { entry.removeValue(forKey: "accountUsage"); entry.removeValue(forKey: "accountUsageIdentity") }
+        known[expected.address] = entry
+        if saved["address"] as? String == expected.address { saved = entry }
+        saved["computers"] = known
+        try commit(saved)
+        return true
+    }
+
     /// Switches the current computer to one already in the list.
     @discardableResult
     public func select(_ address: String) throws -> PairedComputer {
@@ -432,6 +455,14 @@ public final class ComputerStore {
         if next.draftAttachments == nil { next.draftAttachments = stored.draftAttachments }
         next.extraFields = JSONObject(dictionary:
             stored.extraFields.raw.merging(next.extraFields.raw) { _, incoming in incoming })
+        // Usage has its own merge operation. An older in-memory computer must
+        // not roll back a newer reading or restore one cleared after a 401/403.
+        var extras = next.extraFields.raw
+        for key in ["accountUsage", "accountUsageIdentity"] {
+            extras.removeValue(forKey: key)
+            if let value = stored.extraFields.raw[key] { extras[key] = value }
+        }
+        next.extraFields = JSONObject(dictionary: extras)
         return next
     }
 

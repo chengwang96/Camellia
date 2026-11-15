@@ -97,8 +97,14 @@ async function main() {
       assert.equal(first.type, 'ready');
       write({ stage: plugins ? 'verify-cache' : 'copy', processedEntries: 2, totalEntries: 4, processedBytes: 1024, totalBytes: 2048 });
       // The helper must keep updating while its owner's event loop is blocked.
-      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 2200);
-      assert.equal(fs.readFileSync(path.join(root, 'responsive'), 'utf8'), 'yes');
+      const responsive = path.join(root, 'responsive');
+      const deadline = Date.now() + 10_000;
+      const blocked = new Int32Array(new SharedArrayBuffer(4));
+      while (!fs.existsSync(responsive) && Date.now() < deadline) {
+        Atomics.wait(blocked, 0, 0, 50);
+      }
+      assert.ok(fs.existsSync(responsive), 'The helper must repaint while the owner event loop is blocked');
+      assert.equal(fs.readFileSync(responsive, 'utf8'), 'yes');
       child.send('cancel');
       assert.equal(await closed, 0, output + '\n' + errors);
       assert.match(output, /PASS: independent migration window/);

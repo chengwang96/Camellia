@@ -135,18 +135,27 @@ final class SettingsStyle {
         shape.setStroke(dp(1), palette.cardBorder); return shape;
     }
 
+    LinearLayout header(String title) {
+        return header(title, "", null);
+    }
+
     LinearLayout header(String title, String backLabel, Runnable back) {
         LinearLayout header = new LinearLayout(context); header.setGravity(Gravity.CENTER_VERTICAL);
         header.setClipChildren(false); header.setClipToPadding(false);
         header.setPadding(0, dp(2), 0, dp(8));
-        ImageButton button = new ChatStyle(context).backButton(backLabel, back); button.setTag("settingsBack");
-        header.addView(button, new LinearLayout.LayoutParams(dp(48), dp(48)));
+        if (back != null) {
+            ImageButton button = new ChatStyle(context).backButton(backLabel, back); button.setTag("settingsBack");
+            header.addView(button, new LinearLayout.LayoutParams(dp(48), dp(48)));
+        }
         TextView heading = new TextView(context); heading.setText(title); heading.setTextSize(Palette.TEXT_TITLE); heading.setTextColor(ink);
         heading.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL)); heading.setGravity(Gravity.CENTER);
         heading.setPadding(dp(6), dp(8), dp(6), dp(8)); heading.setTag("settingsTitle");
+        if (back == null) heading.setMinHeight(dp(48));
         if (android.os.Build.VERSION.SDK_INT >= 28) heading.setAccessibilityHeading(true);
         header.addView(heading, new LinearLayout.LayoutParams(0, -2, 1));
-        View balance = new View(context); header.addView(balance, new LinearLayout.LayoutParams(dp(48), 1));
+        if (back != null) {
+            View balance = new View(context); header.addView(balance, new LinearLayout.LayoutParams(dp(48), 1));
+        }
         return header;
     }
 

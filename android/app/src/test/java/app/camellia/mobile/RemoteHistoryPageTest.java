@@ -128,6 +128,27 @@ public class RemoteHistoryPageTest {
         assertEquals(weight(cached), window.bytes);
     }
 
+    @Test public void automaticPagesCountVisibleMessagesAndResumeBeforeTheUnreadPrefix() throws Exception {
+        RemoteHistoryPage history = new RemoteHistoryPage(List.of(10L), 10, 590, 1024, 2);
+        history.append(page(null, row(5, "user"), row(6, "tool"), row(7, "assistant"), row(8, "tool"), row(9, "assistant")), 10);
+        assertEquals(List.of(7L, 8L, 9L), new ArrayList<>(history.rows.keySet()));
+        assertTrue(history.limited()); assertEquals(Long.valueOf(7), history.nextBefore);
+        RemoteHistoryPage remaining = new RemoteHistoryPage(history.rows.keySet(), 7);
+        remaining.append(page(null, row(5, "user"), row(6, "tool")), 7);
+        assertEquals(List.of(5L, 6L), new ArrayList<>(remaining.rows.keySet())); assertNull(remaining.nextBefore);
+    }
+
+    @Test public void automaticPagesUseOnlyTheBudgetLeftBesideTheLatestReply() throws Exception {
+        RemoteHistoryPage history = new RemoteHistoryPage(List.of(10L), 10, 1, 1024, 30);
+        history.append(page(null, row(8, "assistant"), row(9, "tool")), 10);
+        assertEquals(List.of(9L), new ArrayList<>(history.rows.keySet()));
+        assertTrue(history.limited()); assertEquals(Long.valueOf(9), history.nextBefore);
+        history = new RemoteHistoryPage(List.of(10L), 10, 10, 1, 30);
+        history.append(page(null, row(9, "assistant")), 10);
+        assertTrue(history.rows.isEmpty()); assertTrue(history.limited());
+        assertEquals(Long.valueOf(10), history.nextBefore);
+    }
+
     @Test public void aToolHeavyTranscriptCanBeTraversedBeyondTheDisplayBudgetWithoutGaps() throws Exception {
         TreeMap<Long, JSONObject> all = new TreeMap<>(), cached = new TreeMap<>();
         for (long seq = 1; seq <= 3000; seq++) all.put(seq, row(seq, seq % 500 == 0 ? "assistant" : "tool"));

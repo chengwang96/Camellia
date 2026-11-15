@@ -15,6 +15,7 @@ import android.widget.TextView;
 
 @android.annotation.SuppressLint("ViewConstructor")
 final class ChatChoiceRow extends LinearLayout {
+    private final TextView name;
     ChatChoiceRow(Context context, boolean chinese, int ink, int muted,
                   String title, String description, String icon, boolean selected, String tag, Runnable action) {
         super(context);
@@ -29,7 +30,7 @@ final class ChatChoiceRow extends LinearLayout {
         setClipToOutline(true);
         setLayoutParams(new LayoutParams(-1, -2));
         LinearLayout words = new LinearLayout(context); words.setOrientation(VERTICAL);
-        TextView name = label(title, Palette.TEXT_ROW_STRONG, ink); name.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        name = label(title, Palette.TEXT_ROW_STRONG, ink); name.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
         name.setSingleLine(true); words.addView(name);
         if (!description.isEmpty()) {
             TextView detail = label(description, Palette.TEXT_SMALL, muted); detail.setMaxLines(3); detail.setPadding(0, dp(3), 0, 0); words.addView(detail);
@@ -57,4 +58,11 @@ final class ChatChoiceRow extends LinearLayout {
     }
 
     private int dp(int value) { return Math.round(value * getResources().getDisplayMetrics().density); }
+
+    int preferredWidth() {
+        // Reserve the check column even for an unchecked row so changing the
+        // selected model does not change the menu width. Descriptions may wrap.
+        return (int) Math.ceil(android.text.Layout.getDesiredWidth(name.getText(), name.getPaint()))
+            + getPaddingLeft() + getPaddingRight() + dp(32) + dp(2);
+    }
 }

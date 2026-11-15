@@ -1416,6 +1416,9 @@ sharedConversations = new SharedConversations({ dir: path.join(app.getPath('user
 });
 
 remoteDesktop = require('./remote/desktop').createRemoteDesktop({ app, BrowserWindow, ipcMain, nativeTheme, windowChrome,
+  accountUsage: require('./remote/account-usage').createAccountUsage({
+    read: () => ({ router: apiRouterState(), insights: accountInsights() }), refresh: () => refreshInsights({ force: true }),
+  }),
   getMainWindow: () => mainWindow,
   getDiscussions: ['win32', 'darwin'].includes(process.platform) ? discussions : null,
   prepareRestart: async () => {

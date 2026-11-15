@@ -401,6 +401,82 @@ public class WorkbenchRefreshTest extends InstrumentationTestCase {
         } finally { releaseRead.countDown(); sync.close(); cache.remove(credentials); }
     }
 
+    public void testHomeResubscribesAndRefreshesAfterReturningFromBackground() throws Exception {
+        var context = getInstrumentation().getTargetContext();
+        JSONObject credentials = new JSONObject().put("address", "http://100.80.1.2:43127")
+            .put("token", "a".repeat(43)).put("computerName", "Home resume test");
+        new CredentialStore(context).save(credentials);
+        JSONArray running = new JSONArray().put(new JSONObject().put("id", "resumed-home")
+            .put("title", "Background task").put("engine", "codex").put("activity", "running")
+            .put("updatedAt", System.currentTimeMillis()));
+        JSONArray idle = new JSONArray().put(new JSONObject(running.getJSONObject(0).toString()).put("activity", ""));
+        var latest = new java.util.concurrent.atomic.AtomicReference<>(running);
+        var starts = new java.util.concurrent.atomic.AtomicInteger();
+        var firstOpened = new java.util.concurrent.CountDownLatch(1);
+        var firstClosed = new java.util.concurrent.CountDownLatch(1);
+        var resumed = new java.util.concurrent.CountDownLatch(1);
+        RemoteApi.SnapshotListener[] oldListener = new RemoteApi.SnapshotListener[1];
+        RemoteConversationSync sync = new RemoteConversationSync(address -> new RemoteApi(address) {
+            final java.util.concurrent.CountDownLatch closed = new java.util.concurrent.CountDownLatch(1);
+            @Override public void listEvents(String token, SnapshotListener listener) throws java.io.IOException {
+                int start = starts.incrementAndGet();
+                if (start == 1) oldListener[0] = listener;
+                try {
+                    listener.onSnapshot(new JSONObject().put("conversationList", new JSONObject()
+                        .put("conversations", latest.get()).put("nextOffset", JSONObject.NULL)));
+                    if (start == 1) firstOpened.countDown(); else resumed.countDown();
+                    closed.await();
+                } catch (InterruptedException error) { Thread.currentThread().interrupt(); }
+                catch (org.json.JSONException error) { throw new java.io.IOException(error); }
+            }
+            @Override public void cancel() { closed.countDown(); firstClosed.countDown(); }
+        });
+        RemoteListCache cache = RemoteListCache.get(context);
+        cache.put(credentials, running, -1, new JSONArray(), true);
+        try {
+            getInstrumentation().runOnMainSync(() -> {
+                try {
+                    ((RemoteConversationSync) field("conversationSync")).close();
+                    field("conversationSync", sync);
+                    field("credentials", credentials);
+                    field("homeClientFactory", (Function<String, RemoteApi>) address -> new RemoteApi(address) {
+                        @Override public JSONObject json(String path, String token, JSONObject payload) throws java.io.IOException {
+                            try { return new JSONObject().put("conversations", latest.get()).put("nextOffset", JSONObject.NULL); }
+                            catch (org.json.JSONException error) { throw new java.io.IOException(error); }
+                        }
+                    });
+                    invoke("homeScreen");
+                } catch (Exception error) { throw new AssertionError(error); }
+            });
+            assertTrue(firstOpened.await(3, java.util.concurrent.TimeUnit.SECONDS));
+            getInstrumentation().waitForIdleSync();
+            getInstrumentation().runOnMainSync(() -> {
+                assertNotNull(activity.getWindow().getDecorView().findViewWithTag("homeActive:resumed-home"));
+                getInstrumentation().callActivityOnPause(activity);
+                getInstrumentation().callActivityOnStop(activity);
+            });
+            assertTrue("Home must release its live stream while in the background",
+                firstClosed.await(3, java.util.concurrent.TimeUnit.SECONDS));
+            latest.set(idle);
+            getInstrumentation().runOnMainSync(() -> {
+                getInstrumentation().callActivityOnRestart(activity);
+                getInstrumentation().callActivityOnStart(activity);
+                getInstrumentation().callActivityOnResume(activity);
+            });
+            assertTrue("Returning to Home must open a new live subscription",
+                resumed.await(3, java.util.concurrent.TimeUnit.SECONDS));
+            getInstrumentation().waitForIdleSync();
+            oldListener[0].onSnapshot(new JSONObject().put("conversationList", new JSONObject().put("conversations", running)));
+            getInstrumentation().waitForIdleSync();
+            getInstrumentation().runOnMainSync(() -> {
+                View root = activity.getWindow().getDecorView();
+                assertNull("A run completed in the background must no longer be Running", root.findViewWithTag("homeActive:resumed-home"));
+                assertNotNull("The fresh snapshot must move the completed conversation to Recent", root.findViewWithTag("homeRecent:resumed-home"));
+            });
+            assertEquals(2, starts.get());
+        } finally { sync.close(); cache.remove(credentials); }
+    }
+
     public void testWideDetailBuildsTheConversationSidebar() throws Exception {
         var context = getInstrumentation().getTargetContext();
         if (!MobileLayout.useDetailSplit(activity.getResources().getConfiguration())) return;
@@ -568,22 +644,155 @@ public class WorkbenchRefreshTest extends InstrumentationTestCase {
         for (int index = 1; index < 5; index++)
             assertEquals("Navigation item " + index + " must share one height", home[1], home[index]);
 
-        getInstrumentation().runOnMainSync(() -> {
-            try {
-                var settings = MainActivity.class.getDeclaredMethod("settingsScreen");
-                settings.setAccessible(true); settings.invoke(activity);
-            } catch (Exception error) { throw new AssertionError(error); }
-        });
-        android.os.SystemClock.sleep(500);
+        for (String destination : new String[]{"homeScreen", "listScreen", "computersScreen", "settingsScreen"}) {
+            getInstrumentation().runOnMainSync(() -> {
+                try {
+                    invoke(destination);
+                    ((PageTransitions) field("pages")).finishTransition();
+                } catch (Exception error) { throw new AssertionError(error); }
+            });
+            getInstrumentation().waitForIdleSync();
+            int[] baseline = navigationGeometry();
+            assertTrue(destination + " must retain navigation position and size", java.util.Arrays.equals(home, baseline));
+            int[] viewportHeight = new int[1];
+            getInstrumentation().runOnMainSync(() -> {
+                try { viewportHeight[0] = ((View) field("scroll")).getHeight(); }
+                catch (Exception error) { throw new AssertionError(error); }
+            });
+            for (String value : new String[]{"Showing cached conversations; syncing…", "Connection failed\nRetry connection", ""}) {
+                getInstrumentation().runOnMainSync(() -> {
+                    try { ((TextView) field("status")).setText(value); }
+                    catch (Exception error) { throw new AssertionError(error); }
+                });
+                getInstrumentation().waitForIdleSync();
+                assertTrue(destination + " status updates must keep navigation fixed",
+                    java.util.Arrays.equals(baseline, navigationGeometry()));
+                getInstrumentation().runOnMainSync(() -> {
+                    try {
+                        View status = (View) field("status");
+                        assertNull("No status footer belongs above destination navigation", status.getParent());
+                        assertFalse(status.isShown());
+                        assertEquals("Status updates must not resize the scrolling content", viewportHeight[0], ((View) field("scroll")).getHeight());
+                    } catch (Exception error) { throw new AssertionError(error); }
+                });
+            }
+        }
+    }
+
+    public void testDestinationRefreshHasNoSpinnerOrContentOffset() throws Exception {
+        var context = getInstrumentation().getTargetContext();
+        JSONObject credentials = new JSONObject().put("address", "http://100.80.1.2:43127")
+            .put("token", "a".repeat(43)).put("computerName", "Refresh presentation");
+        RemoteListCache cache = RemoteListCache.get(context);
+        cache.put(credentials, new JSONArray().put(new JSONObject().put("id", "refresh-row")
+            .put("title", "Keep this conversation visible").put("engine", "codex").put("activity", "running")
+            .put("updatedAt", System.currentTimeMillis())), -1, new JSONArray(), true);
+        try {
+            for (String destination : new String[]{"listScreen", "computersScreen"}) {
+                getInstrumentation().runOnMainSync(() -> {
+                    try {
+                        invoke("stopNetwork");
+                        field("foreground", false);
+                        field("credentials", credentials);
+                        invoke(destination);
+                        ((PageTransitions) field("pages")).finishTransition();
+                    } catch (Exception error) { throw new AssertionError(error); }
+                });
+                getInstrumentation().waitForIdleSync();
+                android.graphics.Bitmap[] before = new android.graphics.Bitmap[1];
+                getInstrumentation().runOnMainSync(() -> {
+                    try {
+                        RefreshScrollView scroll = (RefreshScrollView) field("scroll");
+                        before[0] = android.graphics.Bitmap.createBitmap(scroll.getWidth(), scroll.getHeight(),
+                            android.graphics.Bitmap.Config.ARGB_8888);
+                        scroll.draw(new android.graphics.Canvas(before[0]));
+                        scroll.setRefreshing(true);
+                    } catch (Exception error) { throw new AssertionError(error); }
+                });
+                try {
+                    android.os.SystemClock.sleep(350);
+                    if (destination.equals("listScreen")) capture("sessions-refresh-no-spinner");
+                    getInstrumentation().runOnMainSync(() -> {
+                        try {
+                            RefreshScrollView scroll = (RefreshScrollView) field("scroll");
+                            assertEquals("Refreshing must not push destination content down", 0f,
+                                scroll.getChildAt(0).getTranslationY(), 0f);
+                            android.graphics.Bitmap busy = android.graphics.Bitmap.createBitmap(before[0]);
+                            try {
+                                busy.eraseColor(android.graphics.Color.TRANSPARENT);
+                                scroll.draw(new android.graphics.Canvas(busy));
+                                assertTrue("Refreshing must not paint a spinner above destination content", before[0].sameAs(busy));
+                            } finally { busy.recycle(); }
+                            scroll.setRefreshing(false);
+                        } catch (Exception error) { throw new AssertionError(error); }
+                    });
+                } finally { before[0].recycle(); }
+            }
+        } finally { cache.remove(credentials); }
+    }
+
+    public void testHeldNavigationFeedbackKeepsRoundedCorners() throws Exception {
         getInstrumentation().waitForIdleSync();
-        int[] settings = navigationGeometry();
-        assertEquals("Switching destinations must not move or resize the navigation bar", home[0], settings[0]);
-        for (int index = 1; index < home.length; index++)
-            assertEquals("The navigation bar and its items must keep the same geometry", home[index], settings[index]);
+        android.os.SystemClock.sleep(600);
+        java.io.File directory = new java.io.File(activity.getExternalFilesDir(null), "navigation-press-visuals");
+        assertTrue(directory.isDirectory() || directory.mkdirs());
+        int inset = Math.round(3 * activity.getResources().getDisplayMetrics().density);
+        for (String id : new String[]{"home", "sessions", "computers", "settings"}) {
+            int[] bounds = new int[4];
+            getInstrumentation().runOnMainSync(() -> {
+                View item = activity.getWindow().getDecorView().findViewWithTag("nav:" + id);
+                item.getLocationOnScreen(bounds);
+                bounds[2] = item.getWidth();
+                bounds[3] = item.getHeight();
+            });
+            android.graphics.Bitmap before = getInstrumentation().getUiAutomation().takeScreenshot();
+            long downTime = android.os.SystemClock.uptimeMillis();
+            android.view.MotionEvent down = android.view.MotionEvent.obtain(downTime, downTime,
+                android.view.MotionEvent.ACTION_DOWN, bounds[0] + bounds[2] / 2f, bounds[1] + bounds[3] / 2f, 0);
+            getInstrumentation().sendPointerSync(down);
+            down.recycle();
+            android.graphics.Bitmap held = null;
+            try {
+                android.os.SystemClock.sleep(900);
+                held = getInstrumentation().getUiAutomation().takeScreenshot();
+                for (int x : new int[]{bounds[0] + inset, bounds[0] + bounds[2] - 1 - inset}) {
+                    for (int y : new int[]{bounds[1] + inset, bounds[1] + bounds[3] - 1 - inset}) {
+                        assertTrue(id + " held feedback must leave the rounded corner clear",
+                            pixelDifference(before.getPixel(x, y), held.getPixel(x, y)) <= 6);
+                    }
+                }
+                int x = bounds[0] + bounds[2] / 2;
+                int y = bounds[1] + inset;
+                assertTrue(id + " must still show visible feedback inside the rounded shape",
+                    pixelDifference(before.getPixel(x, y), held.getPixel(x, y)) > 6);
+                android.graphics.Bitmap crop = android.graphics.Bitmap.createBitmap(held,
+                    bounds[0], bounds[1], bounds[2], bounds[3]);
+                try (var output = new java.io.FileOutputStream(new java.io.File(directory, id + "-held.png"))) {
+                    assertTrue(crop.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, output));
+                } finally {
+                    crop.recycle();
+                }
+            } finally {
+                android.view.MotionEvent cancel = android.view.MotionEvent.obtain(downTime,
+                    android.os.SystemClock.uptimeMillis(), android.view.MotionEvent.ACTION_CANCEL,
+                    bounds[0] + bounds[2] / 2f, bounds[1] + bounds[3] / 2f, 0);
+                getInstrumentation().sendPointerSync(cancel);
+                cancel.recycle();
+                before.recycle();
+                if (held != null) held.recycle();
+            }
+            android.os.SystemClock.sleep(350);
+        }
+    }
+
+    private static int pixelDifference(int first, int second) {
+        return Math.abs(android.graphics.Color.red(first) - android.graphics.Color.red(second))
+            + Math.abs(android.graphics.Color.green(first) - android.graphics.Color.green(second))
+            + Math.abs(android.graphics.Color.blue(first) - android.graphics.Color.blue(second));
     }
 
     private int[] navigationGeometry() {
-        int[] values = new int[6];
+        int[] values = new int[8];
         for (int attempt = 0; attempt < 30; attempt++) {
             getInstrumentation().runOnMainSync(() -> {
                 View navigation = activity.getWindow().getDecorView().findViewWithTag("workbenchNav");
@@ -598,6 +807,8 @@ public class WorkbenchRefreshTest extends InstrumentationTestCase {
                 int[] location = new int[2];
                 navigation.getLocationOnScreen(location);
                 values[5] = location[1];
+                values[6] = navigation.getWidth();
+                values[7] = location[0];
             });
             boolean ready = values[0] > 0;
             for (int index = 1; index < 5; index++) ready &= values[index] > 0;

@@ -31,6 +31,9 @@ import okhttp3.Response;
 import okhttp3.ResponseBody;
 
 final class InlineRemoteImages implements MarkdownView.ImageLoader {
+    private static final class VideoLoadFailure extends IOException {
+        VideoLoadFailure(String message) { super(message); }
+    }
     private static final long MAX_IMAGE_BYTES = 32L * 1024 * 1024;
     private static final long MAX_VIDEO_BYTES = 512L * 1024 * 1024;
     private static final java.util.regex.Pattern IMAGE_EXTENSION = java.util.regex.Pattern.compile("(?i).+\\.(?:png|jpe?g|gif|webp|bmp|avif|ico)");
@@ -51,6 +54,7 @@ final class InlineRemoteImages implements MarkdownView.ImageLoader {
     };
     private final Map<String, List<MarkdownView.ImageCallback>> pending = new HashMap<>();
     private final Map<String, List<MarkdownView.VideoCallback>> videoPending = new HashMap<>();
+    private final Map<String, List<MarkdownView.ImageCallback>> posterPending = new HashMap<>();
     private final Map<String, File> videoFiles = new HashMap<>();
     private final Set<RemoteApi> requests = ConcurrentHashMap.newKeySet();
     private final Set<Call> webRequests = ConcurrentHashMap.newKeySet();
@@ -211,7 +215,7 @@ final class InlineRemoteImages implements MarkdownView.ImageLoader {
 
     @Override public void loadVideo(String reference, MarkdownView.VideoCallback callback) {
         if (closed || !supportedVideo(reference) || (remote(reference) == null && (seq < 1 || conversation == null || conversation.isEmpty()))) {
-            callback.failed(); return;
+            callback.failed(tr("此视频引用暂不可用，请重新打开会话后重试。", "This video reference is unavailable. Reopen the conversation and retry.")); return;
         }
         File cached = videoFiles.get(reference);
         if (cached != null && cached.isFile()) { callback.loaded(cached); return; }
@@ -221,19 +225,86 @@ final class InlineRemoteImages implements MarkdownView.ImageLoader {
         WORKER.execute(() -> {
             if (closed) return;
             File file = null;
+            String failure = null;
             try { file = remote(reference) == null ? artifactVideo(reference) : webVideo(reference); }
-            catch (Exception ignored) { }
+            catch (Exception error) {
+                android.util.Log.w("CamelliaInlineVideo", "Video download failed", error);
+                failure = error instanceof VideoLoadFailure ? error.getMessage()
+                    : RemoteApi.failureMessage(error, context.getResources().getConfiguration().getLocales().get(0).getLanguage().equals("zh"));
+            }
             File result = file;
-            handler.post(() -> finishVideo(reference, result));
+            String reason = failure;
+            handler.post(() -> finishVideo(reference, result, reason));
         });
     }
 
-    private void finishVideo(String reference, File file) {
+    private String tr(String zh, String en) {
+        return context.getResources().getConfiguration().getLocales().get(0).getLanguage().equals("zh") ? zh : en;
+    }
+
+    @Override public void loadVideoPoster(String reference, MarkdownView.ImageCallback callback) {
+        if (closed) { callback.failed(); return; }
+        Bitmap cached = cache.get("video-poster:" + reference);
+        if (cached != null) { callback.loaded(cached); return; }
+        List<MarkdownView.ImageCallback> listeners = posterPending.get(reference);
+        if (listeners != null) { listeners.add(callback); return; }
+        listeners = new ArrayList<>(); listeners.add(callback); posterPending.put(reference, listeners);
+        loadVideo(reference, new MarkdownView.VideoCallback() {
+            @Override public void loaded(File file) {
+                WORKER.execute(() -> {
+                    if (closed) return;
+                    Bitmap frame = null;
+                    try { frame = videoPoster(file); }
+                    catch (Exception error) { android.util.Log.w("CamelliaInlineVideo", "Video poster unavailable", error); }
+                    Bitmap result = frame;
+                    handler.post(() -> finishPoster(reference, result));
+                });
+            }
+            @Override public void failed() { finishPoster(reference, null); }
+        });
+    }
+
+    private void finishPoster(String reference, Bitmap bitmap) {
+        List<MarkdownView.ImageCallback> listeners = posterPending.remove(reference);
+        if (closed || listeners == null) {
+            if (bitmap != null) bitmap.recycle();
+            return;
+        }
+        if (bitmap != null) cache.put("video-poster:" + reference, bitmap);
+        for (MarkdownView.ImageCallback listener : listeners) {
+            if (bitmap == null) listener.failed(); else listener.loaded(bitmap);
+        }
+    }
+
+    private static Bitmap videoPoster(File file) throws Exception {
+        android.media.MediaMetadataRetriever retriever = new android.media.MediaMetadataRetriever();
+        try {
+            retriever.setDataSource(file.getAbsolutePath());
+            int width = Integer.parseInt(retriever.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH));
+            int height = Integer.parseInt(retriever.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT));
+            float scale = Math.min(1f, 960f / Math.max(width, height));
+            int targetWidth = Math.max(1, Math.round(width * scale)), targetHeight = Math.max(1, Math.round(height * scale));
+            Bitmap frame;
+            if (android.os.Build.VERSION.SDK_INT >= 27) {
+                frame = retriever.getScaledFrameAtTime(0, android.media.MediaMetadataRetriever.OPTION_CLOSEST_SYNC, targetWidth, targetHeight);
+            } else {
+                frame = retriever.getFrameAtTime(0, android.media.MediaMetadataRetriever.OPTION_CLOSEST_SYNC);
+                if (frame != null && Math.max(frame.getWidth(), frame.getHeight()) > 960) {
+                    Bitmap scaled = Bitmap.createScaledBitmap(frame, targetWidth, targetHeight, true);
+                    if (scaled != frame) frame.recycle();
+                    frame = scaled;
+                }
+            }
+            return frame;
+        } finally { retriever.release(); }
+    }
+
+    private void finishVideo(String reference, File file, String reason) {
         List<MarkdownView.VideoCallback> listeners = videoPending.remove(reference);
         if (listeners == null || closed) return;
         if (file != null) videoFiles.put(reference, file);
         for (MarkdownView.VideoCallback listener : listeners) {
-            if (file == null) listener.failed(); else listener.loaded(file);
+            if (file == null) listener.failed(reason); else listener.loaded(file);
         }
     }
 
@@ -245,6 +316,8 @@ final class InlineRemoteImages implements MarkdownView.ImageLoader {
             String route = "/v1/conversations/" + conversation + "/artifacts?offset=0&seq=" + seq + "&reference=" + ArtifactReferences.query(reference);
             JSONObject result = request.json(route, token, null);
             JSONArray files = result.getJSONArray("artifacts");
+            if (files.length() == 0) throw new VideoLoadFailure(tr(
+                "电脑端找不到视频原文件，文件可能已移动或删除。", "The original video file was not found on the computer. It may have been moved or deleted."));
             JSONObject selected = null;
             for (int index = 0; index < files.length(); index++) {
                 JSONObject file = files.optJSONObject(index);
@@ -252,7 +325,8 @@ final class InlineRemoteImages implements MarkdownView.ImageLoader {
                 if (!file.optString("id").matches("[a-f0-9]{64}")) continue;
                 selected = file; break;
             }
-            if (selected == null) throw new IOException("Video unavailable");
+            if (selected == null) throw new VideoLoadFailure(tr(
+                "视频格式不可用或大小超过 512 MiB。", "The video format is unavailable or the file exceeds 512 MiB."));
             File target = videoTarget(selected.getString("id"), reference);
             long size = selected.getLong("size");
             if (target.isFile() && target.length() == size) return target;
@@ -280,6 +354,8 @@ final class InlineRemoteImages implements MarkdownView.ImageLoader {
         try {
             call = WEB.newCall(new Request.Builder().url(reference).header("Accept", "video/*").build()); webRequests.add(call);
             try (Response response = call.execute()) {
+                if (response.code() == 404 || response.code() == 410) throw new VideoLoadFailure(tr(
+                    "视频链接已失效或文件不存在。", "The video link has expired or the file no longer exists."));
                 if (!response.isSuccessful()) throw new IOException("Video request failed");
                 String scheme = response.request().url().scheme();
                 if ((!scheme.equals("http") && !scheme.equals("https")) || !response.request().url().username().isEmpty()) throw new IOException("Unsafe video URL");
@@ -301,7 +377,7 @@ final class InlineRemoteImages implements MarkdownView.ImageLoader {
             return target;
         } finally {
             if (call != null) webRequests.remove(call);
-            temporary.delete();
+            if (temporary != null) temporary.delete();
         }
     }
 
@@ -324,7 +400,7 @@ final class InlineRemoteImages implements MarkdownView.ImageLoader {
 
     @Override public void close() {
         if (closed) return;
-        closed = true; pending.clear(); videoPending.clear(); videoFiles.clear(); cache.evictAll();
+        closed = true; pending.clear(); videoPending.clear(); posterPending.clear(); videoFiles.clear(); cache.evictAll();
         for (RemoteApi request : requests) request.cancel(); requests.clear();
         for (Call call : webRequests) call.cancel(); webRequests.clear();
     }

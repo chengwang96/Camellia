@@ -29,6 +29,7 @@ public final class Endpoint {
     public String port() { return Integer.toString(URI.create(origin).getPort()); }
 
     public URI uri(String path) {
+        if (path.equals("/v1/account-usage") || path.equals("/v1/account-usage/refresh")) return URI.create(origin + path);
         if (path.equals("/v1/desktop/restart")) return URI.create(origin + path);
         if (path.matches("/v1/commands/[a-f0-9-]{36}")
                 || path.matches("/v1/conversations/[a-f0-9-]{36}/events\\?incremental=1")

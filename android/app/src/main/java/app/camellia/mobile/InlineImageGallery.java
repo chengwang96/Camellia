@@ -42,6 +42,12 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 final class InlineImageGallery {
+    interface ImageSource {
+        Bitmap bitmap();
+        String alt();
+        void load(MarkdownView.ImageCallback callback);
+        default void show(Bitmap bitmap) { }
+    }
     private static final int STORAGE_PERMISSION = 927;
     private static final ExecutorService WORKER = Executors.newSingleThreadExecutor(task -> {
         Thread thread = new Thread(task, "inline-image-export"); thread.setDaemon(true); return thread;
@@ -50,8 +56,8 @@ final class InlineImageGallery {
     private static GalleryView active;
     private static PendingSave pending;
 
-    static void show(Activity activity, InlineImageView selected) {
-        List<InlineImageView> images = new ArrayList<>(); collect(activity.getWindow().getDecorView(), images);
+    static void show(Activity activity, ImageSource selected) {
+        List<ImageSource> images = new ArrayList<>(); collect(activity.getWindow().getDecorView(), images);
         int position = images.indexOf(selected);
         if (position < 0) return;
         if (active != null) active.dialog.dismiss();
@@ -75,8 +81,9 @@ final class InlineImageGallery {
         if (pending != null && pending.activity == activity) pending = null;
     }
 
-    private static void collect(View view, List<InlineImageView> result) {
-        if (view instanceof InlineImageView) result.add((InlineImageView) view);
+    private static void collect(View view, List<ImageSource> result) {
+        if (view.getVisibility() != View.VISIBLE) return;
+        if (view instanceof ImageSource) result.add((ImageSource) view);
         if (view instanceof ViewGroup) for (int index = 0; index < ((ViewGroup) view).getChildCount(); index++)
             collect(((ViewGroup) view).getChildAt(index), result);
     }
@@ -172,18 +179,18 @@ final class InlineImageGallery {
     @android.annotation.SuppressLint("ViewConstructor")
     static final class GalleryView extends FrameLayout {
         final Activity activity;
-        final List<InlineImageView> images;
+        final List<ImageSource> images;
         final Dialog dialog;
         final ImageView image, incoming;
         final LinearLayout top, bottom;
         final TextView counter, status;
         final ImageButton share, save;
-        final Set<InlineImageView> requested = Collections.newSetFromMap(new IdentityHashMap<>());
+        final Set<ImageSource> requested = Collections.newSetFromMap(new IdentityHashMap<>());
         int position, direction;
         float startX, startY;
-        boolean tracking, dragging, settling;
+        boolean tracking, dragging, settling, closed;
 
-        GalleryView(Activity activity, List<InlineImageView> images, int position, Dialog dialog) {
+        GalleryView(Activity activity, List<ImageSource> images, int position, Dialog dialog) {
             super(activity); this.activity = activity; this.images = images; this.position = position; this.dialog = dialog;
             setTag("inlineImageGalleryView"); setBackgroundColor(Color.BLACK);
             image = page("inlineImageGalleryBitmap"); addView(image, new FrameLayout.LayoutParams(-1, -1));
@@ -205,8 +212,8 @@ final class InlineImageGallery {
             bottom.addView(share, actionParams()); bottom.addView(save, actionParams());
             FrameLayout.LayoutParams bottomParams = new FrameLayout.LayoutParams(-2, -2, Gravity.BOTTOM | Gravity.END);
             addView(bottom, bottomParams);
-            share.setOnClickListener(view -> { InlineImageView current = current(); InlineImageGallery.share(activity, current.bitmap(), current.alt()); });
-            save.setOnClickListener(view -> { InlineImageView current = current(); InlineImageGallery.save(activity, current.bitmap(), current.alt()); });
+            share.setOnClickListener(view -> { ImageSource current = current(); InlineImageGallery.share(activity, current.bitmap(), current.alt()); });
+            save.setOnClickListener(view -> { ImageSource current = current(); InlineImageGallery.save(activity, current.bitmap(), current.alt()); });
             image.setOnTouchListener((view, event) -> touch(event));
             setOnApplyWindowInsetsListener((view, insets) -> {
                 int topInset, bottomInset;
@@ -259,7 +266,7 @@ final class InlineImageGallery {
             return params;
         }
 
-        InlineImageView current() { return images.get(position); }
+        ImageSource current() { return images.get(position); }
 
         boolean fling(MotionEvent first, MotionEvent second) {
             float dx = second.getX() - first.getX(), dy = second.getY() - first.getY();
@@ -312,7 +319,7 @@ final class InlineImageGallery {
         private float pageWidth() { return getWidth() > 0 ? getWidth() : activity.getResources().getDisplayMetrics().widthPixels; }
 
         private void prepareIncoming(int target) {
-            InlineImageView source = images.get(target);
+            ImageSource source = images.get(target);
             incoming.setImageBitmap(source.bitmap()); incoming.setContentDescription(source.alt());
             incoming.setTranslationX(direction * pageWidth()); incoming.setVisibility(VISIBLE);
             if (source.bitmap() == null) request(source);
@@ -338,34 +345,39 @@ final class InlineImageGallery {
         void previous() { resetDrag(); if (position > 0) { position--; showCurrent(); } }
 
         private void showCurrent() {
-            InlineImageView current = current();
+            ImageSource current = current();
             counter.setText((position + 1) + " / " + images.size());
             image.setContentDescription(current.alt() + " · " + tr(activity, "左右滑动切换图片", "Swipe left or right to change image"));
             if (current.bitmap() != null) {
                 image.setImageBitmap(current.bitmap()); status.setVisibility(GONE);
-                share.setEnabled(true); save.setEnabled(true); share.setAlpha(1); save.setAlpha(1);
+                share.setEnabled(true); save.setEnabled(true); share.setAlpha(1f); save.setAlpha(1f);
             } else {
                 image.setImageDrawable(null); status.setVisibility(VISIBLE); status.setText(current.alt());
                 share.setEnabled(false); save.setEnabled(false); share.setAlpha(.4f); save.setAlpha(.4f); request(current);
             }
         }
 
-        private void request(InlineImageView source) {
+        private void request(ImageSource source) {
             if (!requested.add(source)) return;
             source.load(new MarkdownView.ImageCallback() {
                 @Override public void loaded(Bitmap bitmap) {
+                    requested.remove(source);
+                    if (closed) return;
                     source.show(bitmap);
                     if (current() == source) showCurrent();
                     if (dragging && position + direction >= 0 && position + direction < images.size() && images.get(position + direction) == source)
                         incoming.setImageBitmap(bitmap);
                 }
                 @Override public void failed() {
+                    requested.remove(source);
+                    if (closed) return;
                     if (current() == source) status.setText(tr(activity, "无法加载图片", "Unable to load image"));
                 }
             });
         }
 
         void close() {
+            closed = true;
             resetDrag(); image.setImageDrawable(null); incoming.setImageDrawable(null); requested.clear();
         }
     }

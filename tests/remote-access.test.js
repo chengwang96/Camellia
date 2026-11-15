@@ -29,7 +29,7 @@ function queuedRuns(manager, id) {
   return { sent, finish };
 }
 
-function fixture(context, { apiRoutes = null, apiImport = null, nativeSettings = null, management = null, desktopRestart = null } = {}) {
+function fixture(context, { apiRoutes = null, apiImport = null, nativeSettings = null, management = null, desktopRestart = null, accountUsage = null } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'camellia-remote-'));
   assert.equal(path.dirname(path.resolve(root)), path.resolve(os.tmpdir()));
   let clock = 1000, config = { sharedMeta: { workspaces: [{ id: 'allowed', name: 'Allowed', path: root }, { id: 'private', name: 'Private', path: root }] } }, gateway, reader;
@@ -41,7 +41,7 @@ function fixture(context, { apiRoutes = null, apiImport = null, nativeSettings =
   const access = new RemoteAccess({ file: path.join(root, 'devices.json'), now: () => clock, onRevoke: id => gateway?.revoke(id) });
   reader = new RemoteReadModel(manager);
   const commands = new RemoteCommands({ file: path.join(root, 'commands.json'), access, reader, publish: () => gateway.publish() });
-  gateway = new RemoteGateway({ access, reader, commands, apiRoutes, apiImport, nativeSettings, management, desktopRestart, validateHost: host => host === '127.0.0.1' });
+  gateway = new RemoteGateway({ access, reader, commands, apiRoutes, apiImport, nativeSettings, management, desktopRestart, accountUsage, validateHost: host => host === '127.0.0.1' });
   const start = gateway.start.bind(gateway);
   gateway.start = async (host, port, transport) => {
     for (let attempt = 0; attempt < 32; attempt++) {
@@ -71,6 +71,34 @@ async function request(gateway, endpoint, { token, method = 'GET', payload, head
     ...(payload ? { 'Content-Type': 'application/json' } : {}), ...headers }, body: payload ? JSON.stringify(payload) : undefined });
   return { status: response.status, body: await response.json() };
 }
+
+test('account usage requires full-device control, advertises capability, validates refresh and revocation', async context => {
+  let reads = 0, refreshes = 0;
+  const h = fixture(context, { accountUsage: {
+    state: () => { reads++; return { version: 1, accounts: [], ranges: { all: [] } }; },
+    refresh: () => { refreshes++; return { version: 1, refreshing: true, accounts: [], ranges: { all: [] } }; },
+  } });
+  await h.gateway.start('127.0.0.1', 0);
+  assert.equal((await request(h.gateway, '/v1/account-usage')).status, 401);
+  const credential = h.pair(), token = credential.token;
+  const device = h.access.authenticate(token);
+  device.allWorkspaces = false;
+  assert.equal((await request(h.gateway, '/v1/account-usage', { token })).status, 403);
+  assert.ok(!h.gateway.connectionInfo(device).capabilities.includes('account-usage'));
+  device.allWorkspaces = true; device.permission = 'read';
+  assert.equal((await request(h.gateway, '/v1/account-usage', { token })).status, 403);
+  device.permission = 'control';
+  assert.ok(h.gateway.connectionInfo(device).capabilities.includes('account-usage'));
+  assert.equal((await request(h.gateway, '/v1/account-usage', { token })).body.version, 1);
+  assert.equal((await request(h.gateway, '/v1/account-usage?key=private', { token })).status, 400);
+  assert.equal((await request(h.gateway, '/v1/account-usage/refresh', { token })).status, 405);
+  assert.equal((await request(h.gateway, '/v1/account-usage/refresh', { token, method: 'POST', payload: { provider: 'private' } })).status, 400);
+  assert.equal((await request(h.gateway, '/v1/account-usage/refresh', { token, method: 'POST', payload: {} })).body.refreshing, true);
+  assert.equal(reads, 1); assert.equal(refreshes, 1);
+  h.access.revoke(device.id);
+  assert.equal((await request(h.gateway, '/v1/account-usage', { token })).status, 401);
+  assert.equal(reads, 1);
+});
 
 test('mobile background stops carry native identities, retain receipts and enforce device scope and permission', async context => {
   const h = fixture(context), credential = h.pair(), device = h.access.authenticate(credential.token);

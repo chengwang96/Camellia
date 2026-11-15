@@ -53,10 +53,12 @@ final class MarkdownView {
     interface VideoCallback {
         void loaded(File file);
         void failed();
+        default void failed(String reason) { failed(); }
     }
     interface ImageLoader {
         void load(String reference, ImageCallback callback);
         default void loadVideo(String reference, VideoCallback callback) { callback.failed(); }
+        default void loadVideoPoster(String reference, ImageCallback callback) { callback.failed(); }
         void close();
     }
     private int blocks;
@@ -179,7 +181,7 @@ final class MarkdownView {
                     } else if ((chunk.node instanceof Paragraph || chunk.node instanceof Heading || chunk.node instanceof HtmlBlock) && binding.views.size() == 1 && binding.views.get(0) instanceof TextView) {
                         TextView view = (TextView) binding.views.get(0);
                         setInline(view, chunk.node instanceof HtmlBlock ? ((HtmlBlock) chunk.node).getLiteral() : inline(chunk.node));
-                        if (chunk.node instanceof Heading) view.setTextSize(Math.max(16, 25 - ((Heading) chunk.node).getLevel() * 2));
+                        if (chunk.node instanceof Heading) view.setTextSize(MobilePreferences.chatTextSize(context, Math.max(16, 25 - ((Heading) chunk.node).getLevel() * 2)));
                     } else {
                         for (View view : binding.views) target.removeView(view);
                         binding.views.clear(); LinearLayout fresh = column(); blocks = 0; renderBlock(chunk.node, fresh, 0);
@@ -258,7 +260,7 @@ final class MarkdownView {
     }
 
     private TextView text(CharSequence content, int size) {
-        TextView view = new TextView(context); view.setTextColor(ink); view.setTextSize(size);
+        TextView view = new TextView(context); view.setTextColor(ink); view.setTextSize(MobilePreferences.chatTextSize(context, size));
         view.setLineSpacing(dp(7), 1); view.setPadding(0, dp(4), 0, dp(6));
         view.setText(content, TextView.BufferType.SPANNABLE); view.setTextIsSelectable(true);
         mathCopy(view);
@@ -460,13 +462,11 @@ final class MarkdownView {
         header.setPadding(0, dp(2), 0, dp(2));
         TextView label = text(language.split("\\s+", 2)[0], 11); label.setTextColor(muted); label.setSingleLine(true); label.setEllipsize(android.text.TextUtils.TruncateAt.END);
         ImageButton wrap = new ImageButton(context); wrap.setTag("markdownCodeWrap");
-        wrap.setContentDescription(tr("自动换行", "Word wrap")); wrap.setTooltipText(tr("自动换行", "Word wrap"));
         wrap.setBackground(codeActionBackground()); wrap.setPadding(dp(12), dp(12), dp(12), dp(12));
         wrap.setMinimumWidth(dp(48)); wrap.setMinimumHeight(dp(48));
         header.addView(label, new LinearLayout.LayoutParams(0, -2, 1)); header.addView(wrap, new LinearLayout.LayoutParams(dp(48), dp(48)));
         header.addView(copy(content::value), new LinearLayout.LayoutParams(dp(48), dp(48))); panel.addView(header);
         HorizontalScrollView horizontal = new HorizontalScrollView(context); horizontal.setTag("markdownCodeScroll");
-        android.content.SharedPreferences preferences = context.getSharedPreferences("markdown", Context.MODE_PRIVATE);
         Runnable applyWrap = () -> {
             boolean wrapped = wrap.isSelected();
             if (code.getParent() == horizontal) horizontal.removeView(code);
@@ -475,13 +475,17 @@ final class MarkdownView {
             horizontal.scrollTo(0, 0); horizontal.setVisibility(wrapped ? View.GONE : View.VISIBLE);
             if (wrapped) panel.addView(code, new LinearLayout.LayoutParams(-1, -2));
             else horizontal.addView(code, new android.widget.FrameLayout.LayoutParams(-2, -2));
-            wrap.setImageDrawable(new LineIcon(wrapped ? "code-nowrap" : "code-wrap", ink));
+            wrap.setImageDrawable(new LineIcon(wrapped ? "code-wrap" : "code-nowrap", wrapped ? accent : ink));
+            wrap.setContentDescription(wrapped ? tr("自动换行：已开启", "Word wrap: on")
+                : tr("自动换行：已关闭", "Word wrap: off"));
+            wrap.setTooltipText(wrapped ? tr("关闭自动换行", "Turn off word wrap")
+                : tr("开启自动换行", "Turn on word wrap"));
         };
         panel.addView(horizontal, new LinearLayout.LayoutParams(-1, -2));
-        wrap.setSelected(preferences.getBoolean("codeWrap", false)); applyWrap.run();
+        wrap.setSelected(MobilePreferences.codeWrap(context)); applyWrap.run();
         wrap.setOnClickListener(view -> {
             wrap.setSelected(!wrap.isSelected());
-            preferences.edit().putBoolean("codeWrap", wrap.isSelected()).apply(); applyWrap.run();
+            MobilePreferences.codeWrap(context, wrap.isSelected()); applyWrap.run();
         });
         LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, -2); params.setMargins(0, dp(6), 0, dp(10)); target.addView(panel, params);
     }
