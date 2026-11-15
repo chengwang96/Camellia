@@ -140,6 +140,7 @@ final class LineIcon extends Drawable {
                 path.moveTo(5, 17); path.cubicTo(-1, 5, 11, 0, 18, 5); path.cubicTo(26, 12, 20, 22, 10, 20); path.lineTo(3, 21); path.close(); canvas.drawPath(path, paint);
                 canvas.drawLine(9, 12, 17, 12, paint); canvas.drawLine(13, 8, 13, 16, paint); break;
             case "down": path.moveTo(6, 9); path.lineTo(12, 15); path.lineTo(18, 9); canvas.drawPath(path, paint); break;
+            case "up": path.moveTo(6, 15); path.lineTo(12, 9); path.lineTo(18, 15); canvas.drawPath(path, paint); break;
             case "right": path.moveTo(9, 6); path.lineTo(15, 12); path.lineTo(9, 18); canvas.drawPath(path, paint); break;
             default: canvas.drawLine(5, 12, 19, 12, paint); canvas.drawLine(12, 5, 12, 19, paint); break;
         }

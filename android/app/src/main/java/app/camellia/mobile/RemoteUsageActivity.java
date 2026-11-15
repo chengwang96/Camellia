@@ -40,12 +40,16 @@ public final class RemoteUsageActivity extends Activity {
     private ScrollView scroll;
     private Dialog dialog;
     private AccountUsageCache cache;
+    private android.icu.text.CompactDecimalFormat countFormat;
 
     @Override protected void attachBaseContext(Context context) { super.attachBaseContext(MobilePreferences.wrap(context)); }
     @Override protected void onCreate(Bundle saved) {
         super.onCreate(saved); MobileOrientation.lockPhonePortrait(this); PageTransitions.configureActivity(this);
         EmbeddedNetwork.initialize(getApplicationContext());
         chinese = getResources().getConfiguration().getLocales().get(0).getLanguage().equals("zh");
+        countFormat = android.icu.text.CompactDecimalFormat.getInstance(chinese ? java.util.Locale.CHINA : java.util.Locale.US,
+            android.icu.text.CompactDecimalFormat.CompactStyle.SHORT);
+        countFormat.setSignificantDigitsUsed(false); countFormat.setMaximumFractionDigits(1);
         style = new SettingsStyle(this); cache = new AccountUsageCache(this);
         address = saved == null ? getIntent().getStringExtra("address") : saved.getString("address");
         if (address == null) address = "";
@@ -278,17 +282,29 @@ public final class RemoteUsageActivity extends Activity {
         if (data.optBoolean("refreshFailed")) style.note(body, tr("部分刷新失败，保留上次成功结果。", "Refresh failed. Last successful readings are retained."));
         if (tab.equals("quota")) {
             LinearLayout controls = new LinearLayout(this);
-            controls.addView(textControl(sourceName() + " ⌄", "usageSource", this::chooseSource), new LinearLayout.LayoutParams(-1, -2));
+            controls.addView(textControl(sourceName(), "usageSource", this::chooseSource), new LinearLayout.LayoutParams(-1, -2));
+            controls.setPadding(0, 0, 0, dp(8));
             body.addView(controls); quota();
         } else history();
         scroll.post(() -> scroll.scrollTo(0, top));
     }
     private TextView textControl(String title, String tag, Runnable action) {
-        TextView control = style.label(title, Palette.TEXT_BODY, style.accent); control.setTag(tag);
-        control.setPadding(dp(4), dp(8), dp(4), dp(8)); control.setMinHeight(dp(44)); control.setGravity(Gravity.CENTER_VERTICAL);
-        control.setFocusable(true); control.setOnClickListener(v -> action.run());
-        control.setBackground(new RippleDrawable(ColorStateList.valueOf(Palette.RIPPLE_ON_PAGE), null, style.round(android.graphics.Color.WHITE, Palette.RADIUS_SETTINGS_CONTROL)));
+        TextView control = style.label(title, Palette.TEXT_BODY, style.ink); control.setTag(tag);
+        ActionStyle.apply(control, false, Palette.TEXT_BODY, 44, Palette.RADIUS_SETTINGS_CONTROL);
+        control.setGravity(Gravity.CENTER_VERTICAL | Gravity.START); control.setPadding(dp(12), dp(8), dp(12), dp(8));
+        control.setSingleLine(true); control.setEllipsize(android.text.TextUtils.TruncateAt.END); control.setTooltipText(title);
+        control.setCompoundDrawablePadding(dp(10)); control.setOnClickListener(v -> action.run());
+        updateControl(control, title, false, false);
         return control;
+    }
+    private void updateControl(TextView control, String title, boolean expanded, boolean highlighted) {
+        control.setText(title); control.setSelected(expanded);
+        LineIcon arrow = new LineIcon(expanded ? "up" : "down", style.secondary); arrow.setBounds(0, 0, dp(14), dp(14));
+        control.setCompoundDrawablesRelative(null, null, arrow, null);
+        var face = style.round(highlighted ? style.palette().controlFill : style.card, Palette.RADIUS_SETTINGS_CONTROL);
+        face.setStroke(dp(1), highlighted ? style.palette().selectedBorder : style.palette().cardBorder);
+        control.setBackground(new RippleDrawable(ColorStateList.valueOf(Palette.RIPPLE_ON_CARD), face,
+            style.round(android.graphics.Color.WHITE, Palette.RADIUS_SETTINGS_CONTROL)));
     }
     private String sourceName() { return source.equals("api") ? "API" : source.equals("subscription") ? tr("订阅", "Subscription") : tr("全部类型", "All types"); }
     private void chooseSource() {
@@ -331,11 +347,12 @@ public final class RemoteUsageActivity extends Activity {
     }
     private void history() {
         String[] ranges = {"1", "7", "30", "all"}; String[] names = {tr("今天", "Today"), tr("最近 7 天", "Last 7 days"), tr("最近 30 天", "Last 30 days"), tr("全部", "All")};
-        LinearLayout controls = new LinearLayout(this); controls.setGravity(Gravity.CENTER_VERTICAL);
-        controls.addView(textControl(names[java.util.Arrays.asList(ranges).indexOf(range)] + " ⌄", "usageRange", () -> choose(tr("时间", "Period"), names, java.util.Arrays.asList(ranges).indexOf(range), i -> { range = ranges[i]; model = ""; render(); })), new LinearLayout.LayoutParams(0, -2, 1));
+        LinearLayout controls = new LinearLayout(this); controls.setGravity(Gravity.CENTER_VERTICAL); controls.setPadding(0, 0, 0, dp(8));
+        controls.addView(textControl(names[java.util.Arrays.asList(ranges).indexOf(range)], "usageRange", () -> choose(tr("时间", "Period"), names, java.util.Arrays.asList(ranges).indexOf(range), i -> { range = ranges[i]; model = ""; render(); })), new LinearLayout.LayoutParams(0, -2, 1));
         int activeFilters = (source.isEmpty() ? 0 : 1) + (accountId.isEmpty() ? 0 : 1) + (model.isEmpty() ? 0 : 1);
-        TextView toggle = textControl(tr("筛选", "Filters") + (activeFilters == 0 ? "" : " · " + activeFilters) + (filtersExpanded ? " ⌃" : " ⌄"), "usageFiltersToggle", () -> { filtersExpanded = !filtersExpanded; render(); });
-        toggle.setContentDescription(tr("筛选类型、账号和模型", "Filter by type, account and model")); controls.addView(toggle); body.addView(controls);
+        TextView toggle = textControl(tr("筛选", "Filters"), "usageFiltersToggle", () -> { filtersExpanded = !filtersExpanded; render(); });
+        LinearLayout.LayoutParams toggleParams = new LinearLayout.LayoutParams(0, -2, 1); toggleParams.setMarginStart(dp(8));
+        controls.addView(toggle, toggleParams); body.addView(controls);
         LinearLayout filters = column(); filters.setTag("usageFilters"); filters.setBackground(style.cardBackground());
         if (filtersExpanded) { LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, -2); params.bottomMargin = dp(12); body.addView(filters, params); }
         filterRow(filters, tr("类型", "Type"), sourceName(), "usageSource", this::chooseSource);
@@ -347,17 +364,20 @@ public final class RemoteUsageActivity extends Activity {
         var models = new java.util.TreeSet<String>(); for (JSONObject row : AccountUsage.rows(data, range, source, accountId, "")) if (!row.optString("model").isEmpty()) models.add(row.optString("model"));
         var modelIds = new ArrayList<String>(); modelIds.add(""); modelIds.addAll(models); if (!modelIds.contains(model)) model = "";
         activeFilters = (source.isEmpty() ? 0 : 1) + (accountId.isEmpty() ? 0 : 1) + (model.isEmpty() ? 0 : 1);
-        toggle.setText(tr("筛选", "Filters") + (activeFilters == 0 ? "" : " · " + activeFilters) + (filtersExpanded ? " ⌃" : " ⌄"));
+        updateControl(toggle, tr("筛选", "Filters") + (activeFilters == 0 ? "" : " · " + activeFilters), filtersExpanded, filtersExpanded || activeFilters > 0);
+        toggle.setContentDescription(toggle.getText() + tr("，筛选类型、账号和模型，", ", filter by type, account and model, ") + (filtersExpanded ? tr("已展开", "expanded") : tr("已收起", "collapsed")));
         var modelNames = new ArrayList<String>(modelIds); modelNames.set(0, tr("全部模型", "All models"));
         filterRow(filters, tr("模型", "Model"), modelNames.get(modelIds.indexOf(model)), "usageModel", () -> choose(tr("模型", "Model"), modelNames.toArray(new String[0]), modelIds.indexOf(model), i -> { model = modelIds.get(i); render(); }));
         var rows = AccountUsage.rows(data, range, source, accountId, model);
         LinearLayout summary = contentCard(); summary.setTag("usageSummary");
         summary.addView(style.label(tr("Token 总量", "Total tokens"), Palette.TEXT_NOTE, style.secondary));
-        TextView total = style.label(number(AccountUsage.sum(rows, "inputTokens", "cacheReadTokens", "cacheWriteTokens", "outputTokens")), Palette.TEXT_HERO, style.ink);
+        double totalTokens = AccountUsage.sum(rows, "inputTokens", "cacheReadTokens", "cacheWriteTokens", "outputTokens");
+        TextView total = style.label(count(totalTokens), Palette.TEXT_HERO, style.ink); total.setTag("usageTotalTokens");
+        total.setContentDescription(tr("Token 总量：", "Total tokens: ") + number(totalTokens)); total.setTooltipText(number(totalTokens));
         total.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL)); total.setFontFeatureSettings("tnum"); total.setPadding(0, dp(2), 0, dp(12)); summary.addView(total);
         LinearLayout counts = new LinearLayout(this); counts.setGravity(Gravity.TOP);
-        stat(counts, tr("成功请求 / 轮次", "Successful requests / turns"), number(AccountUsage.sum(rows, "requests")));
-        stat(counts, tr("失败 / 取消", "Failed / canceled"), number(AccountUsage.sum(rows, "failures", "cancelled"))); summary.addView(counts);
+        stat(counts, tr("成功请求 / 轮次", "Successful requests / turns"), AccountUsage.sum(rows, "requests"));
+        stat(counts, tr("失败 / 取消", "Failed / canceled"), AccountUsage.sum(rows, "failures", "cancelled")); summary.addView(counts);
         if (AccountUsage.sum(rows, "unreported") > 0) style.note(body, tr("部分请求未完整上报 Token，用量合计可能偏低。", "Some requests did not report complete token usage. Totals may be low."));
         if (data.optBoolean("usageFailed")) style.note(body, tr("电脑端订阅统计保存异常，请检查电脑端。", "Subscription usage could not be saved. Check the desktop."));
         for (JSONObject row : rows) {
@@ -365,9 +385,9 @@ public final class RemoteUsageActivity extends Activity {
             LinearLayout card = contentCard();
             card.addView(style.label(row.optString("model").isEmpty() ? tr("历史合计（未按模型归类）", "Legacy totals (model unknown)") : row.optString("model"), Palette.TEXT_ROW_STRONG, style.ink));
             if (account != null) card.addView(style.label(account.optString("provider") + " · " + account.optString("label") + (account.optBoolean("archived") ? tr(" · 历史 Key", " · Previous key") : ""), Palette.TEXT_NOTE, style.secondary));
-            card.addView(style.label(tr("输入 ", "Input ") + number(row.optDouble("inputTokens", 0)) + tr(" · 输出 ", " · Output ") + number(row.optDouble("outputTokens", 0)), Palette.TEXT_BODY, style.ink));
-            card.addView(style.label(tr("缓存读取 ", "Cache read ") + number(row.optDouble("cacheReadTokens", 0)) + tr(" · 写入 ", " · Write ") + number(row.optDouble("cacheWriteTokens", 0)), Palette.TEXT_NOTE, style.secondary));
-            card.addView(style.label(tr("成功 ", "Success ") + number(row.optDouble("requests", 0)) + tr(" · 失败/取消 ", " · Failed/canceled ") + number(AccountUsage.sum(List.of(row), "failures", "cancelled")), Palette.TEXT_NOTE, style.secondary));
+            card.addView(usageLine(tr("输入 ", "Input "), row.optDouble("inputTokens", 0), tr("输出 ", "Output "), row.optDouble("outputTokens", 0), Palette.TEXT_BODY, style.ink));
+            card.addView(usageLine(tr("缓存读取 ", "Cache read "), row.optDouble("cacheReadTokens", 0), tr("写入 ", "Write "), row.optDouble("cacheWriteTokens", 0), Palette.TEXT_NOTE, style.secondary));
+            card.addView(usageLine(tr("成功 ", "Success "), row.optDouble("requests", 0), tr("失败/取消 ", "Failed/canceled "), AccountUsage.sum(List.of(row), "failures", "cancelled"), Palette.TEXT_NOTE, style.secondary));
             if (account != null && account.optString("source").equals("subscription")) {
                 if (row.optDouble("pricedTokens", 0) > 0) card.addView(style.label(tr("API 等价估值 ", "API equivalent ") + String.format(java.util.Locale.ROOT, "$%.4f", row.optDouble("estimatedCostUsd", 0)), Palette.TEXT_NOTE, style.secondary));
                 if (row.optDouble("unpricedTokens", 0) > 0) card.addView(style.label(tr("部分 Token 尚未定价", "Some tokens are unpriced"), Palette.TEXT_NOTE, style.secondary));
@@ -377,10 +397,17 @@ public final class RemoteUsageActivity extends Activity {
         style.note(body, tr("仅统计这台电脑记录的调用，日期按电脑时区计算。订阅金额按标准 API 价格折算，不是实际账单。", "Only calls recorded on this computer are included; dates use its time zone. Subscription amounts are standard API equivalents, not bills."));
     }
     private String number(double value) { java.text.NumberFormat format = java.text.NumberFormat.getNumberInstance(chinese ? java.util.Locale.CHINA : java.util.Locale.US); format.setMaximumFractionDigits(2); return format.format(value); }
-    private void stat(LinearLayout group, String title, String value) {
+    private String count(double value) { return countFormat.format(value); }
+    private TextView usageLine(String firstTitle, double first, String secondTitle, double second, int size, int color) {
+        TextView label = style.label(firstTitle + count(first) + " · " + secondTitle + count(second), size, color);
+        String exact = firstTitle + number(first) + " · " + secondTitle + number(second);
+        label.setContentDescription(exact); label.setTooltipText(exact); return label;
+    }
+    private void stat(LinearLayout group, String title, double value) {
         LinearLayout stat = column(); stat.setPadding(0, 0, dp(12), 0);
         stat.addView(style.label(title, Palette.TEXT_SMALL, style.secondary));
-        TextView number = style.label(value, Palette.TEXT_ROW_STRONG, style.ink); number.setFontFeatureSettings("tnum"); stat.addView(number);
+        TextView number = style.label(count(value), Palette.TEXT_ROW_STRONG, style.ink); number.setFontFeatureSettings("tnum");
+        number.setContentDescription(title + ": " + number(value)); number.setTooltipText(number(value)); stat.addView(number);
         group.addView(stat, new LinearLayout.LayoutParams(0, -2, 1));
     }
     private String date(String value) { try { return java.time.Instant.parse(value).atZone(java.time.ZoneId.systemDefault()).format(java.time.format.DateTimeFormatter.ofPattern("MM-dd HH:mm")); } catch (Exception error) { return tr("未知", "Unknown"); } }

@@ -175,6 +175,71 @@ public class ChatEmptyStateTest extends InstrumentationTestCase {
         });
     }
 
+    public void testRemoteFiltersStayAtTopAcrossEmptyAndPopulatedStates() throws Exception {
+        remote();
+        ui(() -> {
+            conversations().put("running-chat", new JSONObject().put("id", "running-chat")
+                .put("title", "Running conversation").put("activity", "running").put("workspaceId", "research"));
+            snapshot(info(workspace(), false, false, new JSONArray()));
+            field("archivedLoaded", true);
+            ((PageTransitions) field("pages")).finishTransition();
+        });
+        getInstrumentation().waitForIdleSync();
+        int[] filterTop = new int[1], navigationTop = new int[1];
+        ui(() -> {
+            int[] location = new int[2];
+            view("conversationFilters").getLocationOnScreen(location); filterTop[0] = location[1];
+            view("workbenchNav").getLocationOnScreen(location); navigationTop[0] = location[1];
+        });
+        for (String filter : new String[]{"waiting", "archived", "running", "all", "waiting"}) {
+            ui(() -> view("sessionFilter:" + filter).performClick());
+            assertRemoteFilterLayout(filterTop[0], navigationTop[0]);
+            if (filter.equals("waiting") || filter.equals("archived")) {
+                screenshot("filter-" + filter);
+                ui(() -> view("emptyStateAction").performClick());
+                assertRemoteFilterLayout(filterTop[0], navigationTop[0]);
+                ui(() -> assertNotNull(view("conversation:running-chat")));
+            }
+        }
+        // Loading, failed sync and the first-use welcome share the same list layout.
+        ui(() -> {
+            conversations().clear(); field("availableWorkspaces", new JSONArray());
+            field("listLoaded", false); invoke("renderConversations");
+        });
+        assertRemoteFilterLayout(filterTop[0], navigationTop[0]);
+        ui(() -> { field("listLoadFailed", true); invoke("renderConversations"); });
+        assertRemoteFilterLayout(filterTop[0], navigationTop[0]);
+        ui(() -> { field("listLoaded", true); invoke("renderConversations"); });
+        assertRemoteFilterLayout(filterTop[0], navigationTop[0]);
+        ui(() -> {
+            field("conversationFilter", "archived"); field("archivedLoaded", false);
+            field("archivedLoading", true); invoke("renderConversations");
+        });
+        assertRemoteFilterLayout(filterTop[0], navigationTop[0]);
+    }
+
+    private void assertRemoteFilterLayout(int filterTop, int navigationTop) throws Exception {
+        getInstrumentation().waitForIdleSync();
+        ui(() -> {
+            LinearLayout content = (LinearLayout) field("content");
+            View filters = view("conversationFilters"); int[] location = new int[2];
+            filters.getLocationOnScreen(location);
+            assertEquals("Filters must not move when results become empty", filterTop, location[1]);
+            assertEquals("Filters must start at the top of list content", content.getPaddingTop(), filters.getTop());
+            view("workbenchNav").getLocationOnScreen(location);
+            assertEquals("Empty states must not move bottom navigation", navigationTop, location[1]);
+            LinearLayout empty = (LinearLayout) view("chatEmptyState");
+            if (empty != null) {
+                assertTrue("Empty content must follow the filters", empty.getTop() >= filters.getBottom());
+                int blockTop = empty.getTop() + empty.getChildAt(0).getTop();
+                int blockBottom = empty.getTop() + empty.getChildAt(empty.getChildCount() - 1).getBottom();
+                int availableBottom = content.getHeight() - content.getPaddingBottom();
+                assertEquals("Only the placeholder should be centered in the remaining area",
+                    (filters.getBottom() + availableBottom) / 2, (blockTop + blockBottom) / 2, 2);
+            }
+        });
+    }
+
     public void testRemoteWorkspaceAndStandaloneCreationUseExplicitTargets() throws Exception {
         remote();
         ui(() -> {

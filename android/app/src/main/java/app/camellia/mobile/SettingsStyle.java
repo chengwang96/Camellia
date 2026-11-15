@@ -380,8 +380,12 @@ final class SettingsStyle {
     }
 
     private LinearLayout detailRow(LinearLayout group, String title, String description, int titleColor) {
+        return detailRow(group, title, description, titleColor, new LinearLayout(context));
+    }
+
+    private LinearLayout detailRow(LinearLayout group, String title, String description, int titleColor, LinearLayout row) {
         separator(group);
-        LinearLayout row = new LinearLayout(context); row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
         row.setMinimumHeight(dp(56)); row.setPadding(dp(14), dp(10), dp(12), dp(10));
         LinearLayout copy = new LinearLayout(context); copy.setOrientation(LinearLayout.VERTICAL);
         TextView heading = new TextView(context); heading.setText(title); heading.setTextSize(Palette.TEXT_ROW_STRONG); heading.setTextColor(titleColor); copy.addView(heading);
@@ -580,11 +584,17 @@ final class SettingsStyle {
 
     android.widget.Switch toggle(LinearLayout group, String title, String description, String tag, boolean checked,
             android.widget.CompoundButton.OnCheckedChangeListener listener) {
-        LinearLayout row = detailRow(group, title, description, ink);
         android.widget.Switch toggle = new SettingsToggle(context); toggle.setTag(tag);
+        LinearLayout row = detailRow(group, title, description, ink, new LinearLayout(context) {
+            @Override public void setPressed(boolean pressed) {
+                super.setPressed(pressed);
+                toggle.setPressed(pressed && toggle.isEnabled());
+            }
+        });
         toggle.setContentDescription(title + ", " + description); toggle.setChecked(checked); toggle.setMinimumHeight(dp(48));
         toggle.setOnCheckedChangeListener(listener);
         LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-2, -2); params.setMarginStart(dp(16)); row.addView(toggle, params);
-        row.setOnClickListener(view -> toggle.setChecked(!toggle.isChecked())); return toggle;
+        row.setSoundEffectsEnabled(false); // performClick on the switch supplies the single click feedback.
+        row.setOnClickListener(view -> { if (toggle.isEnabled()) toggle.performClick(); }); return toggle;
     }
 }

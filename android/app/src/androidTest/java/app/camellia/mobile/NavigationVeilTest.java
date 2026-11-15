@@ -162,6 +162,95 @@ public class NavigationVeilTest extends InstrumentationTestCase {
         } finally { RemoteListCache.get(context).remove(computer); }
     }
 
+    public void testSearchKeyboardDoesNotLiftNavigationAndRestoresItsGeometry() throws Exception {
+        if (android.os.Build.VERSION.SDK_INT < 30) return;
+        var context = getInstrumentation().getTargetContext();
+        var computer = new org.json.JSONObject().put("address", "http://100.64.0.92:43127")
+            .put("token", "k".repeat(43)).put("computerName", "HP");
+        var rows = new org.json.JSONArray();
+        for (int index = 0; index < 12; index++) rows.put(new org.json.JSONObject()
+            .put("id", "keyboard-row-" + index).put("title", "Keyboard search " + index)
+            .put("currentEngine", "codex").put("activity", "idle").put("workspaceId", "main"));
+        try {
+            MobilePreferences.set(context, "language", "zh-CN");
+            for (String theme : new String[] {"light", "dark"}) {
+                new ComputerStore(new CredentialStore(context)).save(computer);
+                RemoteListCache.get(context).put(computer, rows, -1,
+                    new org.json.JSONArray().put(new org.json.JSONObject().put("id", "main").put("name", "Camellia")), true);
+                launch(theme);
+                ui(() -> {
+                    invoke("listScreen"); invoke("stopNetwork");
+                    ((PageTransitions) field("pages")).finishTransition();
+                    ((ScrollView) field("scroll")).setSmoothScrollingEnabled(false);
+                });
+                View[] navigation = new View[1];
+                android.graphics.Rect original = new android.graphics.Rect();
+                ui(() -> {
+                    navigation[0] = activity.getWindow().getDecorView().findViewWithTag("workbenchNav");
+                    assertTrue(navigation[0].getGlobalVisibleRect(original));
+                    activity.getWindow().getDecorView().findViewWithTag("remoteSearchButton").performClick();
+                });
+                awaitKeyboard(true);
+                ui(() -> {
+                    assertFalse("Navigation must not rise above the search keyboard", navigation[0].isShown());
+                    assertFalse("The bottom frost must not rise above the keyboard either",
+                        activity.getWindow().getDecorView().findViewWithTag("navigationVeil").isShown());
+                    ((android.widget.EditText) field("searchInput")).setText("Keyboard");
+                });
+                ui(() -> ((ScrollView) field("scroll")).fullScroll(View.FOCUS_DOWN));
+                SystemClock.sleep(150); getInstrumentation().waitForIdleSync();
+                capture("search-keyboard-" + theme);
+                ui(() -> {
+                    View last = activity.getWindow().getDecorView().findViewWithTag("conversation:keyboard-row-11");
+                    android.graphics.Rect visible = new android.graphics.Rect();
+                    assertTrue("Search results remain reachable above the keyboard", last.getGlobalVisibleRect(visible));
+                    assertEquals("The final search result is not clipped", last.getHeight(), visible.height());
+                    int keyboardTop = activity.getWindowManager().getCurrentWindowMetrics().getBounds().bottom
+                        - activity.getWindow().getDecorView().getRootWindowInsets().getInsets(android.view.WindowInsets.Type.ime()).bottom;
+                    assertTrue("Final result bottom " + visible.bottom + " must clear keyboard top " + keyboardTop,
+                        visible.bottom <= keyboardTop);
+                    assertTrue("Search must not reserve a hidden navigation bar's height: gap " + (keyboardTop - visible.bottom),
+                        keyboardTop - visible.bottom <= dp(40));
+                });
+                ui(() -> {
+                    android.widget.EditText input = (android.widget.EditText) field("searchInput");
+                    ((android.view.inputmethod.InputMethodManager) activity.getSystemService(android.content.Context.INPUT_METHOD_SERVICE))
+                        .hideSoftInputFromWindow(input.getWindowToken(), 0);
+                });
+                awaitKeyboard(false);
+                ui(() -> {
+                    assertSame(navigation[0], activity.getWindow().getDecorView().findViewWithTag("workbenchNav"));
+                    android.graphics.Rect restored = new android.graphics.Rect();
+                    assertTrue(navigation[0].getGlobalVisibleRect(restored)); assertEquals(original, restored);
+                    assertTrue(activity.getWindow().getDecorView().findViewWithTag("navigationVeil").isShown());
+                    assertEquals("Keyboard", ((android.widget.EditText) field("searchInput")).getText().toString());
+                    assertTrue("Search can stay focused with a hardware keyboard", ((View) field("searchInput")).hasFocus());
+                    activity.getWindow().getDecorView().findViewWithTag("remoteSearchButton").performClick();
+                });
+                awaitKeyboard(true);
+                ui(() -> activity.getWindow().getDecorView().findViewWithTag("remoteSearchClose").performClick());
+                awaitKeyboard(false);
+                ui(() -> {
+                    assertTrue(navigation[0].isShown());
+                    assertEquals(View.GONE, ((View) field("searchBar")).getVisibility());
+                });
+                capture("search-closed-" + theme);
+            }
+        } finally { RemoteListCache.get(context).remove(computer); }
+    }
+
+    private void awaitKeyboard(boolean expected) throws Exception {
+        long deadline = SystemClock.uptimeMillis() + 5000;
+        boolean[] visible = {!expected};
+        do {
+            ui(() -> visible[0] = activity.getWindow().getDecorView().getRootWindowInsets()
+                .isVisible(android.view.WindowInsets.Type.ime()));
+            if (visible[0] != expected) SystemClock.sleep(50);
+        } while (visible[0] != expected && SystemClock.uptimeMillis() < deadline);
+        assertEquals("Expected search keyboard visibility", expected, visible[0]);
+        SystemClock.sleep(300); getInstrumentation().waitForIdleSync();
+    }
+
     private void capture(String name) throws Exception {
         Bitmap image = getInstrumentation().getUiAutomation().takeScreenshot();
         java.io.File directory = new java.io.File(activity.getExternalFilesDir(null), "navigation-veil-visuals");

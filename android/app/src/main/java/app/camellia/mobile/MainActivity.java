@@ -2030,7 +2030,7 @@ public final class MainActivity extends Activity {
 
     private void renderConversations() {
         if (conversationPopup != null) conversationPopup.dismiss();
-        int position = scroll.getScrollY();
+        int position = content.findViewWithTag("chatEmptyState") == null ? scroll.getScrollY() : 0;
         content.removeAllViews(); prefetchRows.clear();
         selectedConversations.retainAll(conversations.keySet());
         if (selectingConversations) {
@@ -2167,10 +2167,16 @@ public final class MainActivity extends Activity {
     }
 
     private void layoutConversationList(boolean centered, int position) {
-        boolean wasCentered = (content.getGravity() & Gravity.VERTICAL_GRAVITY_MASK) == Gravity.CENTER_VERTICAL;
-        content.setGravity(centered ? Gravity.CENTER_VERTICAL : Gravity.TOP);
+        content.setGravity(Gravity.TOP);
+        if (centered) {
+            // Keep filters and pending actions at the top; only the placeholder
+            // fills and centers in the remaining space. WRAP_CONTENT preserves
+            // its full height so actions stay scrollable on short screens.
+            View empty = content.findViewWithTag("chatEmptyState");
+            empty.setLayoutParams(new LinearLayout.LayoutParams(-1, -2, 1));
+        }
         ScrollView target = scroll;
-        viewHandler.post(() -> target.scrollTo(0, centered || wasCentered ? 0 : position));
+        viewHandler.post(() -> target.scrollTo(0, centered ? 0 : position));
         if (!centered) requestPrefetchViewport();
     }
 

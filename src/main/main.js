@@ -1662,7 +1662,10 @@ function openSettingsWindow(target = {}) {
       transparent: true,
       backgroundColor: '#00000000',
       hasShadow: true,
-      roundedCorners: true,
+      // AppKit otherwise keeps a native rounded frame around the transparent
+      // corners, outside the renderer's larger 24px radius. Let CSS own the
+      // entire outline on macOS by using a borderless NSWindow.
+      roundedCorners: process.platform !== 'darwin',
       resizable: false,
       minimizable: false,
       maximizable: false,

@@ -1,8 +1,11 @@
 package app.camellia.mobile;
 
 import android.content.Context;
+import android.graphics.Rect;
 import android.view.Gravity;
 import android.view.View;
+import android.view.ViewTreeObserver;
+import android.view.WindowInsets;
 import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
@@ -17,6 +20,12 @@ final class NavigationDockLayout extends FrameLayout {
     private WorkbenchNavigation navigation;
     private int leftInset, rightInset, bottomInset;
     private int capturedWidth, capturedHeight;
+    private boolean keyboardVisible;
+    private final ViewTreeObserver.OnGlobalLayoutListener legacyKeyboardObserver = () -> {
+        Rect visible = new Rect(); getWindowVisibleDisplayFrame(visible);
+        View window = getRootView(); int[] origin = new int[2]; window.getLocationOnScreen(origin);
+        setKeyboardVisible(origin[1] + window.getHeight() - visible.bottom > dp(120));
+    };
 
     NavigationDockLayout(Context context, ScrollView scroll) {
         super(context);
@@ -50,7 +59,7 @@ final class NavigationDockLayout extends FrameLayout {
             placement.leftMargin = -left; placement.rightMargin = -right;
             setLayoutParams(placement);
         }
-        scroll.setPadding(left, 0, right, dp(WorkbenchNavigation.HEIGHT_DP + CONTENT_CLEARANCE_DP) + bottom);
+        updateScrollPadding();
         FrameLayout.LayoutParams material = (FrameLayout.LayoutParams) veil.getLayoutParams();
         int height = dp(FADE_HEIGHT_DP + WorkbenchNavigation.HEIGHT_DP + BOTTOM_GAP_DP) + bottom;
         if (material.height != height) { material.height = height; veil.setLayoutParams(material); }
@@ -58,6 +67,40 @@ final class NavigationDockLayout extends FrameLayout {
     }
 
     private static final int CONTENT_CLEARANCE_DP = BOTTOM_GAP_DP + WorkbenchNavigation.CONTENT_GAP_DP;
+
+    private void updateScrollPadding() {
+        // Edge-to-edge windows include the IME in this inset; resized windows
+        // already stop at the keyboard. Preserve that clearance in both cases.
+        scroll.setPadding(leftInset, 0, rightInset, bottomInset + (keyboardVisible ? dp(8)
+            : dp(WorkbenchNavigation.HEIGHT_DP + CONTENT_CLEARANCE_DP)));
+    }
+
+    private void setKeyboardVisible(boolean visible) {
+        if (keyboardVisible == visible) return;
+        keyboardVisible = visible;
+        // adjustResize keeps search results above the IME. Destination navigation
+        // and its frost belong at the screen bottom, not on top of the keyboard.
+        if (navigation != null) navigation.setVisibility(visible ? INVISIBLE : VISIBLE);
+        veil.setVisibility(visible ? INVISIBLE : VISIBLE);
+        capturedWidth = capturedHeight = 0;
+        updateScrollPadding();
+    }
+
+    @Override public WindowInsets onApplyWindowInsets(WindowInsets insets) {
+        if (android.os.Build.VERSION.SDK_INT >= 30) setKeyboardVisible(insets.isVisible(WindowInsets.Type.ime()));
+        return super.onApplyWindowInsets(insets);
+    }
+
+    @Override protected void onAttachedToWindow() {
+        super.onAttachedToWindow();
+        if (android.os.Build.VERSION.SDK_INT < 30) getViewTreeObserver().addOnGlobalLayoutListener(legacyKeyboardObserver);
+    }
+
+    @Override protected void onDetachedFromWindow() {
+        if (android.os.Build.VERSION.SDK_INT < 30 && getViewTreeObserver().isAlive())
+            getViewTreeObserver().removeOnGlobalLayoutListener(legacyKeyboardObserver);
+        super.onDetachedFromWindow();
+    }
 
     void updateGeometry() {
         if (navigation == null) return;
@@ -76,7 +119,7 @@ final class NavigationDockLayout extends FrameLayout {
     @Override protected void onLayout(boolean changed, int left, int top, int right, int bottom) {
         updateGeometry();
         super.onLayout(changed, left, top, right, bottom);
-        if (veil.getWidth() > 0 && veil.getHeight() > 0
+        if (veil.getVisibility() == VISIBLE && veil.getWidth() > 0 && veil.getHeight() > 0
             && (capturedWidth != veil.getWidth() || capturedHeight != veil.getHeight())) {
             capturedWidth = veil.getWidth(); capturedHeight = veil.getHeight();
             int[] origin = new int[2]; veil.getLocationOnScreen(origin);

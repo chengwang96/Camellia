@@ -248,29 +248,33 @@ struct RemoteUsageView: View {
             if tab == "quota" {
                 textControl(sourceName, action: chooseSource).frame(maxWidth: .infinity, alignment: .leading)
             } else {
-                HStack {
+                HStack(spacing: 8) {
                     textControl(rangeName) {
                         select("时间", ["1", "7", "30", "all"], [t("今天", "Today"), t("最近 7 天", "Last 7 days"), t("最近 30 天", "Last 30 days"), t("全部", "Total")], range) { range = $0; model = "" }
                     }
-                    Spacer(minLength: 12)
-                    textControl(t("筛选", "Filters") + (activeFilters == 0 ? "" : " · \(activeFilters)"), expanded: filtersExpanded) { filtersExpanded.toggle() }
+                    textControl(t("筛选", "Filters") + (activeFilters == 0 ? "" : " · \(activeFilters)"), expanded: filtersExpanded, highlighted: filtersExpanded || activeFilters > 0) { filtersExpanded.toggle() }
                         .accessibilityIdentifier("usageFiltersToggle")
+                        .accessibilityValue(filtersExpanded ? t("已展开", "Expanded") : t("已收起", "Collapsed"))
                 }
                 if filtersExpanded { expandedFilters }
             }
-        }
+        }.padding(.bottom, 8)
     }
     private var sourceName: String { source == "api" ? "API" : source == "subscription" ? t("订阅", "Subscriptions") : t("全部类型", "All types") }
     private var activeFilters: Int { (source.isEmpty ? 0 : 1) + (account.isEmpty ? 0 : 1) + (model.isEmpty ? 0 : 1) }
     private func chooseSource() {
         select("类型", ["", "subscription", "api"], [t("全部类型", "All types"), t("订阅", "Subscriptions"), "API"], source) { source = $0; account = ""; model = "" }
     }
-    private func textControl(_ title: String, expanded: Bool = false, action: @escaping () -> Void) -> some View {
+    private func textControl(_ title: String, expanded: Bool = false, highlighted: Bool = false, action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            HStack(spacing: 6) {
-                Text(title).font(.system(size: Palette.textBody))
-                Image(systemName: expanded ? "chevron.up" : "chevron.down").font(.system(size: 10, weight: .medium))
-            }.foregroundColor(Palette.accent).padding(.horizontal, 4).padding(.vertical, 8).frame(minHeight: 44).contentShape(Rectangle())
+            HStack(spacing: 10) {
+                Text(title).font(.system(size: Palette.textBody, weight: .medium)).foregroundColor(Palette.ink).lineLimit(1)
+                Spacer(minLength: 0)
+                MobileLineIcon(name: "down", size: 14).rotationEffect(.degrees(expanded ? 180 : 0)).foregroundColor(Palette.secondary)
+            }.padding(.horizontal, 12).padding(.vertical, 8).frame(maxWidth: .infinity, minHeight: 44)
+                .background(RoundedRectangle(cornerRadius: Palette.settingsControlRadius).fill(highlighted ? Palette.controlFill : Palette.card))
+                .overlay(RoundedRectangle(cornerRadius: Palette.settingsControlRadius).strokeBorder(highlighted ? Palette.selectedBorder : Palette.cardBorder, lineWidth: 1))
+                .contentShape(RoundedRectangle(cornerRadius: Palette.settingsControlRadius))
         }.buttonStyle(.plain)
     }
     private var expandedFilters: some View {
@@ -380,7 +384,8 @@ struct RemoteUsageView: View {
                 VStack(alignment: .leading, spacing: 10) {
                     VStack(alignment: .leading, spacing: 2) {
                         note(t("Token 总量", "Total tokens"))
-                        Text(number(AccountUsage.sum(rows, ["inputTokens", "cacheReadTokens", "cacheWriteTokens", "outputTokens"])))
+                        let total = AccountUsage.sum(rows, ["inputTokens", "cacheReadTokens", "cacheWriteTokens", "outputTokens"])
+                        Text(count(total)).accessibilityLabel(t("Token 总量：", "Total tokens: ") + number(total))
                             .font(.system(size: Palette.textHero, weight: .medium)).foregroundColor(Palette.ink).monospacedDigit()
                     }
                     HStack(alignment: .top, spacing: 12) {
@@ -399,7 +404,8 @@ struct RemoteUsageView: View {
     private func stat(_ title: String, _ fields: [String]) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(title).font(.system(size: Palette.textSmall)).foregroundColor(Palette.secondary)
-            Text(number(AccountUsage.sum(rows, fields))).font(.system(size: Palette.textRowStrong)).foregroundColor(Palette.ink).monospacedDigit()
+            Text(count(AccountUsage.sum(rows, fields))).font(.system(size: Palette.textRowStrong)).foregroundColor(Palette.ink).monospacedDigit()
+                .accessibilityLabel(title + ": " + number(AccountUsage.sum(rows, fields)))
         }.frame(maxWidth: .infinity, alignment: .leading)
     }
     private func historyCard(_ row: JSONObject) -> some View {
@@ -408,9 +414,9 @@ struct RemoteUsageView: View {
             VStack(alignment: .leading, spacing: 6) {
                 Text(row.text("model").isEmpty ? t("历史合计（未按模型归类）", "Legacy totals (model unknown)") : row.text("model")).font(.system(size: Palette.textRowStrong, weight: .medium)).foregroundColor(Palette.ink)
                 if let account { note(accountName(account)) }
-                note(t("输入 ", "Input ") + number(row.double("inputTokens")) + t(" · 输出 ", " · Output ") + number(row.double("outputTokens")))
-                note(t("缓存读取 ", "Cache read ") + number(row.double("cacheReadTokens")) + t(" · 写入 ", " · Write ") + number(row.double("cacheWriteTokens")))
-                note(t("成功 ", "Success ") + number(row.double("requests")) + t(" · 失败/取消 ", " · Failed/canceled ") + number(AccountUsage.sum([row], ["failures", "cancelled"])))
+                usageLine(t("输入 ", "Input "), row.double("inputTokens"), t("输出 ", "Output "), row.double("outputTokens"))
+                usageLine(t("缓存读取 ", "Cache read "), row.double("cacheReadTokens"), t("写入 ", "Write "), row.double("cacheWriteTokens"))
+                usageLine(t("成功 ", "Success "), row.double("requests"), t("失败/取消 ", "Failed/canceled "), AccountUsage.sum([row], ["failures", "cancelled"]))
                 if account?.text("source") == "subscription" {
                     if row.double("pricedTokens") > 0 { note(t("API 等价估值 ", "API equivalent ") + String(format: "$%.4f", row.double("estimatedCostUsd"))) }
                     if row.double("unpricedTokens") > 0 { note(t("部分 Token 尚未定价", "Some tokens are unpriced")) }
@@ -422,6 +428,14 @@ struct RemoteUsageView: View {
         account.text("provider") + " · " + account.text("label") + (account.bool("archived") ? t(" · 历史 Key", " · Previous key") : "")
     }
     private func note(_ value: String) -> some View { Text(value).font(.system(size: Palette.textNote)).foregroundColor(Palette.secondary).fixedSize(horizontal: false, vertical: true) }
+    private func usageLine(_ firstTitle: String, _ first: Double, _ secondTitle: String, _ second: Double) -> some View {
+        note(firstTitle + count(first) + " · " + secondTitle + count(second))
+            .accessibilityLabel(firstTitle + number(first) + " · " + secondTitle + number(second))
+    }
+    private func count(_ value: Double) -> String {
+        value.formatted(.number.locale(Locale(identifier: app.usesChinese ? "zh_CN" : "en_US"))
+            .notation(.compactName).precision(.fractionLength(0...1)))
+    }
     private func number(_ value: Double) -> String {
         let formatter = NumberFormatter(); formatter.numberStyle = .decimal; formatter.maximumFractionDigits = 2
         formatter.locale = Locale(identifier: app.usesChinese ? "zh_CN" : "en_US")

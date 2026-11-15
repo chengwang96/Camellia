@@ -5,6 +5,7 @@ const assert = require('node:assert/strict');
 const { EventEmitter } = require('node:events');
 const fs = require('node:fs');
 const path = require('node:path');
+const vm = require('node:vm');
 const { settingsWindowSize, settingsWindowBounds, createSettingsWindowSizeCache } = require('../src/main/settings-window-size');
 
 const main = fs.readFileSync(path.join(__dirname, '../src/main/main.js'), 'utf8').replace(/\r\n/g, '\n');
@@ -20,6 +21,26 @@ test('settings opens hidden as a frameless child panel with an interactive owner
   assert.match(openSettings, /frame: false/);
   assert.match(openSettings, /transparent: true/);
   assert.match(openSettings, /settingsWindow\.once\('ready-to-show', \(\) => \{[\s\S]*?settingsWindow\.setBounds\([\s\S]*?settingsWindow\.show\(\);/);
+});
+
+test('macOS settings has no native rounded frame behind the CSS outline', () => {
+  // Evaluate the actual constructor options for each platform. A renderer
+  // capture cannot see the AppKit frame that leaks through transparent corners.
+  const constructor = /settingsWindow = (new BrowserWindow\(\{[\s\S]*?\n    \}\));/.exec(openSettings)[1];
+  for (const [platform, nativeCorners] of [['darwin', false], ['win32', true], ['linux', true]]) {
+    const owner = {};
+    const options = vm.runInNewContext(constructor, {
+      BrowserWindow: class { constructor(options) { return options; } },
+      bounds: { x: 80, y: 24, width: 1160, height: 852 }, owner,
+      process: { platform }, desktopZoom: () => ({ factor: 1 }),
+      path, APP_ROOT: path.resolve(__dirname, '..'), APP_NAME: 'Camellia', __dirname,
+    });
+    assert.equal(options.roundedCorners, nativeCorners, platform);
+    assert.equal(options.frame, false);
+    assert.equal(options.transparent, true);
+    assert.equal(options.backgroundColor, '#00000000');
+    assert.equal(options.parent, owner);
+  }
 });
 
 test('the floating panel stays centered inside small and secondary-monitor workbenches', () => {

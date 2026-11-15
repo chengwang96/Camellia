@@ -66,12 +66,13 @@ async function main() {
         for (let channel = 0; channel < 3; channel++)
           assert.ok(Math.abs(data[channel] - [40, 120, 200][channel]) <= 8, 'Image pixels changed in transport');
       }
-      requests.push({ model: body.model, count: media.length, title,
+      const reply = 'IMAGE_TRANSPORT_OK_' + requests.length;
+      requests.push({ model: body.model, count: media.length, title, reply,
         text: body.messages.filter(message => message.role === 'user').map(message => typeof message.content === 'string' ? message.content
           : message.content.filter(part => part.type === 'text').map(part => part.text).join('\n')).join('\n') });
       const message = title ? { role: 'assistant', content: null, tool_calls: [{ index: 0, id: 'image-title', type: 'function',
         function: { name: 'session_title', arguments: JSON.stringify({ session_title: 'Image fixture' }) } }] }
-        : { role: 'assistant', content: 'IMAGE_TRANSPORT_OK' };
+        : { role: 'assistant', content: reply };
       const finish_reason = title ? 'tool_calls' : 'stop';
       const usage = { prompt_tokens: 100, completion_tokens: 10, total_tokens: 110 };
       if (body.stream) {
@@ -140,28 +141,34 @@ async function main() {
       });
       const success = result => {
         assert.equal(result.subtype, 'success', JSON.stringify(result) + '\n' + logs.slice(-5).join('\n'));
-        assert.match(result.result, /IMAGE_TRANSPORT_OK/);
+        // Native background summaries can arrive after the user-facing reply.
+        // Match its unique response marker rather than the last HTTP request.
+        const marker = /\bIMAGE_TRANSPORT_OK_(\d+)\b/.exec(result.result);
+        assert.ok(marker, 'The native reply must identify its upstream request');
+        const request = requests[Number(marker[1])];
+        assert.equal(request?.model, settings.model, 'The reply must use the selected image model');
+        assert.equal(request.title, false, 'The reply must come from an image turn');
+        return request;
       };
-      const latest = () => requests.findLast(request => request.model === settings.model && !request.title);
       try {
         await create();
         // The SDK's native Image primitive accepts PNG/JPEG/WebP, not GIF.
         const supported = engine === 'antigravity' ? images.slice(0, 3) : images;
-        success(await turn('IMAGE_FIRST: inspect these references', supported));
-        assert.equal(latest().count, supported.length, 'Every image must reach upstream');
-        success(await turn('IMAGE_FOLLOWUP: retain the reference images'));
-        assert.equal(latest().count, supported.length, 'Follow-up history must retain images');
+        assert.equal(success(await turn('IMAGE_FIRST: inspect these references', supported)).count,
+          supported.length, 'Every image must reach upstream');
+        assert.equal(success(await turn('IMAGE_FOLLOWUP: retain the reference images')).count,
+          supported.length, 'Follow-up history must retain images');
         const sourceId = session.sessionId;
         await stop(); await create({ sessionId: sourceId });
-        success(await turn('IMAGE_RESUME: use the same references'));
+        const resumed = success(await turn('IMAGE_RESUME: use the same references'));
         assert.equal(session.sessionId, sourceId);
-        assert.equal(latest().count, supported.length, 'Native resume must retain image bytes');
-        success(await turn('', [images[0]]));
-        assert.equal(latest().count, supported.length + 1, 'Image-only input must reach upstream');
+        assert.equal(resumed.count, supported.length, 'Native resume must retain image bytes');
+        assert.equal(success(await turn('', [images[0]])).count,
+          supported.length + 1, 'Image-only input must reach upstream');
         if (engine === 'dsh') {
           await stop(); await create({}, { standardAcp: true });
-          success(await turn('IMAGE_STANDARD_ACP: no history extension', [images[0]]));
-          assert.equal(latest().count, 1, 'Unmodified ACP must initialize against the selected image route');
+          assert.equal(success(await turn('IMAGE_STANDARD_ACP: no history extension', [images[0]])).count,
+            1, 'Unmodified ACP must initialize against the selected image route');
         }
         console.log('PASS: ' + engine + ' images=' + supported.length + ', follow-up, native resume, image-only; upstream pixels verified');
       } catch (error) {

@@ -58,6 +58,92 @@ public class RemoteUsageTest extends InstrumentationTestCase {
     }
     public void testChineseUsageReadingsStatisticsOfflineAndRevocation() throws Exception { runScreen("zh-CN", "light"); }
     public void testEnglishDarkUsageReadingsStatisticsOfflineAndRevocation() throws Exception { runScreen("en", "dark"); }
+    public void testChineseLargeUsageUsesWanYiAndStyledControls() throws Exception { runLargeUsage("zh-CN", "light"); }
+    public void testEnglishLargeUsageUsesCompactUnitsAndStyledControls() throws Exception { runLargeUsage("en", "dark"); }
+    private void runLargeUsage(String language, String theme) throws Exception {
+        var context = getInstrumentation().getTargetContext();
+        var vault = new CredentialStore(context); var cachedVault = new CredentialStore(context, "remote-account-usage");
+        JSONObject original = vault.load(), originalCache = cachedVault.load();
+        String oldLanguage = MobilePreferences.get(context, "language"), oldTheme = MobilePreferences.get(context, "theme");
+        var factory = RemoteUsageActivity.clientFactory; Activity activity = null;
+        boolean chinese = language.startsWith("zh");
+        JSONObject data = snapshot();
+        data.getJSONArray("accounts").getJSONObject(0).getJSONArray("balances").getJSONObject(0).put("value", 12345678.25);
+        var rows = new org.json.JSONArray("""
+            [{"accountId":"api:a","model":"deepseek-flash","inputTokens":4820772039,"cacheReadTokens":4740982266,
+              "outputTokens":12895895,"cacheWriteTokens":0,"requests":14072,"failures":1603,"unreported":1},
+             {"accountId":"api:a","model":"deepseek-v4.1-flash:1017","inputTokens":27055375731,"requests":32083,"cancelled":11473}]
+            """);
+        for (String period : new String[]{"7", "30", "all"}) data.getJSONObject("ranges").put(period, rows);
+        try {
+            MobilePreferences.set(context, "language", language); MobilePreferences.set(context, "theme", theme);
+            vault.save(new JSONObject()); cachedVault.save(new JSONObject());
+            new ComputerStore(vault).save(new JSONObject().put("address", ADDRESS).put("token", "a".repeat(43)).put("computerName", "HP"));
+            RemoteUsageActivity.clientFactory = address -> new RemoteApi(address) {
+                @Override public JSONObject json(String path, String token, JSONObject payload) throws java.io.IOException {
+                    if (path.equals("/v1/status")) try { return new JSONObject().put("capabilities", new org.json.JSONArray().put("account-usage")); } catch (Exception e) { throw new java.io.IOException(e); }
+                    return data;
+                }
+            };
+            activity = getInstrumentation().startActivitySync(new Intent(context, RemoteUsageActivity.class).putExtra("address", ADDRESS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+            waitFor(activity, "75%"); Activity current = activity;
+            getInstrumentation().runOnMainSync(() -> {
+                View root = current.getWindow().getDecorView();
+                assertTrue("Money must retain its precision", text(root).contains("12,345,678.25 CNY"));
+                root.findViewWithTag("usageTabHistory").performClick();
+                TextView total = root.findViewWithTag("usageTotalTokens");
+                assertEquals(chinese ? "366.3亿" : "36.6B", total.getText().toString());
+                assertTrue(total.getContentDescription().toString().contains("36,630,025,931"));
+                assertEquals("36,630,025,931", total.getTooltipText());
+                String all = text(root);
+                for (String value : chinese ? new String[]{"48.2亿", "47.4亿", "1289.6万", "4.6万", "1.3万"} : new String[]{"4.8B", "4.7B", "12.9M", "46.2K", "13.1K"}) assertTrue(value, all.contains(value));
+                try {
+                    var count = RemoteUsageActivity.class.getDeclaredMethod("count", double.class); count.setAccessible(true);
+                    double[] values = {0, 999, 10000, 99999999, 100000000, 1000000000000d};
+                    String[] expected = chinese ? new String[]{"0", "999", "1万", "1亿", "1亿", "1万亿"} : new String[]{"0", "999", "10K", "100M", "100M", "1T"};
+                    for (int i = 0; i < values.length; i++) assertEquals(expected[i], count.invoke(current, values[i]));
+                } catch (Exception e) { throw new AssertionError(e); }
+                for (String tag : new String[]{"usageRange", "usageFiltersToggle"}) {
+                    TextView control = root.findViewWithTag(tag);
+                    assertTrue(control.getBackground() instanceof android.graphics.drawable.RippleDrawable);
+                    assertTrue(control.getCompoundDrawablesRelative()[2] instanceof LineIcon);
+                    assertFalse(control.getText().toString().contains("⌄"));
+                }
+            });
+            getInstrumentation().waitForIdleSync();
+            getInstrumentation().runOnMainSync(() -> {
+                TextView total = current.getWindow().getDecorView().findViewWithTag("usageTotalTokens");
+                assertEquals(1, total.getLineCount());
+                assertTrue(total.getLayout().getLineWidth(0) <= total.getWidth() - total.getPaddingLeft() - total.getPaddingRight());
+            });
+            screenshot("quota-usage-compact-" + language + ".png");
+            choose(current, "usageRange", 3);
+            getInstrumentation().runOnMainSync(() -> {
+                View root = current.getWindow().getDecorView();
+                assertEquals(chinese ? "366.3亿" : "36.6B", ((TextView) root.findViewWithTag("usageTotalTokens")).getText().toString());
+                root.findViewWithTag("usageFiltersToggle").performClick();
+                assertTrue(root.findViewWithTag("usageFiltersToggle").isSelected());
+                root.findViewWithTag("usageSource").performClick();
+            });
+            screenshot("quota-usage-choice-" + language + ".png");
+            getInstrumentation().runOnMainSync(() -> {
+                try {
+                    var field = RemoteUsageActivity.class.getDeclaredField("dialog"); field.setAccessible(true);
+                    android.app.Dialog chooser = (android.app.Dialog) field.get(current);
+                    assertNotNull(chooser.getWindow().getDecorView().findViewWithTag("settingsChoicePanel"));
+                    chooser.cancel();
+                    assertEquals(chinese ? "366.3亿" : "36.6B", ((TextView) current.getWindow().getDecorView().findViewWithTag("usageTotalTokens")).getText().toString());
+                } catch (Exception e) { throw new AssertionError(e); }
+            });
+            choose(current, "usageSource", 1);
+            getInstrumentation().runOnMainSync(() -> assertEquals("0", ((TextView) current.getWindow().getDecorView().findViewWithTag("usageTotalTokens")).getText().toString()));
+        } finally {
+            if (activity != null) { Activity current = activity; getInstrumentation().runOnMainSync(current::finish); }
+            getInstrumentation().waitForIdleSync(); RemoteUsageActivity.clientFactory = factory;
+            vault.save(original); cachedVault.save(originalCache);
+            MobilePreferences.set(context, "language", oldLanguage); MobilePreferences.set(context, "theme", oldTheme);
+        }
+    }
     private void runScreen(String language, String theme) throws Exception {
         var context = getInstrumentation().getTargetContext();
         String oldLanguage = MobilePreferences.get(context, "language"), oldTheme = MobilePreferences.get(context, "theme");

@@ -106,6 +106,17 @@ async function main() {
     const color = '#' + [2, 1, 0].map(channel => bitmap[offset + channel].toString(16).padStart(2, '0')).join('');
     assert.equal(captionOverlays.get(home.id)?.color, color, label + ': native caption must match the rendered caption');
   }
+  function checkSettingsCorners(shot, label) {
+    const { width, height } = shot.getSize(), bitmap = shot.toBitmap();
+    assert.ok(width > 48 && height > 48, label + ': capture must contain the settings panel');
+    for (const [name, x, y] of [
+      ['top-left', 0, 0], ['top-right', width - 1, 0],
+      ['bottom-left', 0, height - 1], ['bottom-right', width - 1, height - 1],
+    ]) {
+      assert.equal(bitmap[(y * width + x) * 4 + 3], 0, label + ': ' + name + ' corner must be transparent');
+    }
+    assert.equal(bitmap[(24 * width + 24) * 4 + 3], 255, label + ': the panel itself must remain opaque');
+  }
   for (const theme of ['light', 'dark']) {
     await wc.executeJavaScript(`window.dshDesktop.workbenchSaveSettings({theme:${JSON.stringify(theme)},language:'zh-CN'})`);
     await wait(() => wc.executeJavaScript(`document.documentElement.dataset.theme === '${theme}' && document.querySelector('.desktop-titlebar button').textContent === '应用'`), theme + ' caption');
@@ -180,12 +191,10 @@ async function main() {
     assert.equal(settings.isMenuBarVisible(), false);
     await capture(settings.webContents, 'settings-' + theme);
     checkNativeCaption(await capture(wc, 'settings-backdrop-' + theme), 'settings ' + theme);
-    const bitmap = (await settings.webContents.capturePage(undefined, {stayHidden:true})).toBitmap();
-    assert.equal(bitmap[3], 0, 'the rounded panel corner must be transparent');
+    checkSettingsCorners(await settings.webContents.capturePage(undefined, {stayHidden:true}), theme + ' settings');
     await settings.webContents.executeJavaScript("document.querySelector('#addDialog').showModal()");
     await settings.webContents.executeJavaScript('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
-    const dialogBitmap = (await settings.webContents.capturePage(undefined, {stayHidden:true})).toBitmap();
-    assert.equal(dialogBitmap[3], 0, 'a modal backdrop must not paint outside the rounded panel corner');
+    checkSettingsCorners(await settings.webContents.capturePage(undefined, {stayHidden:true}), theme + ' settings with a dialog');
     await settings.webContents.executeJavaScript("document.querySelector('#addDialog').close()");
   }
   await settings.webContents.executeJavaScript('document.querySelector("#closeSettings").click()');
