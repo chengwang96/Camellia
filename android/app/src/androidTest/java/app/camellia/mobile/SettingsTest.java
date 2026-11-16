@@ -49,6 +49,34 @@ public class SettingsTest extends InstrumentationTestCase {
         } finally { ui(reopened::finish); }
     }
 
+    public void testProtocolDropdownPreservesEditorDraftAndCancelDoesNotSave() throws Throwable {
+        Activity activity = launch("providers");
+        try {
+            String before = new LocalChatFixture(activity).config().toString();
+            ui(() -> root(activity).findViewWithTag("providerAdd").performClick());
+            ui(() -> {
+                AlertDialog editor = dialog(activity); View form = editor.getWindow().getDecorView();
+                field(form, "providerName", "Unsaved provider"); field(form, "providerEndpoint", "https://example.com/v1");
+                form.findViewWithTag("providerProtocol").performClick();
+                try {
+                    var member = SettingsActivity.class.getDeclaredField("choiceDropdown"); member.setAccessible(true);
+                    ChoiceDropdown menu = (ChoiceDropdown) member.get(activity); assertTrue(menu.isShowing());
+                    menu.panel.findViewWithTag("dropdownChoice:2").performClick();
+                    assertNull(member.get(activity));
+                } catch (Exception error) { throw new AssertionError(error); }
+                assertTrue(editor.isShowing()); assertEquals("Dual", ((TextView) form.findViewWithTag("providerProtocol")).getText().toString());
+                assertEquals("Unsaved provider", ((EditText) form.findViewWithTag("providerName")).getText().toString());
+                editor.getButton(AlertDialog.BUTTON_NEGATIVE).performClick();
+            });
+            assertEquals(before, new LocalChatFixture(activity).config().toString());
+            ui(() -> root(activity).findViewWithTag("providerAdd").performClick());
+            ui(() -> {
+                assertEquals("OpenAI", ((TextView) dialog(activity).getWindow().getDecorView().findViewWithTag("providerProtocol")).getText().toString());
+                dialog(activity).getButton(AlertDialog.BUTTON_NEGATIVE).performClick();
+            });
+        } finally { ui(activity::finish); }
+    }
+
     public void testEnterPreferenceOffersThreeModes() throws Throwable {
         Activity activity = launch("general");
         try {
@@ -87,6 +115,22 @@ public class SettingsTest extends InstrumentationTestCase {
                 capture(activity, "settings-appearance-" + theme);
                 for (String key : new String[]{"language", "enterMode"}) {
                     ui(() -> root(activity).findViewWithTag("preference:" + key).performClick());
+                    if (key.equals("language")) {
+                        ui(() -> {
+                            try {
+                                var field = SettingsActivity.class.getDeclaredField("choiceDropdown"); field.setAccessible(true);
+                                ChoiceDropdown menu = (ChoiceDropdown) field.get(activity); assertTrue(menu.isShowing());
+                                android.view.accessibility.AccessibilityNodeInfo info = menu.panel.findViewWithTag("dropdownChoice:1").createAccessibilityNodeInfo();
+                                assertTrue(info.isCheckable()); assertTrue(info.isChecked()); assertTrue(info.isClickable()); info.recycle();
+                            } catch (Exception error) { throw new AssertionError(error); }
+                        });
+                        capture(activity, "settings-choice-" + key + "-" + theme);
+                        ui(() -> {
+                            try { var field = SettingsActivity.class.getDeclaredField("choiceDropdown"); field.setAccessible(true); ((ChoiceDropdown) field.get(activity)).dismiss(); }
+                            catch (Exception error) { throw new AssertionError(error); }
+                        });
+                        continue;
+                    }
                     ui(() -> {
                         AlertDialog sheet = dialog(activity); View decor = sheet.getWindow().getDecorView();
                         View panel = decor.findViewWithTag("settingsChoicePanel"); assertNotNull(panel);
@@ -341,6 +385,26 @@ public class SettingsTest extends InstrumentationTestCase {
             assertEquals("Cancelling must keep the phone configuration", 1, routes.size());
             assertEquals("phone-secret", routes.get(0).key);
         } finally { ui(activity::finish); remote.clear(); }
+    }
+
+    public void testWorkspaceMenuIsAnchoredAndRemovingWorkspaceKeepsChats() throws Throwable {
+        LocalChatFixture fixture = new LocalChatFixture(getInstrumentation().getTargetContext());
+        JSONObject workspace = fixture.createWorkspace("Workspace menu audit"); String id = workspace.getString("id");
+        JSONObject chat = fixture.createConversation(id, "missing/model");
+        Activity activity = LocalChatFixture.start(getInstrumentation(), new Intent(getInstrumentation().getTargetContext(), LocalChatActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+        try {
+            ui(() -> root(activity).findViewWithTag("localWorkspaceMenu:" + id).performClick());
+            ui(() -> {
+                ConversationMenu menu = conversationMenu(activity); assertTrue(menu.isShowing());
+                menu.panel.findViewWithTag("conversationAction:edit").performClick();
+                assertNotNull(dialog(activity).getWindow().getDecorView().findViewWithTag("localWorkspaceName"));
+                dialog(activity).getButton(AlertDialog.BUTTON_NEGATIVE).performClick();
+            });
+            ui(() -> root(activity).findViewWithTag("localWorkspaceMenu:" + id).performClick());
+            ui(() -> conversationMenu(activity).panel.findViewWithTag("conversationAction:delete").performClick());
+            assertNotNull(new LocalChatFixture(activity).conversation(chat.getString("id")));
+            assertEquals("", new LocalChatFixture(activity).conversation(chat.getString("id")).optString("workspaceId"));
+        } finally { ui(activity::finish); }
     }
 
     public void testArchiveHiddenRestoreAndDelete() throws Throwable {

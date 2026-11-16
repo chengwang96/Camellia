@@ -30,7 +30,7 @@ final class ArtifactDownloads {
     private int generation;
 
     ArtifactDownloads(Activity activity, Bundle saved) {
-        this(activity, saved, RemoteApi::new);
+        this(activity, saved, address -> new RemoteApi(activity, address));
     }
 
     ArtifactDownloads(Activity activity, Bundle saved, java.util.function.Function<String, RemoteApi> apiFactory) {
@@ -252,8 +252,8 @@ final class ArtifactDownloads {
                 bytes.setText(android.text.format.Formatter.formatFileSize(activity, state.received) + " / " + android.text.format.Formatter.formatFileSize(activity, state.total));
                 boolean notificationsEnabled = activity.getSystemService(android.app.NotificationManager.class).areNotificationsEnabled();
                 detail.setText(state.active() ? (notificationsEnabled
-                    ? tr("可切换应用或锁屏。通知栏可查看进度；网络中断需重新下载。", "Switch apps or lock your phone. Track progress in notifications; a network interruption requires downloading again.")
-                    : tr("可切换应用或锁屏；网络中断需重新下载。", "Switch apps or lock your phone; a network interruption requires downloading again.")) : state.detail);
+                    ? tr("可切换应用或锁屏。通知栏可查看进度；短暂断线会自动重试并续传。", "Switch apps or lock your phone. Track progress in notifications; brief interruptions are retried automatically.")
+                    : tr("可切换应用或锁屏；短暂断线会自动重试并续传。", "Switch apps or lock your phone; brief interruptions are retried automatically.")) : state.detail);
                 boolean complete = "complete".equals(state.phase) && state.destination != null;
                 if (state.active()) {
                     primary.setText(tr("在后台继续", "Continue in background")); primary.setTag("downloadBackground");

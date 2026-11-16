@@ -88,13 +88,31 @@ test('a clipboard failure is reported without claiming the reply was copied', as
 
 test('the user bubble reuses the same footer instead of a duplicate implementation', () => {
   const shared = extract('  function messageActions(', '  function addUser(');
-  const user = extract('  function addUser(', '  function updateMessageActions()');
-  assert.match(user, /messageActions\(meta\.at, \(\) => div\.messageData\.text\)/);
+  const user = extract('  function addUser(', '  function showFailedSend(');
+  assert.match(user, /messageActions\(meta\.at, \(\) => div\.messageData\.text \|\|/);
   assert.doesNotMatch(user, /navigator\.clipboard/);
   // Only two clipboard writers may exist: this shared footer and the per-code
   // block copier. A third inline handler is what let the sides drift apart.
   assert.equal([...source.matchAll(/navigator\.clipboard\.writeText\(/g)].length, 2);
   assert.match(shared, /message-actions/);
+});
+
+test('an attachment-only user message never draws an empty text bubble', () => {
+  const render = extract('  function renderUserBubble(', '  function setUserMessageContent(');
+  assert.match(render, /String\(text \|\| ''\)\.trim\(\)/);
+  assert.match(render, /bubble\?\.remove\(\)/);
+  assert.match(render, /div\.classList\.add\('attachment-only'\)/);
+  assert.match(render, /bubble\.innerHTML = mdRender\(text\)/);
+  const user = extract('  function addUser(', '  function showFailedSend(');
+  assert.match(user, /renderUserBubble\(div, text\)/);
+  assert.doesNotMatch(user, /innerHTML = mdRender\(text\)/);
+  // The attachment name is the only copyable content on such a row.
+  assert.match(user, /\.map\(attachment => attachment\.name\)/);
+  assert.match(user, /\.join\(', '\)/);
+  // Creating or restoring the row must never manufacture a visible
+  // "[Attachments]" placeholder from a path-only message.
+  assert.doesNotMatch(source, /addUser\([^\n]*\[Attachments\]/);
+  assert.doesNotMatch(source, /addUser\([^\n]*"[Attachments]"/);
 });
 
 test('agent turns place the footer after their content and keep copy text raw', () => {

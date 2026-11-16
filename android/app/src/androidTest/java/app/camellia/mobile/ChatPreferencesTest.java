@@ -35,6 +35,10 @@ public class ChatPreferencesTest extends InstrumentationTestCase {
         if (failure.get() != null) throw new AssertionError(failure.get());
     }
     private View root(Activity activity) { return activity.getWindow().getDecorView(); }
+    private float sp(Activity activity, float value) {
+        // Android 14+ scales fonts nonlinearly; scaledDensity multiplication is not an SP conversion.
+        return android.util.TypedValue.applyDimension(android.util.TypedValue.COMPLEX_UNIT_SP, value, activity.getResources().getDisplayMetrics());
+    }
     private void assertNoticeCount(NotificationManager manager, int expected) {
         long deadline = android.os.SystemClock.uptimeMillis() + 3000;
         while (manager.getActiveNotifications().length != expected && android.os.SystemClock.uptimeMillis() < deadline)
@@ -48,8 +52,8 @@ public class ChatPreferencesTest extends InstrumentationTestCase {
     private void choose(Activity activity, String key, int index) {
         root(activity).findViewWithTag("preference:" + key).performClick();
         try {
-            var member = SettingsActivity.class.getDeclaredField("dialog"); member.setAccessible(true);
-            ((AlertDialog) member.get(activity)).getWindow().getDecorView().findViewWithTag("settingsChoice:" + index).performClick();
+            var member = SettingsActivity.class.getDeclaredField("choiceDropdown"); member.setAccessible(true);
+            ((ChoiceDropdown) member.get(activity)).panel.findViewWithTag("dropdownChoice:" + index).performClick();
         } catch (Exception error) { throw new AssertionError(error); }
     }
 
@@ -60,15 +64,14 @@ public class ChatPreferencesTest extends InstrumentationTestCase {
                 choose(activity, "chatFontSize", 3);
                 assertEquals("largest", MobilePreferences.get(activity, "chatFontSize"));
                 TextView code = root(activity).findViewWithTag("markdownCodeText");
-                float density = activity.getResources().getDisplayMetrics().scaledDensity;
-                assertEquals(13f * 1.3f * density, code.getTextSize(), .1f);
+                assertEquals(sp(activity, 13f * 1.3f), code.getTextSize(), .1f);
                 View rendered = new MarkdownView(activity, Color.BLACK, Color.GRAY, Color.WHITE, Color.BLUE).render("Chat body");
-                assertEquals(15f * 1.3f * density, ((TextView) ((LinearLayout) rendered).getChildAt(0)).getTextSize(), .1f);
+                assertEquals(sp(activity, 15f * 1.3f), ((TextView) ((LinearLayout) rendered).getChildAt(0)).getTextSize(), .1f);
                 ChatStyle style = new ChatStyle(activity);
                 TextView user = new TextView(activity); user.setTextSize(16); style.messageTypography(user);
-                assertEquals(16f * 1.3f * density, user.getTextSize(), .1f);
+                assertEquals(sp(activity, 16f * 1.3f), user.getTextSize(), .1f);
                 ChatComposer composer = new ChatComposer(new LinearLayout(activity), style, false, "", 10000, () -> {}, () -> {}, () -> {}, () -> {});
-                assertEquals(Palette.TEXT_ROW * 1.3f * density, composer.input.getTextSize(), .1f);
+                assertEquals(sp(activity, Palette.TEXT_ROW * 1.3f), composer.input.getTextSize(), .1f);
                 root(activity).findViewWithTag("preference:codeWrap").performClick();
                 assertTrue(MobilePreferences.codeWrap(activity));
                 choose(activity, "processMode", 1);

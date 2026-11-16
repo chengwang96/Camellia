@@ -1,4 +1,6 @@
 "进入本地聊天" = "Open local chat";
+"搜索" = "Search";
+"没有匹配项" = "No matches";
 "进入远程控制" = "Open remote control";
 "回到最新消息" = "Back to latest messages";
 "设置已更新，请重新选择。" = "Settings have changed. Please choose again.";

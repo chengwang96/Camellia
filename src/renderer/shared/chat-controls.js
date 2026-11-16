@@ -49,10 +49,182 @@
   function toolSummary(name, inputData) {
     if (!inputData) return '';
     const c = typeof inputData === 'string' ? inputData
-      : inputData.command || inputData.CommandLine || inputData.file_path || inputData.TargetFile || inputData.AbsolutePath || inputData.pattern || inputData.path || inputData.description || '';
+      : inputData.command || inputData.CommandLine || inputData.file_path || inputData.TargetFile
+        || inputData.AbsolutePath || inputData.pattern || inputData.path || inputData.description
+        || inputData.url || inputData.query || '';
     if (!c) return '';
     const line = String(c).split('\n')[0];
     return line.length > 90 ? line.slice(0, 90) + '…' : line;
+  }
+
+  // Web search results are model/tool data, not trusted markup. Keep the
+  // presentation in one pure function so the card, tests and future citation
+  // markers agree on ordering, deduplication and labels.
+  const TRACKING_PARAMS = new Set([
+    'gclid', 'dclid', 'fbclid', 'msclkid', 'mc_cid', 'mc_eid', 'igshid',
+    'ref', 'ref_src', 'ref_url', 'spm', 'scm', 'share_source', 'share_medium',
+    'utm_source', 'utm_medium', 'utm_campaign', 'utm_term', 'utm_content', 'utm_id',
+  ]);
+
+  // Native harnesses wrap MCP results as { content: [{ type: 'text', text }] },
+  // and some add another JSON string layer. Unwrap those envelopes before the
+  // card looks for the real web-tool result. Never coerce arbitrary text into a
+  // fake payload: an unrecognised shape stays unrecognised and falls back to
+  // the plain tool output.
+  function toolPayload(output) {
+    let value = output;
+    for (let depth = 0; depth < 8; depth += 1) {
+      if (typeof value === 'string') {
+        const trimmed = value.trim();
+        if (!trimmed.startsWith('{') && !trimmed.startsWith('[') && !trimmed.startsWith('"')) return null;
+        try { value = JSON.parse(trimmed); } catch { return null; }
+        continue;
+      }
+      if (!value || typeof value !== 'object') return null;
+      if (Array.isArray(value.content)) {
+        const texts = value.content
+          .filter(item => item && (item.type === 'text' || item.type === undefined) && typeof item.text === 'string')
+          .map(item => item.text);
+        if (!texts.length) return null;
+        value = texts.join('\n');
+        continue;
+      }
+      return value;
+    }
+    return null;
+  }
+
+  // A source key must survive the harmless spelling differences a model writes:
+  // missing scheme, case differences, a trailing slash, a fragment, and common
+  // tracking parameters. Keep the visible URL as written; only the key is
+  // normalized, so the card never rewrites the user's citation.
+  function sourceKey(value) {
+    const raw = String(value || '').trim();
+    if (!raw || /[\x00-\x1f\x7f]/.test(raw)) return '';
+    let url;
+    try {
+      if (/^https?:\/\//i.test(raw)) url = new URL(raw);
+      else if (/^www\./i.test(raw)) url = new URL('https://' + raw);
+      else if (/^[a-z][a-z\d+.-]*:/i.test(raw)) return '';
+      else url = new URL('https://' + raw);
+    } catch { return ''; }
+    if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) return '';
+    url.protocol = 'https:';
+    url.hostname = url.hostname.toLowerCase().replace(/^www\./, '');
+    for (const name of [...url.searchParams.keys()]) {
+      if (TRACKING_PARAMS.has(name.toLowerCase())) url.searchParams.delete(name);
+    }
+    url.hash = '';
+    url.pathname = url.pathname.replace(/\/+$/, '') || '/';
+    return url.href;
+  }
+
+  function webSearchView(name, output) {
+    if (!/^camellia_web_search$/i.test(String(name || ''))) return null;
+    let value = toolPayload(output);
+    if (!value || typeof value !== 'object') return null;
+    if (value.ok === false) {
+      return { error: String(value.error || 'Search failed'), results: [] };
+    }
+    const rows = Array.isArray(value.results) ? value.results : [];
+    const seen = new Set();
+    const results = [];
+    for (const row of rows) {
+      if (!row || typeof row.url !== 'string' || typeof row.title !== 'string') continue;
+      const key = sourceKey(row.url);
+      if (!key) continue;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      let site = '';
+      try { site = new URL(key).hostname; } catch {}
+      results.push({
+        index: results.length + 1,
+        title: row.title,
+        url: String(row.url),
+        key,
+        site,
+        summary: typeof row.summary === 'string' ? row.summary : '',
+        date: typeof row.date === 'string' && row.date ? row.date : '',
+      });
+    }
+    return { error: '', results, provider: typeof value.provider === 'string' ? value.provider : '',
+      truncated: value.truncated === true };
+  }
+
+  // A fetched page is one source, not a result list. Present its identity
+  // (title, site, final URL, which fetcher answered) before its readable text,
+  // so a long page does not look like an undifferentiated wall of output.
+  function webFetchView(name, output) {
+    if (!/^camellia_web_fetch$/i.test(String(name || ''))) return null;
+    let value = toolPayload(output);
+    if (!value || typeof value !== 'object') return null;
+    if (value.ok === false) {
+      return {
+        error: String(value.error || 'Page fetch failed'),
+        code: typeof value.code === 'string' ? value.code : '',
+        url: typeof value.url === 'string' ? value.url : '',
+        fallbackFrom: typeof value.fallback_from === 'string' ? value.fallback_from : '',
+        fallbackReason: typeof value.fallback_reason === 'string' ? value.fallback_reason : '',
+      };
+    }
+    const url = typeof value.final_url === 'string' && value.final_url ? value.final_url
+      : typeof value.url === 'string' ? value.url : '';
+    let site = '';
+    try { site = new URL(url).hostname.replace(/^www\./, ''); } catch {}
+    return {
+      error: '',
+      title: typeof value.title === 'string' && value.title.trim() ? value.title.trim() : url,
+      url,
+      site,
+      provider: typeof value.provider === 'string' ? value.provider : '',
+      fallbackFrom: typeof value.fallback_from === 'string' ? value.fallback_from : '',
+      fallbackReason: typeof value.fallback_reason === 'string' ? value.fallback_reason : '',
+      connectionMode: typeof value.connection_mode === 'string' ? value.connection_mode : '',
+      content: typeof value.content === 'string' ? value.content : '',
+      truncated: value.truncated === true,
+    };
+  }
+
+  // Search order is metadata, not citation order. Allocate a number only when
+  // a reply actually links a source, including fetched or directly linked pages.
+  function sourceRegistry(list = []) {
+    const byUrl = new Map();
+    for (const item of Array.isArray(list) ? list : []) {
+      if (!item || typeof item !== 'object') continue;
+      const key = item.key || sourceKey(item.url);
+      if (key && !byUrl.has(key)) byUrl.set(key, item);
+    }
+    const cited = new Map();
+    return {
+      get size() { return cited.size; },
+      get(url) { return cited.get(sourceKey(url)) || null; },
+      numberFor(url) {
+        const key = sourceKey(url);
+        if (!key) return 0;
+        if (!cited.has(key)) {
+          cited.set(key, { ...byUrl.get(key), url, key, index: cited.size + 1 });
+        }
+        return cited.get(key).index;
+      },
+    };
+  }
+
+  // Streaming parses only the unfinished suffix, and may revisit table rows.
+  // Reconcile labels against the displayed link order across all answer blocks
+  // so fragments and repeated canonical snapshots cannot reserve extra numbers.
+  function renumberSources(elements) {
+    const registry = sourceRegistry();
+    for (const element of elements) {
+      for (const link of element.querySelectorAll('a[data-chat-source]')) {
+        const marker = link.nextElementSibling;
+        if (!marker?.classList.contains('md-source-marker')) continue;
+        const number = String(registry.numberFor(link.getAttribute('href')));
+        if (link.dataset.chatSource !== number) link.dataset.chatSource = number;
+        if (marker.textContent !== number) marker.textContent = number;
+        if (marker.getAttribute('aria-label') !== 'Source ' + number) marker.setAttribute('aria-label', 'Source ' + number);
+        if (marker.title !== 'Open source ' + number) marker.title = 'Open source ' + number;
+      }
+    }
   }
 
   function previewableToolPath(name, inputData) {
@@ -106,9 +278,19 @@
       setOutput(text, isErr) {
         this.finished = true;
         this.failed = !!isErr;
-        this.outputEl.textContent = text || "(No output)";
+        const search = isErr ? null : webSearchView(this.name, text);
+        const page = isErr ? null : webFetchView(this.name, text);
+        this.outputEl.textContent = '';
         this.outputEl.classList.toggle('err', !!isErr);
+        if (search) renderWebSearch(this.outputEl, search);
+        else if (page) renderWebFetch(this.outputEl, page);
+        else this.outputEl.textContent = text || "(No output)";
         this.stateEl.className = 'tool-state ' + (isErr ? 'err' : 'done');
+        this.summaryEl.textContent = search ? webSearchSummary(search)
+          : page ? webFetchSummary(page)
+            : toolSummary(this.name, this.inputData);
+        if (search || page) this.summaryEl.dataset.i18n = '';
+        else delete this.summaryEl.dataset.i18n;
         if (!isErr && this.previewPath && !this.el.querySelector('.tool-preview-file')) {
           const button = document.createElement('button');
           button.type = 'button'; button.className = 'tool-preview-file';
@@ -120,6 +302,153 @@
     };
     card.setInput(inputData || null);
     return card;
+  }
+
+  function webSearchSummary(view) {
+    if (view.error) return window.CamelliaI18n.t('Search failed');
+    const count = view.results.length;
+    return count === 1 ? '1 source' : count + ' sources';
+  }
+
+  // Search output is structured: a title, a site label and a summary per row,
+  // with the original text still available for copy and inspection. Links are
+  // anchors with a fixed protocol check, never innerHTML from the result.
+  function renderWebSearch(container, view) {
+    const t = window.CamelliaI18n.t;
+    if (view.error) {
+      const error = document.createElement('div');
+      error.className = 'tool-output-err';
+      error.textContent = view.error;
+      container.append(error);
+      return;
+    }
+    const list = document.createElement('ol');
+    list.className = 'web-search-results';
+    for (const item of view.results) {
+      const row = document.createElement('li');
+      row.className = 'web-search-result';
+      const title = document.createElement('a');
+      title.href = item.url;
+      title.target = '_blank';
+      title.rel = 'noopener noreferrer';
+      title.textContent = item.title;
+      title.className = 'web-search-title';
+      row.append(title);
+      if (item.site || item.date) {
+        const meta = document.createElement('div');
+        meta.className = 'web-search-meta';
+        meta.textContent = [item.site, item.date].filter(Boolean).join(' · ');
+        row.append(meta);
+      }
+      if (item.summary) {
+        const summary = document.createElement('div');
+        summary.className = 'web-search-summary';
+        summary.textContent = item.summary;
+        row.append(summary);
+      }
+      list.append(row);
+    }
+    container.append(list);
+    if (view.truncated) {
+      const note = document.createElement('div');
+      note.className = 'web-search-note';
+      note.dataset.i18n = '';
+      note.textContent = 'Some results were omitted because the response was too large.';
+      container.append(note);
+    }
+  }
+
+  function webFetchSummary(view) {
+    if (view.error) return window.CamelliaI18n.t('Page fetch failed');
+    const title = String(view.title || '').trim();
+    return title.length > 72 ? title.slice(0, 72) + '…' : title;
+  }
+
+  const FETCH_PREVIEW_CHARS = 1600;
+
+  // The provider label explains why a page may look different between modes;
+  // the fallback line records that DeepSeek was tried first and failed.
+  function renderWebFetch(container, view) {
+    const t = window.CamelliaI18n.t;
+    if (view.error) {
+      const error = document.createElement('div');
+      error.className = 'web-fetch-error';
+      const message = document.createElement('p');
+      message.className = 'web-fetch-error-message';
+      message.textContent = view.error;
+      error.append(message);
+      const meta = [view.url, view.code && 'Code: ' + view.code,
+        view.fallbackFrom && t('Fell back from {0}').replace('{0}', view.fallbackFrom),
+        view.fallbackReason].filter(Boolean);
+      if (meta.length) {
+        const detail = document.createElement('p');
+        detail.className = 'web-fetch-error-meta';
+        detail.textContent = meta.join(' · ');
+        error.append(detail);
+      }
+      container.append(error);
+      return;
+    }
+    const header = document.createElement('div');
+    header.className = 'web-fetch-card';
+    const title = document.createElement('a');
+    title.className = 'web-fetch-title';
+    title.href = view.url;
+    title.target = '_blank';
+    title.rel = 'noopener noreferrer';
+    title.textContent = view.title;
+    header.append(title);
+    const labels = [];
+    if (view.site) labels.push({ text: view.site });
+    if (view.provider === 'local') labels.push({ text: 'Local fetch', translate: true });
+    else if (view.provider === 'deepseek') labels.push({ text: 'DeepSeek fetch', translate: true });
+    if (view.fallbackFrom) labels.push({ text: 'Fell back from ' + view.fallbackFrom, translate: true });
+    if (view.connectionMode) labels.push({ text: view.connectionMode });
+    if (labels.filter(Boolean).length) {
+      const meta = document.createElement('div');
+      meta.className = 'web-fetch-meta';
+      labels.forEach((label, index) => {
+        if (index) meta.append(' · ');
+        const part = document.createElement('span');
+        if (label.translate) part.dataset.i18n = '';
+        part.textContent = label.text;
+        meta.append(part);
+      });
+      header.append(meta);
+    }
+    container.append(header);
+    if (view.content.trim()) {
+      const text = view.content.trim();
+      const preview = document.createElement('pre');
+      preview.className = 'web-fetch-content';
+      preview.textContent = text.slice(0, FETCH_PREVIEW_CHARS)
+        + (text.length > FETCH_PREVIEW_CHARS ? '\n…' : '');
+      container.append(preview);
+      if (text.length > FETCH_PREVIEW_CHARS) {
+        const more = document.createElement('details');
+        more.className = 'web-fetch-more';
+        const summary = document.createElement('summary');
+        summary.dataset.i18n = '';
+        summary.textContent = 'Show the rest of the page text';
+        const rest = document.createElement('pre');
+        rest.className = 'web-fetch-content';
+        rest.textContent = text.slice(FETCH_PREVIEW_CHARS);
+        more.append(summary, rest);
+        container.append(more);
+      }
+      const stats = document.createElement('div');
+      stats.className = 'web-fetch-stats';
+      stats.dataset.i18n = '';
+      stats.textContent = text.length + ' characters read'
+        + (view.truncated ? ' · Content was truncated by the fetcher.' : '');
+      container.append(stats);
+    } else {
+      const empty = document.createElement('div');
+      empty.className = 'web-fetch-empty';
+      empty.dataset.i18n = '';
+      empty.textContent = 'The page returned no readable text.';
+      container.append(empty);
+    }
   }
 
   // An expanded process buries its own summary above the viewport, so the
@@ -230,5 +559,5 @@
     }
     return fields;
   }
-  window.CamelliaChatControls = { isImagePath, attachmentGlyph, fileUrl, makeToolCard, executionProcess, renderAttachments, questionFields, resizeQuestionFields };
+  window.CamelliaChatControls = { isImagePath, attachmentGlyph, fileUrl, makeToolCard, executionProcess, renderAttachments, questionFields, resizeQuestionFields, webSearchView, webFetchView, sourceRegistry, sourceKey, renumberSources };
 })();

@@ -46,6 +46,7 @@ public final class EmbeddedNetwork {
         lifecycle = new NetworkLifecycle<>(new NetworkLifecycle.Backend<Node>() {
             @Override public Node create() throws Exception { return createNode(); }
             @Override public void close(Node value) { value.close(); }
+            @Override public void networkChanged(Node value) throws Exception { value.networkChanged(); }
             @Override public void saveMode(boolean value) throws IOException {
                 if (!context.getSharedPreferences("network-mode", 0).edit().putBoolean("embedded", value).commit())
                     throw new IOException("Cannot save network mode");
@@ -124,6 +125,16 @@ public final class EmbeddedNetwork {
         catch (ExecutionException error) {
             if (error.getCause() instanceof IOException failure) throw failure;
             throw ConnectionFailure.failure(ConnectionFailure.Code.NETWORK_START_FAILED, error.getCause());
+        }
+    }
+
+    static JSONObject path(String target) throws IOException {
+        try {
+            return new JSONObject(node().path(target));
+        } catch (org.json.JSONException error) {
+            throw new IOException("Invalid embedded path response", error);
+        } catch (Exception error) {
+            throw new IOException("Cannot read embedded path", error);
         }
     }
 

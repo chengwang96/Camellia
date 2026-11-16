@@ -18,6 +18,7 @@ const accountOptions = require('./subscription-accounts');
 const { quotaPatch, createResetCredits } = require('./codex-reset-credits');
 const weeklyProbe = require('./codex-weekly-probe');
 const { getDiscussionLaunch, buildDiscussionSpec, assertDiscussionPoolAccess } = require('./discussions/native-launch');
+const { withSessionAffinity } = require('../api/session-affinity');
 
 function createCodex({ dataDir, loadConfig, saveConfig, getRoute, getModels = () => [], getContextWindow = () => undefined, runtimes, environment = () => process.env,
   openExternal, onEvent, onGoal, onAccount = () => {}, createUsageMeter = () => null, isBusy = () => false, log = () => {}, createAccountClient = options => new CodexClient(options) }) {
@@ -112,7 +113,7 @@ function createCodex({ dataDir, loadConfig, saveConfig, getRoute, getModels = ()
     const target = connection === 'api' ? path.join(home, 'api', ...(conversationId ? ['conversations', conversationId] : []))
       : accountHome(accountId || activeId());
     return codexSpawnSpec({ runtime, home: target, configHome: home, cwd, allowUserQuestions: true,
-      connection, model, route: connection === 'api' ? getRoute() : null, contextWindow: connection === 'api' ? getContextWindow(model) : undefined, env: environment(), proxyUrl: settings().proxyUrl,
+      connection, model, route: connection === 'api' ? withSessionAffinity(getRoute(), conversationId) : null, contextWindow: connection === 'api' ? getContextWindow(model) : undefined, env: environment(), proxyUrl: settings().proxyUrl,
       sharedPluginCache: connection === 'api' ? path.join(home, '.tmp') : '' });
   }
   function accountState(id = activeId()) {

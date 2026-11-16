@@ -4,7 +4,7 @@ const { spawn } = require('node:child_process');
 const { SessionPool } = require('./session-pool');
 const { AcpSession } = require('./acp-session');
 const { ClaudeHistory } = require('./claude-history');
-const { dshLaunchArgs } = require('./dsh-config');
+const { dshLaunchArgs, dshVersion } = require('./dsh-config');
 const { modelId } = require('../api/api-router-config');
 const { valid, nativeMode } = require('./permission-levels');
 const { levelsFor } = require('../shared/model-levels');
@@ -15,6 +15,7 @@ const { matchesPrompt, nativeEditOptions } = require('./native-edit-boundary');
 const { validSessionId } = require('./claude-history');
 const { copyDshFork } = require('./native-fork');
 const { harnessThinkingRoute } = require('../api/harness-thinking');
+const { withSessionAffinity } = require('../api/session-affinity');
 
 class DshSession extends AcpSession {
   async editBoundary(prompt) {
@@ -38,6 +39,9 @@ const DSH_PRESETS = {
 };
 
 function dshAcpSpec({ runtime, home, model, route, permissionMode, env, nativeConfig = {}, thinking, webTools = false, thinkingBudget, contextWindow }) {
+  // Desktop can supply only the executable path. Resolve its package version
+  // once so launch configuration and child lifecycle support cannot disagree.
+  runtime = { ...runtime, version: dshVersion(runtime) };
   if (thinkingBudget !== undefined) route = harnessThinkingRoute(route, thinkingBudget);
   const levels = levelsFor(model, { thinking });
   const supported = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
@@ -57,7 +61,8 @@ function dshAcpSpec({ runtime, home, model, route, permissionMode, env, nativeCo
       // the synthetic api-pool provider. Upstream still validates model support.
       models: [{ id: model, contextWindow: resolvedContextWindow, input: ['text', 'image'], reasoningEfforts: canThink ? reasoningEfforts : false }] } } },
   } });
-  const childEvents = /^(?:0\.[2-9]|[1-9]\.)/.test(String(runtime.version || ''));
+  const [major, minor] = runtime.version.split('.').map(Number);
+  const childEvents = major > 0 || minor >= 2;
   if (childEvents) {
     const file = path.join(home, 'camellia-subagents.patch.yml');
     writeText(file, YAML.stringify([{ insert: [{ id: 'camellia-subagents',
@@ -97,8 +102,9 @@ function createDshChat({ dataDir, loadConfig, saveConfig, getRoute, getModels, g
     selected.modelThinking = getModelThinking(selected.model);
     if (!selected.model || !getModels().includes(selected.model)) throw new Error('Select a configured model first');
     if (current && !current.dead && !opts.fork && current.opts.goalBridge === opts.goalBridge && current.sessionId === opts.sessionId && JSON.stringify(current.settings) === JSON.stringify(selected)) return current;
+    const route = withSessionAffinity(getRoute(), opts.conversationId);
     const spec = dshAcpSpec({ runtime: runtime(), home: path.join(dataDir, 'dsh-chat', ...(opts.conversationId ? ['conversations', opts.conversationId] : [])), model: selected.model,
-      route: getRoute(), permissionMode: selected.permissionMode, env: environment(), nativeConfig: nativeConfig(), thinking: selected.modelThinking,
+      route, permissionMode: selected.permissionMode, env: environment(), nativeConfig: nativeConfig(), thinking: selected.modelThinking,
       thinkingBudget: selected.thinkingBudget || '', webTools: opts.goalBridge?.webTools, contextWindow: selected.contextWindow });
     const previous = current?.shutdown();
     const session = new DshSession({ name: 'DSH', gen: ++generation, opts, settings: selected, spec, exe: node(), spawn, log, history,

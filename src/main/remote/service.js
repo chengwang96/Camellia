@@ -7,17 +7,48 @@ const { RemoteReadModel } = require('./read-model');
 const { RemoteGateway } = require('./gateway');
 const { RemoteCommands } = require('./commands');
 const { RemoteMessageQueue } = require('./message-queue');
+const { TailscaleAPI } = require('./tailscale-api');
 
 function createRemoteService({ dataDir, manager, networkFactory, apiRoutes = null, apiImport = null, nativeSettings = null, management = null, desktopRestart = null, getDiscussions = null, accountUsage = null,
-  preferences = () => ({}), setComputerName = () => '' }) {
+  preferences = () => ({}), setComputerName = () => '', safeStorage = null, openExternal = null }) {
   let gateway = null, access = null, network = null, busy = false, enabled = false, closed = false;
   let startupChecked = false, monitor = null, attachmentMaintenance = null, retryDelay = 1000, retryAt = 0;
-  let recovering = null, diagnosing = false;
+  let recovering = null, diagnosing = false, sourceDeviceId = '', sourceAddress = '';
+  const tailscale = new TailscaleAPI({ file: path.join(dataDir, 'remote', 'tailscale-oauth.json'), safeStorage, openExternal });
   const messageQueue = new RemoteMessageQueue({
     file: path.join(dataDir, 'remote', 'message-queue.json'),
     manager,
   });
   manager.remoteQueue = messageQueue;
+  let tailscaleRevision = 0;
+  function refreshTailscaleView() {
+    const revision = ++tailscaleRevision;
+    void tailscale.status({ sourceDeviceId, sourceAddress }).then(view => {
+      if (!closed && revision === tailscaleRevision) tailscaleView = view;
+    }).catch(error => {
+      if (!closed && revision === tailscaleRevision) tailscaleView = { ...(tailscaleView || {}), state: 'error', error: error.message };
+    });
+  }
+  function setSourceDeviceId(value, address = sourceAddress) {
+    const nextId = typeof value === 'string' && value ? value : sourceDeviceId;
+    const nextAddress = typeof address === 'string' && address ? address : sourceAddress;
+    if (nextId === sourceDeviceId && nextAddress === sourceAddress) return;
+    sourceDeviceId = nextId;
+    sourceAddress = nextAddress;
+    tailscale.statusCache = null;
+    refreshTailscaleView();
+  }
+  let tailscaleView;
+  try {
+    const saved = tailscale.saved();
+    tailscaleView = saved ? { configured: true, clientId: saved.clientId, state: 'checking', changedAcl: false }
+      : { configured: false, state: 'unconfigured', changedAcl: false };
+  } catch (error) {
+    tailscaleView = { configured: true, state: 'invalid', error: error.message, changedAcl: false };
+  }
+  if (tailscaleView.state === 'checking') {
+    refreshTailscaleView();
+  }
   const attachmentReferences = () => ({
     references: [gateway?.commands?.queue.entries || [], ...(gateway?.commands?.pendingAttachments.values() || []),
       ...(gateway?.discussions?.pendingAttachments.values() || [])],
@@ -46,6 +77,7 @@ function createRemoteService({ dataDir, manager, networkFactory, apiRoutes = nul
     return { ...preferences(), running: Boolean(gateway?.server), enabled, network: { ...network.snapshot },
       address: gateway?.url || null, ...view, workspaces: reader.workspaces(),
       diagnosticsAvailable: typeof network.diagnosePeer === 'function',
+      ...(tailscaleView ? { tailscale: tailscaleView } : {}),
       devices: view.devices.map(device => ({ ...device, peerAddress: gateway.peerAddresses.get(device.id) || null })) };
   }
   async function refreshNetwork() {
@@ -54,6 +86,9 @@ function createRemoteService({ dataDir, manager, networkFactory, apiRoutes = nul
     if (Date.now() < retryAt) return;
     if (['Stopped', 'Error'].includes(network.snapshot.state)) await network.start();
     const status = await network.status();
+    // The helper's stable node ID can differ from the management API ID.
+    // Publish its address in the same update so status can resolve that node.
+    setSourceDeviceId(status.deviceId, status.address);
     if (!enabled || closed) return;
     if (status.state !== 'Running' || !status.address) {
       if (gateway.server) await gateway.stop();
@@ -108,8 +143,44 @@ function createRemoteService({ dataDir, manager, networkFactory, apiRoutes = nul
     monitor.unref();
   }
   return {
+    setSourceDeviceId,
     async command(action, payload) {
       if (closed) return { ok: false, error: 'Camellia is closing' };
+      if (['tailscale-status', 'tailscale-open-credentials', 'tailscale-save', 'tailscale-remove', 'tailscale-apply-peer-relay', 'tailscale-rename-device'].includes(action)) {
+        try {
+          if (action !== 'tailscale-open-credentials') ++tailscaleRevision;
+          let result;
+          if (action === 'tailscale-status') result = await tailscale.status({ sourceDeviceId, sourceAddress, force: true });
+          else if (action === 'tailscale-open-credentials') { await tailscale.openCredentials(); result = { opened: true }; }
+          else if (action === 'tailscale-save') result = await tailscale.verifyAndSave(payload, { sourceDeviceId, sourceAddress });
+          else if (action === 'tailscale-apply-peer-relay') {
+            // A stale renderer may still send only `enabled` while the selected
+            // relay is known from the cached view. Resolve it here rather than
+            // rejecting with "Choose a valid relay device".
+            const relay = payload?.enabled && !payload?.deviceId
+              ? (tailscaleView?.devices || []).find(device => device.relayGranted) : null;
+            result = await tailscale.applyPeerRelay({ ...payload,
+              ...(relay ? { deviceId: relay.id } : {}), sourceDeviceId, sourceAddress });
+          }
+          else if (action === 'tailscale-rename-device') result = await tailscale.renameDevice({ ...payload, sourceDeviceId, sourceAddress });
+          else { tailscale.remove(); result = { configured: false, state: 'unconfigured', changedAcl: false }; }
+          if (action !== 'tailscale-open-credentials') ++tailscaleRevision;
+          if (action === 'tailscale-apply-peer-relay' || action === 'tailscale-rename-device') {
+            if (result.state === 'connected') {
+              tailscaleView = { ...result, applied: true };
+              if (tailscale.statusCache?.clientId) tailscale.statusCache = { ...tailscale.statusCache,
+                expiresAt: Date.now() + 60_000, view: tailscaleView };
+            } else tailscaleView = result;
+          } else if (action !== 'tailscale-open-credentials') {
+            // status() can return an error view after a temporary network
+            // failure. Preserve a successful verification during its cache
+            // window so the settings summary does not flicker.
+            if (!(action === 'tailscale-status' && result.state === 'error' && tailscaleView?.state === 'connected'
+                && tailscale.statusCache?.expiresAt > Date.now())) tailscaleView = result;
+          }
+          return { ok: true, result };
+        } catch (error) { return { ok: false, error: error.message }; }
+      }
       if (action === 'diagnose') {
         if (diagnosing) return { ok: false, error: 'A connection probe is already running' };
         diagnosing = true;
@@ -155,7 +226,26 @@ function createRemoteService({ dataDir, manager, networkFactory, apiRoutes = nul
           if (action === 'scope') { access.setScope(payload?.id, [], options); result = state(); }
           else result = { ...access.invite([], { ...options, computerName: preferences().computerName }), address: gateway.url };
         } else if (action === 'set-name') {
-          result = { ...state(), computerName: setComputerName(payload?.name) };
+          const requested = typeof payload?.name === 'string' ? payload.name.trim() : '';
+          if (!requested || requested.length > 80) throw new Error('Enter a name of 1–80 characters');
+          const savedName = setComputerName(requested);
+          // The embedded node always receives the OS-safe form of the name;
+          // the management API accepts the display name when it is already a
+          // valid DNS label and otherwise reports that control-plane sync was
+          // skipped. The local name is never rolled back after a sync failure.
+          const hostname = requested.toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 63).replace(/-+$/g, '');
+          let networkSync = { synced: false, reason: 'not-running' };
+          if (hostname && network?.child) {
+            try { networkSync = { synced: true, ...(await network.setHostname(hostname)) }; }
+            catch (error) { networkSync = { synced: false, reason: 'error', error: error.message }; }
+          }
+          let tailscaleSync = { synced: false, reason: 'invalid-name' };
+          if (/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$/.test(savedName)) {
+            try { tailscaleSync = await tailscale.renameCurrentDevice({ name: savedName, sourceDeviceId, sourceAddress }); }
+            catch (error) { tailscaleSync = { synced: false, reason: 'error', error: error.message }; }
+            if (tailscaleSync.synced) tailscale.statusCache = null;
+          }
+          result = { ...state(), computerName: savedName, tailscaleSync, embeddedNetworkSync: networkSync };
         } else if (action === 'rename') {
           access.rename(payload?.id, payload?.name); result = state();
         } else if (action === 'approve') {

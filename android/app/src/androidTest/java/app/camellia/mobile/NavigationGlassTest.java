@@ -155,21 +155,25 @@ public class NavigationGlassTest extends InstrumentationTestCase {
                 for (int pageIndex = 0; pageIndex < pageColors.length; pageIndex++) {
                     int pageColor = pageColors[pageIndex];
                     ui(() -> { bands.first = pageColor; bands.invalidate(); }); awaitColor(pageColor);
-                    SystemClock.sleep(100);
                     int[] selectedPixel = new int[2], backgroundPixel = new int[2];
                     ui(() -> {
                         samplePoint(navigation.findViewWithTag("nav:" + selected), selectedPixel);
                         samplePoint(navigation.findViewWithTag("nav:" + inactive), backgroundPixel);
                     });
-                    Bitmap frame = getInstrumentation().getUiAutomation().takeScreenshot();
+                    Bitmap frame = RenderedFrameFixture.screenshot(getInstrumentation(), navigation);
                     int selectedColor, backgroundColor;
                     try {
                         selectedColor = frame.getPixel(selectedPixel[0], selectedPixel[1]);
                         backgroundColor = frame.getPixel(backgroundPixel[0], backgroundPixel[1]);
                     } finally { frame.recycle(); }
                     if (index == 0) { selectedReference[pageIndex] = selectedColor; backgroundReference[pageIndex] = backgroundColor; }
-                    assertTrue("Equal backdrops must give equal selected tones across destinations", distance(selectedReference[pageIndex], selectedColor) <= 8);
-                    assertTrue("Equal backdrops must give equal glass tones across destinations", distance(backgroundReference[pageIndex], backgroundColor) <= 8);
+                    String scene = (dark ? "dark/" : "light/") + selected + "/" + pageIndex;
+                    assertTrue(scene + ": equal backdrops must give equal selected tones across destinations: "
+                        + Integer.toHexString(selectedReference[pageIndex]) + " / " + Integer.toHexString(selectedColor),
+                        distance(selectedReference[pageIndex], selectedColor) <= 8);
+                    assertTrue(scene + ": equal backdrops must give equal glass tones across destinations: "
+                        + Integer.toHexString(backgroundReference[pageIndex]) + " / " + Integer.toHexString(backgroundColor),
+                        distance(backgroundReference[pageIndex], backgroundColor) <= 8);
                     assertTrue("The selected segment remains visibly distinct from the glass", distance(selectedColor, backgroundColor) >= 10);
                     assertTrue("Selection is a neutral tonal overlay", dark
                         ? Color.red(selectedColor) > Color.red(backgroundColor)

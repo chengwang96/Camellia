@@ -61,7 +61,7 @@ final class InlineRemoteImages implements MarkdownView.ImageLoader {
     private volatile boolean closed;
 
     InlineRemoteImages(Context context, String address, String token, String conversation, long seq) {
-        this(context, address, token, conversation, seq, RemoteApi::new);
+        this(context, address, token, conversation, seq, value -> new RemoteApi(context, value));
     }
 
     InlineRemoteImages(Context context, String address, String token, String conversation, long seq,

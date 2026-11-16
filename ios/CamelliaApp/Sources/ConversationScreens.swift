@@ -1218,10 +1218,12 @@ struct ConversationDetailView: View {
                     // the shared one-line connection status follows it.
                     RemoteStatusBars().environmentObject(model)
                     RemoteBackgroundBar().environmentObject(model)
-                    Composer(onAttach: { showAttachPanel = true },
-                             onModelPicker: { remotePopup = .models },
-                             onPermission: { remotePopup = .permissions })
-                        .environmentObject(model)
+                    if !model.isArchivedConversation {
+                        Composer(onAttach: { showAttachPanel = true },
+                                 onModelPicker: { remotePopup = .models },
+                                 onPermission: { remotePopup = .permissions })
+                            .environmentObject(model)
+                    }
                     StreamBar().environmentObject(model)
                 }
             }
@@ -2356,7 +2358,7 @@ struct Composer: View {
                                   sendOnReturn: model.preferences.enterMode == .send,
                                   maxUTF16Length: Self.draftLimit,
                                   onSubmit: { if canSend { model.send() } })
-                        .disabled(model.hasPendingDetailOperation || model.commandBusy)
+                        .disabled(model.hasPendingDetailOperation || model.commandBusy || model.isArchivedConversation)
                     // Android sets a hint on the same field rather than drawing
                     // one beside it, so the invitation sits on the first line,
                     // in the muted tone, and goes when there is a draft.

@@ -835,9 +835,9 @@ test('malformed records late in a streamed transcript stop confirmation without 
   assert.equal(harness.cleaner.preview, null);
 });
 
-test('an oversized individual JSON record fails closed instead of buffering unbounded data', async context => {
+test('oversized legacy rows retain escaped references and permit automatic and confirmed cleanup', async context => {
   const harness = setup(context);
-  const attachment = harness.attachment();
+  const retained = harness.attachment(), unused = remoteAttachment(harness);
   harness.conversation('live');
   const preview = await harness.cleaner.scan();
   const file = path.join(harness.dataDir, 'conversations/live.jsonl');
@@ -846,8 +846,24 @@ test('an oversized individual JSON record fails closed instead of buffering unbo
     fs.writeSync(descriptor, '{"text":"');
     const block = Buffer.alloc(1024 * 1024, 'x');
     for (let index = 0; index < 33; index += 1) fs.writeSync(descriptor, block);
-    fs.writeSync(descriptor, '"}');
+    // The complete path, including its identifier, is only discoverable after
+    // decoding escapes late in this record. It is not in the raw byte stream.
+    const reference = [...retained].map(char => '\\u' + char.charCodeAt(0).toString(16).padStart(4, '0')).join('');
+    fs.writeSync(descriptor, reference + '"}');
   } finally { fs.closeSync(descriptor); }
-  await assert.rejects(harness.cleaner.clean(preview.token), /reference JSON record is too large/);
-  assert.ok(fs.existsSync(attachment));
+  const readFile = fs.readFileSync;
+  context.mock.method(fs, 'readFileSync', (target, ...args) => {
+    assert.notEqual(target, file, 'a giant history row must not be materialized');
+    return readFile(target, ...args);
+  });
+  const sweep = await harness.cleaner.sweepAttachments();
+  assert.equal(sweep.files, 1); assert.ok(!fs.existsSync(unused));
+  // Manual confirmation also rechecks the new giant record, rather than using
+  // the preview from before the reference appeared.
+  const result = await harness.cleaner.clean(preview.token);
+  assert.equal(result.files, 0); assert.ok(fs.existsSync(retained));
+  fs.appendFileSync(file, '\n{"truncated":"' + 'x'.repeat(33 * 1024 * 1024));
+  remoteAttachment(harness);
+  await assert.rejects(harness.cleaner.sweepAttachments(), /reference JSON/);
+  assert.ok(fs.existsSync(retained));
 });

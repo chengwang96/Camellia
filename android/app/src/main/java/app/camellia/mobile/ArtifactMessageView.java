@@ -13,7 +13,6 @@ import android.widget.LinearLayout;
 import android.widget.TextView;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Locale;
 
 @android.annotation.SuppressLint("ViewConstructor")
 final class ArtifactMessageView extends LinearLayout {
@@ -34,7 +33,8 @@ final class ArtifactMessageView extends LinearLayout {
         setClipToOutline(true);
         setPadding(style.dp(1), style.dp(1), style.dp(1), style.dp(1));
         List<String> files = new ArrayList<>(names);
-        files.sort(java.util.Comparator.comparingInt(name -> priority(kind(name), extension(name))));
+        files.sort(java.util.Comparator.comparingInt(name ->
+            priority(ArtifactReferences.kind(name), ArtifactReferences.extension(name))));
         LinearLayout overflow = new LinearLayout(context); overflow.setOrientation(VERTICAL);
         for (int index = 0; index < files.size(); index++) {
             LinearLayout parent = index < VISIBLE_LIMIT ? this : overflow;
@@ -82,7 +82,7 @@ final class ArtifactMessageView extends LinearLayout {
 
     private LinearLayout fileRow(String reference, java.util.function.Consumer<String> open) {
         String name = ArtifactReferences.name(reference);
-        String kind = kind(name), extension = extension(name);
+        String kind = ArtifactReferences.kind(name), extension = ArtifactReferences.extension(name);
         LinearLayout row = new LinearLayout(getContext()); row.setGravity(Gravity.CENTER_VERTICAL);
         row.setPadding(style.dp(10), style.dp(9), style.dp(10), style.dp(9));
         row.setTag("artifactRow:" + name);
@@ -102,6 +102,7 @@ final class ArtifactMessageView extends LinearLayout {
         title.setSingleLine(true); title.setEllipsize(TextUtils.TruncateAt.MIDDLE); title.setTag("artifactName:" + name);
         info.addView(title);
         TextView meta = text(category(kind) + " · " + extension, Palette.TEXT_SMALL, style.muted); meta.setPadding(0, style.dp(2), 0, 0);
+        meta.setTag("artifactMeta:" + name);
         meta.setSingleLine(true); meta.setEllipsize(TextUtils.TruncateAt.END); info.addView(meta);
         TextView action = text(tr("查看", "View"), Palette.TEXT_NOTE, style.accent); action.setGravity(Gravity.CENTER);
         action.setMinHeight(style.dp(48)); action.setPadding(style.dp(10), style.dp(8), style.dp(10), style.dp(8));
@@ -111,21 +112,6 @@ final class ArtifactMessageView extends LinearLayout {
         action.setOnClickListener(view -> open.accept(reference));
         LinearLayout.LayoutParams actionParams = new LinearLayout.LayoutParams(-2, -2); actionParams.setMarginStart(style.dp(8)); row.addView(action, actionParams);
         return row;
-    }
-
-    private static String extension(String name) { return name.substring(name.lastIndexOf('.') + 1).toUpperCase(Locale.ROOT); }
-
-    private static String kind(String name) {
-        String extension = extension(name);
-        if (List.of("APK", "EXE", "MSI", "DMG", "DEB", "RPM").contains(extension)) return "package";
-        if (extension.equals("PDF")) return "pdf";
-        if (List.of("DOC", "DOCX").contains(extension)) return "word";
-        if (List.of("XLS", "XLSX", "CSV", "TSV").contains(extension)) return "spreadsheet";
-        if (List.of("PPT", "PPTX").contains(extension)) return "presentation";
-        if (List.of("PNG", "JPG", "JPEG", "GIF", "WEBP", "SVG").contains(extension)) return "image";
-        if (List.of("MP4", "M4V", "MOV", "WEBM").contains(extension)) return "video";
-        if (List.of("MP3", "WAV").contains(extension)) return "audio";
-        return "text";
     }
 
     private static int priority(String kind, String extension) {

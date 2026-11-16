@@ -23,7 +23,7 @@ function endpointPath(value, method) {
   if (management && ['GET', 'POST'].includes(method)) { if (value.includes('?')) throw new Error('Invalid management query'); return value; }
   if (method === 'POST') {
     if (value.includes('?') || !(pairing || native || url.pathname === '/v1/api-import' || url.pathname === '/v1/commands' || conversation && ['commands', 'read'].includes(conversation[1]))) throw new Error('Unsupported device endpoint');
-  } else if (method !== 'GET' || !(['/v1/status', '/v1/archived', '/v1/conversations', '/v1/conversations/events', '/v1/api-keys', '/v1/api-import'].includes(url.pathname)
+  } else if (method !== 'GET' || !(['/v1/status', '/v1/archived', '/v1/conversations', '/v1/conversations/events', '/v1/workbench', '/v1/workbench/events', '/v1/api-keys', '/v1/api-import'].includes(url.pathname)
       || native || conversation && !['commands', 'read'].includes(conversation[1]))) throw new Error('Unsupported device endpoint');
   for (const [key, entry] of url.searchParams) {
     if (!/^\d{1,12}$/.test(entry) || url.searchParams.getAll(key).length !== 1

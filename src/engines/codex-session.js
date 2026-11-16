@@ -6,6 +6,8 @@ const { StreamingSession } = require('./streaming-session');
 const { validSessionId } = require('./claude-history');
 const { CodexTitles } = require('./codex-title');
 const { announcesPendingWork } = require('../shared/pending-work');
+const { ACTIVE } = require('./native-subagents');
+const TERMINAL_CHILD_STATES = new Set(['completed', 'failed', 'stopped']);
 
 const PERMISSIONS = {
   default: { approvalPolicy: 'untrusted', sandbox: 'workspace-write' },
@@ -28,6 +30,7 @@ class CodexSession extends StreamingSession {
     this.permissions = new Map(); this.eventSeq = 0;
     this.children = new Map();
     this.childReads = new Set();
+    this.retiredChildTurns = new Map();
   }
   start(waitFor) {
     this.starting = Promise.resolve(waitFor).then(() => {
@@ -301,9 +304,15 @@ class CodexSession extends StreamingSession {
     }
     if (params.threadId !== this.sessionId && this.children.has(params.threadId)) {
       const id = params.threadId;
-      if (method === 'turn/started') this.childUpdate(id, { turnId: params.turn.id, status: 'running' });
-      if (method === 'turn/completed') this.childUpdate(id, { status: params.turn.status === 'completed' ? 'completed' : params.turn.status === 'interrupted' ? 'stopped' : 'failed', canStop: false, progress: params.turn.error?.message || undefined });
-      if (method === 'item/agentMessage/delta') this.childUpdate(id, { progress: ((this.children.get(id)?.progress || '') + params.delta).slice(-16000) });
+      const child = this.children.get(id);
+      if (method === 'turn/started' && !this.retiredChildTurns.get(id)?.has(params.turn.id)
+          && !(child.turnId === params.turn.id && TERMINAL_CHILD_STATES.has(child.status)))
+        this.childUpdate(id, { turnId: params.turn.id, status: 'running',
+          ...(child.turnId !== params.turn.id ? { result: '', progress: '', approvals: [] } : {}) });
+      if (method === 'turn/completed' && (!child.turnId || child.turnId === params.turn.id))
+        this.childUpdate(id, { turnId: params.turn.id, status: params.turn.status === 'completed' ? 'completed' : params.turn.status === 'interrupted' ? 'stopped' : 'failed', canStop: false, progress: params.turn.error?.message || undefined });
+      if (method === 'item/agentMessage/delta' && (!params.turnId || !child.turnId || params.turnId === child.turnId))
+        this.childUpdate(id, { progress: ((this.children.get(id)?.progress || '') + params.delta).slice(-16000) });
       return;
     }
     if (!this.running || params.threadId !== this.sessionId) return;
@@ -402,7 +411,8 @@ class CodexSession extends StreamingSession {
     if (this.compaction && !child) {
       this.client.write({ id, error: { code: -32600, message: 'Interactions are unavailable during compaction' } }); return;
     }
-    if ((!child && (!this.running || params.threadId !== this.sessionId || this.cancelled)) || this.dead) {
+    if ((!child && (!this.running || params.threadId !== this.sessionId || this.cancelled))
+        || child && (TERMINAL_CHILD_STATES.has(child.status) || params.turnId && child.turnId && params.turnId !== child.turnId) || this.dead) {
       this.client.write({ id, error: { code: -32600, message: 'No active turn' } }); return;
     }
     const requestId = String(id);
@@ -475,6 +485,15 @@ class CodexSession extends StreamingSession {
     const previous = this.children.get(id);
     const child = require('../shared/subagents').mergeTask(previous, { ...update, id }, { engine: 'codex' });
     if (!child) return;
+    if (previous?.turnId && child.turnId && previous.turnId !== child.turnId) {
+      const retired = this.retiredChildTurns.get(id) || new Set();
+      retired.add(previous.turnId);
+      if (retired.size > 32) retired.delete(retired.values().next().value);
+      this.retiredChildTurns.set(id, retired);
+    }
+    if (!ACTIVE.has(child.status)) { child.canStop = false; child.approvals = []; }
+    if (TERMINAL_CHILD_STATES.has(child.status))
+      for (const [requestId, request] of this.permissions) if (request.params.threadId === id) this.permissions.delete(requestId);
     if (previous && JSON.stringify({ ...previous, updatedAt: 0 }) === JSON.stringify({ ...child, updatedAt: 0 })) return;
     this.children.set(id, child);
     if (update.status && update.status !== previous?.status) this.childReads.add(id);
@@ -486,8 +505,9 @@ class CodexSession extends StreamingSession {
     approvals.push({ ...event, subagentId: id }); this.childUpdate(id, { approvals, status: 'waiting' });
   }
   async pollChildren() {
+    clearTimeout(this.childTimer);
     this.childTimer = null;
-    if (this.dead) return;
+    if (this.dead || this.childPolling) return;
     this.childPolling = true;
     for (const child of this.children.values()) {
       if (!['starting', 'running', 'waiting'].includes(child.status) && !this.childReads.has(child.id)) continue;
@@ -497,16 +517,27 @@ class CodexSession extends StreamingSession {
         if (this.dead || !this.children.has(child.id)) break;
         if (this.children.get(child.id) !== child) { this.childReads.add(child.id); continue; }
         const turn = thread.turns?.at(-1), items = turn?.items || [];
+        if (turn?.id && this.retiredChildTurns.get(child.id)?.has(turn.id)) { this.childReads.add(child.id); continue; }
         const messages = items.filter(item => item.type === 'agentMessage');
         const history = items.slice(-40).map(item => ({ type: item.type, text: item.text || item.command || item.aggregatedOutput || (item.changes || []).map(file => file.path).join('\n') }));
         const artifacts = items.flatMap(item => item.type === 'fileChange' ? (item.changes || []).map(file => ({ path: file.path })) : []);
         const waiting = (child.approvals || []).length || (thread.status?.activeFlags || []).some(flag => ['waitingOnApproval', 'waitingOnUserInput'].includes(flag));
-        const status = waiting ? 'waiting' : turn?.status === 'inProgress' ? 'running' : turn?.status === 'completed' ? 'completed'
-          : turn?.status === 'interrupted' ? 'stopped' : turn?.status === 'failed' ? 'failed' : child.status;
+        // A persisted read may still show inProgress after the native end
+        // event. That same turn cannot become live again because of disk lag.
+        const status = turn?.id === child.turnId && TERMINAL_CHILD_STATES.has(child.status) ? child.status
+          : turn?.status === 'completed' ? 'completed' : turn?.status === 'interrupted' ? 'stopped'
+          : turn?.status === 'failed' ? 'failed' : ['notLoaded', 'systemError'].includes(thread.status?.type) ? 'unavailable'
+          : waiting ? 'waiting' : turn?.status === 'inProgress' ? 'running' : child.status;
         this.childUpdate(child.id, { title: thread.name || thread.agentNickname || child.title, turnId: turn?.id || child.turnId,
           progress: messages.at(-1)?.text || child.progress, ...(status === 'completed' ? { result: messages.filter(item => item.phase === 'final_answer').map(item => item.text).join('\n\n') || messages.at(-1)?.text || child.result } : {}),
-          status, history, artifacts, canReply: thread.canAcceptDirectInput === true, canStop: turn?.status === 'inProgress' });
-      } catch (error) { this.childReads.add(child.id); this.log('Codex child status: ' + error.message); }
+          status, history, artifacts, canReply: status !== 'unavailable' && thread.canAcceptDirectInput === true, canStop: ACTIVE.has(status) && turn?.status === 'inProgress' });
+      } catch (error) {
+        if (this.dead) break;
+        this.childReads.add(child.id);
+        if (this.children.get(child.id) === child && ACTIVE.has(child.status) && !child.approvals?.length)
+          this.childUpdate(child.id, { status: 'unavailable', canStop: false, canReply: false });
+        this.log('Codex child status: ' + error.message);
+      }
     }
     this.childPolling = false;
     if (!this.dead && (this.childReads.size || [...this.children.values()].some(child => ['starting', 'running', 'waiting'].includes(child.status)))) {

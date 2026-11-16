@@ -125,12 +125,12 @@ public class WorkbenchRefreshTest extends InstrumentationTestCase {
                         root.findViewWithTag("homeContinue"));
                     assertNull(root.findViewWithTag("homeSummary"));
                     assertNotNull(root.findViewWithTag("homeRunningSection"));
-                    assertNotNull(root.findViewWithTag("homeActive:home-running"));
-                    assertNotNull(root.findViewWithTag("homeActive:home-waiting"));
-                    assertNull(root.findViewWithTag("homeRecent:home-running"));
-                    assertNull(root.findViewWithTag("homeRecent:home-waiting"));
+                    assertNotNull(root.findViewWithTag("homeActive:http://100.80.1.2:43127#home-running"));
+                    assertNotNull(root.findViewWithTag("homeActive:http://100.80.1.2:43127#home-waiting"));
+                    assertNull(root.findViewWithTag("homeRecent:http://100.80.1.2:43127#home-running"));
+                    assertNull(root.findViewWithTag("homeRecent:http://100.80.1.2:43127#home-waiting"));
                     assertNotNull(root.findViewWithTag("homeRecentSection"));
-                    assertNotNull(root.findViewWithTag("homeRecent:home-idle"));
+                    assertNotNull(root.findViewWithTag("homeRecent:http://100.80.1.2:43127#home-idle"));
                 } catch (Exception error) {
                     throw new AssertionError(error);
                 }
@@ -146,7 +146,7 @@ public class WorkbenchRefreshTest extends InstrumentationTestCase {
                 screenshot.recycle();
             }
         } finally {
-            cache.remove(credentials);
+            cache.remove(credentials); RemoteListCache.workbench(context).remove(credentials);
             new CredentialStore(context).clear();
         }
     }
@@ -193,16 +193,16 @@ public class WorkbenchRefreshTest extends InstrumentationTestCase {
                     invoke("homeScreen");
                     View root = activity.getWindow().getDecorView();
                     assertNotNull(root.findViewWithTag("homeRunningToggle"));
-                    assertNotNull(root.findViewWithTag("homeActive:running-1"));
-                    assertNotNull(root.findViewWithTag("homeActive:running-2"));
-                    assertNotNull(root.findViewWithTag("homeActive:running-3"));
+                    assertNotNull(root.findViewWithTag("homeActive:http://100.80.1.3:43127#running-1"));
+                    assertNotNull(root.findViewWithTag("homeActive:http://100.80.1.3:43127#running-2"));
+                    assertNotNull(root.findViewWithTag("homeActive:http://100.80.1.3:43127#running-3"));
                     assertNull("Only the first three running sessions show while collapsed",
-                        root.findViewWithTag("homeActive:running-4"));
-                    assertNull(root.findViewWithTag("homeActive:running-5"));
-                    assertNotNull(root.findViewWithTag("homeRecent:idle-1"));
-                    assertNotNull(root.findViewWithTag("homeRecent:idle-2"));
-                    assertNull(root.findViewWithTag("homeRecent:running-1"));
-                    assertNull(root.findViewWithTag("homeRecent:running-5"));
+                        root.findViewWithTag("homeActive:http://100.80.1.3:43127#running-4"));
+                    assertNull(root.findViewWithTag("homeActive:http://100.80.1.3:43127#running-5"));
+                    assertNotNull(root.findViewWithTag("homeRecent:http://100.80.1.3:43127#idle-1"));
+                    assertNotNull(root.findViewWithTag("homeRecent:http://100.80.1.3:43127#idle-2"));
+                    assertNull(root.findViewWithTag("homeRecent:http://100.80.1.3:43127#running-1"));
+                    assertNull(root.findViewWithTag("homeRecent:http://100.80.1.3:43127#running-5"));
                 } catch (Exception error) {
                     throw new AssertionError(error);
                 }
@@ -216,10 +216,10 @@ public class WorkbenchRefreshTest extends InstrumentationTestCase {
                 View root = activity.getWindow().getDecorView();
                 for (int index = 1; index <= 5; index++)
                     assertNotNull("Expanded running list must show row " + index,
-                        root.findViewWithTag("homeActive:running-" + index));
+                        root.findViewWithTag("homeActive:http://100.80.1.3:43127#running-" + index));
                 assertNull("Running rows must never reappear under Recent",
-                    root.findViewWithTag("homeRecent:running-3"));
-                assertNotNull(root.findViewWithTag("homeRecent:idle-1"));
+                    root.findViewWithTag("homeRecent:http://100.80.1.3:43127#running-3"));
+                assertNotNull(root.findViewWithTag("homeRecent:http://100.80.1.3:43127#idle-1"));
                 String toggle = ((TextView) root.findViewWithTag("homeRunningToggle")).getText().toString();
                 assertTrue(toggle.equals("收起") || toggle.equals("Collapse"));
             });
@@ -231,12 +231,12 @@ public class WorkbenchRefreshTest extends InstrumentationTestCase {
             getInstrumentation().waitForIdleSync();
             getInstrumentation().runOnMainSync(() -> {
                 View root = activity.getWindow().getDecorView();
-                assertNotNull(root.findViewWithTag("homeActive:running-3"));
-                assertNull(root.findViewWithTag("homeActive:running-4"));
-                assertNotNull(root.findViewWithTag("homeRecent:idle-2"));
+                assertNotNull(root.findViewWithTag("homeActive:http://100.80.1.3:43127#running-3"));
+                assertNull(root.findViewWithTag("homeActive:http://100.80.1.3:43127#running-4"));
+                assertNotNull(root.findViewWithTag("homeRecent:http://100.80.1.3:43127#idle-2"));
             });
         } finally {
-            cache.remove(credentials);
+            cache.remove(credentials); RemoteListCache.workbench(context).remove(credentials);
             new CredentialStore(context).clear();
         }
     }
@@ -287,6 +287,13 @@ public class WorkbenchRefreshTest extends InstrumentationTestCase {
                     field("screen", "home");
                     field("homeRefreshAt", 0L);
                     field("homeClientFactory", (Function<String, RemoteApi>) address -> new RemoteApi(address) {
+                        final java.util.concurrent.CountDownLatch closed = new java.util.concurrent.CountDownLatch(1);
+                        @Override void workbenchEvents(String token, SnapshotListener listener, SseReader.HeartbeatListener heartbeat) throws java.io.IOException {
+                            try { listener.onSnapshot(new JSONObject().put("workbench", json("/v1/workbench", token, null))); closed.await(); }
+                            catch (InterruptedException error) { Thread.currentThread().interrupt(); }
+                            catch (Exception error) { throw new java.io.IOException(error); }
+                        }
+                        @Override public void cancel() { closed.countDown(); }
                         @Override public JSONObject json(String path, String token, JSONObject payload) {
                             try {
                                 return new JSONObject().put("conversations", new JSONArray().put(new JSONObject()
@@ -305,7 +312,7 @@ public class WorkbenchRefreshTest extends InstrumentationTestCase {
             });
             JSONObject updated = null;
             for (int attempt = 0; attempt < 80; attempt++) {
-                JSONObject saved = cache.get(credentials);
+                JSONObject saved = RemoteListCache.workbench(context).get(credentials);
                 JSONArray rows = saved == null ? null : saved.optJSONArray("conversations");
                 if (rows != null && rows.length() > 0 && rows.getJSONObject(0).optString("activity").equals("idle")) {
                     updated = rows.getJSONObject(0);
@@ -316,7 +323,7 @@ public class WorkbenchRefreshTest extends InstrumentationTestCase {
             assertNotNull("Home should refresh its stale conversation cache", updated);
             assertEquals("idle", updated.optString("activity"));
         } finally {
-            cache.remove(credentials);
+            cache.remove(credentials); RemoteListCache.workbench(context).remove(credentials);
             new CredentialStore(context).clear();
         }
     }
@@ -330,8 +337,8 @@ public class WorkbenchRefreshTest extends InstrumentationTestCase {
         java.util.concurrent.CountDownLatch readEntered = new java.util.concurrent.CountDownLatch(1);
         java.util.concurrent.CountDownLatch releaseRead = new java.util.concurrent.CountDownLatch(1);
         RemoteApi.SnapshotListener[] listener = new RemoteApi.SnapshotListener[1];
-        RemoteConversationSync sync = new RemoteConversationSync(address -> new RemoteApi(address) {
-            @Override public void listEvents(String token, SnapshotListener callback) throws java.io.IOException {
+        RemoteWorkbenchSync sync = new RemoteWorkbenchSync(address -> new RemoteApi(address) {
+            @Override void workbenchEvents(String token, SnapshotListener callback, SseReader.HeartbeatListener heartbeat) throws java.io.IOException {
                 listener[0] = callback;
                 opened.countDown();
                 try { closed.await(); }
@@ -347,8 +354,8 @@ public class WorkbenchRefreshTest extends InstrumentationTestCase {
         try {
             getInstrumentation().runOnMainSync(() -> {
                 try {
-                    ((RemoteConversationSync) field("conversationSync")).close();
-                    field("conversationSync", sync);
+                    ((RemoteWorkbenchSync) field("homeSync")).close();
+                    field("homeSync", sync);
                     field("credentials", credentials);
                     field("homeRefreshAt", 0L);
                     field("homeClientFactory", (Function<String, RemoteApi>) address -> new RemoteApi(address) {
@@ -360,45 +367,36 @@ public class WorkbenchRefreshTest extends InstrumentationTestCase {
                     });
                     field("foreground", false);
                     invoke("homeScreen");
-                    assertNotNull(activity.getWindow().getDecorView().findViewWithTag("homeActive:live-home"));
+                    assertNotNull(activity.getWindow().getDecorView().findViewWithTag("homeActive:http://100.80.1.2:43127#live-home"));
                     field("foreground", true);
-                    invoke("startConversationSync");
+                    invoke("refreshHomeConversations");
                     invoke("refreshHomeConversations");
                 } catch (Exception error) { throw new AssertionError(error); }
             });
             assertTrue("Home should subscribe without an open conversation", opened.await(3, java.util.concurrent.TimeUnit.SECONDS));
-            assertTrue(readEntered.await(3, java.util.concurrent.TimeUnit.SECONDS));
+            assertEquals("Summary streams do not fetch a redundant full list", 1L, readEntered.getCount());
             JSONArray idle = new JSONArray().put(new JSONObject(running.getJSONObject(0).toString()).put("activity", ""));
-            listener[0].onSnapshot(new JSONObject().put("conversationList", new JSONObject()
+            listener[0].onSnapshot(new JSONObject().put("workbench", new JSONObject()
                 .put("conversations", idle).put("nextOffset", JSONObject.NULL)
                 .put("workspaces", new JSONArray()).put("includeUnassigned", true)));
             getInstrumentation().waitForIdleSync();
             releaseRead.countDown();
-            for (int attempt = 0; attempt < 80; attempt++) {
-                final boolean[] busy = { true };
-                getInstrumentation().runOnMainSync(() -> {
-                    try { busy[0] = (boolean) field("homeRefreshBusy"); }
-                    catch (Exception error) { throw new AssertionError(error); }
-                });
-                if (!busy[0]) break;
-                android.os.SystemClock.sleep(25);
-            }
             getInstrumentation().waitForIdleSync();
             getInstrumentation().runOnMainSync(() -> {
                 View root = activity.getWindow().getDecorView();
-                assertNull("A desktop completion must remove the running row without navigation", root.findViewWithTag("homeActive:live-home"));
-                assertNotNull("The completed conversation must move to recent", root.findViewWithTag("homeRecent:live-home"));
+                assertNull("A desktop completion must remove the running row without navigation", root.findViewWithTag("homeActive:http://100.80.1.2:43127#live-home"));
+                assertNotNull("The completed conversation must move to recent", root.findViewWithTag("homeRecent:http://100.80.1.2:43127#live-home"));
                 try { invoke("settingsScreen"); }
                 catch (Exception error) { throw new AssertionError(error); }
             });
             assertTrue("Leaving Home must close the subscription", closed.await(3, java.util.concurrent.TimeUnit.SECONDS));
-            listener[0].onSnapshot(new JSONObject().put("conversationList", new JSONObject().put("conversations", running)));
+            listener[0].onSnapshot(new JSONObject().put("workbench", new JSONObject().put("conversations", running)));
             getInstrumentation().waitForIdleSync();
             getInstrumentation().runOnMainSync(() -> {
                 try { assertEquals("settings", field("screen")); }
                 catch (Exception error) { throw new AssertionError(error); }
             });
-        } finally { releaseRead.countDown(); sync.close(); cache.remove(credentials); }
+        } finally { releaseRead.countDown(); sync.close(); cache.remove(credentials); RemoteListCache.workbench(context).remove(credentials); }
     }
 
     public void testHomeResubscribesAndRefreshesAfterReturningFromBackground() throws Exception {
@@ -416,13 +414,13 @@ public class WorkbenchRefreshTest extends InstrumentationTestCase {
         var firstClosed = new java.util.concurrent.CountDownLatch(1);
         var resumed = new java.util.concurrent.CountDownLatch(1);
         RemoteApi.SnapshotListener[] oldListener = new RemoteApi.SnapshotListener[1];
-        RemoteConversationSync sync = new RemoteConversationSync(address -> new RemoteApi(address) {
+        RemoteWorkbenchSync sync = new RemoteWorkbenchSync(address -> new RemoteApi(address) {
             final java.util.concurrent.CountDownLatch closed = new java.util.concurrent.CountDownLatch(1);
-            @Override public void listEvents(String token, SnapshotListener listener) throws java.io.IOException {
+            @Override void workbenchEvents(String token, SnapshotListener listener, SseReader.HeartbeatListener heartbeat) throws java.io.IOException {
                 int start = starts.incrementAndGet();
                 if (start == 1) oldListener[0] = listener;
                 try {
-                    listener.onSnapshot(new JSONObject().put("conversationList", new JSONObject()
+                    listener.onSnapshot(new JSONObject().put("workbench", new JSONObject()
                         .put("conversations", latest.get()).put("nextOffset", JSONObject.NULL)));
                     if (start == 1) firstOpened.countDown(); else resumed.countDown();
                     closed.await();
@@ -436,8 +434,8 @@ public class WorkbenchRefreshTest extends InstrumentationTestCase {
         try {
             getInstrumentation().runOnMainSync(() -> {
                 try {
-                    ((RemoteConversationSync) field("conversationSync")).close();
-                    field("conversationSync", sync);
+                    ((RemoteWorkbenchSync) field("homeSync")).close();
+                    field("homeSync", sync);
                     field("credentials", credentials);
                     field("homeClientFactory", (Function<String, RemoteApi>) address -> new RemoteApi(address) {
                         @Override public JSONObject json(String path, String token, JSONObject payload) throws java.io.IOException {
@@ -451,7 +449,7 @@ public class WorkbenchRefreshTest extends InstrumentationTestCase {
             assertTrue(firstOpened.await(3, java.util.concurrent.TimeUnit.SECONDS));
             getInstrumentation().waitForIdleSync();
             getInstrumentation().runOnMainSync(() -> {
-                assertNotNull(activity.getWindow().getDecorView().findViewWithTag("homeActive:resumed-home"));
+                assertNotNull(activity.getWindow().getDecorView().findViewWithTag("homeActive:http://100.80.1.2:43127#resumed-home"));
                 getInstrumentation().callActivityOnPause(activity);
                 getInstrumentation().callActivityOnStop(activity);
             });
@@ -466,15 +464,15 @@ public class WorkbenchRefreshTest extends InstrumentationTestCase {
             assertTrue("Returning to Home must open a new live subscription",
                 resumed.await(3, java.util.concurrent.TimeUnit.SECONDS));
             getInstrumentation().waitForIdleSync();
-            oldListener[0].onSnapshot(new JSONObject().put("conversationList", new JSONObject().put("conversations", running)));
+            oldListener[0].onSnapshot(new JSONObject().put("workbench", new JSONObject().put("conversations", running)));
             getInstrumentation().waitForIdleSync();
             getInstrumentation().runOnMainSync(() -> {
                 View root = activity.getWindow().getDecorView();
-                assertNull("A run completed in the background must no longer be Running", root.findViewWithTag("homeActive:resumed-home"));
-                assertNotNull("The fresh snapshot must move the completed conversation to Recent", root.findViewWithTag("homeRecent:resumed-home"));
+                assertNull("A run completed in the background must no longer be Running", root.findViewWithTag("homeActive:http://100.80.1.2:43127#resumed-home"));
+                assertNotNull("The fresh snapshot must move the completed conversation to Recent", root.findViewWithTag("homeRecent:http://100.80.1.2:43127#resumed-home"));
             });
             assertEquals(2, starts.get());
-        } finally { sync.close(); cache.remove(credentials); }
+        } finally { sync.close(); cache.remove(credentials); RemoteListCache.workbench(context).remove(credentials); }
     }
 
     public void testWideDetailBuildsTheConversationSidebar() throws Exception {
@@ -548,7 +546,7 @@ public class WorkbenchRefreshTest extends InstrumentationTestCase {
                 }
             });
         } finally {
-            cache.remove(credentials);
+            cache.remove(credentials); RemoteListCache.workbench(context).remove(credentials);
             new CredentialStore(context).clear();
         }
     }
@@ -630,7 +628,7 @@ public class WorkbenchRefreshTest extends InstrumentationTestCase {
                 screenshot.recycle();
             }
         } finally {
-            cache.remove(credentials);
+            cache.remove(credentials); RemoteListCache.workbench(context).remove(credentials);
             new CredentialStore(context).clear();
         }
     }
@@ -737,7 +735,7 @@ public class WorkbenchRefreshTest extends InstrumentationTestCase {
                     });
                 } finally { before[0].recycle(); }
             }
-        } finally { cache.remove(credentials); }
+        } finally { cache.remove(credentials); RemoteListCache.workbench(context).remove(credentials); }
     }
 
     public void testHeldNavigationFeedbackKeepsRoundedCorners() throws Exception {

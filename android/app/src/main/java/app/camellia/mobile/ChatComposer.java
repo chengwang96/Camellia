@@ -16,6 +16,7 @@ final class ChatComposer {
     final ComposerInput input;
     final TextView model;
     final ImageButton send, stop;
+    private final LinearLayout bar;
     private final LinearLayout tools, editing;
     private final View toolSpacer;
     private final ImageButton cancelEdit;
@@ -26,7 +27,12 @@ final class ChatComposer {
     ChatComposer(LinearLayout bar, ChatStyle style, boolean chinese, String hint, int limit,
                  Runnable onModel, Runnable onSend, Runnable onStop, Runnable onCancelEdit) {
         context = bar.getContext(); this.chinese = chinese;
+        this.bar = bar;
         bar.setOrientation(LinearLayout.VERTICAL);
+        // The dock can leave room for this bar's shadow, but its children must
+        // clip to their bounds so a horizontal attachment row cannot draw out.
+        bar.setClipChildren(true);
+        bar.setClipToPadding(true);
         bar.setPadding(dp(8), dp(6), dp(8), dp(6));
         GradientDrawable shape = style.floatingBar(bar);
         editing = new LinearLayout(context); editing.setGravity(Gravity.CENTER_VERTICAL);
@@ -82,6 +88,8 @@ final class ChatComposer {
     void addTool(View tool) {
         addTool(tool, 48);
     }
+
+    LinearLayout bar() { return bar; }
 
     void addTool(View tool, int widthDp) {
         int width = widthDp < 0 ? widthDp : dp(widthDp);

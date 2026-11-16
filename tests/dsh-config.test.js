@@ -15,6 +15,29 @@ function setup(t, source = '') {
   return { home, file, read: () => YAML.parse(fs.readFileSync(file, 'utf8'), { merge: true }) };
 }
 
+test('DSH desktop path-only runtimes install the same child lifecycle observer as server runtimes', t => {
+  const h = setup(t);
+  const file = path.join(h.home, 'runtime', 'lib', 'bin.js');
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const build = runtime => dshAcpSpec({ runtime, home: h.home, model: 'fixture',
+    route: { baseUrl: 'http://localhost:8788' }, env: {} });
+  for (const version of ['0.2.2-rc.1', '0.10.0', '1.0.0']) {
+    fs.writeFileSync(path.join(h.home, 'runtime', 'package.json'), JSON.stringify({ version }));
+    const desktop = build({ file });
+    const server = build({ file, version });
+    assert.equal(desktop.nativeSubagentEvents, true, version);
+    assert.equal(server.nativeSubagentEvents, true, version);
+    assert.deepEqual(desktop.args, server.args);
+    const observer = path.join(h.home, 'camellia-subagents.patch.yml');
+    assert.ok(desktop.args.includes(observer));
+    const patch = YAML.parse(fs.readFileSync(observer, 'utf8'));
+    assert.deepEqual(patch[0].insert[0].inject, ['agents', 'subagents']);
+    assert.ok(patch[0].insert[0].name.endsWith('dsh-subagents.mjs'));
+  }
+  fs.writeFileSync(path.join(h.home, 'runtime', 'package.json'), JSON.stringify({ version: '0.1.5-rc.2' }));
+  assert.equal(build({ file }).nativeSubagentEvents, false, 'legacy runtimes keep tool-based observation');
+});
+
 test('DSH API models declare image input and ACP initializes against the selected pool model', t => {
   const h = setup(t);
   const nativeConfig = { acp: { provider: 'personal', model: 'old', sessionListPageSize: 10 } };

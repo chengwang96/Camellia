@@ -118,6 +118,7 @@ function message(row) {
   const visualizations = visualizationsFromProcess(process);
   return { seq: row.seq, role: row.role, engine: row.engine, at: row.at, ...text(value), ...(compaction ? { compaction } : {}),
     ...(turnDetails ? { turnDetails } : {}),
+    ...(Array.isArray(row.sources) && row.sources.length ? { sources: row.sources } : {}),
     ...(process.length ? { process } : {}), ...(visualizations.length ? { visualizations } : {}),
     ...(attachedFiles.length ? { attachedFiles } : {}) };
 }
@@ -183,6 +184,28 @@ class RemoteReadModel {
     if (!conversation || !this.allowed(device, conversation)) fail(404, 'Conversation not found');
     return conversation;
   }
+  conversationState(device, conversation) {
+    const archivedAt = this.manager.workspaces.sessionMeta().archived[conversation.id] || 0;
+    return { permission: archivedAt ? 'read' : device.permission,
+      ...(archivedAt ? { archived: { at: archivedAt } } : {}) };
+  }
+  // The one write an archived detail page may perform. Restoring ends the
+  // read-only state; every other command still goes through conversation().
+  canRestore(device, conversation) {
+    return device.permission === 'control'
+      && Boolean(this.manager.workspaces.sessionMeta().archived[conversation.id]);
+  }
+  // Archived conversations are readable, but they are not a second control
+  // surface. The stream checks this rather than `allowed()` so a heartbeat does
+  // not turn an intentionally read-only transcript into a 404.
+  readable(device, conversation, meta = this.manager.workspaces.sessionMeta()) {
+    return this.allowed(device, conversation, meta, true);
+  }
+  readableConversation(device, id) {
+    const conversation = this.manager.items.get(id);
+    if (!conversation || !this.readable(device, conversation)) fail(404, 'Conversation not found');
+    return conversation;
+  }
   archived(device, offset = 0) {
     const meta = this.manager.workspaces.sessionMeta();
     const entries = [...this.manager.items.values()].filter(conversation => meta.archived[conversation.id] && this.allowed(device, conversation, meta, true))
@@ -212,7 +235,8 @@ class RemoteReadModel {
       engine: conversation.currentEngine, model, modelName, pinned: Boolean(meta.pinned[conversation.id]), workspaceId: meta.sessionWorkspace[conversation.id] || null,
       workspaceName: meta.workspaces.find(workspace => workspace.id === meta.sessionWorkspace[conversation.id])?.name || null,
       updatedAt: conversation.updatedAt, seq: conversation.seq, lastReplyAt: conversation.lastReplyAt || 0, replyReadAt: conversation.replyReadAt || 0,
-      activity: this.manager.activity(conversation.id), ...(backgroundWork ? { backgroundWork } : {}), ...(filePreview ? { filePreview } : {}) };
+      activity: this.manager.activity(conversation.id), ...(meta.archived[conversation.id] ? { archivedAt: meta.archived[conversation.id] } : {}),
+      ...(backgroundWork ? { backgroundWork } : {}), ...(filePreview ? { filePreview } : {}) };
   }
   list(device, offset = 0, limit = 100, query = '') {
     const meta = this.manager.workspaces.sessionMeta();
@@ -229,6 +253,26 @@ class RemoteReadModel {
     return { conversations: conversations.slice(offset, offset + limit).map(conversation => this.summary(conversation, meta, true)),
       query, nextOffset: conversations.length > offset + limit ? offset + limit : null };
   }
+  workbench(device) {
+    const meta = this.manager.workspaces.sessionMeta();
+    const entries = [...this.manager.items.values()]
+      .filter(conversation => this.allowed(device, conversation, meta))
+      .sort((left, right) => right.updatedAt - left.updatedAt || left.id.localeCompare(right.id));
+    const active = [], recent = [];
+    for (const conversation of entries) {
+      const activity = this.manager.activity(conversation.id);
+      const backgroundTaskCount = (this.manager.backgroundStatus?.(conversation.id)?.tasks || []).filter(task => task?.id).length;
+      const running = ['running', 'permission', 'question'].includes(activity) || backgroundTaskCount > 0;
+      if (!running && recent.length >= 10) continue;
+      const summary = this.summary(conversation, meta);
+      // Home never needs transcripts, file previews, task commands or stream counters.
+      const { id, title, engine, model, modelName, workspaceName, updatedAt } = summary;
+      (running ? active : recent).push({ id, title, engine, model, modelName, workspaceName, updatedAt, activity, backgroundTaskCount });
+    }
+    const conversations = [...active, ...recent];
+    const listVersion = createHash('sha256').update(JSON.stringify(conversations)).digest('hex');
+    return { conversations, listVersion };
+  }
   listSnapshot(device) {
     const meta = this.manager.workspaces.sessionMeta();
     const hash = createHash('sha256');
@@ -242,7 +286,10 @@ class RemoteReadModel {
     return { listVersion: hash.digest('hex') };
   }
   snapshot(device, id, before, previousHistoryVersion) {
-    const conversation = this.conversation(device, id);
+    const conversation = this.manager.items.get(id);
+    if (!conversation || !this.readable(device, conversation)) fail(404, 'Conversation not found');
+    const state = this.conversationState(device, conversation);
+    const permission = state.permission;
     const info = this.manager.remoteHistoryRows && this.manager.historyInfo(conversation);
     const transcript = info ? [] : (this.manager.rows ? this.manager.rows(conversation) : this.manager.messages(conversation))
       .filter(row => !row.internal && ['user', 'assistant', 'notice', 'tool'].includes(row.role));
@@ -270,7 +317,7 @@ class RemoteReadModel {
     const live = !before && active && !active.internal ? { runId: active.facade.gen, eventSeq: active.eventSeq,
       startedAt: active.startedAt, userSeq: active.userSeq, ...text(output ? output.text : active.text || active.assistant.join('\n\n')),
       ...(output?.process.length ? { process: output.process } : {}),
-      pendingApprovals: active.permissions.size, approvals: device.permission === 'control' ? [...active.permissions.values()].map(approval) : [] } : null;
+      pendingApprovals: active.permissions.size, approvals: permission === 'control' ? [...active.permissions.values()].map(approval) : [] } : null;
     const goal = this.manager.goalFor?.(id)?.view();
     const selected = active?.settings || this.manager.settings(conversation.currentEngine, id);
     const pressure = this.manager.contextPressure?.(conversation, conversation.currentEngine, selected, active);
@@ -279,22 +326,25 @@ class RemoteReadModel {
     const subagents = boundedSubtasks((this.manager.subagentView?.(id) || []).filter(task => !task.managedConversationId
       || this.manager.items.has(task.managedConversationId) && this.allowed(device, this.manager.items.get(task.managedConversationId))).map(task => {
       const { artifacts, approvals, ...rest } = task;
-      return { ...rest, approvals: device.permission === 'control' ? approvals : [],
-        pendingApprovals: approvals.length, canReply: device.permission === 'control' && task.canReply,
-        canStop: device.permission === 'control' && task.canStop };
+      return { ...rest, approvals: permission === 'control' ? approvals : [],
+        pendingApprovals: approvals.length, canReply: permission === 'control' && task.canReply,
+        canStop: permission === 'control' && task.canStop };
     }));
-    return { conversation: this.summary(conversation), historyVersion, ...(unchanged ? {} : { messages, nextBefore }), live, permission: device.permission,
+    return { conversation: this.summary(conversation), historyVersion, ...(unchanged ? {} : { messages, nextBefore }), live, permission,
+      canRestore: this.canRestore(device, conversation),
+      ...(state.archived ? { archived: state.archived } : {}),
       subagents,
       preparation: start && !start.cancelled && typeof start.startId === 'string' ? { startId: start.startId } : null,
       compaction,
       ...(pressure ? { context: { used: Math.max(0, Math.round(pressure.used)), cap: pressure.cap, source: pressure.source,
         compacting: compaction?.state === 'running', compactionState: compaction?.state || '' } } : {}),
-      ...(this.manager.remoteQueue ? this.manager.remoteQueue.snapshot(id, { redactAttachments: true }) : {}),
-      queueSteering: device.permission === 'control' && goal?.id && goal.armed && goal.phase === 'active'
+      ...(permission === 'control' && this.manager.remoteQueue
+        ? this.manager.remoteQueue.snapshot(id, { redactAttachments: true }) : {}),
+      queueSteering: permission === 'control' && goal?.id && goal.armed && goal.phase === 'active'
         ? { goalId: goal.id } : null,
       automation: { goal: mobileGoal(goal, transcript, info),
         tasks: (this.manager.tasks?.list(id) || []).map(task => ({ id: task.id, instruction: String(task.instruction || '').slice(0, 500), status: task.status, state: task.state, intervalMinutes: task.intervalMinutes, lastResult: String(task.lastResult || '').slice(0, 600) })) },
-      ...(device.permission === 'control' ? { settings: settingsView(this.manager, conversation) } : {}),
+      ...(permission === 'control' ? { settings: settingsView(this.manager, conversation) } : {}),
       };
   }
 }

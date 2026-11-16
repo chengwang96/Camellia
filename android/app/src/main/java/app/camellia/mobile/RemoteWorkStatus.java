@@ -16,6 +16,22 @@ final class RemoteWorkStatus {
         return label(zh, "等待审批", "Waiting for approval");
     }
 
+    static String goal(JSONObject goal, boolean zh) {
+        String phase = goal.optString("phase");
+        boolean running = phase.equals("active") && goal.optBoolean("armed");
+        if (phase.equals("complete")) return label(zh, "目标已完成", "Goal complete");
+        if (phase.equals("blocked")) return label(zh, "目标受阻", "Goal blocked");
+        if (running && goal.optJSONObject("waiting") != null) return label(zh, "目标等待中", "Goal waiting");
+        return running ? label(zh, "目标进行中", "Goal running") : label(zh, "目标已暂停", "Goal paused");
+    }
+
+    static String automation(JSONObject goal, JSONArray tasks, boolean zh) {
+        String value = goal == null ? "" : goal(goal, zh);
+        int count = size(tasks);
+        if (count > 0) value += (value.isEmpty() ? "" : " · ") + label(zh, "定时任务 " + count, "Scheduled tasks " + count);
+        return value;
+    }
+
     /** The tasks the desktop still runs after its reply, or null when it sent none. */
     private static JSONArray backgroundTasks(JSONObject conversation) {
         JSONObject work = conversation == null ? null : conversation.optJSONObject("backgroundWork");
@@ -25,6 +41,7 @@ final class RemoteWorkStatus {
     /** How many background tasks are still running, ignoring malformed entries. */
     static int backgroundCount(JSONObject conversation) {
         JSONArray tasks = backgroundTasks(conversation);
+        if (tasks == null && conversation != null) return Math.max(0, conversation.optInt("backgroundTaskCount"));
         int count = 0;
         for (int i = 0; i < size(tasks); i++) {
             JSONObject task = tasks.optJSONObject(i);

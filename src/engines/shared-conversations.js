@@ -26,6 +26,7 @@ const { buildHistoryIndex, searchHistory: matchHistory } = require('../main/conv
 const { previewKind } = require('../main/file-preview');
 const { subscriptionFailure, subscriptionRecoveryMessage, availableAccount } = require('./subscription-recovery');
 const { memoryInstructions } = require('./global-memory');
+const { windowsExecutionInstructions } = require('./windows-execution');
 const { ConversationHistory, FLAGS: HISTORY_FLAGS, contextRow: historyContextRow } = require('./conversation-history');
 const { snapshotForConversation, eventsForConversation, nodeForConversation } = require('./context-ledger');
 const { graphForConversation } = require('./agent-context');
@@ -57,6 +58,77 @@ const usageTotal = usage => USAGE_KEYS.reduce((total, key) => total + (usage?.[k
 // manual recovery instead of treating a valid legacy record as corrupt.
 const LEGACY_ENGINES = new Set(['pi']);
 const presentationInstructions = 'Camellia media presentation: To intentionally show an image or video in the conversation, put ![concise alt text](media-path) in the final response at the desired location. Images and videos use this same Markdown syntax; a supported video extension such as .mp4, .webm, .mov or .m4v makes the result an inline player. Use an absolute path or a workspace-relative path, wrapping paths with spaces in <...>. Only this explicit Markdown image syntax requests an inline preview. For media that is merely an output artifact, use a normal [label](path) link instead; never turn file references or media-reading tool results into inline previews automatically.\n\n';
+
+// Store a compact citation snapshot on the assistant row. Rendering can then
+// recover numbered sources even after the tool process entry is trimmed from a
+// long transcript. Keys follow the renderer's normalization so a model-written
+// URL with a missing scheme, case difference, fragment or tracking parameter
+// still matches.
+const SOURCE_TRACKING = new Set([
+  'gclid', 'dclid', 'fbclid', 'msclkid', 'mc_cid', 'mc_eid', 'igshid',
+  'ref', 'ref_src', 'ref_url', 'spm', 'scm', 'share_source', 'share_medium',
+  'utm_source', 'utm_medium', 'utm_campaign', 'utm_term', 'utm_content', 'utm_id',
+]);
+function sourceUrlKey(value) {
+  const raw = String(value || '').trim();
+  if (!raw || /[\x00-\x1f\x7f]/.test(raw)) return '';
+  let url;
+  try {
+    if (/^https?:\/\//i.test(raw)) url = new URL(raw);
+    else if (/^www\./i.test(raw)) url = new URL('https://' + raw);
+    else if (/^[a-z][a-z\d+.-]*:/i.test(raw)) return '';
+    else url = new URL('https://' + raw);
+  } catch { return ''; }
+  if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) return '';
+  url.protocol = 'https:';
+  url.hostname = url.hostname.toLowerCase().replace(/^www\./, '');
+  for (const name of [...url.searchParams.keys()]) {
+    if (SOURCE_TRACKING.has(name.toLowerCase())) url.searchParams.delete(name);
+  }
+  url.hash = '';
+  url.pathname = url.pathname.replace(/\/+$/, '') || '/';
+  return url.href;
+}
+function sourceSnapshot(process) {
+  const sources = [];
+  const seen = new Set();
+  for (const entry of Array.isArray(process) ? process : []) {
+    if (entry?.type !== 'tool' || entry.title !== 'camellia_web_search') continue;
+    let output;
+    try {
+      output = entry.text;
+      for (let depth = 0; depth < 8; depth += 1) {
+        if (typeof output === 'string') { output = JSON.parse(output); continue; }
+        if (Array.isArray(output?.content)) {
+          output = output.content.filter(item => item && (item.type === 'text' || item.type === undefined)
+            && typeof item.text === 'string').map(item => item.text).join('\n');
+          continue;
+        }
+        break;
+      }
+    }
+    catch { continue; }
+    if (!output || output.ok === false || !Array.isArray(output.results)) continue;
+    for (const row of output.results) {
+      if (!row || typeof row.url !== 'string' || typeof row.title !== 'string') continue;
+      const key = sourceUrlKey(row.url);
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      let site = '';
+      try { site = new URL(key).hostname; } catch {}
+      sources.push({
+        index: sources.length + 1,
+        title: String(row.title).slice(0, 2048),
+        url: String(row.url),
+        key,
+        site,
+        summary: typeof row.summary === 'string' ? row.summary.slice(0, 4000) : '',
+        date: typeof row.date === 'string' ? row.date.slice(0, 80) : '',
+      });
+    }
+  }
+  return sources;
+}
 
 // History hits are prepended to the filesystem reply, each labelled with the
 // conversation that produced it, so the user recognizes where the file came
@@ -209,6 +281,8 @@ class SharedConversations {
   constructor({ dir, skillsDir, portableSkills = false, visualize = true, loadConfig, saveConfig, drivers, onEvent = () => {}, onGoal = () => {}, onStatus = () => {}, prepare = async () => {}, assertAvailable = () => {}, generateTitle = async () => '', summarize, log = () => {}, modelContextWindow = () => undefined, contextRoute = () => '', contextCapacity, conversationModels = () => [], createGoalBridge, webTools, activateSkillInstallation, deactivateSkillInstallation, stopTimeoutMs = 12000 }) {
     Object.assign(this, { dir, loadConfig, saveConfig, drivers, onEvent, onStatus, prepare, assertAvailable, generateTitle, summarize, log, modelContextWindow, contextRoute, contextCapacity, conversationModels, activateSkillInstallation, deactivateSkillInstallation });
     this.runtimeId = randomUUID();
+    // Pools own native-session lifetimes. This routing index must not keep a
+    // released engine (and its last tool buffers) alive after idle teardown.
     this.subagentSessions = new Map();
     fs.mkdirSync(dir, { recursive: true });
     this.items = new Map(); this.legacyConversations = new Map(); this.active = new Map(); this.facades = new Map(); this.switching = new Map(); this.goals = new Map(); this.recovering = new Map(); this.sequence = 0; this.clock = 0;
@@ -491,7 +565,7 @@ class SharedConversations {
   }
 
   toolInstructions(c = null) {
-    return presentationInstructions + goalToolInstructions + this.dynamicGoalInstructions(c)
+    return presentationInstructions + windowsExecutionInstructions() + goalToolInstructions + this.dynamicGoalInstructions(c)
       + (this.webTools?.enabled() ? '\n' + require('./web-tools').instructions : '');
   }
 
@@ -971,6 +1045,7 @@ class SharedConversations {
     this.remoteQueue?.discard(id);
     this.goals.get(id)?.cancelTimer();
     this.items.delete(id); this.facades.delete(id); this.goals.delete(id); this.backgroundWork.delete(id);
+    for (const engine of ENGINES) this.subagentSessions.delete(id + ':' + engine);
     const rm = async file => { try { await fs.promises.unlink(file); } catch (error) { if (error.code !== 'ENOENT') throw error; } };
     await rm(this.file(id));
     await rm(path.join(this.dir, id + '.jsonl'));
@@ -1800,7 +1875,7 @@ class SharedConversations {
     let summary = '';
     if (canSummarize) {
       try {
-        const result = await this.summarize.run({ model: settings.model, kind: 'bridge',
+        const result = await this.summarize.run({ model: settings.model, kind: 'bridge', sessionKey: c.id,
           system: 'Summarize conversation turns that happened while the reader was away. Output only the summary: decisions, files and paths, test results, unresolved issues, and exact next steps. Do not perform work or use tools.',
           user: this.formatContext(c, rows), maxTokens: 1024, maxChars: BRIDGE_MAX_CHARS });
         summary = String(result?.text || '').trim();
@@ -2277,9 +2352,11 @@ class SharedConversations {
     }
     if (event.type === 'gui:subagent' && event.conversationId) {
       const c = this.items.get(event.conversationId);
-      const session = a?.engine === engine && a.session?.gen === event.runId ? a.session : this.subagentSessions.get(c?.id + ':' + engine);
+      const session = a?.engine === engine && a.session?.gen === event.runId ? a.session : this.subagentSession(c?.id, engine);
       if (!c || !session || session.gen !== event.runId) return false;
-      this.subagentSessions.set(c.id + ':' + engine, session);
+      const pool = this.drivers[engine]?.sessions;
+      if (typeof pool?.get === 'function' && pool.get({ conversationId: c.id }) !== session) return false;
+      this.subagentSessions.set(c.id + ':' + engine, new WeakRef(session));
       const old = (c.subagents || []).find(task => task.id === event.task?.id && task.engine === engine);
       if (a?.internal && !old) return false;
       if (a?.session === session && Number.isSafeInteger(a.userSeq)) session.subagentUserSeq = a.userSeq;
@@ -2307,10 +2384,21 @@ class SharedConversations {
     try { return this.captureRun(a, engine, event); }
     catch (error) { this.failCapturedRun(a, error, event.type === 'result'); return true; }
   }
+  subagentSession(id, engine) {
+    const key = id + ':' + engine, session = this.subagentSessions.get(key)?.deref();
+    const pool = this.drivers[engine]?.sessions;
+    if (!session || session.dead || typeof pool?.get === 'function' && pool.get({ conversationId: id }) !== session) {
+      this.subagentSessions.delete(key);
+      return null;
+    }
+    return session;
+  }
   subagentView(id) {
     return (this.get(id).subagents || []).map(task => {
-      const session = this.subagentSessions.get(id + ':' + task.engine);
-      const connected = !session?.dead && session?.children?.has(task.id);
+      const session = this.subagentSession(id, task.engine);
+      const pool = this.drivers[task.engine]?.sessions;
+      const connected = !session?.dead && session?.children?.has(task.id)
+        && (typeof pool?.get !== 'function' || pool.get({ conversationId: id }) === session);
       return { ...task, connected: Boolean(connected), canReply: Boolean(connected && task.canReply), canStop: Boolean(connected && task.canStop),
         approvals: connected ? (task.approvals || []).map(require('../main/remote/approvals').approval) : [],
         ...(!connected && ['starting', 'running', 'waiting'].includes(task.status) ? { status: 'unavailable' } : {}) };
@@ -2319,7 +2407,7 @@ class SharedConversations {
   async subagentCommand(id, payload) {
     const task = this.subagentView(id).find(task => task.id === payload.taskId && task.engine === payload.engine);
     if (task?.managedConversationId) return managedSubagents.command(this, id, task, payload);
-    const session = task && this.subagentSessions.get(id + ':' + task.engine);
+    const session = task && this.subagentSession(id, task.engine);
     if (!task?.connected || !session?.controlChild) throw new Error('This subtask is no longer connected');
     const raw = (this.get(id).subagents || []).find(row => row.id === task.id && row.engine === task.engine);
     const response = payload.operation === 'approve' ? require('../main/remote/approvals').answer(
@@ -2596,7 +2684,9 @@ class SharedConversations {
       const visibleText = mobileOutput.text || (text !== runResult?.result ? text : '');
       const mobileText = terminal ? [visibleText, ...(runResult.result && runResult.result !== visibleText ? [runResult.result] : [])].filter(Boolean).join('\n\n')
         : mobileOutput.text || (!process.some(block => block.type === 'text') ? text : '');
+      const turnSources = sourceSnapshot(process);
       const assistant = (text || output.outputBlocks?.length || process.length || event.usage || a.lastCallUsage || event.artifacts?.length || terminal) ? this.append(c, { role: 'assistant', engine, text, ...output,
+        ...(turnSources.length ? { sources: turnSources } : {}),
         ...(process.length ? { process } : {}), ...(terminal || process.length ? { mobileText } : {}),
         ...(runResult ? { runResult } : {}), ...(!a.internal && Number.isSafeInteger(a.userSeq) ? { userSeq: a.userSeq } : {}),
         turnMetrics, internal: a.internal, artifacts: event.artifacts,
@@ -3856,7 +3946,8 @@ class SharedConversations {
     c.pending = { engine, at: Date.now(), internal: true }; this.save(c);
     try {
       const result = await runSummaryPipeline({ units, budget, maxSummaryChars, maxOutputTokens, ...checkpoint,
-        request: ({ kind, system, user, maxChars, maxTokens }) => this.summarize.run({ model: settings.model, kind, system, user, maxChars, maxTokens, signal: abort.signal }),
+        request: ({ kind, system, user, maxChars, maxTokens }) => this.summarize.run({ model: settings.model, kind, sessionKey: c.id,
+          system, user, maxChars, maxTokens, signal: abort.signal }),
         stopped: () => { abort.signal.throwIfAborted(); return switching.cancelled || Boolean(switching.timedOut || recovery?.cancelled); },
         onOverflow: (error, current) => {
           const reduced = this.reduceSummaryBudget(c, engine, settings, error.message, current);

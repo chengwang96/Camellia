@@ -833,6 +833,12 @@ public struct RemoteSnapshot: Sendable {
     public let conversation: RemoteConversation?
     /// The device's current permission, carried on every detail snapshot.
     public let permission: RemotePermission?
+    /// Present only while this conversation is archived on the computer. It is
+    /// separate from `permission`: the device still owns its pairing and the
+    /// transcript is still readable; the conversation itself is read-only.
+    public let archivedAt: Int64
+    /// Whether this archive view still offers its one command: restore.
+    public let canRestore: Bool
     /// Android only replaces rendered history when `messages` is an
     /// array. Missing, null and wrong-typed fields are not empty pages.
     public let hasMessages: Bool
@@ -883,6 +889,8 @@ public struct RemoteSnapshot: Sendable {
         subagents = json.has("subagents") ? json.objects("subagents").map(RemoteSubtask.init) : nil
         conversation = json.object("conversation").map(RemoteConversation.init)
         permission = RemotePermission(rawValue: json.text("permission"))
+        archivedAt = json.object("archived")?.long("at") ?? 0
+        canRestore = json.bool("canRestore")
         hasMessages = json.raw["messages"] is [Any]
         let pagingCursor = json.raw["nextBefore"]
         let numericCursor = (pagingCursor as? NSNumber).map {
@@ -911,6 +919,11 @@ public struct RemoteSnapshot: Sendable {
         instanceId = json.text("instanceId")
         cursor = json.long("cursor", fallback: -1)
     }
+}
+
+extension RemoteSnapshot {
+    /// Whether this snapshot describes a conversation the computer archived.
+    public var isArchived: Bool { archivedAt > 0 }
 }
 
 /// A page of the conversation list.

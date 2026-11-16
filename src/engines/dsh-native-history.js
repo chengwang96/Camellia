@@ -73,10 +73,16 @@ function patchDshHistory(source, hostFile, version = '0.2.1-rc.2') {
   const filtered = parentFilters ? source
     .replace(resume, 'persisted.origin === "subagent" || persisted.parentSession !== void 0 && !persisted.isSeeded')
     .replace(listing, 'header.origin === "subagent" || header.parentSession !== void 0 && !header.isSeeded') : source;
+  // 0.2.2 moved model state into Agent.model. Its AcpSession creates the
+  // controller itself; the older constructor/setup contract no longer exists.
+  const forkHandlers = parentFilters ? handlers : handlers
+    .replace('    const modelControl = new AcpModelControl(ctx.llm, initialSelection(config));\n', '')
+    .replace('modelControl.install(agentCtx);', 'installModelSelection(agentCtx);')
+    .replace('new AcpSession(ctx, handle, modelControl, notify)', 'new AcpSession(ctx, handle, notify)');
   return 'import { SessionCommandController as CamelliaHostFork } from ' + JSON.stringify(pathToFileURL(hostFile).href) + ';\n'
     + filtered.replace(inject, inject + '\n\t"sessionQuery",')
       .replace(capability, capability + ',\n\t\t\t\t\t\tfork: {}')
-      .replace(apply, handlers + '\n' + apply)
+      .replace(apply, forkHandlers + '\n' + apply)
       .replace(chain, chain
         + '.onRequest("session/camellia_history_boundary", params => params, ({ params }) => camelliaBoundary(params))'
         + '.onRequest("session/camellia_fork", params => params, ({ params, signal }) => camelliaFork(params, signal))'

@@ -168,6 +168,7 @@ public class RemoteMessageQueueTest extends InstrumentationTestCase {
     public void testQueuePreview() throws Exception {
         ui(() -> {
             snapshot(true, true, new JSONArray().put(entry("one", "queued")).put(entry("two", "queued")), 3);
+            assertNull("Queue status belongs in the tray, without a duplicate summary row", view("remoteWorkSummary"));
             input().setText("任务完成后，把最终文件整理到一起");
             View tray = view("remoteQueueTray");
             assertNotNull(tray);

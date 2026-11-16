@@ -1,10 +1,19 @@
 /* Mobile access and CLI connections share the same settings layout. */
-.device-settings { display: grid; gap: 16px; min-width: 0; }
+.device-settings { position: relative; display: grid; gap: 16px; min-width: 0; }
+.device-settings .sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
 .device-settings .device-section { min-width: 0; margin: 0; }
 .device-settings .device-card { padding: 20px; border: 1px solid var(--dsw-alias-border-l2); border-radius: 14px; background: var(--dsw-alias-bg-layer-1); }
-.device-settings .device-connection { border-left: 3px solid var(--dsw-alias-border-l3); }
-.device-settings .device-connection:has(.device-status.online) { border-left-color: var(--dsw-alias-state-success-primary); }
-.device-settings .device-pair { border-left: 3px solid var(--dsw-static-deepseek-500); }
 .device-settings .device-heading { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 16px; }
 .device-settings h2 { margin: 0; font-size: 15px; font-weight: 600; }
 .device-settings p { overflow-wrap: anywhere; }
@@ -26,7 +35,62 @@
 .device-settings .device-help button { margin-top: 10px; }
 .device-settings .device-name-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin-top: 12px; }
 .device-settings .device-name-row label { margin: 0; }
-.device-settings .device-name-row input { flex: 1 1 160px; width: auto; padding: 8px 12px; }
+.device-settings .device-name-row input { flex: 0 1 208px; width: 208px; max-width: 100%; padding: 8px 12px; }
+.device-settings .relay-config { margin-top: 16px; }
+.device-settings .relay-setting { display: flex; align-items: center; justify-content: space-between; gap: 16px; min-height: 36px; padding: 12px 0; color: var(--dsw-alias-label-primary); font-size: 14px; line-height: 22px; }
+.device-settings .relay-setting > input[type=checkbox] { margin: 0; }
+.device-settings .relay-fields { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 12px 0; border-top: 1px solid var(--dsw-alias-border-l2); }
+.device-settings .relay-setting:has(+ .relay-fields:not([hidden])) { padding-bottom: 0; }
+.device-settings .relay-fields label { flex: 0 0 auto; margin: 0; color: var(--dsw-alias-label-primary); font-size: 14px; line-height: 22px; }
+.device-settings .relay-device-controls { display: flex; flex: 0 1 420px; min-width: 0; max-width: 100%; margin-left: auto; gap: 8px; }
+.device-settings .relay-device-controls :is(select, input) { flex: 1 1 0; width: 0; min-width: 0; max-width: 100%; text-overflow: ellipsis; }
+.device-settings .relay-device-controls input { padding: 7px 12px; border: 1px solid var(--dsw-alias-border-l2); border-radius: 10px; background: var(--dsw-specific-input-major); color: inherit; font: inherit; }
+.device-settings .relay-device-controls button { flex: 0 0 auto; padding: 6px 12px; }
+.device-settings .relay-fields .relay-rename-hint { flex: 1 0 100%; margin: 0; }
+.device-settings .relay-config > .hint { margin: 8px 0 0; }
+.device-settings .relay-setting > input[type=checkbox] {
+  appearance: none;
+  position: relative;
+  flex: 0 0 auto;
+  width: 36px;
+  height: 21px;
+  margin: 0 0 0 auto;
+  padding: 0;
+  border: 0;
+  border-radius: 20px;
+  background: light-dark(#d9dce0, #54575d);
+  cursor: pointer;
+}
+.device-settings .relay-setting > input[type=checkbox]::before {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 17px;
+  height: 17px;
+  margin: 0;
+  border: 0;
+  border-radius: 50%;
+  background: #fff;
+  opacity: 1;
+  transform: none;
+  transition: transform .12s ease;
+}
+.device-settings .relay-setting > input[type=checkbox]:checked {
+  background: var(--dsw-alias-label-primary);
+}
+.device-settings .relay-setting > input[type=checkbox]:checked::before {
+  background: var(--dsw-alias-bg-base);
+  transform: translateX(15px);
+}
+.device-settings .relay-setting > input[type=checkbox]:disabled {
+  cursor: default;
+  opacity: .45;
+}
+.device-settings .relay-setting > input[type=checkbox]:focus-visible {
+  outline: 2px solid var(--dsw-static-deepseek-400);
+  outline-offset: 3px;
+}
 .device-settings .device-row { display: flex; flex-wrap: wrap; align-items: center; gap: 14px; margin-top: 12px; padding: 16px; border: 1px solid var(--dsw-alias-border-l2); border-radius: 12px; background: var(--dsw-alias-bg-layer-1); }
 .device-settings .device-icon { flex: 0 0 34px; width: 34px; height: 34px; padding: 7px; border-radius: 9px; background: var(--dsw-alias-bg-soft); fill: none; stroke: var(--dsw-alias-label-secondary); stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
 .device-settings .device-info { flex: 1 1 180px; min-width: 0; overflow-wrap: anywhere; }
@@ -38,6 +102,22 @@
 .device-settings .device-feedback:empty { display: none; }
 .device-settings button:focus-visible, .device-settings input:focus-visible, .device-settings select:focus-visible, .device-settings summary:focus-visible { outline: 2px solid var(--dsw-static-deepseek-400); outline-offset: 3px; }
 .device-settings dialog { padding: 24px; }
+.device-settings dialog.device-rename {
+  width: min(400px, calc(100vw - 32px));
+  max-width: 400px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 16px;
+  background: var(--dsw-alias-bg-layer-1);
+  color: var(--dsw-alias-label-primary);
+  box-shadow: var(--dsw-shadow-lv3);
+}
+.device-settings dialog.device-rename::backdrop { background: var(--dsw-alias-bg-mask-1); }
+.device-settings dialog.device-rename form { display: grid; gap: 12px; }
+.device-settings dialog.device-rename h2 { margin: 0; font-size: 17px; }
+.device-settings dialog.device-rename .hint { margin: 0; }
+.device-settings dialog.device-rename label { display: grid; gap: 8px; margin: 0; color: var(--dsw-alias-label-secondary); font-size: 13px; }
+.device-settings dialog.device-rename input { width: 100%; padding: 9px 12px; }
+.device-settings dialog.device-rename .actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 6px; }
 /* Shared by the embedded settings category and the separate mobile panel. */
 dialog.mobile-logout {
   width: 440px; max-width: calc(100vw - 32px); max-height: calc(100dvh - 32px);

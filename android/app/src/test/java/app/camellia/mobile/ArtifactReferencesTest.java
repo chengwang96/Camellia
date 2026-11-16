@@ -22,4 +22,14 @@ public class ArtifactReferencesTest {
         assertEquals(100, ArtifactReferences.names(java.util.stream.IntStream.range(0, 120)
             .mapToObj(index -> "`file" + index + ".pdf`").collect(java.util.stream.Collectors.joining(" "))).size());
     }
+    @Test public void recognizesAppleAndDesktopInstallersAsPackages() {
+        String text = "`dist/Camellia-ios.ipa` `dist/Camellia-macOS.pkg` `dist/Camellia-macOS.dmg` "
+            + "`dist/Camellia-android.aab` `dist/Camellia.AppImage`";
+        assertEquals(java.util.List.of("Camellia-ios.ipa", "Camellia-macOS.pkg", "Camellia-macOS.dmg",
+            "Camellia-android.aab", "Camellia.AppImage"), ArtifactReferences.names(text));
+        for (String name : java.util.List.of("Camellia-ios.IPA", "Camellia-macOS.pkg", "Camellia-android.aab",
+            "Camellia.AppImage", "Camellia-Setup.exe", "Camellia.deb")) {
+            assertEquals(name, "package", ArtifactReferences.kind(name));
+        }
+    }
 }

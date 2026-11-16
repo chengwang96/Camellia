@@ -6,6 +6,7 @@ const { randomUUID } = require('node:crypto');
 const { StringDecoder } = require('node:string_decoder');
 const { validSessionId } = require('../engines/claude-history');
 const { referenceMatcher } = require('./reference-matcher');
+const { JsonReferenceScanner } = require('./json-reference-scanner');
 const { readDiscussionRecord } = require('../engines/discussions/store');
 const { DiscussionPayloads } = require('../engines/discussions/payloads');
 const { collectNativeOwners } = require('../engines/discussions/native-ownership');
@@ -423,30 +424,22 @@ class StorageCleanup {
       const descriptor = fs.openSync(file, 'r');
       try {
         const decoder = new StringDecoder('utf8');
-        let tail = '', record = '', recordBytes = 0, trailingBackslash = false;
-        const inspectRecord = text => {
-          if (Buffer.byteLength(text, 'utf8') > MAX_RECORD_BYTES) throw new Error('A reference JSON record is too large to verify safely; no files were deleted');
-          if (text.trim()) inspect(JSON.stringify(JSON.parse(text)));
-        };
+        let tail = '', decodedTail = '', decodedBackslash = false, trailingBackslash = false;
+        const scanner = lines && new JsonReferenceScanner((text, first, last) => {
+          if (first) { decodedTail = ''; decodedBackslash = false; }
+          const raw = decodedBackslash ? text.replace(/^\\+/, '') : text;
+          if (text) decodedBackslash = text.endsWith('\\');
+          const source = decodedTail + normalize(raw);
+          inspect(source);
+          decodedTail = !last && overlap ? source.slice(-overlap) : '';
+        });
         const consume = text => {
           const raw = trailingBackslash ? text.replace(/^\\+/, '') : text;
           if (text) trailingBackslash = text.endsWith('\\');
           const source = tail + normalize(raw);
           inspect(source);
           tail = overlap ? source.slice(-overlap) : '';
-          if (lines) {
-            let start = 0, end;
-            while ((end = text.indexOf('\n', start)) !== -1) {
-              inspectRecord(record + text.slice(start, end));
-              record = '';
-              recordBytes = 0;
-              start = end + 1;
-            }
-            const remainder = text.slice(start);
-            recordBytes += Buffer.byteLength(remainder, 'utf8');
-            if (recordBytes > MAX_RECORD_BYTES) throw new Error('A reference JSON record is too large to verify safely; no files were deleted');
-            record += remainder;
-          }
+          if (scanner) scanner.write(text);
         };
         let remaining = stat.size;
         let processed = 0;
@@ -462,7 +455,7 @@ class StorageCleanup {
           }
         }
         consume(decoder.end());
-        if (lines) inspectRecord(record);
+        if (scanner) scanner.end();
         verifiedSources.push({ file, root, stat });
       } finally { fs.closeSync(descriptor); }
     }

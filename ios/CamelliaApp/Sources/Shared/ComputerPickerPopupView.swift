@@ -14,6 +14,9 @@ struct ComputerPickerPopupView: View {
 
     let maxHeight: CGFloat
     let onAction: (ComputerPickerAction) -> Void
+    var computers: [PairedComputer]? = nil
+    var selectedAddress: String? = nil
+    var selectionOnly = false
 
     var body: some View {
         ScrollView(.vertical, showsIndicators: false) {
@@ -21,15 +24,17 @@ struct ComputerPickerPopupView: View {
                 ForEach(orderedComputers, id: \.address) { computer in
                     computerRow(computer)
                 }
-                if !orderedComputers.isEmpty {
+                if !selectionOnly && !orderedComputers.isEmpty {
                     Rectangle()
                         .fill(Palette.divider)
                         .frame(height: 1)
                         .padding(.horizontal, 14)
                         .padding(.vertical, 8)
                 }
-                actionRow("plus", title: "添加电脑") { onAction(.add) }
-                actionRow("gearshape", title: "管理电脑") { onAction(.manage) }
+                if !selectionOnly {
+                    actionRow("plus", title: "添加电脑") { onAction(.add) }
+                    actionRow("gearshape", title: "管理电脑") { onAction(.manage) }
+                }
             }
             .fixedSize(horizontal: false, vertical: true)
             .padding(8)
@@ -42,14 +47,15 @@ struct ComputerPickerPopupView: View {
         .background(PopupGlassSurface())
         .clipShape(RoundedRectangle(cornerRadius: Palette.groupRadius, style: .continuous))
         .shadow(color: .black.opacity(0.2), radius: 8, y: 5)
-        .task { await model.refreshComputers() }
+        .task { if !selectionOnly { await model.refreshComputers() } }
     }
 
     private var initialHeight: CGFloat {
-        16 + CGFloat(orderedComputers.count + 2) * 56 + (orderedComputers.isEmpty ? 0 : 17)
+        16 + CGFloat(orderedComputers.count + (selectionOnly ? 0 : 2)) * 56 + (selectionOnly || orderedComputers.isEmpty ? 0 : 17)
     }
 
     private var orderedComputers: [PairedComputer] {
+        if let computers { return computers }
         let current = model.current?.address
         return model.computers.sorted { left, right in
             if (left.address == current) != (right.address == current) {
@@ -60,7 +66,7 @@ struct ComputerPickerPopupView: View {
     }
 
     private func computerRow(_ computer: PairedComputer) -> some View {
-        let selected = computer.address == model.current?.address
+        let selected = computer.address == (selectionOnly ? selectedAddress : model.current?.address)
         let state = computer.isPaired ? model.computerState(computer.address)
             : (model.usesChinese ? "等待电脑确认" : "Waiting for desktop confirmation")
         return Button { onAction(.open(computer)) } label: {
@@ -75,10 +81,12 @@ struct ComputerPickerPopupView: View {
                         .font(.system(size: Palette.textRowStrong))
                         .foregroundColor(Palette.ink)
                         .lineLimit(1)
-                    Text(verbatim: ComputerStatus.display(state, chinese: model.usesChinese))
-                        .font(.system(size: Palette.textSmall))
-                        .foregroundColor(ComputerStatus.isConnected(state) ? Palette.accent : Palette.muted)
-                        .lineLimit(2)
+                    if !selectionOnly {
+                        Text(verbatim: ComputerStatus.display(state, chinese: model.usesChinese))
+                            .font(.system(size: Palette.textSmall))
+                            .foregroundColor(ComputerStatus.isConnected(state) ? Palette.accent : Palette.muted)
+                            .lineLimit(2)
+                    }
                 }
                 .padding(.leading, 14)
                 Spacer(minLength: 8)
@@ -96,6 +104,8 @@ struct ComputerPickerPopupView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .accessibilityAddTraits(selected ? .isSelected : [])
+        .help(Text(verbatim: computer.displayName))
         .accessibilityLabel(computer.displayName + (selected
                             ? (model.usesChinese ? "，当前电脑" : ", current computer") : ""))
     }

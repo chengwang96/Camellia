@@ -82,3 +82,44 @@ test('Tool diagnostics identify native failures without treating successfully re
   assert.equal(observed.length, 1, 'Replayed history does not duplicate failures');
   scope.close(); scope.scope.observeTools(body, 'anthropic'); assert.equal(observed.length, 1);
 });
+
+test('SSE parser accepts CRLF, LF and lone CR line endings with comments and byte splits', () => {
+  const events = [];
+  const parser = new SSEParser((value, event) => events.push({ value, event }));
+  const stream = ': keep-alive\r\n\r\nevent: message\rdata: {"a":1}\r\r'
+    + 'data: {"b":\ndata: 2}\n\n';
+  for (const byte of Buffer.from(stream)) parser.feed(Buffer.from([byte]));
+  parser.end();
+  assert.deepEqual(events, [
+    { value: { a: 1 }, event: 'message' },
+    { value: { b: 2 }, event: '' },
+  ]);
+});
+
+test('SSE parser drops incomplete tail data and skips unreadable frames without stopping the stream', () => {
+  const logs = [];
+  const events = [];
+  const parser = new SSEParser((value) => events.push(value), { log: message => logs.push(message) });
+  parser.feed(Buffer.from('data: {"partial":\n\ndata: not-json\n\ndata: {"ok":true}\n\ndata: {"unfinished"'));
+  parser.end();
+  assert.deepEqual(events, [{ ok: true }]);
+  assert.equal(logs.length, 2);
+});
+
+test('SSE parser keeps plain-text error frames so the router can report them', () => {
+  const events = [];
+  const parser = new SSEParser((value, event) => events.push({ value, event }));
+  parser.feed(Buffer.from('event: error\ndata: upstream overloaded\n\n'));
+  parser.end();
+  assert.deepEqual(events, [{
+    value: { type: 'error', error: { message: 'upstream overloaded' } }, event: 'error',
+  }]);
+});
+
+test('SSE parser accepts a complete final frame that omits the terminating blank line', () => {
+  const events = [];
+  const parser = new SSEParser((value) => events.push(value));
+  parser.feed(Buffer.from('data: {"first":1}\n\ndata: {"last":true}'));
+  parser.end();
+  assert.deepEqual(events, [{ first: 1 }, { last: true }]);
+});

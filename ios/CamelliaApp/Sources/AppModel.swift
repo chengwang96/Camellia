@@ -2118,7 +2118,44 @@ final class AppModel: ObservableObject {
     var canDrive: Bool {
         guard foregrounded, remoteScreenActive else { return false }
         guard case .connected = streamState else { return false }
-        return transcript.connected && transcript.permission == .control
+        return transcript.connected && transcript.permission == .control && transcript.archivedAt == 0
+    }
+
+    /// Whether the open conversation is archived on the computer. The desktop
+    /// keeps sending a readable snapshot and a read permission, so this flag is
+    /// what separates "archived" from "this device is read-only" in the UI.
+    var isArchivedConversation: Bool { transcript.archivedAt > 0 }
+
+    /// Restores the archived conversation that is currently open. This is the
+    /// only write action available from an archived detail page, and it is
+    /// authorized against the conversation's own sequence rather than the list
+    /// page's instance id, because the detail stream is the live source here.
+    func restoreOpenConversation() {
+        guard isArchivedConversation, !commandBusy, !hasPendingDetailOperation,
+              transcript.canRestoreArchived, let session, let id = openId else { return }
+        let payload: [String: Any] = [
+            "instanceId": transcript.instanceId,
+            "conversationId": id,
+            "expectedSeq": transcript.conversation?.seq ?? 0,
+        ]
+        // Restore names its conversation in the payload rather than in the URL;
+        // the detail endpoint has no restore target.
+        deliver(session: session, action: "restore", conversationId: id, payload: payload,
+                pendingSlot: .detail) { [weak self] result in
+            guard let self, self.session === session, self.openId == id else { return }
+            switch result {
+            case .accepted:
+                self.transcript.clearArchivedAfterRestore()
+                self.notice = Notice(text: self.usesChinese ? "会话已恢复。" : "Conversation restored.",
+                                     serious: false)
+                self.refreshList()
+                // The archive event and the next stream snapshot carry the
+                // cleared marker; reconnecting here would discard the pages the
+                // reader already has open.
+            case .refused, .unconfirmed, .transportUnconfirmed:
+                self.report(result)
+            }
+        }
     }
 
     /// What a command turned out to be.
@@ -2218,7 +2255,11 @@ final class AppModel: ObservableObject {
             publish()
         }
 
-        session.command(action, conversationId: conversationId, payload: body,
+        // Restore names its conversation in the payload; every other detail
+        // command names it in the URL. The journal stays under `conversationId`
+        // so retries after leaving the page still find the same operation.
+        let endpoint = action == "restore" ? nil : conversationId
+        session.command(action, conversationId: endpoint, payload: body,
                         lookupReceipt: lookupReceipt && access.capabilities.contains(.commandReceipts)) { [weak self] result in
             guard let self, self.activeCommandTasks.contains(deliveryId) else { return }
             // Any newer command answer supersedes the previous status line.
@@ -2233,7 +2274,8 @@ final class AppModel: ObservableObject {
                     self.markPreparing()
                     DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
                         let active = self.foregrounded && self.remoteScreenActive && self.session === session
-                            && (slot == .list ? self.openId == nil : self.openId == conversationId && self.canDrive)
+                            && (slot == .list ? self.openId == nil : self.openId == conversationId
+                                && (self.canDrive || action == "restore"))
                         guard self.activeCommandTasks.contains(deliveryId) else { return }
                         guard active else {
                             self.scheduleBackgroundCommandCheck(
@@ -2277,7 +2319,7 @@ final class AppModel: ObservableObject {
                         let active = self.foregrounded && self.remoteScreenActive
                             && self.session === session
                             && (slot == .list ? self.openId == nil
-                                : self.openId == conversationId && self.canDrive)
+                                : self.openId == conversationId && (self.canDrive || action == "restore"))
                         guard self.activeCommandTasks.contains(deliveryId) else { return }
                         guard active else {
                             self.scheduleBackgroundCommandCheck(
@@ -2445,12 +2487,16 @@ final class AppModel: ObservableObject {
 
     /// Retries the unconfirmed operation belonging to the open conversation.
     func retryPendingDetailOperation() {
-        guard foregrounded, canDrive, !commandBusy,
+        guard foregrounded, !commandBusy,
               let session, let pending = current?.pendingCommand,
               let target = pending.string("conversationId"),
               let payloadObject = pending.object("payload"),
               let action = payloadObject.string("action"),
               let requestId = payloadObject.string("requestId") else { return }
+        // Restore is the sole archived-detail command; it is already authorized
+        // by the snapshot's canRestore and still needs control on the desktop.
+        let restoring = action == "restore"
+        guard canDrive || (restoring && isArchivedConversation && transcript.canRestoreArchived) else { return }
         guard target == openId else {
             notice = Notice(text: "另一会话有未确认操作，请先打开该会话核对结果。", serious: false)
             return
@@ -2478,13 +2524,16 @@ final class AppModel: ObservableObject {
                               requestId: requestId, journaled: true, taskId: taskId,
                               lookupReceipt: true) { [weak self] result in
             guard let self else { return }
-            let visible = self.openId == target
+            let visible = self.session === session && self.openId == target
             if action.hasPrefix("codex-reset-") {
                 if visible { self.handleCodexReset(result, action: action) }
                 return
             }
             switch result {
             case .accepted(let value):
+                if restoring && visible {
+                    self.transcript.clearArchivedAfterRestore()
+                }
                 if submitted {
                     self.removeAttachmentBlobs(in: payloadObject)
                     self.pendingAttachments = []

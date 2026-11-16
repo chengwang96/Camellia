@@ -51,6 +51,7 @@ public final class LocalChatActivity extends Activity {
     private LinearLayout root, content, messageViews;
     private PageTransitions pages;
     private ScrollView scroll;
+    private final ConversationListScroll conversationListScroll = new ConversationListScroll();
     private EditText composer;
     private ImageButton send, stop;
     private ImageButton toolsButton;
@@ -169,7 +170,10 @@ public final class LocalChatActivity extends Activity {
         background = chatStyle.background; surface = chatStyle.surface; ink = chatStyle.ink; muted = chatStyle.muted; accent = chatStyle.accent;
         getWindow().setStatusBarColor(background); getWindow().setNavigationBarColor(background);
         if (!dark) getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR | View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR);
-        if (saved != null) { conversationId = saved.getString("conversationId"); query = saved.getString("query", ""); }
+        if (saved != null) {
+            conversationId = saved.getString("conversationId"); query = saved.getString("query", "");
+            conversationListScroll.load(saved.getBundle("conversationListScroll"));
+        }
         else conversationId = getIntent().getStringExtra("conversationId");
         loadStore(true);
     }
@@ -177,6 +181,7 @@ public final class LocalChatActivity extends Activity {
     @Override protected void onSaveInstanceState(Bundle saved) {
         super.onSaveInstanceState(saved);
         saved.putString("conversationId", conversationId); saved.putString("query", query);
+        saved.putBundle("conversationListScroll", conversationListScroll.save());
     }
 
     @Override protected void onStop() {
@@ -320,6 +325,7 @@ public final class LocalChatActivity extends Activity {
         store.releaseHistory();
         processState.clear();
         conversationId = null; shell(tr("本机聊天", "Local chat"));
+        conversationListScroll.attach("local", scroll, content);
         status.setText(tr("本机模式 · 聊天记录仅保存在此设备", "Local mode · Chat history stays on this device"));
         root.setClipChildren(false);
         boolean unconfigured = false;
@@ -352,7 +358,7 @@ public final class LocalChatActivity extends Activity {
 
     private void renderGroups(LinearLayout groups) {
         if (conversationPopup != null) conversationPopup.dismiss();
-        int position = scroll.getScrollY();
+        conversationListScroll.beforeRender();
         groups.removeAllViews();
         JSONArray workspaces = store.workspaces();
         boolean configured = false;
@@ -372,13 +378,13 @@ public final class LocalChatActivity extends Activity {
                 tr("新建独立会话直接开始，或创建工作区整理会话。", "Start a standalone chat, or create a workspace to organize your conversations."));
             welcome.addAction(tr("新建独立会话", "New standalone chat"), "localEmptyNewStandalone", () -> createConversation(""));
             welcome.addAction(tr("新建工作区", "New workspace"), "localNewWorkspace", () -> nameDialog(null));
-            groups.addView(welcome); layoutGroups(true, position); return;
+            groups.addView(welcome); layoutGroups(true); return;
         }
         if (!query.isEmpty() && !matches) {
             groups.addView(new ChatEmptyState(this, chatStyle, "search", tr("没有找到会话", "No conversations found"),
                 tr("试试更短的关键词，或清除搜索查看全部会话。", "Try a shorter keyword, or clear the search to see all conversations."),
                 tr("清除搜索", "Clear search"), () -> ((EditText) root.findViewWithTag("localSearch")).setText("")));
-            layoutGroups(true, position); return;
+            layoutGroups(true); return;
         }
         if (selectingConversations) {
             LinearLayout actions = new LinearLayout(this);
@@ -396,15 +402,13 @@ public final class LocalChatActivity extends Activity {
             if (workspace != null) group(groups, workspace.optString("id"), workspace.optString("name"), workspace);
         }
         group(groups, "", tr("独立会话", "Standalone chats"), null);
-        layoutGroups(false, position);
+        layoutGroups(false);
     }
 
-    private void layoutGroups(boolean centered, int position) {
-        boolean wasCentered = (content.getGravity() & Gravity.VERTICAL_GRAVITY_MASK) == Gravity.CENTER_VERTICAL;
+    private void layoutGroups(boolean centered) {
         content.setGravity(centered ? Gravity.CENTER_VERTICAL : Gravity.TOP);
         updateListDock(centered);
-        ScrollView target = scroll;
-        target.post(() -> target.scrollTo(0, centered || wasCentered ? 0 : position));
+        conversationListScroll.afterRender(centered);
     }
 
     private void updateListDock(boolean centered) {
@@ -486,11 +490,13 @@ public final class LocalChatActivity extends Activity {
     }
 
     private void workspaceMenu(JSONObject workspace) {
-        dialog = new CamelliaDialog.Builder(this).setTitle(workspace.optString("name"))
-            .setItems(new String[] { tr("重命名", "Rename"), tr("移除工作区（保留会话）", "Remove workspace (keep chats)") }, (selected, which) -> {
-                if (which == 0) nameDialog(workspace);
-                else store.deleteWorkspace(workspace.optString("id"), stored(result -> list()));
-            }).show();
+        if (conversationPopup != null) conversationPopup.dismiss();
+        View anchor = root.findViewWithTag("localWorkspaceMenu:" + workspace.optString("id"));
+        if (anchor == null) return;
+        conversationPopup = new ConversationMenu(anchor, chatStyle,
+            new String[]{tr("重命名", "Rename"), tr("移除工作区（保留会话）", "Remove workspace (keep chats)")},
+            new String[]{"edit", "delete"}, new Runnable[]{() -> nameDialog(workspace),
+                () -> store.deleteWorkspace(workspace.optString("id"), stored(result -> list()))});
     }
 
     private void conversationMenu(JSONObject conversation) {
@@ -956,6 +962,7 @@ public final class LocalChatActivity extends Activity {
     }
 
     private void releasePageViews() {
+        conversationListScroll.detach();
         // PageTransitions captures the outgoing hierarchy before detaching it.
         viewHandler.removeCallbacksAndMessages(null); disposeMessages(); locationConsent.cancel();
         if (conversationPopup != null) { conversationPopup.dismiss(); conversationPopup = null; }

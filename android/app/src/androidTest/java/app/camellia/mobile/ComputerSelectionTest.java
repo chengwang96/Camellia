@@ -98,6 +98,82 @@ public class ComputerSelectionTest extends InstrumentationTestCase {
         });
     }
 
+    public void testRouteSitsOnTheSameStatusLineAndDisappearsWithoutAProbe() throws Exception {
+        ui(() -> {
+            var context = getInstrumentation().getTargetContext();
+            ComputerRow row = new ComputerRow(context, new SettingsStyle(context), true, "HP", first.getString("address"), () -> {}, () -> {});
+            row.state("已连接", true, false);
+            row.route("VPS 中继 · Peer Relay");
+            TextView state = row.findViewWithTag("computerState:" + first.getString("address"));
+            TextView route = row.findViewWithTag("computerRoute:" + first.getString("address"));
+            assertNotNull(state); assertNotNull(route);
+            assertSame("the path must share one horizontal status row", state.getParent(), route.getParent());
+            assertEquals(View.VISIBLE, route.getVisibility());
+            assertEquals(1, state.getMaxLines());
+            assertTrue(row.getContentDescription().toString().contains("VPS 中继"));
+            row.route(null);
+            assertEquals(View.GONE, route.getVisibility());
+            assertEquals(2, state.getMaxLines());
+            assertFalse(row.getContentDescription().toString().contains("VPS 中继"));
+        });
+    }
+
+    public void testRefreshDoesNotReuseAnOldPathWhenNoNewProbeIsAvailable() throws Exception {
+        ui(() -> {
+            field("foreground", true);
+            applyRoute((int) field("generation"), first, "direct");
+            assertEquals(View.VISIBLE, root().findViewWithTag("computerRoute:" + first.getString("address")).getVisibility());
+            field("statusClientFactory", (java.util.function.Function<String, RemoteApi>) address -> new RemoteApi(address) {
+                @Override public JSONObject json(String path, String token, JSONObject payload) throws java.io.IOException {
+                    return new JSONObject(java.util.Map.of("protocol", 1));
+                }
+            });
+            invoke("refreshComputers");
+        });
+        long deadline = android.os.SystemClock.elapsedRealtime() + 5000;
+        boolean[] ready = {false};
+        while (!ready[0] && android.os.SystemClock.elapsedRealtime() < deadline) {
+            ui(() -> ready[0] = "已连接".contentEquals(((TextView) root().findViewWithTag("computerState:" + first.getString("address"))).getText()));
+            if (!ready[0]) Thread.sleep(25);
+        }
+        assertTrue("The refreshed HTTP status did not arrive", ready[0]);
+        ui(() -> {
+            assertEquals(View.GONE, root().findViewWithTag("computerRoute:" + first.getString("address")).getVisibility());
+            assertFalse(((java.util.Map<?, ?>) field("computerRoutes")).containsKey(first.getString("address")));
+        });
+    }
+
+    public void testLateRouteFromAnOlderRefreshCannotReplaceTheNewRouteAndFailureClearsIt() throws Exception {
+        ui(() -> {
+            field("foreground", true);
+            int old = (int) field("generation");
+            applyRoute(old, first, "direct");
+            assertEquals(View.GONE, root().findViewWithTag("computerRoute:" + second.getString("address")).getVisibility());
+            invoke("stopNetwork");
+            applyRoute((int) field("generation"), first, "peer-relay");
+            applyRoute(old, first, "direct");
+            TextView route = root().findViewWithTag("computerRoute:" + first.getString("address"));
+            assertTrue(route.getText().toString().contains("VPS 中继"));
+            applyRoute((int) field("generation"), first, "unreachable");
+            assertEquals(View.GONE, route.getVisibility());
+            assertTrue(root().findViewWithTag("computer:" + first.getString("address")).getContentDescription().toString().contains("已连接"));
+        });
+    }
+
+    public void testNetworkChangeInvalidatesTheDisplayedPathBeforeAnotherProbe() throws Exception {
+        ui(() -> {
+            field("foreground", true); applyRoute((int) field("generation"), first, "direct");
+            field("foreground", false); invoke("networkRouteChanged");
+            assertTrue(((java.util.Map<?, ?>) field("computerRoutes")).isEmpty());
+            assertEquals(View.GONE, root().findViewWithTag("computerRoute:" + first.getString("address")).getVisibility());
+        });
+    }
+
+    private void applyRoute(int ticket, JSONObject computer, String path) throws Exception {
+        var method = MainActivity.class.getDeclaredMethod("applyComputerPath", int.class, String.class, JSONObject.class); method.setAccessible(true);
+        method.invoke(activity, ticket, computer.getString("address"), new JSONObject().put("path", path));
+    }
+
     private interface Check { void run() throws Exception; }
     private void ui(Check check) {
         getInstrumentation().runOnMainSync(() -> { try { check.run(); } catch (Exception error) { throw new AssertionError(error); } });

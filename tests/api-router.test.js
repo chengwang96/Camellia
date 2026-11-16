@@ -14,6 +14,15 @@ const { frame, SSEParser, StreamConverter, convertRequest } = require('../src/ap
 const { toolModelId } = require('../src/shared/codex-tool-model');
 const { BAD_PORTS } = require('./bad-ports.cjs');
 const { harnessThinkingRoute } = require('../src/api/harness-thinking');
+const { withSessionAffinity } = require('../src/api/session-affinity');
+
+test('SSE parser bounds unfinished multiline events across drained chunks', () => {
+  const parser = new SSEParser(() => assert.fail('The unfinished event must not be dispatched'));
+  const line = Buffer.from('data: ' + 'x'.repeat(1024 * 1024) + '\n');
+  assert.throws(() => {
+    for (let index = 0; index < 17; index++) parser.feed(line);
+  }, /SSE event exceeded the size limit/);
+});
 
 async function port() {
   for (;;) {
@@ -831,6 +840,73 @@ test('routing switches default on, validate booleans and preserve omitted prefer
   }
 });
 
+test('conversation affinity keeps one key across turns and spreads separate conversations', async t => {
+  const held = [];
+  const f = await fixture(t, (request, response) => held.push({ request, response }),
+    url => [provider('pool', url, ['a', 'b', 'c'])], { timeoutMs: 5000 });
+  const post = (sessionId, content = 'hello') => fetch(withSessionAffinity({ baseUrl: f.router.url }, sessionId).baseUrl
+    + '/v1/chat/completions', { method: 'POST', headers: { 'content-type': 'application/json',
+    authorization: 'Bearer client-placeholder' }, body: JSON.stringify({ model: 'kimi-k3', messages: [{ role: 'user', content }] }) });
+  const first = post('conversation-a', 'first turn'), second = post('conversation-b', 'first turn'),
+    separate = post('conversation-c', 'first turn');
+  await waitForRouting(() => held.length === 3);
+  assert.deepEqual(held.map(item => item.request.headers.authorization).sort(), ['Bearer a', 'Bearer b', 'Bearer c']);
+  for (const item of held.splice(0)) reply(item.response, 200, completion(item.request.body.model));
+  for (const response of [first, second, separate]) {
+    const result = await response; assert.equal(result.status, 200); await result.text();
+  }
+
+  const third = post('conversation-a', 'second turn');
+  await waitForRouting(() => held.length === 1);
+  const firstKey = f.requests[0].headers.authorization;
+  assert.equal(held[0].request.headers.authorization, firstKey, 'A conversation stays on its key across turns');
+  reply(held[0].response, 200, completion(held[0].request.body.model));
+  const turn = await third; assert.equal(turn.status, 200); await turn.text();
+  held.splice(0);
+
+  const fourth = post('conversation-d');
+  await waitForRouting(() => held.length === 1);
+  assert.ok(['Bearer a', 'Bearer b', 'Bearer c'].includes(held[0].request.headers.authorization),
+    'A new conversation uses an available key after all pools are balanced');
+  reply(held[0].response, 200, completion(held[0].request.body.model));
+  assert.equal((await fourth).status, 200);
+});
+
+test('a failed affinity route is released so the conversation can move on', async t => {
+  const calls = [];
+  const f = await fixture(t, (request, response) => {
+    calls.push(request.headers.authorization);
+    return request.headers.authorization === 'Bearer a'
+      ? reply(response, 429, { error: 'rate limit' }, { 'retry-after': '120' })
+      : reply(response, 200, completion(request.body.model));
+  }, url => [provider('pool', url, ['a', 'b'])]);
+  const endpoint = withSessionAffinity({ baseUrl: '' }, 'moving').baseUrl + '/v1/chat/completions';
+  let response = await f.post({}, endpoint);
+  assert.equal(response.status, 200);
+  assert.deepEqual(calls, ['Bearer a', 'Bearer b']);
+  response = await f.post({}, endpoint);
+  assert.equal(response.status, 200);
+  assert.equal(calls.at(-1), 'Bearer b');
+});
+
+test('native session headers bind affinity without an injected URL', async t => {
+  const held = [];
+  const f = await fixture(t, (request, response) => held.push({ request, response }),
+    url => [provider('pool', url, ['a', 'b'])], { timeoutMs: 5000 });
+  const post = headers => f.post({}, '/v1/messages', { headers });
+  const first = post({ 'x-session-affinity': 'session-from-dsh' });
+  await waitForRouting(() => held.length === 1);
+  reply(held[0].response, 200, completion(held[0].request.body.model));
+  const firstResult = await first; assert.equal(firstResult.status, 200); await firstResult.text();
+  const used = f.requests.at(-1).headers.authorization;
+  held.splice(0);
+  const second = post({ 'x-session-affinity': 'session-from-dsh' });
+  await waitForRouting(() => held.length === 1);
+  assert.equal(held[0].request.headers.authorization, used);
+  reply(held[0].response, 200, completion(held[0].request.body.model));
+  assert.equal((await second).status, 200);
+});
+
 test('all four routing switch combinations independently control distribution and failover', async t => {
   for (const multiKeyConcurrency of [true, false]) for (const multiKeyFailover of [true, false]) {
     await t.test(`concurrency=${multiKeyConcurrency}, failover=${multiKeyFailover}`, async t => {
@@ -1324,6 +1400,13 @@ test('recovered usage is merged once across reloads and later saves', t => {
   }] }));
   const first = loadConfig(file);
   assert.equal(first.usageArchive.length, 1);
+  const { readJson, withJsonReadSnapshot } = require('../src/shared/json-store');
+  withJsonReadSnapshot(() => {
+    const raw = readJson(file);
+    const archive = structuredClone(raw.usageArchive);
+    for (let i = 0; i < 10; i++) assert.deepEqual(loadConfig(file), first);
+    assert.deepEqual(raw.usageArchive, archive, 'Recovery must not append to shared read-only input on each model lookup');
+  });
   writeConfig(file, first);
   const second = loadConfig(file);
   assert.equal(second.usageArchive.length, 1);

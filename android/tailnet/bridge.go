@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"net/http"
 	"net/http/httptrace"
@@ -22,6 +23,7 @@ import (
 	"tailscale.com/ipn"
 	"tailscale.com/ipn/ipnstate"
 	"tailscale.com/net/netmon"
+	"tailscale.com/tailcfg"
 	"tailscale.com/tsnet"
 )
 
@@ -135,6 +137,44 @@ func (node *Node) Status() (string, error) {
 	return statusPayload(status)
 }
 
+// NetworkChanged refreshes the underlay without closing the overlay identity,
+// HTTP responses, or peer-relay bindings owned by active downloads.
+func (node *Node) NetworkChanged() error {
+	node.mu.Lock()
+	defer node.mu.Unlock()
+	if node.closed {
+		return errors.New("embedded network closed")
+	}
+	node.server.Sys().NetMon.Get().InjectEvent()
+	return nil
+}
+
+// Identify reports this node's Tailscale device identity for `whois`.
+func (node *Node) Identify() (string, error) {
+	client, err := node.server.LocalClient()
+	if err != nil {
+		return "", errors.New("embedded network unavailable")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	status, err := client.StatusWithoutPeers(ctx)
+	if err != nil || status.Self == nil {
+		return "", errors.New("cannot read embedded network identity")
+	}
+	result, err := json.Marshal(map[string]any{
+		"deviceId": status.Self.ID,
+		"hostName": status.Self.HostName,
+		"tailnet": func() string {
+			if status.CurrentTailnet != nil {
+				return status.CurrentTailnet.Name
+			}
+			return ""
+		}(),
+		"addresses": status.Self.TailscaleIPs,
+	})
+	return string(result), err
+}
+
 // statusPayload serialises the node state for both clients.
 //
 // `state` and `loginUrl` are what the clients act on; the rest is additive
@@ -181,6 +221,56 @@ func (node *Node) Login() error {
 	return client.StartLoginInteractive(ctx)
 }
 
+// Path reports how this node currently reaches a tailnet IPv4 address.
+//
+// The caller uses it for display, never for connectivity decisions. A probe
+// failure returns a valid "unreachable" result rather than an error, because a
+// path label must not turn a working computer into a failed one.
+type pathClient interface {
+	Ping(context.Context, netip.Addr, tailcfg.PingType) (*ipnstate.PingResult, error)
+}
+
+func (node *Node) Path(target string) (string, error) {
+	address, err := netip.ParseAddr(target)
+	if err != nil || !netip.MustParsePrefix("100.64.0.0/10").Contains(address) {
+		return "", errors.New("target is not a tailnet IPv4 address")
+	}
+	client, err := node.server.LocalClient()
+	if err != nil {
+		return "", errors.New("embedded network unavailable")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+	defer cancel()
+	return probePath(ctx, client, address)
+}
+
+func probePath(ctx context.Context, client pathClient, address netip.Addr) (string, error) {
+	result, pingErr := client.Ping(ctx, address, tailcfg.PingDisco)
+	probe := map[string]any{"path": "unreachable"}
+	if pingErr != nil || result == nil || result.Err != "" || result.IsLocalIP {
+		return marshalPath(probe)
+	}
+	switch {
+	case result.PeerRelay != "":
+		probe["path"], probe["peerRelay"] = "peer-relay", result.PeerRelay
+	case result.DERPRegionID != 0:
+		probe["path"], probe["derpRegionCode"] = "derp", result.DERPRegionCode
+	case result.Endpoint != "":
+		probe["path"], probe["endpoint"] = "direct", result.Endpoint
+	default:
+		probe["path"] = "unknown"
+	}
+	if result.LatencySeconds >= 0 {
+		probe["latencyMs"] = math.Round(result.LatencySeconds*1e6) / 1e3
+	}
+	return marshalPath(probe)
+}
+
+func marshalPath(value map[string]any) (string, error) {
+	encoded, err := json.Marshal(value)
+	return string(encoded), err
+}
+
 func validateTarget(method, target string) error {
 	parsed, err := url.Parse(target)
 	if err != nil || parsed.Scheme != "http" || parsed.User != nil || parsed.Fragment != "" {
@@ -201,16 +291,18 @@ func validateTarget(method, target string) error {
 }
 
 type Response struct {
-	mu          sync.Mutex
-	body        io.ReadCloser
-	status      int
-	contentType string
-	cancel      context.CancelFunc
-	node        *Node
-	closed      bool
-	request     *http.Request
-	started     bool
-	finished    bool
+	mu            sync.Mutex
+	body          io.ReadCloser
+	status        int
+	contentType   string
+	contentLength int64
+	contentRange  string
+	cancel        context.CancelFunc
+	node          *Node
+	closed        bool
+	request       *http.Request
+	started       bool
+	finished      bool
 }
 
 func (node *Node) Open(method, target, token, payload string) (*Response, error) {
@@ -268,6 +360,17 @@ func (response *Response) Execute() error {
 		timeout = 120 * time.Second
 	}
 	return response.execute(timeout)
+}
+
+// SetRangeStart is restricted to GET and must be called before Execute.
+func (response *Response) SetRangeStart(offset int64) error {
+	response.mu.Lock()
+	defer response.mu.Unlock()
+	if offset < 0 || response.started || response.closed || response.request.Method != http.MethodGet {
+		return errors.New("invalid download range")
+	}
+	response.request.Header.Set("Range", fmt.Sprintf("bytes=%d-", offset))
+	return nil
 }
 
 func connectionError(err error, cancelled, timedOut, connected bool, state string) error {
@@ -353,12 +456,16 @@ func (response *Response) execute(headerTimeout time.Duration) error {
 	response.body = result.Body
 	response.status = result.StatusCode
 	response.contentType = result.Header.Get("Content-Type")
+	response.contentLength = result.ContentLength
+	response.contentRange = result.Header.Get("Content-Range")
 	response.mu.Unlock()
 	return nil
 }
 
-func (response *Response) StatusCode() int     { return response.status }
-func (response *Response) ContentType() string { return response.contentType }
+func (response *Response) StatusCode() int      { return response.status }
+func (response *Response) ContentType() string  { return response.contentType }
+func (response *Response) ContentLength() int64 { return response.contentLength }
+func (response *Response) ContentRange() string { return response.contentRange }
 
 func (response *Response) ReadChunk() ([]byte, error) {
 	response.mu.Lock()

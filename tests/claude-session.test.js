@@ -42,6 +42,22 @@ test('Claude reports native background task progress and its actual terminal sta
   assert.equal(tasks[2].status, 'failed'); assert.equal(tasks[2].canStop, false);
 });
 
+test('Claude completed children discard pending approvals and deny late child requests', t => {
+  const f = fixture(t), childId = 'child';
+  f.session.childUpdate(childId, { status: 'running' });
+  const request = request_id => f.session.onControlRequest({ request_id, request: {
+    subtype: 'can_use_tool', agent_id: childId, tool_name: 'Write', input: { path: 'fixture.txt' } } });
+  request('approval');
+  assert.equal(f.session.permissions.has('approval'), true);
+  f.session.childUpdate(childId, { status: 'completed', result: 'Finished' });
+  assert.equal(f.session.permissions.has('approval'), false);
+  assert.equal(f.session.answerPermission('approval', true), false);
+  request('late');
+  assert.equal(f.session.permissions.has('late'), false);
+  assert.equal(f.session.children.get(childId).status, 'completed');
+  assert.equal(f.writes.at(-1).response.response.behavior, 'deny');
+});
+
 test('Claude recovers missed task starts from the native background snapshot and retains real completion', t => {
   const f = fixture(t);
   f.session.emitLine(JSON.stringify({ type: 'system', subtype: 'background_tasks_changed', tasks: [

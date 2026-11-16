@@ -77,6 +77,9 @@ public final class RemoteDiscussionsActivity extends Activity {
     private ChatComposer composer;
     private PermissionTool permissionButton;
     private AlertDialog dialog;
+    private ChoiceDropdown choiceDropdown;
+    private ConversationMenu actionMenu;
+    private RemoteSettingsPopup permissionPopup;
     private LinearLayout memberPanel;
     private final List<String> images = new ArrayList<>();
     private final List<JSONObject> documents = new ArrayList<>();
@@ -165,6 +168,7 @@ public final class RemoteDiscussionsActivity extends Activity {
         if (focused) notifyApprovalRequests();
     }
     @Override protected void onStop() {
+        dismissMenus();
         saveDraft(); foreground = false; disconnect();
         EmbeddedNetwork.setNetworkListener(null); EmbeddedNetwork.background();
         if (dialog != null) dialog.dismiss(); super.onStop();
@@ -175,6 +179,12 @@ public final class RemoteDiscussionsActivity extends Activity {
         if (cameraFile != null) saved.putString("cameraFile", cameraFile.getAbsolutePath()); downloads.save(saved); super.onSaveInstanceState(saved);
     }
     @Override public void onBackPressed() { if (groupId == null || getIntent().getBooleanExtra("fromNavigation", false)) finish(); else openGroup(null); }
+    @Override public void finish() { dismissMenus(); super.finish(); }
+    private void dismissMenus() {
+        if (choiceDropdown != null) choiceDropdown.dismiss();
+        if (actionMenu != null) { actionMenu.dismiss(); actionMenu = null; }
+        if (permissionPopup != null) { permissionPopup.dismiss(); permissionPopup = null; }
+    }
 
     private void stateLoadError(Exception error) {
         stateReady = false;
@@ -245,7 +255,8 @@ public final class RemoteDiscussionsActivity extends Activity {
         headerConnection.setSingleLine(true); headerConnection.setMaxWidth(dp(112)); headerConnection.setEllipsize(TextUtils.TruncateAt.END);
         headerConnection.setPadding(dp(6), 0, dp(6), 0); computer.addView(headerConnection); labels.addView(computer);
         header.addView(labels, new LinearLayout.LayoutParams(0, -2, 1));
-        header.addView(style.lineButton("more", tr("切换和管理", "Switch and manage"), this::pageMenu), new LinearLayout.LayoutParams(dp(48), dp(48)));
+        ImageButton pageMenu = style.lineButton("more", tr("切换和管理", "Switch and manage"), this::pageMenu); pageMenu.setTag("discussionPageMenu");
+        header.addView(pageMenu, new LinearLayout.LayoutParams(dp(48), dp(48)));
         root.addView(header);
         toolbar = new LinearLayout(this); toolbar.setPadding(0, dp(8), 0, dp(8)); toolbar.setGravity(Gravity.CENTER_VERTICAL); root.addView(toolbar);
         if (groupId == null) toolbar.addView(button(tr("新建讨论群", "New discussion"), "discussionCreate", this::createGroup));
@@ -640,6 +651,7 @@ public final class RemoteDiscussionsActivity extends Activity {
     }
 
     private void releasePageViews() {
+        dismissMenus();
         viewHandler.removeCallbacksAndMessages(null); handler.removeCallbacks(saveDraftLater);
         clearHistoryScroll(); disposeMessageRows();
         if (workStatus != null) { workStatus.close(); workStatus = null; }
@@ -694,9 +706,10 @@ public final class RemoteDiscussionsActivity extends Activity {
         }
     }
     private void chooseMode() {
-        dialog = new SettingsChoiceDialog(this, tr("回答方式", "Reply mode"), new String[] { tr("并行回答", "Parallel replies"), tr("依次回答", "Sequential replies") },
-            mode.equals("serial") ? 1 : 0, tr("取消", "Cancel"), index -> { mode = index == 0 ? "parallel" : "serial"; saveDraft(); controls(); });
-        dialog.show();
+        if (choiceDropdown != null) choiceDropdown.dismiss();
+        choiceDropdown = new ChoiceDropdown(composer.model, tr("回答方式", "Reply mode"), new String[] { tr("并行回答", "Parallel replies"), tr("依次回答", "Sequential replies") },
+            mode.equals("serial") ? 1 : 0, false, index -> { mode = index == 0 ? "parallel" : "serial"; saveDraft(); controls(); });
+        choiceDropdown.onDismiss(() -> choiceDropdown = null);
     }
     private void send() {
         if (composer == null || loadingAttachments || composer.input.getText().toString().trim().isEmpty() && images.isEmpty() && documents.isEmpty()) return;
@@ -778,12 +791,13 @@ public final class RemoteDiscussionsActivity extends Activity {
 
     private void showPermissionMenu() {
         if (group == null || groupId == null || !rich || !connected || group.optBoolean("active")) return;
-        String[] levels = {"ask", "auto", "full"};
-        dialog = new CamelliaDialog.Builder(this).setTitle(tr("安全级别", "Safety level"))
-            .setItems(new String[]{RemoteSettingsPopup.permissionLabel("ask", chinese),
-                RemoteSettingsPopup.permissionLabel("auto", chinese),
-                RemoteSettingsPopup.permissionLabel("full", chinese)},
-                (d, index) -> submit("set-permission", groupId, object("permissionMode", levels[index]))).show();
+        dismissMenus(); String target = groupId;
+        permissionPopup = new RemoteSettingsPopup(this, chinese, style.background, style.ink, style.muted, style.accent,
+            object("permissionMode", group.optString("permissionMode", "ask")), (key, value) -> {
+                if (target.equals(groupId) && group != null && connected && !group.optBoolean("active"))
+                    submit("set-permission", target, object("permissionMode", value));
+            });
+        permissionPopup.show(permissionButton, true);
     }
     private void pickAttachment(int kind) {
         dialog.dismiss(); pickerGroup = groupId;
@@ -836,10 +850,14 @@ public final class RemoteDiscussionsActivity extends Activity {
         });
     }
     private void pageMenu() {
-        dialog = new CamelliaDialog.Builder(this).setTitle(tr("Agent 讨论 (beta)", "Agent discussions (beta)"))
-            .setItems(new String[] { tr("普通会话", "Regular conversations"), tr("讨论群列表", "Discussions"), tr("刷新", "Refresh"), tr("管理当前群", "Manage discussion") }, (d, index) -> {
-                if (index == 0) finish(); else if (index == 1) openGroup(null); else if (index == 2) connect(); else if (group != null) groupMenu(group);
-            }).show();
+        dismissMenus(); boolean current = group != null;
+        String[] labels = current
+            ? new String[]{tr("普通会话", "Regular conversations"), tr("讨论群列表", "Discussions"), tr("刷新", "Refresh"), tr("管理当前群", "Manage discussion")}
+            : new String[]{tr("普通会话", "Regular conversations"), tr("讨论群列表", "Discussions"), tr("刷新", "Refresh")};
+        String[] icons = current ? new String[]{"back", "sessions", "refresh", "settings"} : new String[]{"back", "sessions", "refresh"};
+        Runnable[] actions = current ? new Runnable[]{this::finish, () -> openGroup(null), this::connect, () -> { if (group != null) groupMenu(group); }}
+            : new Runnable[]{this::finish, () -> openGroup(null), this::connect};
+        actionMenu = new ConversationMenu(root.findViewWithTag("discussionPageMenu"), style, labels, icons, actions);
     }
     private void createGroup() { editTitle(null); }
     private void editTitle(JSONObject target) {
@@ -849,14 +867,17 @@ public final class RemoteDiscussionsActivity extends Activity {
             .setNegativeButton(tr("取消", "Cancel"), (d, w) -> { if (target == null && groupId == null && getIntent().getBooleanExtra("fromNavigation", false)) finish(); }).show();
     }
     private void groupMenu(JSONObject target) {
-        dialog = new CamelliaDialog.Builder(this).setTitle(target.optString("title")).setItems(new String[] {
-            tr("重命名", "Rename"), target.optBoolean("pinned") ? tr("取消置顶", "Unpin") : tr("置顶", "Pin"), tr("删除讨论群", "Delete discussion") }, (d, which) -> {
-                if (which == 0) editTitle(target);
-                else if (which == 1) submit("pin", target.optString("id"), object("pinned", !target.optBoolean("pinned")));
-                else dialog = new CamelliaDialog.Builder(this).setTitle(tr("删除讨论群？", "Delete discussion?"))
+        dismissMenus();
+        View anchor = root.findViewWithTag("discussionActions:" + target.optString("id"));
+        if (anchor == null) anchor = root.findViewWithTag("discussionPageMenu");
+        actionMenu = new ConversationMenu(anchor, style, new String[]{tr("重命名", "Rename"),
+            target.optBoolean("pinned") ? tr("取消置顶", "Unpin") : tr("置顶", "Pin"), tr("删除讨论群", "Delete discussion")},
+            new String[]{"edit", "pin", "delete"}, new Runnable[]{() -> editTitle(target),
+                () -> submit("pin", target.optString("id"), object("pinned", !target.optBoolean("pinned"))),
+                () -> { dialog = new CamelliaDialog.Builder(this).setTitle(tr("删除讨论群？", "Delete discussion?"))
                     .setMessage(tr("将删除这个群的记录和附件。请先停止正在进行的回复。", "This deletes the group's history and attachments. Stop active replies first."))
                     .setPositiveButton(tr("删除", "Delete"), (x, y) -> submit("delete", target.optString("id"), new JSONObject())).setNegativeButton(tr("取消", "Cancel"), null).show();
-            }).show();
+                }});
     }
     private void showMembers() {
         if (group == null) return;

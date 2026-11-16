@@ -186,6 +186,105 @@ test('Codex recognizes the bundled app-server subAgent source and V2 completion 
   assert.equal(session.childReads.has('child-v2'), true, 'completion still schedules the final thread read');
 });
 
+test('Codex child terminal events clear pending approvals before the final status read', async t => {
+  const { session, notify } = await outputFixture(t);
+  session.childUpdate('child', { status: 'running', turnId: 'child-turn', canStop: true });
+  session.requestApproval({ id: 919, method: 'item/tool/requestUserInput', params: { threadId: 'child', questions: [] } });
+  notify('turn/completed', { threadId: 'child', turn: { id: 'child-turn', status: 'completed' } });
+  const child = session.children.get('child');
+  assert.deepEqual(child.approvals, []);
+  assert.equal(session.permissions.has('919'), false);
+  assert.equal(session.answerPermission('919', true), false, 'an old approval cannot revive completed work');
+  session.requestApproval({ id: 920, method: 'item/tool/requestUserInput', params: { threadId: 'child', questions: [] } });
+  assert.equal(session.permissions.has('920'), false, 'a late request from the ended child must be rejected');
+  clearTimeout(session.childTimer);
+  session.client.request = async () => ({ thread: { turns: [{ id: 'child-turn', status: 'completed', items: [] }] } });
+  await session.pollChildren();
+  assert.equal(session.children.get('child').status, 'completed');
+});
+
+test('Codex ignores a previous child turn completion and stale persisted running state', async t => {
+  const { session, notify } = await outputFixture(t);
+  session.childUpdate('child', { status: 'running', turnId: 'old' });
+  notify('turn/started', { threadId: 'child', turn: { id: 'new' } });
+  notify('turn/completed', { threadId: 'child', turn: { id: 'old', status: 'completed' } });
+  assert.equal(session.children.get('child').status, 'running');
+  notify('turn/completed', { threadId: 'child', turn: { id: 'new', status: 'completed' } });
+  clearTimeout(session.childTimer);
+  session.client.request = async () => ({ thread: { turns: [{ id: 'new', status: 'inProgress', items: [] }] } });
+  await session.pollChildren();
+  assert.equal(session.children.get('child').status, 'completed', 'an older read cannot override native completion');
+  assert.equal(session.children.get('child').canStop, false);
+});
+
+test('Codex ignores retired turn starts and disk snapshots after a child starts a new turn', async t => {
+  const { session, notify } = await outputFixture(t);
+  session.childUpdate('child', { status: 'running', turnId: 'old' });
+  notify('turn/started', { threadId: 'child', turn: { id: 'new' } });
+  clearTimeout(session.childTimer);
+  session.client.request = async () => ({ thread: { turns: [{ id: 'old', status: 'completed', items: [] }] } });
+  await session.pollChildren();
+  assert.equal(session.children.get('child').status, 'running');
+  assert.equal(session.children.get('child').turnId, 'new');
+  notify('turn/started', { threadId: 'child', turn: { id: 'old' } });
+  assert.equal(session.children.get('child').turnId, 'new');
+});
+
+test('Codex ignores text deltas belonging to an earlier child turn', async t => {
+  const { session, notify } = await outputFixture(t);
+  session.childUpdate('child', { status: 'running', turnId: 'old' });
+  notify('turn/started', { threadId: 'child', turn: { id: 'new' } });
+  notify('item/agentMessage/delta', { threadId: 'child', turnId: 'new', delta: 'Current answer' });
+  notify('item/agentMessage/delta', { threadId: 'child', turnId: 'old', delta: 'Stale text' });
+  assert.equal(session.children.get('child').progress, 'Current answer');
+});
+
+for (const type of ['notLoaded', 'systemError']) test('Codex ' + type + ' snapshots cannot leave a stale turn running', async t => {
+  const { session } = await outputFixture(t);
+  session.childUpdate('child', { status: 'running', turnId: 'child-turn', canStop: true });
+  clearTimeout(session.childTimer);
+  session.client.request = async () => ({ thread: { status: { type }, turns: [{ id: 'child-turn', status: 'inProgress', items: [] }] } });
+  await session.pollChildren();
+  assert.equal(session.children.get('child').status, 'unavailable');
+  assert.equal(session.children.get('child').canStop, false);
+});
+
+test('Codex failed child status reads become unavailable and can recover without running a model', async t => {
+  const { session } = await outputFixture(t);
+  session.childUpdate('child', { status: 'running', turnId: 'child-turn', canStop: true });
+  clearTimeout(session.childTimer);
+  session.client.request = async () => { throw new Error('Thread read unavailable'); };
+  await session.pollChildren();
+  assert.equal(session.children.get('child').status, 'unavailable');
+  assert.equal(session.children.get('child').canStop, false);
+  assert.equal(session.childReads.has('child'), true);
+  clearTimeout(session.childTimer);
+  session.client.request = async method => {
+    assert.equal(method, 'thread/read');
+    return { thread: { turns: [{ id: 'child-turn', status: 'completed', items: [
+      { type: 'agentMessage', phase: 'final_answer', text: 'Verified final result' },
+    ] }] } };
+  };
+  await session.pollChildren();
+  assert.equal(session.children.get('child').status, 'completed');
+  assert.equal(session.children.get('child').result, 'Verified final result');
+});
+
+test('Codex polling cannot revive a child after its native client closes', async t => {
+  const { session } = await outputFixture(t);
+  session.childUpdate('child', { status: 'running', turnId: 'child-turn', canStop: true });
+  clearTimeout(session.childTimer);
+  let rejectRead;
+  session.client.request = () => new Promise((_, reject) => { rejectRead = reject; });
+  const read = session.pollChildren();
+  session.dead = true;
+  session.childUpdate('child', { status: 'unavailable', canStop: false });
+  rejectRead(new Error('Native process closed'));
+  await read;
+  assert.equal(session.children.get('child').status, 'unavailable');
+  assert.equal(session.childTimer, null);
+});
+
 test('Codex subscription Fast mode reaches threads and turns, and disabling it clears the tier', async t => {
   const root = temporary(t), wire = transport();
   const session = new CodexSession({ gen: 1, settings: { cwd: root, model: 'fixture', connection: 'subscription', serviceTier: 'priority' },

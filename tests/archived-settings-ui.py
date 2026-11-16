@@ -42,6 +42,18 @@ with sync_playwright() as playwright:
     page.goto((root / "src/renderer/settings/api-settings.html").as_uri() + "?page=archived")
     page.wait_for_load_state("networkidle")
     expect(page.locator("#archivedList .archived-row")).to_have_count(23)
+    page.locator(".scroll-content").evaluate("element => element.scrollTop = element.scrollHeight")
+    page.wait_for_timeout(100)
+    tail = page.evaluate("""() => {
+      const scroller = document.querySelector('.scroll-content');
+      const last = document.querySelector('#archivedList .archived-row:last-child');
+      return { atEnd: Math.abs(scroller.scrollTop - (scroller.scrollHeight - scroller.clientHeight)) <= 1,
+        gap: scroller.getBoundingClientRect().bottom - last.getBoundingClientRect().bottom,
+        paddingBottom: getComputedStyle(scroller).paddingBottom };
+    }""")
+    assert tail['atEnd'], tail
+    assert abs(tail['gap']) <= 1, tail
+    assert tail['paddingBottom'] == '0px', tail
     page.locator("#deleteAllArchived").click()
     expect(page.locator("#deleteAllArchivedDialog")).to_be_visible()
     page.evaluate("window.firstArchivedRow = document.querySelector('#archivedList .archived-row')")

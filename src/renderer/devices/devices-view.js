@@ -13,7 +13,7 @@
   </section>
   <section class="device-section device-card device-pair" aria-labelledby="cli-pairTitle">
     <div class="device-heading"><h2 id="cli-pairTitle" data-copy="pairServer">配对服务器</h2><button id="cli-add" data-copy="add">添加 CLI 服务器</button></div>
-    <p class="hint" data-copy="intro">使用服务器上的一次性配对码添加连接。配对后，从首页打开服务器工作台。</p>
+    <p class="hint sr-only" data-copy="intro">使用服务器上的一次性配对码添加连接。配对后，从首页打开服务器工作台。</p>
   </section>
   <section class="device-section" aria-labelledby="cli-serversTitle">
     <div class="device-heading"><h2 id="cli-serversTitle" data-copy="servers">已配对服务器</h2></div>
@@ -42,7 +42,7 @@
     <div class="actions"><button id="${prefix}networkStart" data-copy="login">启动 / 登录</button><button id="${prefix}openLogin" data-copy="browser">打开登录链接</button><button id="${prefix}networkRefresh" data-copy="refresh">刷新</button></div>
   </details>
   </div>
-  <label for="${prefix}harness" class="hint" data-copy="engine">Harness</label><select id="${prefix}harness"></select>
+  <label for="${prefix}harness" data-copy="engine">Harness</label><select id="${prefix}harness"></select>
   <button id="${prefix}newChat" data-write data-copy="newChat">新建会话</button>
   <div class="workspace-heading"><span data-copy="workspace">工作区</span><button id="${prefix}newWorkspace" data-write data-copy="newWorkspace">新建工作区</button></div>
   <nav id="${prefix}tree" class="tree" aria-label="Remote workspaces"></nav>

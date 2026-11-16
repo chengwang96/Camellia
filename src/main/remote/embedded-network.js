@@ -104,7 +104,8 @@ class EmbeddedNetwork {
   async status() {
     if (this.child) {
       const result = await this.request('status');
-      this.snapshot = { state: String(result.state), loginUrl: loginURL(result.loginUrl), address: isTailscaleIPv4(result.address) ? result.address : null };
+      this.snapshot = { state: String(result.state), loginUrl: loginURL(result.loginUrl), address: isTailscaleIPv4(result.address) ? result.address : null,
+        deviceId: typeof result.deviceId === 'string' ? result.deviceId : '', hostName: typeof result.hostName === 'string' ? result.hostName : '' };
     }
     return { ...this.snapshot };
   }
@@ -120,6 +121,16 @@ class EmbeddedNetwork {
     await this.openExternal(url);
   }
   async listen(target, token) { return this.request('listen', { target, token }); }
+  async setHostname(hostname) {
+    if (!this.child) return { hostName: '' };
+    const result = await this.request('set-hostname', { hostname });
+    const hostName = typeof result?.hostName === 'string' ? result.hostName : '';
+    if (hostName) this.snapshot = { ...this.snapshot, hostName };
+    return { hostName };
+  }
+  identity() {
+    return { deviceId: this.snapshot.deviceId || '', hostName: this.snapshot.hostName || '', address: this.snapshot.address || null };
+  }
   async diagnosePeer(address) {
     if (!isTailscaleIPv4(address)) throw new Error('Invalid diagnostic peer address');
     if (!this.child) throw new Error('Enable mobile access first');

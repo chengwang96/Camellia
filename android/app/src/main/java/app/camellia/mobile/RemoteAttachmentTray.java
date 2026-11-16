@@ -17,7 +17,7 @@ final class RemoteAttachmentTray {
 
     static View create(Context context, ChatStyle style, JSONArray files, long seq,
                        String address, String token, String conversation, boolean chinese) {
-        return create(context, style, files, seq, address, token, conversation, chinese, RemoteApi::new);
+        return create(context, style, files, seq, address, token, conversation, chinese, value -> new RemoteApi(context, value));
     }
 
     static View create(Context context, ChatStyle style, JSONArray files, long seq,

@@ -109,6 +109,19 @@ test('headless hostname is validated before any helper process starts', () => {
   assert.equal(new EmbeddedNetwork({ hostname: 'gpu-lab-01' }).hostname, 'gpu-lab-01');
 });
 
+test('embedded hostname changes use the helper and refresh the cached identity', async () => {
+  const network = new EmbeddedNetwork({});
+  const requests = [];
+  network.child = {};
+  network.snapshot = { state: 'Running', address: '100.80.1.2', deviceId: 'node', hostName: 'old-name' };
+  network.request = async (action, payload) => { requests.push({ action, payload }); return { hostName: payload.hostname }; };
+  assert.deepEqual(await network.setHostname('new-name'), { hostName: 'new-name' });
+  assert.deepEqual(requests, [{ action: 'set-hostname', payload: { hostname: 'new-name' } }]);
+  assert.equal(network.identity().hostName, 'new-name');
+  network.child = null;
+  assert.deepEqual(await network.setHostname('ignored'), { hostName: '' });
+});
+
 test('outdated helper connect errors explain the local rebuild and restart without stopping networking', async () => {
   const network = new EmbeddedNetwork({});
   const child = {};

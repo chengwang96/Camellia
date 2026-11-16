@@ -129,3 +129,139 @@ test('native caption painting is yielded before the backdrop and refreshed befor
   await setBackdrop(owner, false);
   assert.deepEqual(order, [['dim', false], ['send', 'dsh:settings-overlay', false]]);
 });
+
+// Exercise the production lifecycle with controllable focus and an unfinished
+// save. Hidden Electron windows cannot exercise Windows foreground ownership.
+async function settingsCloseFixture() {
+  const actions = [], timers = [];
+  let finishSave;
+  class Window extends EventEmitter {
+    constructor() {
+      super();
+      this.visible = true; this.minimized = false; this.focused = false; this.destroyed = false;
+      this.webContents = { isLoading: () => false, send() {}, isDestroyed: () => this.destroyed };
+    }
+    isDestroyed() { return this.destroyed; }
+    isVisible() { return this.visible; }
+    isMinimized() { return this.minimized; }
+    isFocused() { return this.focused; }
+    getContentBounds() { return { x: 0, y: 0, width: 1320, height: 900 }; }
+    setMenu() {}
+    setBounds() {}
+    show() { this.visible = true; }
+    restore() { actions.push('restore'); this.minimized = false; }
+    focus() {
+      actions.push(this === owner ? 'focus-owner' : 'focus-settings');
+      owner.focused = false; context.settingsWindow.focused = false;
+      this.focused = true; this.emit('focus');
+    }
+    loadFile() {}
+    close() {
+      const event = { preventDefault() { this.defaultPrevented = true; } };
+      this.emit('close', event);
+      if (event.defaultPrevented) return;
+      actions.push('close-settings'); this.destroyed = true; this.focused = false;
+      this.emit('closed');
+    }
+  }
+  const owner = new Window();
+  const context = vm.createContext({
+    mainWindow: owner, settingsWindow: null, settingsOpening: null, settingsCloseReady: false,
+    settingsShowReady: false, appQuitting: false, nativeSettingsView: null, nativeSettingsLoad: null,
+    BrowserWindow: Window, settingsWindowSizes: { size: { width: 1160, height: 860 } }, settingsWindowBounds,
+    setSettingsBackdrop: async () => {}, windowChrome: { setDimmed() {} },
+    flushSettingsWindow: () => new Promise(resolve => { finishSave = resolve; }),
+    attachExternalNavigation() {}, desktopZoom: () => ({ factor: 1, attach() {} }),
+    cliDevices: { detach() {} }, liveWebContents: () => null, shell: {}, log() {},
+    setImmediate, setTimeout: callback => timers.push(callback),
+    path, APP_ROOT: path.resolve(__dirname, '..'), APP_NAME: 'Camellia', RENDERER_ROOT: __dirname,
+    __dirname, process: { platform: 'win32' },
+  });
+  vm.runInContext(`function openSettingsWindow(target = {}) {${openSettings}\n}`, context);
+  context.openSettingsWindow();
+  for (let attempt = 0; !context.settingsWindow && attempt < 20; attempt++) await new Promise(setImmediate);
+  assert.ok(context.settingsWindow, 'settings constructor must complete');
+  const settings = context.settingsWindow;
+  settings.emit('ready-to-show');
+  return { owner, settings, actions, timers, context,
+    async save(ok = true) { finishSave(ok); await new Promise(setImmediate); } };
+}
+
+test('closing settings after switching away and back hands focus to the visible owner before destroying the child', async () => {
+  const f = await settingsCloseFixture();
+  f.settings.focused = false; f.settings.emit('blur'); // Another application.
+  assert.equal(f.settings.isDestroyed(), false);
+  f.settings.focus(); // Return to Camellia through Settings, not its owner.
+  f.actions.length = 0;
+  f.settings.close();
+  assert.equal(f.settings.isDestroyed(), false, 'saving must finish first');
+  await f.save();
+  assert.deepEqual(f.actions, ['focus-owner', 'close-settings']);
+  assert.equal(f.owner.isFocused(), true);
+  assert.equal(f.owner.listenerCount('focus'), 0, 'handoff must not re-enter dismissal');
+  f.owner.focused = false; // Switching away after dismissal must remain possible.
+  f.owner.minimized = true;
+  for (const timer of f.timers) timer();
+  assert.deepEqual(f.actions, ['focus-owner', 'close-settings'], 'no delayed foreground activation');
+  assert.equal(f.owner.isMinimized(), true, 'a subsequent minimize is preserved');
+});
+
+test('settings never activates the owner if the user switches away while saving', async () => {
+  const f = await settingsCloseFixture();
+  f.settings.focused = true;
+  f.settings.close();
+  f.settings.focused = false;
+  await f.save();
+  assert.deepEqual(f.actions, ['close-settings']);
+});
+
+test('settings close respects hidden/minimized owners and application shutdown', async () => {
+  for (const state of ['hidden', 'minimized', 'destroyed', 'quitting', 'background']) {
+    const f = await settingsCloseFixture();
+    f.settings.focused = true;
+    if (state === 'hidden') f.owner.visible = false;
+    if (state === 'minimized') f.owner.minimized = true;
+    if (state === 'destroyed') f.owner.destroyed = true;
+    if (state === 'quitting') f.context.appQuitting = true;
+    if (state === 'background') f.settings.focused = false;
+    f.settings.close();
+    await f.save();
+    for (const timer of f.timers) timer();
+    assert.deepEqual(f.actions, ['close-settings'], state);
+  }
+});
+
+test('hiding or minimizing the workbench during a pending save is preserved', async () => {
+  for (const state of ['hidden', 'minimized']) {
+    const f = await settingsCloseFixture();
+    f.settings.focused = true;
+    f.settings.close();
+    if (state === 'hidden') f.owner.visible = false;
+    else f.owner.minimized = true;
+    await f.save();
+    for (const timer of f.timers) timer();
+    assert.deepEqual(f.actions, ['close-settings'], state);
+  }
+});
+
+test('owner caption dismissal stays focused without a redundant activation or repeated save', async () => {
+  const f = await settingsCloseFixture();
+  f.owner.focus();
+  await f.save();
+  assert.deepEqual(f.actions, ['focus-owner', 'close-settings']);
+  assert.equal(f.owner.isFocused(), true);
+  assert.equal(f.owner.listenerCount('focus'), 0);
+});
+
+test('failed saves keep settings open and a later successful close returns focus to its owner', async () => {
+  const f = await settingsCloseFixture();
+  f.settings.focused = true;
+  f.settings.close();
+  await f.save(false);
+  assert.equal(f.settings.isDestroyed(), false);
+  assert.equal(f.settings.isFocused(), true);
+  f.actions.length = 0;
+  f.settings.close();
+  await f.save();
+  assert.deepEqual(f.actions, ['focus-owner', 'close-settings']);
+});

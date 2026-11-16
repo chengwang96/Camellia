@@ -10,15 +10,18 @@ export function apply(ctx) {
     } }) + '\n');
   };
   const start = info => {
+    if (tasks.get(info.id)?.task.turnId === info.runId) return;
     const child = ctx.agents.get(info.id), header = child?.session.header;
     if (!header?.parentSession || header.origin !== 'subagent') return;
     let root = header.parentSession;
     const seen = new Set([info.id]);
     while (!seen.has(root)) {
       seen.add(root);
-      const parent = ctx.agents.get(root)?.session.header.parentSession;
-      if (!parent) break;
-      root = parent;
+      const parent = ctx.agents.get(root)?.session.header;
+      // Ordinary forks retain historical lineage but own their ACP session.
+      // Only native subagent ancestors share this child's event destination.
+      if (parent?.origin !== 'subagent' || !parent.parentSession) break;
+      root = parent.parentSession;
     }
     if (root === info.id || seen.size > 32) return;
     const record = { root, task: { id: info.id, parentId: header.parentSession, turnId: info.runId,
@@ -36,7 +39,7 @@ export function apply(ctx) {
     const record = tasks.get(session.id); if (!record) return;
     let progress;
     if (event.type === 'user/message') {
-      const goal = words(event.data.message?.content);
+      const goal = words(event.data.content || event.data.message?.content);
       if (goal) send(record, { goal, title: goal.split('\n')[0].slice(0, 90) });
     } else if (event.type === 'assistant/message') progress = words(event.data.message?.content);
     else if (event.type === 'tool/call') progress = event.data.name;

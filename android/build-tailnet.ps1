@@ -1,7 +1,10 @@
 param([string]$Targets = 'android/arm64,android/amd64')
 $ErrorActionPreference = 'Stop'
 if (-not $env:ANDROID_HOME -or -not $env:JAVA_HOME) { throw 'Set ANDROID_HOME and JAVA_HOME (JDK 17) first.' }
-if (-not $env:ANDROID_NDK_HOME) { $env:ANDROID_NDK_HOME = Join-Path $env:ANDROID_HOME 'ndk/27.2.12479018' }
+if (-not $env:ANDROID_NDK_HOME -or
+    -not (Test-Path -LiteralPath (Join-Path $env:ANDROID_NDK_HOME 'meta/platforms.json') -PathType Leaf)) {
+    $env:ANDROID_NDK_HOME = Join-Path $env:ANDROID_HOME 'ndk/27.2.12479018'
+}
 $env:PATH = (Join-Path $env:JAVA_HOME 'bin') + ';' + $env:PATH
 $module = Join-Path $PSScriptRoot 'tailnet'
 $library = Join-Path $PSScriptRoot 'app/libs/tailnet.aar'

@@ -17,6 +17,7 @@ const { readCodexNativeHistories } = require('./codex-history-inventory');
 const { readJson, readRecoverableJson, writeJson } = require('../../shared/json-store');
 const { kimiCredentialFile, googleDiscussionSpec, extraTextSpec, createTextSession, extraDiscussionDrivers } = require('./text-runtimes');
 const { nativeToolSpec } = require('./tool-runtimes');
+const { withSessionAffinity } = require('../../api/session-affinity');
 
 const UUID = /^[0-9a-f-]{36}$/;
 const VERIFY_NOTICE = 'Verify this connection once with two short messages. This uses model quota.';
@@ -261,9 +262,10 @@ class DiscussionProduction {
         writeJson(path.join(home, 'auth.json'), { ...auth, refresh_token: '' }, { mode: 0o600 });
       } else if (profile.connection === 'api') {
         const account = JSON.parse(profile.accountRef);
-        record.route = this.getRouter()?.createScope({ model: profile.model, providerId: account.providerId,
+        const scope = this.getRouter()?.createScope({ model: profile.model, providerId: account.providerId,
           routeFingerprint: account.route, maxRequests: verification ? 6 : 100, maxTokens: Math.max(4096, profile.contextWindow * (verification ? 2 : 16)),
           toolPolicy: verification && profile.engine === 'grok' ? 'none' : 'preserve' });
+        record.route = scope && { ...scope, baseUrl: withSessionAffinity(scope, 'discussion:' + identity.runtimeId).baseUrl };
         if (!record.route) throw new Error('Enable the configured API route before verifying this connection.');
       }
       record.job = await this.jobs.prepare({ identity, journal: verification ? this.checkJournal : this.journal, signal });

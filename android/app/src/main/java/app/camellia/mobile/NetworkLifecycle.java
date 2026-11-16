@@ -10,6 +10,7 @@ final class NetworkLifecycle<N> {
     interface Backend<N> {
         N create() throws Exception;
         void close(N node) throws Exception;
+        default void networkChanged(N node) throws Exception { }
         void saveMode(boolean enabled) throws Exception;
         void forget() throws Exception;
     }
@@ -32,6 +33,7 @@ final class NetworkLifecycle<N> {
     private CompletableFuture<Void> modeSave = CompletableFuture.completedFuture(null);
     // Accessed only by the worker. Detaching ready never releases ownership of the directory.
     private N owned;
+    private long ownedRouteRevision;
 
     NetworkLifecycle(Backend<N> backend, ExecutorService worker, LongSupplier clock, LongSupplier route, boolean enabled) {
         this.backend = backend; this.worker = worker; this.clock = clock; this.route = route;
@@ -80,9 +82,10 @@ final class NetworkLifecycle<N> {
         long revision = route.getAsLong();
         if (revision == routeRevision) return null;
         routeRevision = revision;
-        Creation<N> cancelled = invalidateLocked();
-        submitLocked(this::closeOwned);
-        return cancelled;
+        // A cellular LinkProperties update is not a logout. Keep the native
+        // identity and its TCP streams while Tailscale discovers a new path.
+        submitLocked(this::refreshOwnedRoute);
+        return null;
     }
 
     CompletableFuture<Void> setEnabled(boolean value) {
@@ -183,7 +186,7 @@ final class NetworkLifecycle<N> {
 
     private boolean currentLocked(Creation<N> pending) {
         return creation == pending && generation == pending.generation && enabled
-            && route.getAsLong() == pending.routeRevision && !expiredLocked();
+            && !expiredLocked();
     }
 
     private void create(Creation<N> pending) {
@@ -196,6 +199,8 @@ final class NetworkLifecycle<N> {
             if (!current) { pending.future.completeExceptionally(new IOException("Cancelled")); return; }
             N candidate = backend.create();
             owned = candidate;
+            ownedRouteRevision = pending.routeRevision;
+            refreshOwnedRoute();
             boolean publish;
             synchronized (lock) {
                 publish = currentLocked(pending);
@@ -211,6 +216,14 @@ final class NetworkLifecycle<N> {
         if (owned == null) return;
         backend.close(owned);
         owned = null;
+    }
+
+    private void refreshOwnedRoute() throws Exception {
+        if (owned == null) return;
+        long revision = route.getAsLong();
+        if (ownedRouteRevision == revision) return;
+        backend.networkChanged(owned);
+        ownedRouteRevision = revision;
     }
 
     private CompletableFuture<Void> submitLocked(Operation operation) {

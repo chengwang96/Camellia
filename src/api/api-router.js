@@ -15,6 +15,7 @@ const { routedModelId } = require('../shared/codex-tool-model');
 const { canonicalModelId } = require('../shared/model-names');
 const { accountCapability, queryAccount } = require('./provider-accounts');
 const { createModelDiscovery } = require('./model-discovery');
+const { parseSessionAffinityPath, requestSessionKey } = require('./session-affinity');
 const apiTransport = require('./api-transport');
 
 function retryDelay(headers = {}, now = Date.now()) {
@@ -45,7 +46,11 @@ function failureKind(status, body = '') {
   if (status >= 500) return 'upstream';
   return null;
 }
-const reasonText = { auth: "Key authentication failed", quota: "Quota exhausted or plan unavailable", rate_limit: "Provider rate limit", model_unavailable: "Model temporarily unavailable", upstream: "Provider temporarily unavailable", network: "Connection failed or timed out", protocol: "This route cannot handle the request format" };
+// Routing keeps a stable machine-readable kind; presentation supplies the
+// wording. `reason` remains the English fallback for logs, exports and older
+// readers that do not know about `kind`.
+const { FAILURE_LABELS: reasonText } = require('../shared/failure-labels');
+const failure = (kind, extra = {}) => ({ kind, reason: reasonText[kind] || 'Provider request failed', ...extra });
 function safeDetail(text, secrets) {
   let value = String(text || '').slice(0, 4000);
   for (const key of secrets) if (key) value = value.split(key).join('[redacted]');
@@ -56,8 +61,12 @@ function json(res, status, body, headers = {}) {
   res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', ...headers });
   res.end(JSON.stringify(body));
 }
-function apiError(res, status, message, protocol, code = 'api_router_error', headers = {}) {
-  json(res, status, protocol === 'anthropic' ? { type: 'error', error: { type: code, message } } : { error: { type: code, code, message } }, headers);
+function apiError(res, status, message, protocol, code = 'api_router_error', headers = {}, kind = null) {
+  // `failureKind` lets a client localize or branch without parsing prose. The
+  // protocol-required shape stays unchanged, so existing SDKs keep working.
+  json(res, status, protocol === 'anthropic'
+    ? { type: 'error', error: { type: code, message, ...(kind ? { failure_kind: kind } : {}) } }
+    : { error: { type: code, code, message, ...(kind ? { failure_kind: kind } : {}) } }, headers);
 }
 
 function startApiRouter({ configPath, log = () => {}, onState = () => {}, onContextEvidence = () => {}, timeoutMs = 120000, quotaCheck = {}, modelDiscovery = {} } = {}) {
@@ -67,6 +76,10 @@ function startApiRouter({ configPath, log = () => {}, onState = () => {}, onCont
   let diskMtime = fs.existsSync(configPath) ? fs.statSync(configPath).mtimeMs : 0;
   const sockets = new Set(), upstreams = new Set();
   const keyRequests = new Map();
+  // Affinity is memory-only: a restart may rebalance cleanly, and a retry
+  // after a failed route gets a fresh choice instead of reviving a dead key.
+  const sessionRoutes = new Map();
+  let sessionCursor = 0;
   const retiredRequests = new Map();
   const scopes = new RequestScopes();
   const getState = () => ({ ...publicState(cfg), running, error, activeRequests: upstreams.size, url: `http://127.0.0.1:${cfg.port}`, lastRoute: lastRoute ? { ...lastRoute } : null,
@@ -222,7 +235,7 @@ function startApiRouter({ configPath, log = () => {}, onState = () => {}, onCont
               const usage = cfg.usage[key.id];
               let cleared = false;
               for (const [model, cooldown] of Object.entries(usage?.models || {})) {
-                if (cooldown.reason === reasonText.quota) { delete usage.models[model]; cleared = true; }
+                if (cooldown.kind === 'quota' || cooldown.reason === reasonText.quota) { delete usage.models[model]; cleared = true; }
               }
               if (cleared) changed();
             }
@@ -253,7 +266,13 @@ function startApiRouter({ configPath, log = () => {}, onState = () => {}, onCont
   // Load is shared across models/protocols on this account. Credential or
   // endpoint changes get a fresh identity while old requests finish normally.
   function keyLoad(provider, key) { return keyRequests.get(quotaIdentity(provider, key)) || 0; }
-  function nextRoute(remaining, model, protocol) {
+  function sessionRouteFor(model, key) { return key ? sessionRoutes.get(model + '\0' + key) || '' : ''; }
+  function sessionLoad(route) {
+    let count = 0;
+    for (const id of sessionRoutes.values()) if (id === route.provider.id + '\0' + route.key.id) count++;
+    return count;
+  }
+  function nextRoute(remaining, model, protocol, sessionKey = '') {
     if (!cfg.enabled) return null;
     const currentRoutes = candidates(model, protocol);
     const eligible = remaining.filter(route => {
@@ -267,7 +286,9 @@ function startApiRouter({ configPath, log = () => {}, onState = () => {}, onCont
       if (unchanged) Object.assign(route, current);
       return unchanged;
     });
-    const preferred = eligible.find(route => route.key.id === cfg.active[model]) || eligible.reduce((best, route) =>
+    const sessionKeyId = sessionKey && sessionRouteFor(model, sessionKey);
+    const preferred = eligible.find(route => route.provider.id + '\0' + route.key.id === sessionKeyId)
+      || eligible.find(route => route.key.id === cfg.active[model]) || eligible.reduce((best, route) =>
       route.provider.priority > best.provider.priority ? route : best, eligible[0]);
     const selectable = cfg.routing.multiKeyFailover ? eligible.filter(route => available(route, model))
       : eligible.filter(route => cfg.routing.multiKeyConcurrency
@@ -275,12 +296,46 @@ function startApiRouter({ configPath, log = () => {}, onState = () => {}, onCont
     // Spread overlapping requests across all keys at the highest available
     // priority. Equal loads keep the active route/provider order; a busy high
     // priority route still takes precedence over an idle lower priority route.
-    const selected = selectable.reduce((best, route) => route.provider.priority > best.provider.priority
-      || cfg.routing.multiKeyConcurrency && route.provider.priority === best.provider.priority && keyLoad(route.provider, route.key) < keyLoad(best.provider, best.key)
-      ? route : best, selectable[0]);
+    const affinity = selectable.find(route => route.provider.id + '\0' + route.key.id === sessionKeyId);
+    let selected = affinity;
+    if (!selected && sessionKey && cfg.routing.multiKeyConcurrency) {
+      // A new conversation prefers the idlest key at the highest priority,
+      // rotating equal candidates so two fresh conversations do not pile onto
+      // one key before either has a binding.
+      const topPriority = Math.max(...selectable.map(route => route.provider.priority));
+      // A dual-protocol provider exposes the same account twice; affinity
+      // belongs to the account, so only one candidate per key enters the pool.
+      const seen = new Set();
+      const pool = selectable.filter(route => route.provider.priority === topPriority
+        && !seen.has(route.provider.id + '\0' + route.key.id) && seen.add(route.provider.id + '\0' + route.key.id));
+      const offset = sessionCursor++ % pool.length;
+      const rotated = [...pool.slice(offset), ...pool.slice(0, offset)];
+      selected = rotated.reduce((best, route) => sessionLoad(route) < sessionLoad(best)
+        || sessionLoad(route) === sessionLoad(best) && keyLoad(route.provider, route.key) < keyLoad(best.provider, best.key)
+        ? route : best, rotated[0]);
+    }
+    selected ||= cfg.routing.multiKeyConcurrency ? selectable.reduce((best, route) =>
+      route.provider.priority > best.provider.priority || route.provider.priority === best.provider.priority
+        && keyLoad(route.provider, route.key) < keyLoad(best.provider, best.key) ? route : best, selectable[0]) : selectable[0];
     // With failover off, health does not silently replace the selected key.
     // Concurrency can still distribute new requests, but each gets one attempt.
     return selected && available(selected, model) ? selected : null;
+  }
+  function bindSession(route, model, sessionKey) {
+    if (!sessionKey) return;
+    sessionRoutes.set(model + '\0' + sessionKey, route.provider.id + '\0' + route.key.id);
+    // Bound routes are advisory and must not accumulate forever.
+    if (sessionRoutes.size > 4096) {
+      for (const key of sessionRoutes.keys()) {
+        sessionRoutes.delete(key);
+        if (sessionRoutes.size <= 3072) break;
+      }
+    }
+  }
+  function releaseSession(model, sessionKey, boundId = '') {
+    if (!sessionKey) return;
+    const id = model + '\0' + sessionKey;
+    if (!boundId || sessionRoutes.get(id) === boundId) sessionRoutes.delete(id);
   }
   function failed(route, model, status, kind, headers = {}, tokens = {}, trackUsage = true) {
     const usage = usageFor(route);
@@ -288,11 +343,12 @@ function startApiRouter({ configPath, log = () => {}, onState = () => {}, onCont
     const now = Date.now();
     const delay = kind === 'auth' ? 0 : kind === 'quota' ? Math.max(15 * 60000, retryDelay(headers)) : retryDelay(headers);
     if (trackUsage) recordUsage(usage, model, tokens, 'failures');
-    usage.lastError = { status, reason: reasonText[kind], at: new Date(now).toISOString() };
+    usage.lastError = { status, ...failure(kind), at: new Date(now).toISOString() };
     if (kind === 'auth') usage.blocked = true;
-    else usage.models[model] = { until: now + delay, reason: reasonText[kind] };
-    log(`${model}: ${route.provider.name} / ${route.key.id} ${reasonText[kind]}`);
-    lastRoute = { model, providerId: route.provider.id, providerName: route.provider.name, keyId: route.key.id, reason: reasonText[kind], at: new Date(now).toISOString(), status: 'failed' };
+    else usage.models[model] = { until: now + delay, ...failure(kind) };
+    log(`${model}: ${route.provider.name} / ${route.key.id} ${failure(kind).reason}`);
+    lastRoute = { model, providerId: route.provider.id, providerName: route.provider.name, keyId: route.key.id,
+      ...failure(kind), at: new Date(now).toISOString(), status: 'failed' };
     changed();
   }
   function succeeded(route, model, tokens, switched) {
@@ -477,7 +533,7 @@ function startApiRouter({ configPath, log = () => {}, onState = () => {}, onCont
           if (obj !== '[DONE]') { countUsage(obj); rememberTools(obj); }
           // Preserve native SSE event names, including tool and thinking deltas.
           converter.push(obj, event || (typeof obj === 'object' ? obj.type || '' : ''));
-        });
+        }, { log: message => log(message) });
         response.on('data', chunk => { try { parser.feed(chunk); } catch (error) { streamError(error.code === 'invalid_tool_call' ? 'protocol' : 'upstream', error.message); } });
         response.on('error', () => streamError('network'));
         response.on('end', () => {
@@ -510,7 +566,8 @@ function startApiRouter({ configPath, log = () => {}, onState = () => {}, onCont
     if (req.headers.origin || !/^(127\.0\.0\.1|localhost|\[::1\])(:\d+)?$/i.test(host)) return apiError(res, 403, "Only local API clients are allowed", 'openai');
     const scoped = scopes.resolve(new URL(req.url, 'http://localhost').pathname);
     const scope = scoped.scope;
-    const thinking = parseHarnessThinkingPath(scoped.pathname);
+    const affinity = parseSessionAffinityPath(scoped.pathname);
+    const thinking = parseHarnessThinkingPath(affinity.pathname);
     if (thinking.error) return apiError(res, 400, thinking.error, 'openai', 'invalid_thinking');
     const bufferTools = thinking.pathname.startsWith('/compat/antigravity/');
     const pathname = (bufferTools ? thinking.pathname.slice('/compat/antigravity'.length) : thinking.pathname).replace(/^\/v1(?=\/)/, '');
@@ -534,6 +591,7 @@ function startApiRouter({ configPath, log = () => {}, onState = () => {}, onCont
     let body, model;
     try { body = JSON.parse(Buffer.concat(chunks).toString('utf8')); model = modelId(routedModelId(modelId(body.model))); }
     catch { return apiError(res, 400, "Requests require valid JSON and an explicit model ID", protocol); }
+    const sessionKey = requestSessionKey(req, body, affinity.sessionKey);
     if (scope?.toolPolicy === 'none' && !pathname.endsWith('/count_tokens')) { delete body.tools; delete body.tool_choice; }
     if (scope && model !== scope.model) return apiError(res, 400, 'Scoped requests must use the selected model', protocol, 'scope_model_mismatch');
     const routes = candidates(model, protocol).filter(route => !scope || (route.provider.id === scope.providerId
@@ -551,7 +609,8 @@ function startApiRouter({ configPath, log = () => {}, onState = () => {}, onCont
     const remaining = [...routes];
     while (remaining.length) {
       if (res.destroyed || stopped) return;
-      const route = nextRoute(remaining, model, protocol);
+      // Conversation affinity belongs to real model work, not a title probe.
+      const route = nextRoute(remaining, model, protocol, auxiliary ? '' : sessionKey);
       if (!route) break;
       remaining.splice(remaining.indexOf(route), 1);
       if (scope && !pathname.endsWith('/count_tokens')) {
@@ -586,13 +645,22 @@ function startApiRouter({ configPath, log = () => {}, onState = () => {}, onCont
         if (usage && !pathname.endsWith('/count_tokens')) { recordUsage(usage, model, result.tokens, 'cancelled'); changed(); }
         return;
       }
-      if (result.ok) { if (!pathname.endsWith('/count_tokens')) succeeded(route, model, result.tokens, attempts.length > 0); return; }
+      if (result.ok) {
+        if (!pathname.endsWith('/count_tokens')) {
+          if (!auxiliary) bindSession(route, model, sessionKey);
+          succeeded(route, model, result.tokens, attempts.length > 0);
+        }
+        return;
+      }
       if (!result.kind) {
         const usage = usageFor(route);
         if (usage && !pathname.endsWith('/count_tokens')) { recordUsage(usage, model, result.tokens, 'failures'); changed(); }
         return apiError(res, result.status, safeDetail(result.detail, secrets) || "The provider rejected the request", protocol, 'upstream_request_error');
       }
       attempts.push(`${route.provider.name}: ${reasonText[result.kind]}`);
+      // A failed route must not keep attracting this conversation's retries or
+      // its next turn. The session then distributes to another key normally.
+      if (!auxiliary && result.kind !== 'protocol') releaseSession(model, sessionKey, route.provider.id + '\0' + route.key.id);
       // Unsupported features are request-specific, not an exhausted credential.
       if (result.kind !== 'protocol' && !auxiliary) failed(route, model, result.status, result.kind, result.headers, result.tokens, !pathname.endsWith('/count_tokens'));
       // Auxiliary callers are told what actually went wrong, so they can skip a
@@ -603,7 +671,7 @@ function startApiRouter({ configPath, log = () => {}, onState = () => {}, onCont
     }
     if (auxiliary && auxiliaryFailure) {
       const status = Number.isInteger(auxiliaryFailure.status) && auxiliaryFailure.status >= 400 && auxiliaryFailure.status < 600 ? auxiliaryFailure.status : 503;
-      return apiError(res, status, `Model "${model}" failed this auxiliary request. ${attempts.join('; ') || reasonText[auxiliaryFailure.kind]}`, protocol, 'model_routes_exhausted');
+      return apiError(res, status, `Model "${model}" failed this auxiliary request. ${attempts.join('; ') || reasonText[auxiliaryFailure.kind]}`, protocol, 'model_routes_exhausted', {}, auxiliaryFailure.kind);
     }
     const waits = routes.map(r => cfg.usage[r.key.id]?.models[model]?.until - Date.now()).filter(ms => ms > 0);
     const outOfQuota = routes.filter(r => quotaExhausted(r.key.id));
@@ -647,6 +715,9 @@ function startApiRouter({ configPath, log = () => {}, onState = () => {}, onCont
   }
   function reset(model, key) {
     const id = model ? modelId(model) : null;
+    if (id) {
+      for (const sessionKey of [...sessionRoutes.keys()]) if (sessionKey.startsWith(id + '\0')) sessionRoutes.delete(sessionKey);
+    } else sessionRoutes.clear();
     for (const [kid, u] of Object.entries(cfg.usage)) {
       if (key && kid !== key) continue;
       u.blocked = false; u.lastError = null;
@@ -662,6 +733,7 @@ function startApiRouter({ configPath, log = () => {}, onState = () => {}, onCont
   }
   function rotate(model) {
     const id = modelId(model);
+    for (const sessionKey of [...sessionRoutes.keys()]) if (sessionKey.startsWith(id + '\0')) sessionRoutes.delete(sessionKey);
     const all = candidates(id, 'openai');
     const routes = all.filter(route => available(route, id));
     const preferred = all.find(route => route.key.id === cfg.active[id]) || all[0];

@@ -45,3 +45,16 @@ test('settings load external scripts under CSP and no longer expose runtime path
   assert.ok(!/id="(?:dshBin|nodeExe|dshHome|dsBalance)"/.test(html));
   for (const file of ['src/renderer/settings/api-settings.js', 'src/renderer/settings/settings-charts.js']) assert.doesNotThrow(() => new vm.Script(fs.readFileSync(path.join(root, file), 'utf8')));
 });
+
+test('settings keep explanatory hints out of the visible layout', () => {
+  const root = path.join(__dirname, '..');
+  const html = fs.readFileSync(path.join(root, 'src/renderer/settings/api-settings.html'), 'utf8');
+  const css = fs.readFileSync(path.join(root, 'src/renderer/settings/settings-surface.css'), 'utf8');
+  const general = html.slice(html.indexOf('<section id="generalPage"'), html.indexOf('<section id="networkPage"'));
+  for (const hint of ['Frosted-glass menus with depth and richer motion.', 'Show short markers beside the conversation']) {
+    const tag = general.slice(general.indexOf(hint) - 200, general.indexOf(hint) + hint.length);
+    assert.match(tag, /class="hint sr-only"/, hint);
+  }
+  assert.match(css, /^\.sr-only \{/m);
+  assert.match(css, /clip-path: inset\(50%\)/);
+});

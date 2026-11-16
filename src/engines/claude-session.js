@@ -47,6 +47,8 @@ class ClaudeSession {
     this.permissions = new Map();
     this.subagents = new NativeSubagents('claude', (task, replacesIds) => {
       for (const request of this.permissions.values()) if (replacesIds?.includes(request.subagentId)) request.subagentId = task.id;
+      if (!ACTIVE.has(task.status))
+        for (const [id, request] of this.permissions) if (request.subagentId === task.id) this.permissions.delete(id);
       for (const [key, id] of this.childTools || []) if (replacesIds?.includes(id)) this.childTools.set(key, task.id);
       this.sendChannel({ type: 'gui:subagent', task, ...(replacesIds ? { replacesIds } : {}) });
     });
@@ -351,7 +353,8 @@ class ClaudeSession {
       this.answer(msg.request_id, {});
     } else if (req.subtype === 'can_use_tool') {
       const childId = typeof req.agent_id === 'string' ? this.subagents.resolve(req.agent_id) : null;
-      if ((!childId && (!this.running || this.cancelled || this.compaction)) || this.dead) {
+      if ((!childId && (!this.running || this.cancelled || this.compaction))
+          || TERMINAL_TASK_STATES.has(this.children.get(childId)?.status) || this.dead) {
         this.answer(msg.request_id, { behavior: 'deny', message: 'This response was stopped or is no longer active.' });
         return;
       }

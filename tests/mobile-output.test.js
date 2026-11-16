@@ -95,3 +95,16 @@ test('stored mobile process entries also show only the latest reasoning', () => 
   assert.deepEqual(output.map(entry => entry.type), ['tool', 'thinking', 'text']);
   assert.equal(output[1].text, 'Latest reasoning');
 });
+
+test('web tool rows keep their url or query as the visible input', () => {
+  const events = [{
+    type: 'gui:tool', id: 'fetch-1', name: 'camellia_web_fetch', status: 'completed',
+    input: { url: 'https://example.com/page' }, output: JSON.stringify({ ok: true }),
+  }, {
+    type: 'gui:tool', id: 'search-1', name: 'camellia_web_search', status: 'completed',
+    input: { query: 'electron safeStorage' }, output: JSON.stringify({ ok: true, results: [] }),
+  }];
+  const output = projectOutput(events, true);
+  assert.equal(output.process[0].input, 'https://example.com/page');
+  assert.equal(output.process[1].input, 'electron safeStorage');
+});

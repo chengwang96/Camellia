@@ -12,6 +12,12 @@ const { captureTarget, createReviewController, normalizeReport } = require('../s
 const { SharedConversations, preferences, ENGINES } = require('../src/engines/shared-conversations');
 const { createCodex } = require('../src/engines/codex');
 const { callConversationTool } = require('../src/engines/conversation-control');
+const { windowsExecutionInstructions } = require('../src/engines/windows-execution');
+
+// These small-window fixtures reserve the same summary headroom on each host.
+// Windows adds process-launch guidance to every tool-enabled user turn.
+const windowsInstructionAllowance = Math.ceil([...windowsExecutionInstructions()]
+  .reduce((tokens, char) => tokens + (char.charCodeAt(0) > 127 ? 1 : 1 / 3), 0) / 0.65);
 
 function fixture(t, overrides = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'shared-chat-'));
@@ -1119,6 +1125,22 @@ for (const engine of ['claude', 'dsh', 'kimi', 'grok', 'antigravity']) test(`${e
   assert.equal(h.restart().subagentView(conversation.id)[0].result, 'Native child answer');
 });
 
+for (const mode of ['replaced', 'released']) test('native subtasks stop reporting live controls after their process is ' + mode, async t => {
+  const h = fixture(t), run = await h.manager.send('kimi', { prompt: 'Delegate work' });
+  const session = h.manager.active.get(run.sessionId).session;
+  session.children = new Map([['child', {}]]);
+  let current = session;
+  h.drivers.kimi.sessions = { get: () => current, touch() {} };
+  const capture = task => h.manager.capture('kimi', { type: 'gui:subagent', conversationId: run.sessionId, runId: session.gen, task });
+  capture({ id: 'child', status: 'running', canStop: true, canReply: true });
+  h.finish('kimi'); await run.done;
+  current = mode === 'replaced' ? { gen: session.gen + 1 } : null;
+  const child = h.manager.subagentView(run.sessionId)[0];
+  assert.equal(child.status, 'unavailable');
+  assert.equal(child.connected, false); assert.equal(child.canStop, false); assert.equal(child.canReply, false);
+  assert.equal(capture({ id: 'child', status: 'running' }), false, 'a retired producer cannot publish stale live state');
+});
+
 test('media preview guidance reaches user turns without coupling previews to artifacts or tool reads', async t => {
   const h = fixture(t, { createGoalBridge: async () => ({ close() {} }) });
   t.after(() => h.manager.closeGoalTools());
@@ -1132,6 +1154,24 @@ test('media preview guidance reaches user turns without coupling previews to art
   assert.match(prompt, /media-reading tool results/);
   assert.ok(prompt.endsWith('Create a plot'));
   h.finish('codex'); await run.done;
+});
+
+test('Windows background launch guidance reaches every engine on fresh and resumed user turns', async t => {
+  const h = fixture(t, { createGoalBridge: async () => ({ close() {} }) });
+  t.after(() => h.manager.closeGoalTools());
+  for (const engine of ENGINES) {
+    const first = await h.manager.send(engine, { prompt: 'Launch a background helper' });
+    h.finish(engine); await first.done;
+    const resumed = await h.manager.send(engine, { sessionId: first.sessionId, prompt: 'Continue the work' });
+    for (const prompt of h.sent.slice(-2).map(sent => sent.prompt)) {
+      if (process.platform === 'win32') {
+        assert.match(prompt, /Camellia Windows process execution:/, engine);
+        assert.match(prompt, /background-process\.cjs/, engine);
+        assert.match(prompt, /Never use cmd \/c start/, engine);
+      } else assert.doesNotMatch(prompt, /Camellia Windows process execution:/, engine);
+    }
+    h.finish(engine); await resumed.done;
+  }
 });
 
 test('changing web source refreshes session tools while preserving the conversation and checking turn tokens', async t => {
@@ -4077,7 +4117,8 @@ test('child sends survive pre-compaction and overflow recovery without duplicate
   const token = manager.active.get(parent.sessionId).goalRunToken;
   const call = (operation, args = {}) => manager.callGoalTool(parent.sessionId, 'camellia_conversation_' + operation, { run_token: token, ...args });
   const child = manager.get(call('fork', { request_id: 'child', title: 'Worker' }).conversation.id);
-  manager.modelContextWindow = () => 8000;
+  // Overflow recovery halves this window; preserve host headroom there too.
+  manager.modelContextWindow = () => 8000 + 2 * windowsInstructionAllowance;
   manager.append(child, { role: 'assistant', text: 'Prior work ' + 'x'.repeat(30000) });
   manager.save(child);
   assert.equal(call('send', { conversation_id: child.id, request_id: 'work', prompt: 'Finish the work' }).ok, true);
@@ -8921,7 +8962,8 @@ test('a Markdown handoff gives a short target the exported file instead of rejec
 
 test('a target harness budgets its extra goal instructions before switching from a long model', async context => {
   const calls = [];
-  const harness = fixture(context, { modelContextWindow: model => model === 'short' ? 8000 : 200000,
+  const shortCap = 8000 + windowsInstructionAllowance;
+  const harness = fixture(context, { modelContextWindow: model => model === 'short' ? shortCap : 200000,
     createGoalBridge: async () => ({ close() {} }),
     summarize: { available: () => true, run: async request => { calls.push(request); return { text: 'Preserved task facts' }; } } });
   const manager = harness.manager, conversation = manager.create('codex');
@@ -8930,11 +8972,11 @@ test('a target harness budgets its extra goal instructions before switching from
   manager.saveSettings('kimi', { sessionId: conversation.id, model: 'short' });
   const run = await manager.send('kimi', { sessionId: conversation.id, prompt: 'Continue' });
   assert.ok(calls.length > 0);
-  assert.equal(conversation.lastCompaction.targetCap, 8000);
+  assert.equal(conversation.lastCompaction.targetCap, shortCap);
   assert.match(harness.sent.at(-1).prompt, /Camellia Goal mode/);
   assert.match(harness.sent.at(-1).prompt, /Preserved task facts/);
   assert.doesNotMatch(harness.sent.at(-1).prompt, /OLD_OUTPUT_/);
-  assert.ok(harness.sent.at(-1).prompt.length < 8000 * 3 * 0.85);
+  assert.ok(harness.sent.at(-1).prompt.length < shortCap * 3 * 0.85);
   harness.finish('kimi'); await run.done;
 });
 

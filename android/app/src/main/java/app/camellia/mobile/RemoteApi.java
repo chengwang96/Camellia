@@ -49,6 +49,7 @@ public class RemoteApi {
     private volatile boolean incremental;
     void incremental(boolean enabled) { incremental = enabled; }
     boolean incremental() { return incremental; }
+    boolean embeddedCapable() { return context != null; }
     private final Set<tailnet.Response> embeddedResponses = ConcurrentHashMap.newKeySet();
 
     public RemoteApi(String address) { this(null, address); }
@@ -75,14 +76,40 @@ public class RemoteApi {
 
     public void download(String path, String token, java.io.OutputStream output, long expectedSize, DownloadProgress progress) throws IOException {
         if (expectedSize < 0) throw new IOException("Invalid file size");
+        long[] received = { 0 };
+        boolean embedded = EmbeddedNetwork.enabled();
+        java.io.OutputStream counted = new java.io.OutputStream() {
+            @Override public void write(int value) throws IOException {
+                try { output.write(value); received[0]++; }
+                catch (IOException error) { throw new DownloadWriteFailure(error); }
+            }
+            @Override public void write(byte[] bytes, int offset, int length) throws IOException {
+                try { output.write(bytes, offset, length); received[0] += length; }
+                catch (IOException error) { throw new DownloadWriteFailure(error); }
+            }
+        };
         int retries = 0;
         while (true) {
-            try { downloadOnce(path, token, output, expectedSize, progress); return; }
-            catch (Failure error) {
-                if (error.status != 429 || retries >= 5 || cancelled) throw error;
+            try {
+                if (received[0] == 0) downloadOnce(path, token, counted, expectedSize, progress);
+                else downloadAt(path, token, counted, expectedSize, received[0], progress);
+                return;
+            } catch (IOException error) {
+                if (cancelled || Thread.currentThread().isInterrupted() || embedded != EmbeddedNetwork.enabled()
+                        || error instanceof DownloadValidationFailure || error instanceof DownloadWriteFailure || retries >= 5) throw error;
+                if (error instanceof Failure failure && failure.status != 429 && failure.status != 502
+                        && failure.status != 503 && failure.status != 504) throw error;
+                if (received[0] > 0 && received[0] == expectedSize) { progress.update(expectedSize, expectedSize); return; }
                 retryPause(retries++);
             }
         }
+    }
+
+    private static final class DownloadValidationFailure extends IOException {
+        DownloadValidationFailure(String message) { super(message); }
+    }
+    private static final class DownloadWriteFailure extends IOException {
+        DownloadWriteFailure(IOException cause) { super(cause.getMessage(), cause); }
     }
 
     private void retryPause(int retry) throws IOException {
@@ -93,33 +120,60 @@ public class RemoteApi {
     }
 
     void downloadOnce(String path, String token, java.io.OutputStream output, long expectedSize, DownloadProgress progress) throws IOException {
+        downloadAt(path, token, output, expectedSize, 0, progress);
+    }
+
+    void downloadAt(String path, String token, java.io.OutputStream output, long expectedSize, long offset, DownloadProgress progress) throws IOException {
         if (EmbeddedNetwork.enabled()) {
-            tailnet.Response response = embeddedOpen(path, token, null);
+            tailnet.Response response = embeddedOpen(path, token, null, offset);
             try (InputStream source = input(response)) {
-                if (!"application/octet-stream".equals(response.contentType())) throw new IOException("Unexpected file type");
-                copyDownload(source, output, expectedSize, progress);
+                validateDownload(response.statusCode(), response.contentType(), response.contentLength(), response.contentRange(), expectedSize, offset);
+                if (offset > 0 && response.statusCode() == 200) skipDownloadPrefix(source, offset);
+                copyDownload(source, output, expectedSize, offset, progress);
             } finally { release(response); }
         } else {
             HttpURLConnection connection = open(path, token);
             try {
                 connection.setRequestProperty("Accept", "application/octet-stream");
+                if (offset > 0) connection.setRequestProperty("Range", "bytes=" + offset + "-");
                 int status = connection.getResponseCode();
-                if (status != 200) throw new Failure(status, readFailure(connection));
-                if (!"application/octet-stream".equals(connection.getContentType())) throw new IOException("Unexpected file type");
-                if (connection.getContentLengthLong() != expectedSize) throw new IOException("File size changed");
-                try (InputStream source = connection.getInputStream()) { copyDownload(source, output, expectedSize, progress); }
+                if (status != 200 && !(offset > 0 && status == 206)) throw new Failure(status, readFailure(connection));
+                validateDownload(status, connection.getContentType(), connection.getContentLengthLong(), connection.getHeaderField("Content-Range"), expectedSize, offset);
+                try (InputStream source = connection.getInputStream()) {
+                    if (offset > 0 && status == 200) skipDownloadPrefix(source, offset);
+                    copyDownload(source, output, expectedSize, offset, progress);
+                }
             } finally { release(connection); }
         }
     }
 
-    private void copyDownload(InputStream source, java.io.OutputStream output, long expectedSize, DownloadProgress progress) throws IOException {
+    static void validateDownload(long status, String type, long length, String range, long expectedSize, long offset) throws IOException {
+        if (!"application/octet-stream".equals(type)) throw new DownloadValidationFailure("Unexpected file type");
+        if (status == 206) {
+            if (offset <= 0 || length != expectedSize - offset
+                    || !("bytes " + offset + "-" + (expectedSize - 1) + "/" + expectedSize).equals(range))
+                throw new DownloadValidationFailure("Invalid resumed download");
+        } else if (status != 200 || length != expectedSize) throw new DownloadValidationFailure("File size changed");
+    }
+
+    private void skipDownloadPrefix(InputStream source, long offset) throws IOException {
         byte[] buffer = new byte[64 * 1024];
-        long received = 0, lastUpdate = 0;
+        while (offset > 0) {
+            if (cancelled || Thread.currentThread().isInterrupted()) throw new IOException("Download cancelled");
+            int count = source.read(buffer, 0, (int) Math.min(buffer.length, offset));
+            if (count < 0) throw new IOException("Incomplete download");
+            offset -= count;
+        }
+    }
+
+    private void copyDownload(InputStream source, java.io.OutputStream output, long expectedSize, long offset, DownloadProgress progress) throws IOException {
+        byte[] buffer = new byte[64 * 1024];
+        long received = offset, lastUpdate = 0;
         int count;
         while ((count = source.read(buffer)) != -1) {
             if (cancelled || Thread.currentThread().isInterrupted()) throw new IOException("Download cancelled");
             received += count;
-            if (received > expectedSize) throw new IOException("File size changed");
+            if (received > expectedSize) throw new DownloadValidationFailure("File size changed");
             output.write(buffer, 0, count);
             long now = System.nanoTime();
             if (now - lastUpdate > 250_000_000L) { progress.update(received, expectedSize); lastUpdate = now; }
@@ -214,6 +268,10 @@ public class RemoteApi {
         eventsAt("/v1/conversations/events", token, listener);
     }
 
+    void workbenchEvents(String token, SnapshotListener listener, SseReader.HeartbeatListener heartbeat) throws IOException {
+        eventsAt("/v1/workbench/events", token, listener, heartbeat);
+    }
+
     void listEvents(String token, SnapshotListener listener, SseReader.HeartbeatListener heartbeat) throws IOException {
         eventsAt("/v1/conversations/events", token, listener, heartbeat);
     }
@@ -257,6 +315,10 @@ public class RemoteApi {
     }
 
     private tailnet.Response embeddedOpen(String path, String token, JSONObject payload) throws IOException {
+        return embeddedOpen(path, token, payload, 0);
+    }
+
+    private tailnet.Response embeddedOpen(String path, String token, JSONObject payload, long offset) throws IOException {
         if (cancelled) throw new IOException("Cancelled");
         if (token != null && !token.matches("[A-Za-z0-9_-]{43}")) throw new IOException("Invalid credential");
         try {
@@ -270,11 +332,12 @@ public class RemoteApi {
                 catch (Exception error) { upload.close(); throw error; }
             }
             embeddedResponses.add(response);
+            if (offset > 0) response.setRangeStart(offset);
             if (cancelled) { release(response); throw new IOException("Cancelled"); }
             try { response.execute(); }
             catch (Exception error) { release(response); throw error; }
             if (cancelled) { release(response); throw new IOException("Cancelled"); }
-            if (response.statusCode() != 200) {
+            if (response.statusCode() != 200 && !(offset > 0 && response.statusCode() == 206)) {
                 int code = (int) response.statusCode();
                 String detail = "";
                 try (InputStream body = input(response)) { detail = readLimited(body); }

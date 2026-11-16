@@ -8,6 +8,7 @@ const { listArtifacts, openArtifact } = require('./artifacts');
 const { visualizationDocument } = require('./visualizations');
 const { pipeline } = require('node:stream/promises');
 const { MAX_REQUEST } = require('./attachments');
+const { withJsonReadSnapshot } = require('../../shared/json-store');
 const DOWNLOAD_GLOBAL_LIMIT = 32;
 const DOWNLOAD_DEVICE_LIMIT = 8;
 
@@ -78,7 +79,7 @@ class RemoteGateway {
   commandReply(device, id, result) {
     let current;
     if (id) {
-      try { current = { ...this.reader.snapshot(device, id, undefined, null), ...this.stamp() }; }
+      try { current = withJsonReadSnapshot(() => ({ ...this.reader.snapshot(device, id, undefined, null), ...this.stamp() })); }
       catch (error) { if (![403, 404].includes(error.status)) throw error; }
     }
     return { ...result, ...this.stamp(), ...(current ? { current } : {}) };
@@ -225,7 +226,8 @@ class RemoteGateway {
     if (command && request.method === 'POST' && !url.search && this.commands) {
       if (device.permission !== 'control') fail(403, 'Control permission required');
       const payload = await body(request, MAX_REQUEST);
-      this.json(response, 200, this.commandReply(device, command[1], await this.commands.execute(device, command[1], payload, this.instanceId)));
+      this.json(response, 200, this.commandReply(device, command[1],
+        await this.commands.execute(device, command[1], payload, this.instanceId)));
       return;
     }
     // Reading the desktop API route configuration hands the device every raw
@@ -252,7 +254,7 @@ class RemoteGateway {
         selection = { seq, reference };
       }
       if (!artifact[2]) this.json(response, 200, listArtifacts(this.reader, device, artifact[1], number(url.searchParams.get('offset'), 0), selection));
-      else await this.download(response, device, artifact[1], artifact[2]);
+      else await this.download(response, device, artifact[1], artifact[2], false, request);
       return;
     }
     const attachment = /^\/v1\/conversations\/([a-f0-9-]{36})\/attachments\/(\d{1,12})\/(\d{1,2})$/.exec(url.pathname);
@@ -260,7 +262,7 @@ class RemoteGateway {
       if (url.search) fail(400, 'Unsupported attachment query');
       const seq = number(attachment[2], 0), index = number(attachment[3], 0);
       if (seq < 1 || index < 0 || index >= 20) fail(400, 'Invalid attachment location');
-      await this.sendFile(response, device, await this.commands.messageAttachment(device, attachment[1], seq, index));
+      await this.sendFile(response, device, await this.commands.messageAttachment(device, attachment[1], seq, index), request);
       return;
     }
     const visualization = /^\/v1\/conversations\/([a-f0-9-]{36})\/visualizations\/([a-f0-9-]{36})$/.exec(url.pathname);
@@ -270,7 +272,7 @@ class RemoteGateway {
       }
       const theme = url.searchParams.get('theme') || 'light';
       if (!['light', 'dark'].includes(theme)) fail(400, 'Invalid visualization theme');
-      this.reader.conversation(device, visualization[1]);
+      this.reader.readableConversation(device, visualization[1]);
       let card;
       try { card = this.reader.manager.visualize?.get(visualization[1], visualization[2]); }
       catch { fail(404, 'Visualization not found'); }
@@ -289,21 +291,25 @@ class RemoteGateway {
     const incremental = /\/events$/.test(url.pathname) && url.searchParams.get('incremental') === '1';
     for (const key of url.searchParams.keys()) if (!['before', 'offset'].includes(key) && !(key === 'incremental' && incremental)
       && !(url.pathname === '/v1/conversations' && ['limit', 'query'].includes(key))) fail(400, 'Unsupported query parameter');
-    if (url.pathname === '/v1/status') {
+    if (url.pathname === '/v1/workbench' || url.pathname === '/v1/workbench/events') {
+      if (url.search) fail(400, 'Unsupported workbench query');
+      if (url.pathname.endsWith('/events')) this.subscribe(response, device, null, 'workbench');
+      else this.json(response, 200, withJsonReadSnapshot(() => ({ ...this.reader.workbench(device), ...this.stamp() })));
+    } else if (url.pathname === '/v1/status') {
       this.json(response, 200, { ...this.connectionInfo(device), ...this.stamp() });
     } else if (url.pathname === '/v1/archived') {
-      this.json(response, 200, { ...this.reader.archived(device, number(url.searchParams.get('offset'), 0)), ...this.stamp() });
+      this.json(response, 200, withJsonReadSnapshot(() => ({ ...this.reader.archived(device, number(url.searchParams.get('offset'), 0)), ...this.stamp() })));
     } else if (url.pathname === '/v1/conversations') {
       const limit = number(url.searchParams.get('limit'), 100), query = (url.searchParams.get('query') || '').trim().toLowerCase();
       if (limit < 1 || limit > 1000 || query.length > 200) fail(400, 'Invalid list range or query');
-      this.json(response, 200, { ...this.connectionInfo(device), ...this.reader.list(device, number(url.searchParams.get('offset'), 0), limit, query), ...this.discussionNavigation(device), ...this.stamp() });
+      this.json(response, 200, withJsonReadSnapshot(() => ({ ...this.connectionInfo(device), ...this.reader.list(device, number(url.searchParams.get('offset'), 0), limit, query), ...this.discussionNavigation(device), ...this.stamp() })));
     } else if (url.pathname === '/v1/conversations/events') {
       this.subscribe(response, device, null);
     } else {
       const match = /^\/v1\/conversations\/([a-f0-9-]{36})(\/events)?$/.exec(url.pathname);
       if (!match) fail(404, 'Endpoint not found');
       if (match[2]) this.subscribe(response, device, match[1], 'conversations', incremental);
-      else this.json(response, 200, { ...this.reader.snapshot(device, match[1], number(url.searchParams.get('before'), undefined)), ...this.stamp() });
+      else this.json(response, 200, withJsonReadSnapshot(() => ({ ...this.reader.snapshot(device, match[1], number(url.searchParams.get('before'), undefined)), ...this.stamp() })));
     }
   }
   connectionInfo(device) {
@@ -323,7 +329,7 @@ class RemoteGateway {
     if (this.commands && this.reader.manager.stopBackgroundWork) capabilities.push('stop-background-work');
     if (this.reader.manager?.visualize) capabilities.push('visualizations');
     if (this.commands && fullControl && this.reader.manager.drivers?.codex?.resetCredits) capabilities.push('codex-reset-credits');
-    capabilities.push('list-query');
+    capabilities.push('list-query', 'workbench-summary');
     return { protocol: 1, permission: device.permission, capabilities,
       engines: (this.reader.manager.remoteEngines || ['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'grok']).filter(engine => ['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'grok'].includes(engine)),
       workspaces: this.reader.workspaces().filter(item => device.allWorkspaces || device.workspaceIds.includes(item.id)),
@@ -340,7 +346,7 @@ class RemoteGateway {
     const artifact = /^\/([a-f0-9-]{36})\/artifacts(?:\/([a-f0-9]{64}))?$/.exec(route);
     if (artifact) {
       for (const key of url.searchParams.keys()) if (key !== 'offset' || artifact[2]) fail(400, 'Unsupported artifact query');
-      if (artifact[2]) await this.download(response, device, artifact[1], artifact[2], true);
+      if (artifact[2]) await this.download(response, device, artifact[1], artifact[2], true, request);
       else this.json(response, 200, this.discussions.artifacts(device, artifact[1], number(url.searchParams.get('offset'), 0)));
       return;
     }
@@ -362,11 +368,11 @@ class RemoteGateway {
     }
     this.json(response, 200, { ...result, ...this.stamp() });
   }
-  async download(response, device, conversationId, id, discussion = false) {
+  async download(response, device, conversationId, id, discussion = false, request = null) {
     const file = discussion ? await this.discussions.openArtifact(device, conversationId, id) : await openArtifact(this.reader, device, conversationId, id);
-    await this.sendFile(response, device, file);
+    await this.sendFile(response, device, file, request);
   }
-  async sendFile(response, device, file) {
+  async sendFile(response, device, file, request = null) {
     if (this.downloads.size >= DOWNLOAD_GLOBAL_LIMIT || [...this.downloads].filter(entry => entry.device.id === device.id).length >= DOWNLOAD_DEVICE_LIMIT) {
       await file?.handle?.close();
       fail(429, 'Too many downloads');
@@ -379,11 +385,24 @@ class RemoteGateway {
     });
     try {
       if (response.destroyed) return;
-      response.writeHead(200, { 'Content-Type': 'application/octet-stream', 'Content-Length': file.size,
+      let start = 0;
+      const range = request?.headers?.range;
+      if (range !== undefined) {
+        const match = /^bytes=(\d+)-$/.exec(range);
+        start = match ? Number(match[1]) : NaN;
+        if (!Number.isSafeInteger(start) || start < 0 || start >= file.size) {
+          response.setHeader('Content-Range', `bytes */${file.size}`);
+          fail(416, 'Invalid download range');
+        }
+      }
+      // The artifact URL already binds the canonical file identity and size;
+      // openArtifact revalidates it before every resumed request.
+      response.writeHead(range === undefined ? 200 : 206, { 'Content-Type': 'application/octet-stream', 'Content-Length': file.size - start,
+        'Accept-Ranges': 'bytes', ...(range === undefined ? {} : { 'Content-Range': `bytes ${start}-${file.size - 1}/${file.size}` }),
         'Content-Disposition': `attachment; filename="artifact"; filename*=UTF-8''${encodeURIComponent(file.name).replace(/['()*]/g, value => '%' + value.charCodeAt(0).toString(16))}`,
         'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' });
       if (!file.size) response.end();
-      else await pipeline(file.handle.createReadStream({ autoClose: false, start: 0, end: file.size - 1 }), response);
+      else await pipeline(file.handle.createReadStream({ autoClose: false, start, end: file.size - 1 }), response);
     } finally {
       await file?.handle.close();
       this.downloads.delete(entry);
@@ -395,6 +414,13 @@ class RemoteGateway {
     return { discussionGroups: snapshot.groups, discussionsNextOffset: snapshot.nextOffset, discussionVersion: snapshot.listVersion };
   }
   streamSnapshot({ device, id, kind, incremental, historyVersion, listVersion }) {
+    return withJsonReadSnapshot(() => this.readStreamSnapshot({ device, id, kind, incremental, historyVersion, listVersion }));
+  }
+  readStreamSnapshot({ device, id, kind, incremental, historyVersion, listVersion }) {
+    if (kind === 'workbench') {
+      const workbench = this.reader.workbench(device);
+      return workbench.listVersion === listVersion ? { listVersion } : { listVersion: workbench.listVersion, workbench };
+    }
     if (kind === 'discussions') {
       if (!id) return this.discussions.list(device);
       try { return this.discussions.snapshot(device, id); }
@@ -460,7 +486,10 @@ class RemoteGateway {
           this.closeStream(stream); continue;
         }
         if (stream.kind === 'discussions') this.discussions.authorize(stream.device);
-        else if (stream.id) this.reader.conversation(stream.device, stream.id);
+        else if (stream.id) {
+          const conversation = this.reader.manager.items.get(stream.id);
+          if (!conversation || !this.reader.readable(stream.device, conversation)) fail(404, 'Conversation not found');
+        }
         if (!stream.blocked) this.writeFrame(stream, ': heartbeat\n\n');
       } catch { this.closeStream(stream, true); }
     }
@@ -485,7 +514,7 @@ class RemoteGateway {
   }
   scheduleFlush() {
     if (this.flushTimer || !this.streams.size) return;
-    this.flushTimer = setTimeout(() => {
+    this.flushTimer = setTimeout(() => withJsonReadSnapshot(() => {
       this.flushTimer = null;
       const snapshots = new Map();
       for (const stream of this.streams) {
@@ -498,7 +527,7 @@ class RemoteGateway {
         }
         catch { this.closeStream(stream, true); }
       }
-    }, 250);
+    }), 250);
     this.flushTimer.unref();
   }
   revoke(id) {

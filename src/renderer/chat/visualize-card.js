@@ -5,6 +5,22 @@
   const MAX_STATE_BYTES = 64 * 1024;
   const MAX_ACTION_BYTES = 1400;
   const MAX_FILL_CHARS = 2000;
+  let mountedCards = 0;
+  let removalObserver = null;
+  function watchCardRemoval() {
+    mountedCards++;
+    if (removalObserver) return;
+    // Observe removals rather than retaining a registry of card DOM nodes.
+    // A synchronous layout move leaves the node connected by delivery time.
+    removalObserver = new MutationObserver(records => {
+      for (const record of records) for (const node of record.removedNodes) {
+        if (node.nodeType !== 1 || node.isConnected) continue;
+        node.disposeVisualize?.();
+        for (const card of node.querySelectorAll('.visualize-block')) card.disposeVisualize?.();
+      }
+    });
+    removalObserver.observe(document.documentElement, { childList: true, subtree: true });
+  }
   function contentSecurityPolicy(origins = []) {
     const network = origins.length ? ' ' + origins.join(' ') : '';
     return [
@@ -755,6 +771,7 @@
     block.flushVisualizeState = () => flushStateSave();
     block.getVisualizeState = () => normalizeState(currentState) || {};
     block.disposeVisualize = () => {
+      if (disposed) return;
       disposed = true;
       hidePresentMenu();
       void flushStateSave();
@@ -768,6 +785,7 @@
       window.removeEventListener('resize', dismissPresentMenu);
       themeObserver.disconnect();
       mediaTheme?.removeEventListener?.('change', onSystemTheme);
+      if (--mountedCards === 0) { removalObserver?.disconnect(); removalObserver = null; }
     };
     block.updateVisualize = next => {
       const previousRevision = currentCard.revision;
@@ -778,6 +796,7 @@
       hideAction();
       void load();
     };
+    watchCardRemoval();
     return block;
   }
 

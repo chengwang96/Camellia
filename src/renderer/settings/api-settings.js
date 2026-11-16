@@ -8,6 +8,10 @@ const uid = () => crypto.randomUUID();
 const routingId = window.CamelliaModelNames.canonicalModelId;
 const maskKey = value => { const s = String(value || ''); return s.length > 12 ? s.slice(0, 4) + '…' + s.slice(-4) : '••••••••'; };
 const keyName = (key, index = 0) => key.name || key.maskedKey || `Key ${index + 1}`;
+// A stored failure carries either a stable kind (new records) or only the old
+// English reason. Prefer the kind so the same state reads correctly in every
+// language; fall back to the stored text for records written before kinds existed.
+const failureLabel = entry => window.CamelliaFailureLabels.failureLabel(entry, window.CamelliaI18n.t);
 const mark = type => ({ gemini: 'G', ollama: 'O', mimo: 'M', 'mimo-token-plan-cn': 'M', 'mimo-token-plan-sgp': 'M', 'mimo-token-plan-ams': 'M', nvidia: 'N', kimi: 'K', 'kimi-code': 'K', deepseek: 'D', commandcode: '⌘', opencode: 'OC', 'opencode-go': 'OC', qclaw: 'Q' }[type] || 'API');
 const brandFile = window.CamelliaProviderBrands.providerBrand;
 function brandMark(provider, { engine = '' } = {}) {
@@ -268,17 +272,17 @@ function renderEditor() {
   if (!p) { $('editor').innerHTML = ''; return; }
   $('editor').innerHTML = `<button class="back" id="backProviders" data-i18n>← All providers</button>
     <div class="editor-heading"><span class="provider-mark">${brandMark(p)}</span><input id="pName" value="${esc(p.name)}" aria-label="Provider name" data-i18n-attrs="aria-label"><label><input id="pEnabled" type="checkbox" ${p.enabled ? 'checked' : ''}>Enabled</label></div>
-    <label for="pPriority" data-i18n>API priority</label><select id="pPriority"><option value="-1" data-i18n>Low</option><option value="0" data-i18n>Default</option><option value="1" data-i18n>High</option></select>
-    <p class="hint" data-i18n>Routes use High, Default, then Low priority.</p>
+    <label for="pPriority" data-i18n>API priority</label><select id="pPriority" aria-describedby="pPriorityHint"><option value="-1" data-i18n>Low</option><option value="0" data-i18n>Default</option><option value="1" data-i18n>High</option></select>
+    <p class="hint" id="pPriorityHint" data-i18n>Routes use High, Default, then Low priority.</p>
     <details id="providerRoutingHelp" class="settings-help"><summary data-i18n>Routing behavior</summary><p class="hint" data-i18n>Manage concurrency and failover in Model Settings. Next route switches among available keys at the highest available priority.</p></details>
-    ${p.type.startsWith('mimo-token-plan-') ? '<p class="hint" data-i18n>Use your Token Plan tp- key and the region shown in your console. Coding use only. Do not add a pay-as-you-go route for the same model unless you want paid fallback. Check remaining Credits in the MiMo console.</p>' : ''}
-    ${p.type === 'mimo' ? '<p class="hint" data-i18n>Use a regular MiMo API key, not a Token Plan tp- key. Requests are billed to your API balance. Adding this provider alongside Token Plan for the same model allows paid fallback.</p>' : ''}
+    ${p.type.startsWith('mimo-token-plan-') ? '<p class="hint" id="mimoTokenPlanHint" data-i18n>Use your Token Plan tp- key and the region shown in your console. Coding use only. Do not add a pay-as-you-go route for the same model unless you want paid fallback. Check remaining Credits in the MiMo console.</p>' : ''}
+    ${p.type === 'mimo' ? '<p class="hint" id="mimoApiHint" data-i18n>Use a regular MiMo API key, not a Token Plan tp- key. Requests are billed to your API balance. Adding this provider alongside Token Plan for the same model allows paid fallback.</p>' : ''}
     <div class="section-head"><h2 data-i18n>${p.type === 'qclaw' ? 'Connection' : 'API Key'}</h2><button id="showImport" ${p.type === 'qclaw' ? 'hidden' : ''} data-i18n>Import keys</button><button id="addKey" ${p.type === 'qclaw' ? 'hidden' : ''} data-i18n>+ Add key</button></div>
-    <p class="hint" ${p.type === 'qclaw' ? 'hidden' : ''} data-i18n>Keys are tried in order. Leave blank to keep a saved key.</p><div id="keyRows"></div>
-    <div id="keyImport" class="key-import" hidden><label for="bulkKeys" data-i18n>One key per line</label><textarea id="bulkKeys" placeholder="Paste API keys" spellcheck="false" data-i18n-attrs="placeholder"></textarea><button id="importKeys" data-i18n>Add to key pool</button><p class="hint" data-i18n>Duplicate keys for this provider are merged on save.</p></div>
+    <p class="hint" id="keyOrderHint" ${p.type === 'qclaw' ? 'hidden' : ''} data-i18n>Keys are tried in order. Leave blank to keep a saved key.</p><div id="keyRows"></div>
+    <div id="keyImport" class="key-import" hidden><label for="bulkKeys" data-i18n>One key per line</label><textarea id="bulkKeys" placeholder="Paste API keys" spellcheck="false" aria-describedby="bulkKeysHint" data-i18n-attrs="placeholder"></textarea><button id="importKeys" data-i18n>Add to key pool</button><p class="hint" id="bulkKeysHint" data-i18n>Duplicate keys for this provider are merged on save.</p></div>
     <div class="section"><div class="section-head"><h2 data-i18n>Model</h2><button id="mapModels" data-i18n>Map model aliases</button><button id="discoverModels" data-i18n>Fetch models</button></div><div id="modelChips" class="model-chips"></div>
       <details class="advanced" id="modelAdvanced"><summary data-i18n>Manual models and mappings</summary><p class="hint" data-i18n>Use one routing ID for aliases of the same model; keep versions, dates, variants and moving aliases separate. Recognized owner prefixes and case normalize automatically; upstream IDs stay unchanged. Saves automatically.</p><div class="table-scroll"><table class="model-table"><thead><tr><th data-i18n>Routing model ID</th><th data-i18n>Upstream model ID</th><th data-i18n>Protocol</th><th data-i18n>Context</th><th></th></tr></thead><tbody id="modelRows"></tbody></table></div><datalist id="routingModelIds"></datalist><button id="addModel" data-i18n>+ Add model</button></details>
-      <div class="row verify-row" style="margin-top:18px"><label data-i18n>Validation model<select id="verifyModel" aria-label="Validation model" data-i18n-attrs="aria-label"></select></label><button id="verifyNow" data-verify-now data-i18n>Validate</button></div><p class="hint" data-i18n>Validate sends a short model request and may incur a charge. Fetching the catalog only checks catalog access.</p>
+      <div class="row verify-row" style="margin-top:18px"><label data-i18n>Validation model<select id="verifyModel" aria-label="Validation model" data-i18n-attrs="aria-label"></select></label><button id="verifyNow" data-verify-now aria-describedby="verifyHint" data-i18n>Validate</button></div><p class="hint" id="verifyHint" data-i18n>Validate sends a short model request and may incur a charge. Fetching the catalog only checks catalog access.</p>
     </div>
     <details class="advanced section" id="connectionAdvanced" ${p.type === 'custom' ? 'open' : ''}><summary data-i18n>Advanced connection settings</summary><div class="grid">
       <div class="full"><label for="pUrl" data-i18n>API URL</label><input id="pUrl" value="${esc(p.baseUrl)}" placeholder="https://api.example.com/v1" spellcheck="false" data-i18n-attrs="placeholder"></div>
@@ -334,7 +338,8 @@ function updateKeyStats() {
     const t = window.CamelliaI18n.t;
     const [text, cls] = keyBadge(k), u = live.usage?.[k.id] || {}, v = insight.keys[k.id]?.verification;
     badge.className = `badge ${cls}`; badge.textContent = text;
-    const cooldown = Object.entries(u.models || {}).filter(([,s]) => s.until > Date.now()).map(([m,s]) => `${m} cooldown until ${when(s.until)}`).join('; ');
+    const cooldown = Object.entries(u.models || {}).filter(([,s]) => s.until > Date.now())
+      .map(([m, s]) => `${m} cooldown until ${when(s.until)}${s.kind ? ' · ' + failureLabel(s) : ''}`).join('; ');
     // Reported quota comes from the router, which reads it for every provider
     // with an account API, and is what keeps an exhausted key out of rotation.
     const quota = live.quota?.[k.id];
@@ -346,7 +351,7 @@ function updateKeyStats() {
       + (quota?.stale ? ` · ${t('Quota reading expired')}` : '')
       + (live.quotaCheck?.enabled === false && quota ? ` · ${t('Automatic quota checks disabled')}` : '')
       + (quota?.error ? ` · ${t('Quota check failed')}: ${quota.error}` : '');
-    note.textContent = `${fmt(u.requests)} successful · Input ${fmt(u.inputTokens)} / Output ${fmt(u.outputTokens)} tokens · Failed ${fmt(u.failures)}` + (v ? ` · Last validated ${v.model} ${when(v.at)}${v.error ? ' · ' + v.error : ''}` : '') + (cooldown ? ' · ' + cooldown : '') + (u.lastError ? ' · ' + u.lastError.reason : '') + quotaNote;
+    note.textContent = `${fmt(u.requests)} successful · Input ${fmt(u.inputTokens)} / Output ${fmt(u.outputTokens)} tokens · Failed ${fmt(u.failures)}` + (v ? ` · Last validated ${v.model} ${when(v.at)}${v.error ? ' · ' + v.error : ''}` : '') + (cooldown ? ' · ' + cooldown : '') + (u.lastError ? ' · ' + failureLabel(u.lastError) : '') + quotaNote;
   }
 }
 function routeKeySummary(id) {
@@ -805,13 +810,14 @@ $('exportData').onclick = async () => {
   dataMigrationBusy = true; dataMigrationActive = true; dataMigrationControls();
   $('dataMigrationProgress').hidden = false; $('dataMigrationProgress').value = 0;
   $('dataMigrationStatus').classList.remove('error');
+  $('dataMigrationStatus').hidden = false;
   $('dataMigrationStatus').textContent = window.CamelliaI18n.t('Preparing the data package…');
   try {
     const scope = await chooseDataScope({ mode: 'export' });
-    if (!scope) { $('dataMigrationStatus').textContent = migrationIdle(); return; }
+    if (!scope) { $('dataMigrationStatus').hidden = true; $('dataMigrationStatus').textContent = migrationIdle(); return; }
     await assertClean();
     const result = await api.dataExport(scope);
-    if (result.canceled) $('dataMigrationStatus').textContent = migrationIdle();
+    if (result.canceled) { $('dataMigrationStatus').hidden = true; $('dataMigrationStatus').textContent = migrationIdle(); }
     else if (!result.ok) throw new Error(result.error);
     else {
       $('dataMigrationProgress').value = 100;
@@ -828,7 +834,7 @@ $('exportData').onclick = async () => {
         $('dataMigrationStatus').classList.add('error');
       }
     }
-  } catch (error) { $('dataMigrationStatus').textContent = window.CamelliaI18n.t(error.message); $('dataMigrationStatus').classList.add('error'); }
+  } catch (error) { $('dataMigrationStatus').hidden = false; $('dataMigrationStatus').textContent = window.CamelliaI18n.t(error.message); $('dataMigrationStatus').classList.add('error'); }
   finally { dataMigrationBusy = false; dataMigrationActive = false; dataMigrationControls(); $('dataMigrationProgress').hidden = true; }
 };
 const importData = async file => {
@@ -836,6 +842,7 @@ const importData = async file => {
   dataMigrationBusy = true; dataMigrationControls();
   $('dataMigrationProgress').hidden = false; $('dataMigrationProgress').value = 0;
   $('dataMigrationStatus').classList.remove('error');
+  $('dataMigrationStatus').hidden = false;
   $('dataMigrationStatus').textContent = window.CamelliaI18n.t('Reading the data package…');
   try {
     let selectedFile = file;
@@ -843,14 +850,15 @@ const importData = async file => {
     let result = await api.dataImport(file);
     if (result.ok && result.needsSelection) {
       const scope = await chooseDataScope(result);
-      if (!scope) { $('dataMigrationStatus').textContent = migrationIdle(); return; }
+      if (!scope) { $('dataMigrationStatus').hidden = true; $('dataMigrationStatus').textContent = migrationIdle(); return; }
       await assertClean();
+      $('dataMigrationStatus').hidden = false;
       $('dataMigrationStatus').textContent = window.CamelliaI18n.t('Reading the data package…');
       dataMigrationActive = true;
       selectedFile = result.file || file;
       result = await api.dataImport(selectedFile, scope);
     }
-    if (result.canceled) $('dataMigrationStatus').textContent = migrationIdle();
+    if (result.canceled) { $('dataMigrationStatus').hidden = true; $('dataMigrationStatus').textContent = migrationIdle(); }
     else if (!result.ok) throw new Error(result.error + (result.recoveryRequired && result.backupDir ? '\nBackup directory: ' + result.backupDir : ''));
     else {
       $('dataMigrationProgress').value = 100;
@@ -865,7 +873,7 @@ const importData = async file => {
       $('dataMigrationStatus').textContent = note + backup + migrationCompatibility(result) + (result.warning ? '\n' + result.warning : '');
       dataMigrationPackage = selectedFile || true;
     }
-  } catch (error) { $('dataMigrationStatus').textContent = error.message; $('dataMigrationStatus').classList.add('error'); }
+  } catch (error) { $('dataMigrationStatus').hidden = false; $('dataMigrationStatus').textContent = error.message; $('dataMigrationStatus').classList.add('error'); }
   finally { dataMigrationBusy = false; dataMigrationActive = false; dataMigrationControls(); $('dataMigrationProgress').hidden = true; }
 };
 const scopeLabel = kinds => {
@@ -959,6 +967,7 @@ api.onDataMigrationProgress(state => {
   // Percentages cover every phase and archive part. The IPC "done" event also
   // runs on failure; only the successful operation result may set 100%.
   bar.value = Math.max(bar.value, Math.min(99, Math.floor(state.percent)));
+  $('dataMigrationStatus').hidden = false;
   $('dataMigrationStatus').textContent = (state.phase === 'snapshot' ? window.CamelliaI18n.t('Preparing the data package…')
     : ['import', 'rewrite', 'apply'].includes(state.phase) ? window.CamelliaI18n.t('Importing data…')
       : window.CamelliaI18n.t('Exporting data…')) + ' ' + bar.value + '%';

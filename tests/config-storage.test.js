@@ -3,9 +3,51 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { readJson, writeJson } = require('../src/shared/json-store');
+const { readJson, readRecoverableJson, writeJson, writeText, withJsonReadSnapshot } = require('../src/shared/json-store');
 const { normalizeConfig, publicState } = require('../src/api/api-router-config');
 const { createHarness } = require('./main-process-harness.cjs');
+
+test('JSON projections read each file once, share nested reads and see external edits on the next projection', t => {
+  const h = createHarness(); t.after(() => h.cleanup());
+  const file = path.join(h.root, 'snapshot.json');
+  writeJson(file, { value: 1 });
+  const original = fs.readFileSync;
+  let reads = 0;
+  t.mock.method(fs, 'readFileSync', (source, ...args) => { if (source === file) reads++; return original(source, ...args); });
+  withJsonReadSnapshot(() => {
+    assert.equal(readJson(file).value, 1);
+    withJsonReadSnapshot(() => assert.equal(readJson(file).value, 1));
+    assert.equal(readJson(file).value, 1);
+  });
+  assert.equal(reads, 1);
+  fs.writeFileSync(file, JSON.stringify({ value: 2 }));
+  withJsonReadSnapshot(() => assert.equal(readJson(file).value, 2));
+  assert.equal(reads, 2);
+  assert.throws(() => withJsonReadSnapshot(() => { readJson(file); throw new Error('projection failed'); }), /projection failed/);
+  fs.writeFileSync(file, JSON.stringify({ value: 3 }));
+  assert.equal(readJson(file).value, 3, 'A failed projection must release its cache');
+});
+
+test('JSON projections preserve missing-file fallbacks, invalidate writes and never hide malformed configuration', t => {
+  const h = createHarness(); t.after(() => h.cleanup());
+  const file = path.join(h.root, 'snapshot.json');
+  withJsonReadSnapshot(() => {
+    assert.equal(readJson(file, null), null);
+    assert.deepEqual(readJson(file, {}), {});
+    writeJson(file, { value: 1 });
+    assert.equal(readJson(file).value, 1);
+    writeText(file, '{"value":2}');
+    assert.equal(readJson(file).value, 2);
+    writeText(file, '{"apiKey":"do-not-display-this-secret"');
+    for (let i = 0; i < 2; i++) {
+      assert.throws(() => readJson(file), error => /Invalid JSON/.test(error.message) && !error.message.includes('do-not-display'));
+    }
+    writeJson(file, { value: 3 });
+    assert.equal(readJson(file).value, 3);
+    assert.equal(readRecoverableJson(file, null, () => {}, () => false), null);
+    assert.equal(readJson(file, null), null, 'Quarantined records must not remain cached');
+  });
+});
 
 test('atomic configuration replacement leaves original data and no temporary files after a failed rename', t => {
   const h = createHarness(); t.after(() => h.cleanup());

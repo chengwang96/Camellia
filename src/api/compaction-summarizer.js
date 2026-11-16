@@ -12,7 +12,9 @@ const REQUEST_TIMEOUT_MS = 180000;
 // Timeouts, rate limits and gateway errors do not; the wording matcher is shared
 // with the conversation engine so both agree on what a context error is.
 
-function createCompactionSummarizer({ getConfig, getRoute, isRunning = () => true, fetchImpl = fetch, log = () => {} }) {
+const { withSessionAffinity } = require('./session-affinity');
+
+function createCompactionSummarizer({ getConfig, getRoute, isRunning = () => true, fetchImpl = fetch, log = () => {}, sessionKey = () => '' }) {
   // Routability decides the transport before the first request, so an unusable
   // route never wastes a summary request or fails a compaction that the engine
   // session path could have completed.
@@ -28,8 +30,8 @@ function createCompactionSummarizer({ getConfig, getRoute, isRunning = () => tru
     }
   }
 
-  async function run({ model, system, user, maxTokens, signal }) {
-    const route = getRoute();
+  async function run({ model, system, user, maxTokens, signal, sessionKey: conversationId }) {
+    const route = withSessionAffinity(getRoute(), conversationId || sessionKey() || '');
     const timeout = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
     const response = await fetchImpl(route.baseUrl + '/v1/chat/completions', {
       method: 'POST', signal: signal ? AbortSignal.any([signal, timeout]) : timeout,

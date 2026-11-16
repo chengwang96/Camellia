@@ -21,7 +21,12 @@ function projectOutput(events = [], finished = false) {
     if (value.status) entry.status = value.status;
     if (value.is_error) entry.status = 'failed';
     const input = value.input;
-    const command = input && typeof input === 'object' ? input.command || input.file_path || input.path || input.pattern || input.description : input;
+    // Web tools identify their work by url/query rather than a shell command or
+    // file path; without these the restored card loses its only input.
+    const command = input && typeof input === 'object'
+      ? input.command || input.file_path || input.path || input.pattern || input.description
+        || input.url || input.query
+      : input;
     if (typeof command === 'string') entry.input = clip(command);
     if (value.output !== undefined) entry.text = printable(value.output);
     return entry;

@@ -62,10 +62,13 @@ public final class MainActivity extends Activity {
     private long historyBytes;
     private ComputerStore store;
     private RemoteListCache listCache;
+    private RemoteListCache homeCache;
+    private final ArrayList<JSONObject> homeComputers = new ArrayList<>();
+    private final RemoteWorkbenchSync homeSync = new RemoteWorkbenchSync(address -> this.homeClientFactory.apply(address));
     private final java.util.function.Function<String, RemoteApi> remoteClientFactory = address -> new RemoteApi(this, address);
     private final RemoteConversationSync conversationSync = new RemoteConversationSync(address -> remoteClientFactory.apply(address));
     private long conversationListRevision;
-    private final RemotePrefetch prefetch = new RemotePrefetch();
+    private final RemotePrefetch prefetch = new RemotePrefetch(address -> new RemoteApi(this, address));
     private final ArrayList<View> prefetchRows = new ArrayList<>();
     private boolean prefetchViewportPosted;
     private final Runnable prefetchViewportUpdate = () -> {
@@ -80,7 +83,6 @@ public final class MainActivity extends Activity {
     private boolean canCommandReceipts, canStopStart, canStopBackgroundWork, canIncremental;
     private LinearLayout backgroundWorkBar;
     private TextView backgroundWorkLabel, backgroundWorkStop;
-    private TextView workSummaryBar;
     private LinearLayout workInline;
     private boolean canListQuery;
     private String capabilityAddress = "", capabilityToken = "", remoteListQuery = "";
@@ -113,9 +115,9 @@ public final class MainActivity extends Activity {
     private ChatStatusLine workStatus;
     private boolean reconnecting, connectionBlocked;
     private boolean destinationSwitch;
-    private volatile boolean homeRefreshBusy;
-    private long homeRefreshAt;
     private boolean homeRunningExpanded;
+    private boolean homeRecentExpanded;
+    private long homeRefreshAt;
     private WorkbenchList homeConversations;
     private TextView homeHeading, homeEmptyHint;
     private ConversationSidebar detailSidebar;
@@ -128,6 +130,7 @@ public final class MainActivity extends Activity {
     private boolean moreDiscussions;
     private boolean canDiscussions;
     private ScrollView scroll;
+    private final ConversationListScroll conversationListScroll = new ConversationListScroll();
     private boolean initialMessageScroll;
     private ScrollView pendingScrollView;
     private android.view.ViewTreeObserver.OnPreDrawListener pendingMessageScroll;
@@ -155,6 +158,9 @@ public final class MainActivity extends Activity {
     private final LinkedHashMap<String, JSONObject> archivedConversations = new LinkedHashMap<>();
     private boolean archivedLoaded, archivedLoading;
     private int archivedNextOffset = -1;
+    private JSONObject archivedConversation;
+    private boolean archivedRestorable;
+    private LinearLayout archivedBar;
     private String conversationFilter = "all";
     private final LinkedHashMap<String, Boolean> collapsedGroups = new LinkedHashMap<>();
     private Button older;
@@ -176,6 +182,8 @@ public final class MainActivity extends Activity {
     private JSONObject remoteGoal;
     private JSONArray remoteTasks = new JSONArray();
     private android.app.Dialog workDialog;
+    private LinearLayout workApprovalSection;
+    private String workApprovalSignature = "";
     private LinearLayout workAutomationSection;
     private String workAutomationSignature = "";
     private LinearLayout queueBar;
@@ -230,9 +238,10 @@ public final class MainActivity extends Activity {
     private final ChatNotifications chatNotifications = new ChatNotifications();
     private final Runnable searchRemote = () -> { if (screen.equals("list")) loadList(false); };
     private final LinkedHashMap<String, String> computerStates = new LinkedHashMap<>();
+    private final LinkedHashMap<String, String> computerRoutes = new LinkedHashMap<>();
     private final java.util.Set<RemoteApi> statusClients = java.util.concurrent.ConcurrentHashMap.newKeySet();
-    private final java.util.function.Function<String, RemoteApi> statusClientFactory = RemoteApi::new;
-    private final java.util.function.Function<String, RemoteApi> homeClientFactory = RemoteApi::new;
+    private final java.util.function.Function<String, RemoteApi> statusClientFactory = address -> new RemoteApi(this, address);
+    private final java.util.function.Function<String, RemoteApi> homeClientFactory = address -> new RemoteApi(this, address);
     private boolean loginLaunched;
     private final ExecutorService networkWorker = Executors.newSingleThreadExecutor();
     // The settings index's Mobile access row, kept so its state label can be
@@ -324,6 +333,7 @@ public final class MainActivity extends Activity {
         if (android.os.Build.VERSION.SDK_INT >= 27 && !dark) getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR | View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR);
         store = new ComputerStore(new CredentialStore(this));
         listCache = RemoteListCache.get(this);
+        homeCache = RemoteListCache.workbench(this);
         String recovery = null;
         try {
             credentials = store.load();
@@ -339,6 +349,7 @@ public final class MainActivity extends Activity {
         }
         String restored = saved == null ? "home" : saved.getString("screen", "home");
         if (saved != null) {
+            conversationListScroll.load(saved.getBundle("conversationListScroll"));
             pairingDraft = saved.getBundle("pairingDraft");
             pendingScannedPairing = saved.getBoolean("pendingScannedPairing");
         }
@@ -378,7 +389,7 @@ public final class MainActivity extends Activity {
         }
         if (networkScreen) { refreshNetwork(false); return; }
         if (screen.equals("computers")) { refreshComputers(); return; }
-        if (screen.equals("home")) { startConversationSync(); refreshHomeConversations(); return; }
+        if (screen.equals("home")) { refreshHomeConversations(); return; }
         // Coming back from Mobile access, which is where the mode is actually
         // changed. Without this the row kept whatever it said when the index
         // was built, so toggling Tailscale off and back left it claiming to be
@@ -394,9 +405,10 @@ public final class MainActivity extends Activity {
     }
 
     private void networkRouteChanged() {
+        clearComputerRoutes();
         if (!networkActive()) return;
         if (EmbeddedNetwork.online()) resumePendingCommands();
-        if (screen.equals("home")) { conversationSync.stop(); startConversationSync(); refreshHomeConversations(); return; }
+        if (screen.equals("home")) { homeSync.stop(); refreshHomeConversations(); return; }
         // These two report the network state on a row, and a route change flips
         // it without rebuilding the page.
         if (screen.equals("settings")) { refreshMobileAccessRow(); return; }
@@ -452,6 +464,7 @@ public final class MainActivity extends Activity {
         if (connectionTest != null) { connectionTest.close(); connectionTest = null; }
         persistDraft();
         if (listCache != null) listCache.flush();
+        if (homeCache != null) homeCache.flush();
         artifactDownloads.stop();
         if (conversationPopup != null) conversationPopup.dismiss();
         locationConsent.cancel();
@@ -478,6 +491,7 @@ public final class MainActivity extends Activity {
         if (connectionTest != null) { connectionTest.close(); connectionTest = null; }
         stopNetwork();
         conversationSync.close();
+        homeSync.close();
         closeCommandClients();
         if (pages != null) { pages.finishTransition(); pages = null; }
         releasePageViews();
@@ -492,6 +506,8 @@ public final class MainActivity extends Activity {
 
     @Override protected void onSaveInstanceState(Bundle saved) {
         super.onSaveInstanceState(saved);
+        rememberConversationListContext();
+        saved.putBundle("conversationListScroll", conversationListScroll.save());
         artifactDownloads.save(saved);
         saved.putString("screen", screen); saved.putString("networkReturn", networkReturn);
         saved.putString("detailReturn", detailReturn);
@@ -502,6 +518,7 @@ public final class MainActivity extends Activity {
     }
 
     private void stopNetwork() {
+        homeSync.stop();
         conversationSync.stop();
         if (subtaskPage != null) { subtaskPage.dismiss(); subtaskPage = null; }
         replyReadSync.reset();
@@ -869,8 +886,9 @@ public final class MainActivity extends Activity {
 
     private void homeScreen() {
         stopNetwork(); screen = "home"; networkScreen = false; conversationId = null;
+        readHomeComputers();
         renderHomeContent();
-        if (foreground) { startConversationSync(); refreshHomeConversations(); }
+        if (foreground) refreshHomeConversations();
     }
 
     private void renderHomeContent() {
@@ -885,6 +903,13 @@ public final class MainActivity extends Activity {
         content.addView(homeConversations, new LinearLayout.LayoutParams(-1, -2));
         updateHomeConversations();
         renderHomeShortcuts();
+        ((RefreshScrollView) scroll).setRefreshAction(() -> {
+            long now = android.os.SystemClock.elapsedRealtime();
+            if (now - homeRefreshAt >= 5_000) {
+                homeRefreshAt = now; refreshHomeConversations(true);
+            }
+            ((RefreshScrollView) scroll).setRefreshing(false);
+        }, ready -> {});
         status.setVisibility(View.GONE);
     }
 
@@ -903,14 +928,70 @@ public final class MainActivity extends Activity {
         ArrayList<WorkbenchList.Item> items = new ArrayList<>();
         renderHomeRunning(cached, shown, items);
         renderHomeRecent(cached, shown, items);
+        renderHomeUnavailable(items);
         homeConversations.show(items);
     }
 
     private JSONArray homeCachedConversations() {
-        if (!credentials.has("token") || listCache == null) return new JSONArray();
-        JSONObject cached = listCache.get(credentials);
-        JSONArray rows = cached == null ? null : cached.optJSONArray("conversations");
-        return rows == null ? new JSONArray() : rows;
+        JSONArray rows = new JSONArray();
+        ArrayList<JSONObject> merged = new ArrayList<>();
+        for (JSONObject computer : homeComputers) {
+            if (homeSync.state(computer) == RemoteWorkbenchSync.State.UNAUTHORIZED) continue;
+            JSONObject page = homeCachedPage(computer);
+            JSONArray entries = page == null ? null : page.optJSONArray("conversations");
+            for (int i = 0; entries != null && i < entries.length(); i++) {
+                JSONObject row = entries.optJSONObject(i);
+                if (row == null || row.optString("id").isEmpty()) continue;
+                try {
+                    merged.add(new JSONObject(row.toString()).put("homeAddress", computer.optString("address"))
+                        .put("homeComputerName", computerName(computer))
+                        .put("homeFresh", homeSync.state(computer) == RemoteWorkbenchSync.State.LIVE));
+                } catch (Exception ignored) { }
+            }
+        }
+        merged.sort((left, right) -> {
+            int order = Long.compare(right.optLong("updatedAt"), left.optLong("updatedAt"));
+            return order == 0 ? left.optString("homeAddress").compareTo(right.optString("homeAddress")) : order;
+        });
+        for (JSONObject row : merged) rows.put(row);
+        return rows;
+    }
+
+    private String homeKey(JSONObject row) { return row.optString("homeAddress") + "#" + row.optString("id"); }
+
+    private JSONObject homeCachedPage(JSONObject computer) {
+        JSONObject page = homeCache == null ? null : homeCache.get(computer);
+        return page != null || listCache == null ? page : listCache.get(computer);
+    }
+
+    private void readHomeComputers() {
+        homeComputers.clear();
+        try { for (JSONObject computer : store.all()) if (computer.has("token")) homeComputers.add(computer); }
+        catch (Exception error) { android.util.Log.w("CamelliaHome", "Could not read paired computers", error); }
+        // The selected profile can include changes not yet flushed by the pairing flow.
+        if (credentials.has("token")) {
+            homeComputers.removeIf(computer -> computer.optString("address").equals(credentials.optString("address")));
+            homeComputers.add(credentials);
+        }
+    }
+
+    private void renderHomeUnavailable(ArrayList<WorkbenchList.Item> items) {
+        for (JSONObject computer : homeComputers) {
+            RemoteWorkbenchSync.State state = homeSync.state(computer);
+            if (homeCachedPage(computer) != null && state != RemoteWorkbenchSync.State.UNAUTHORIZED) continue;
+            String address = computer.optString("address");
+            String message = state == RemoteWorkbenchSync.State.UNAUTHORIZED ? tr("请检查配对和访问权限", "Check pairing and access permissions")
+                : state == RemoteWorkbenchSync.State.CONNECTING ? tr("正在获取任务…", "Fetching tasks…")
+                : tr("暂时无法同步任务", "Tasks unavailable right now");
+            String label = computerName(computer) + " · " + message;
+            items.add(new WorkbenchList.Item("homeUnavailable:" + address, label, () -> {
+                TextView note = text(label, Palette.TEXT_SMALL, muted);
+                note.setTag("homeUnavailable:" + address); note.setPadding(0, dp(8), 0, dp(8));
+                note.setOnClickListener(view -> manageComputer(computer));
+                note.setFocusable(true);
+                return note;
+            }));
+        }
     }
 
     private void renderHomeRunning(JSONArray cached, java.util.Set<String> shown, ArrayList<WorkbenchList.Item> items) {
@@ -925,7 +1006,7 @@ public final class MainActivity extends Activity {
         int count = homeRunningExpanded ? active.size() : Math.min(3, active.size());
         for (int index = 0; index < count; index++) {
             JSONObject conversation = active.get(index);
-            String id = conversation.optString("id");
+            String id = homeKey(conversation);
             shown.add(id);
             items.add(homeConversationItem(conversation, true, "homeActive:" + id, "homeActiveStatus:" + id));
         }
@@ -957,9 +1038,7 @@ public final class MainActivity extends Activity {
     }
 
     private boolean homeConversationActive(JSONObject conversation) {
-        String state = conversation.optString("activity");
-        return state.equals("running") || state.equals("permission") || state.equals("question")
-            || RemoteWorkStatus.backgroundCount(conversation) > 0;
+        return RemoteWorkbenchSync.active(conversation);
     }
 
     private WorkbenchList.Item homeConversationItem(JSONObject conversation, boolean active, String tag, String statusTag) {
@@ -969,18 +1048,52 @@ public final class MainActivity extends Activity {
             : state.equals("permission") || state.equals("question") ? palette.warning
             : RemoteWorkStatus.backgroundCount(conversation) > 0 ? palette.accent : palette.muted;
         String indicator = active ? activity(conversation) : "";
+        if (active && !conversation.optBoolean("homeFresh")) {
+            indicator = cachedHomeActivity(conversation);
+            statusColor = palette.muted;
+        }
         String engine = conversationEngine(conversation), title = conversation.optString("title");
-        String meta = conversationMeta(conversation), time = conversationTime(conversation);
+        String meta = conversation.optString("homeComputerName") + " · " + conversationMeta(conversation), time = conversationTime(conversation);
         // Ignore stream counters, previews and other metadata that this page does not display.
         String presentation = new JSONArray().put(engine).put(title).put(meta).put(indicator).put(statusColor).put(time).toString();
-        return new WorkbenchList.Item(tag, presentation, () -> new ConversationRow(this, chatStyle, false, engine,
-            title, meta, indicator, statusColor, time, tag, statusTag, () -> {
-                conversationId = conversation.optString("id");
-                conversationTitle = conversation.optString("title");
-                detailReturn = "home";
-                detailScreen();
-                connectEvents();
-            }, () -> {}));
+        final String label = indicator;
+        final int color = statusColor;
+        return new WorkbenchList.Item(tag, presentation, () -> {
+            ConversationRow row = new ConversationRow(this, chatStyle, false, engine,
+                title, meta, label, color, time, tag, statusTag, () -> openHomeConversation(conversation), () -> {});
+            row.setContentDescription(title + " · " + meta + (label.isEmpty() ? "" : " · " + label) + " · " + time);
+            return row;
+        });
+    }
+
+    private String cachedHomeActivity(JSONObject conversation) {
+        RemoteWorkbenchSync.State sync = homeSync.state(conversationComputer(conversation));
+        String state = conversation.optString("activity");
+        if (sync == RemoteWorkbenchSync.State.CONNECTING) return tr("正在确认状态…", "Checking status…");
+        if (sync == RemoteWorkbenchSync.State.STALE) return state.equals("running")
+            ? tr("离线 · 上次运行中", "Offline · Previously running")
+            : tr("离线 · 状态待确认", "Offline · Status unconfirmed");
+        return state.equals("running") ? tr("上次运行中", "Previously running") : tr("状态待确认", "Status unconfirmed");
+    }
+
+    private JSONObject conversationComputer(JSONObject conversation) {
+        String address = conversation.optString("homeAddress");
+        for (JSONObject computer : homeComputers) if (address.equals(computer.optString("address"))) return computer;
+        return new JSONObject();
+    }
+
+    private void openHomeConversation(JSONObject conversation) {
+        try {
+            String address = conversation.optString("homeAddress");
+            JSONObject target = null;
+            for (JSONObject computer : store.all()) if (address.equals(computer.optString("address")) && computer.has("token")) { target = computer; break; }
+            if (target == null) throw new IOException(tr("这台服务器已移除，请刷新首页。", "This server was removed. Refresh Home."));
+            persistDraft(); stopNetwork(); store.save(target); credentials = store.load();
+            canCreate = false; canCreateWorkspace = false; canImage = false; availableWorkspaces = new JSONArray();
+            conversationId = conversation.optString("id"); conversationTitle = conversation.optString("title");
+            detailReturn = "home"; detailScreen();
+            if (foreground) connectEvents();
+        } catch (Exception error) { reportError("无法打开服务器上的会话。", "Could not open the server conversation.", error); }
     }
 
     private void renderHomeRecent(JSONArray cached, java.util.Set<String> shown, ArrayList<WorkbenchList.Item> items) {
@@ -988,15 +1101,15 @@ public final class MainActivity extends Activity {
         for (int index = 0; index < cached.length(); index++) {
             JSONObject conversation = cached.optJSONObject(index);
             if (conversation != null && !homeConversationActive(conversation)
-                && !shown.contains(conversation.optString("id"))) { available = true; break; }
+                && !shown.contains(homeKey(conversation))) { available = true; break; }
         }
         if (!available) return;
         items.add(new WorkbenchList.Item("recent", "", this::homeRecentHeader));
         int added = 0;
-        for (int index = 0; index < cached.length() && added < 3; index++) {
+        for (int index = 0; index < cached.length() && (homeRecentExpanded || added < 3); index++) {
             JSONObject conversation = cached.optJSONObject(index);
             if (conversation == null) continue;
-            String id = conversation.optString("id");
+            String id = homeKey(conversation);
             if (id.isEmpty() || shown.contains(id) || homeConversationActive(conversation)) continue;
             shown.add(id); added++;
             items.add(homeConversationItem(conversation, false, "homeRecent:" + id, "homeRecentStatus:" + id));
@@ -1011,9 +1124,9 @@ public final class MainActivity extends Activity {
         TextView label = text(tr("最近", "Recent"), Palette.TEXT_CARD, ink);
         label.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
         section.addView(label, new LinearLayout.LayoutParams(0, -2, 1));
-        TextView all = text(tr("查看全部", "View all"), Palette.TEXT_SMALL, accent);
+        TextView all = text(homeRecentExpanded ? tr("收起", "Collapse") : tr("查看全部", "View all"), Palette.TEXT_SMALL, accent);
         all.setGravity(Gravity.CENTER); all.setMinHeight(dp(48)); all.setPadding(dp(12), 0, dp(2), 0); all.setTag("homeRecentAll");
-        all.setOnClickListener(view -> navigateSessions());
+        all.setOnClickListener(view -> { homeRecentExpanded = !homeRecentExpanded; refreshHomeContent(); });
         section.addView(all);
         return section;
     }
@@ -1113,52 +1226,25 @@ public final class MainActivity extends Activity {
     }
 
     private void refreshHomeConversations() {
-        if (!foreground || !screen.equals("home") || homeRefreshBusy || !credentials.has("token")
-                || !EmbeddedNetwork.online() || listCache == null) return;
-        long now = android.os.SystemClock.elapsedRealtime();
-        if (now - homeRefreshAt < 5_000) return;
-        homeRefreshAt = now;
-        homeRefreshBusy = true;
+        refreshHomeConversations(false);
+    }
+
+    private void refreshHomeConversations(boolean force) {
+        if (!foreground || !screen.equals("home") || homeCache == null) return;
+        readHomeComputers();
+        if (!EmbeddedNetwork.online()) { homeSync.stop(); refreshHomeContent(); return; }
         int ticket = generation;
-        long revision = conversationListRevision;
-        JSONObject snapshot;
-        JSONObject before;
-        try {
-            snapshot = new JSONObject(credentials.toString());
-            before = listCache.get(snapshot);
-        } catch (Exception error) {
-            homeRefreshBusy = false;
-            return;
-        }
-        String token = snapshot.optString("token");
-        RemoteApi request = homeClientFactory.apply(snapshot.optString("address"));
-        worker.submit(() -> {
-            try {
-                JSONObject page = request.json("/v1/conversations?offset=0", token, null);
-                deliver(ticket, () -> {
-                    // A slow pull must not overwrite a newer pushed state.
-                    if (revision != conversationListRevision || !screen.equals("home")) return;
-                    JSONArray rows = page.optJSONArray("conversations");
-                    if (rows == null) return;
-                    JSONArray workspaces = page.optJSONArray("workspaces");
-                    if (workspaces == null) workspaces = before == null ? null : before.optJSONArray("workspaces");
-                    if (workspaces == null) workspaces = new JSONArray();
-                    boolean independent = page.has("includeUnassigned")
-                        ? page.optBoolean("includeUnassigned") : before != null && before.optBoolean("includeUnassigned");
-                    listCache.put(snapshot, rows, page.optInt("nextOffset", -1), workspaces, independent);
-                    conversationListRevision++;
-                    JSONObject after = listCache.get(snapshot);
-                    boolean changed = before == null ? after != null : after != null && !before.toString().equals(after.toString());
-                    if (!changed) return;
-                    refreshHomeContent();
-                });
-            } catch (Exception ignored) {
-                // Keep the cached list; the next home resume will retry.
-            } finally {
-                homeRefreshBusy = false;
-                request.cancel();
+        java.util.function.Consumer<RemoteWorkbenchSync.Update> listener = update -> deliver(ticket, () -> {
+            if (!screen.equals("home") || !homeSync.current(update)) return;
+            if (update.state == RemoteWorkbenchSync.State.UNAUTHORIZED) {
+                homeCache.remove(update.computer); listCache.remove(update.computer);
+            } else if (update.page != null) {
+                homeCache.put(update.computer, update.page.optJSONArray("conversations"), -1, new JSONArray(), false);
             }
+            refreshHomeContent();
         });
+        if (force) homeSync.refresh(homeComputers, listener); else homeSync.start(homeComputers, listener);
+        refreshHomeContent();
     }
 
     private void settingsScreen() {
@@ -1285,15 +1371,13 @@ public final class MainActivity extends Activity {
         TextView introduction = text(tr("管理配对与连接；打开一台电脑会进入它的会话。",
             "Manage pairing and connections. Open a computer to see its conversations."), Palette.TEXT_BODY, style.secondary);
         introduction.setPadding(dp(2), dp(2), dp(2), dp(12)); content.addView(introduction);
-        LinearLayout group = style.group(content, tr("我的电脑", "My computers")); group.setTag("computerList");
+        LinearLayout group = style.group(content, ""); group.setTag("computerList");
         status.setVisibility(View.GONE);
         try {
             var computers = store.all();
             if (computers.isEmpty()) {
-                // Outside the card, not inside it. Inside, it shared a surface
-                // with the "Add computer" row below it and read as one more
-                // thing to tap; and the group's own "My computers" heading above
-                // an empty list says nothing the heading did not already say.
+                // Keep the empty state outside the card so it does not read
+                // as another action beside "Add computer".
                 style.emptyState(content, tr("连接你的第一台电脑", "Connect your first computer"),
                     tr("扫描电脑上的配对二维码，即可在手机继续工作。", "Scan the pairing QR code on your computer to continue working here."),
                     "", null);
@@ -1330,7 +1414,10 @@ public final class MainActivity extends Activity {
         String state = computerStates.getOrDefault(address, tr("待检查", "Not checked"));
         ComputerRow row = new ComputerRow(this, new SettingsStyle(this), chinese, name, address,
             () -> openComputer(computer), () -> manageComputer(computer));
-        row.state(state, state.equals(tr("已连接", "Connected")), checkingComputer(state)); return row;
+        boolean online = state.equals(tr("已连接", "Connected"));
+        row.state(state, online, checkingComputer(state));
+        row.route(online ? computerRoutes.get(address) : null);
+        return row;
     }
 
     private boolean checkingComputer(String state) {
@@ -1341,7 +1428,12 @@ public final class MainActivity extends Activity {
     private void updateComputerState(String address, String state) {
         computerStates.put(address, state);
         View row = root.findViewWithTag("computer:" + address);
-        if (row instanceof ComputerRow) ((ComputerRow) row).state(state, state.equals(tr("已连接", "Connected")), checkingComputer(state));
+        if (row instanceof ComputerRow) {
+            boolean online = state.equals(tr("已连接", "Connected"));
+            ComputerRow value = (ComputerRow) row;
+            value.state(state, online, checkingComputer(state));
+            value.route(online ? computerRoutes.get(address) : null);
+        }
     }
 
     private void openComputer(JSONObject computer) {
@@ -1510,6 +1602,7 @@ public final class MainActivity extends Activity {
     private void refreshComputers() {
         if (!foreground || !screen.equals("computers")) return;
         stopNetwork(); int ticket = generation;
+        clearComputerRoutes();
         try {
             var computers = store.all();
             ((RefreshScrollView) scroll).setRefreshing(false);
@@ -1532,9 +1625,16 @@ public final class MainActivity extends Activity {
                         if (!computer.has("token")) throw new RemoteApi.Failure(401);
                         client = statusClientFactory.apply(address); statusClients.add(client);
                         if (ticket != generation) { statusClients.remove(client); client.cancel(); return; }
-                        info = client.json("/v1/status", computer.getString("token"), null);
+                        String token = computer.getString("token");
+                        info = client.json("/v1/status", token, null);
                         if (info.optInt("protocol") != 1) throw new IOException("Unsupported protocol");
                         result = tr("已连接", "Connected");
+                        if (EmbeddedNetwork.enabled()) {
+                            try {
+                                String host = java.net.URI.create(address).getHost();
+                                if (host != null) probeComputerPath(ticket, address, host);
+                            } catch (Exception ignored) { /* path is diagnostic, not connection state */ }
+                        }
                     } catch (Exception error) {
                         revoked = error instanceof RemoteApi.Failure && ((RemoteApi.Failure) error).status == 401;
                         result = RemoteApi.failureMessage(error, chinese);
@@ -1542,7 +1642,7 @@ public final class MainActivity extends Activity {
                     String state = result;
                     boolean unauthorized = revoked;
                     deliver(ticket, () -> {
-                        if (unauthorized) { listCache.remove(computer); prefetch.remove(computer, null); }
+                        if (unauthorized) { listCache.remove(computer); homeCache.remove(computer); prefetch.remove(computer, null); }
                         updateComputerState(address, state);
                         if (--remaining[0] == 0) {
                             ((RefreshScrollView) scroll).setRefreshing(false);
@@ -1556,6 +1656,32 @@ public final class MainActivity extends Activity {
             ((RefreshScrollView) scroll).setRefreshing(false);
             reportError("无法检查电脑状态，请下拉重试。", "Could not check computers. Pull to retry.", error);
         }
+    }
+
+    private void clearComputerRoutes() {
+        computerRoutes.clear();
+        if (screen.equals("computers")) for (var entry : computerStates.entrySet())
+            updateComputerState(entry.getKey(), entry.getValue());
+    }
+
+    private void probeComputerPath(int ticket, String address, String host) {
+        if (ticket != generation || statusWorker.isShutdown()) return;
+        statusWorker.submit(() -> {
+            if (ticket != generation) return;
+            JSONObject result = null;
+            try {
+                result = EmbeddedNetwork.path(host);
+            } catch (Exception ignored) { /* a failed probe must clear the old path */ }
+            JSONObject probe = result;
+            deliver(ticket, () -> applyComputerPath(ticket, address, probe));
+        });
+    }
+
+    private void applyComputerPath(int ticket, String address, JSONObject probe) {
+        if (ticket != generation || !foreground || !screen.equals("computers")) return;
+        String label = ComputerRoute.label(probe, chinese);
+        if (label.isEmpty()) computerRoutes.remove(address); else computerRoutes.put(address, label);
+        updateComputerState(address, computerStates.getOrDefault(address, tr("正在检查…", "Checking…")));
     }
 
     private void pairScreen() {
@@ -1656,7 +1782,7 @@ public final class MainActivity extends Activity {
                 RemoteApi client = null;
                 try {
                     if (!computer.has("token")) throw new RemoteApi.Failure(401);
-                    client = new RemoteApi(address); statusClients.add(client);
+                    client = new RemoteApi(this, address); statusClients.add(client);
                     if (ticket != generation || !picker.isShowing()) return;
                     JSONObject info = client.json("/v1/status", computer.optString("token"), null);
                     if (info.optInt("protocol") != 1) throw new IOException("Unsupported protocol");
@@ -1820,11 +1946,15 @@ public final class MainActivity extends Activity {
         canCreate = false; canCreateWorkspace = false; canArchive = false; canManageConversations = false;
         canDiscussions = false;
         selectingConversations = false; selectedConversations.clear();
-        conversationFilter = "all";
         availableWorkspaces = new JSONArray(); allowIndependent = false;
         listEventsUnavailable = false;
         listLoaded = false; listLoadFailed = false;
         shell("", "");
+        String pairing = java.util.UUID.nameUUIDFromBytes(credentials.optString("token")
+            .getBytes(java.nio.charset.StandardCharsets.UTF_8)).toString();
+        conversationListScroll.attach(credentials.optString("address") + "/" + pairing, scroll, content);
+        Bundle listContext = conversationListScroll.context();
+        conversationFilter = listContext.getString("filter", "all");
         root.setClipChildren(false);
         if (!credentials.has("token")) {
             status.setVisibility(View.GONE);
@@ -1856,6 +1986,8 @@ public final class MainActivity extends Activity {
         searchInput.setTag("remoteSearchInput"); searchInput.setImeOptions(android.view.inputmethod.EditorInfo.IME_ACTION_SEARCH);
         searchInput.setHint(tr("搜索会话", "Search conversations")); searchInput.setContentDescription(tr("搜索会话", "Search conversations")); searchInput.setBackgroundColor(Color.TRANSPARENT);
         searchInput.setPadding(dp(2), dp(12), dp(8), dp(12)); searchInput.setMinHeight(dp(48));
+        searchInput.setText(listContext.getString("query", ""));
+        searchBar.setVisibility(listContext.getBoolean("searchVisible") ? View.VISIBLE : View.GONE);
         searchBar.addView(searchInput, new LinearLayout.LayoutParams(0, -2, 1));
         ImageButton close = chatStyle.composerToolButton("close", tr("关闭搜索", "Close search"), muted,
             this::closeConversationSearch);
@@ -2030,7 +2162,7 @@ public final class MainActivity extends Activity {
 
     private void renderConversations() {
         if (conversationPopup != null) conversationPopup.dismiss();
-        int position = content.findViewWithTag("chatEmptyState") == null ? scroll.getScrollY() : 0;
+        conversationListScroll.beforeRender();
         content.removeAllViews(); prefetchRows.clear();
         selectedConversations.retainAll(conversations.keySet());
         if (selectingConversations) {
@@ -2080,19 +2212,19 @@ public final class MainActivity extends Activity {
                     : tr("连接电脑后，将显示授权范围内的工作区与会话。", "Your authorized workspaces and conversations will appear after connecting."),
                 listLoadFailed && !archivedFilter ? tr("重新同步", "Retry sync") : "",
                 listLoadFailed && !archivedFilter ? () -> loadList(false) : null));
-            layoutConversationList(true, position); return;
+            layoutConversationList(true); return;
         }
         if (!query.isEmpty() && groups.values().stream().allMatch(java.util.List::isEmpty) && !matchingDiscussion) {
             content.addView(new ChatEmptyState(this, chatStyle, "search", tr("没有找到会话", "No conversations found"),
                 tr("试试更短的关键词，或清除搜索查看全部会话。", "Try a shorter keyword, or clear the search to see all conversations."),
                 tr("清除搜索", "Clear search"), () -> searchInput.setText("")));
-            layoutConversationList(true, position); return;
+            layoutConversationList(true); return;
         }
         if (filtered && visibleConversations == 0 && !matchingDiscussion && dataLoaded) {
             content.addView(new ChatEmptyState(this, chatStyle, "sessions", archivedFilter ? tr("没有已归档会话", "No archived conversations") : tr("没有符合筛选的会话", "No matching conversations"),
                 archivedFilter ? tr("归档后仍可在这里找到会话。", "Archived conversations remain available here.") : tr("清除筛选，查看全部会话。", "Clear the filter to see all conversations."),
                 tr("查看全部", "Show all"), () -> { conversationFilter = "all"; renderConversations(); }));
-            layoutConversationList(true, position); return;
+            layoutConversationList(true); return;
         }
         if (!hasContent) {
             ChatEmptyState welcome = new ChatEmptyState(this, chatStyle, "brand", tr("在这里开始新的工作", "Start something new"),
@@ -2106,7 +2238,7 @@ public final class MainActivity extends Activity {
             if (!(canCreate && allowIndependent) && !canCreateWorkspace && !canDiscussions) welcome.addAction(tr("刷新列表", "Refresh conversations"), "emptyStateAction", () -> loadList(false));
             for (int index = 0; index < welcome.getChildCount(); index++) if (welcome.getChildAt(index).isClickable())
                 welcome.getChildAt(index).setEnabled(!commandBusy && !credentials.has("pendingCreate"));
-            content.addView(welcome); layoutConversationList(true, position); return;
+            content.addView(welcome); layoutConversationList(true); return;
         }
         if (!filtered && (availableWorkspaces.length() > 0 || canCreateWorkspace)) {
             LinearLayout workspaceHeader = chatStyle.workspaceHeader(availableWorkspaces.length() == 0 ? tr("新建工作区", "New workspace") : tr("工作区", "Workspaces"),
@@ -2163,10 +2295,10 @@ public final class MainActivity extends Activity {
         if (!filtered && (query.isEmpty() || matchingDiscussion)) renderDiscussionSection(query);
         if (archivedFilter && archivedNextOffset >= 0) content.addView(button(tr("加载更多归档会话", "Load more archived conversations"), () -> loadArchived(true), false));
         else if (!archivedFilter && nextOffset >= 0) content.addView(button(tr("加载更多会话", "Load more conversations"), () -> loadList(true), false));
-        layoutConversationList(false, position);
+        layoutConversationList(false);
     }
 
-    private void layoutConversationList(boolean centered, int position) {
+    private void layoutConversationList(boolean centered) {
         content.setGravity(Gravity.TOP);
         if (centered) {
             // Keep filters and pending actions at the top; only the placeholder
@@ -2175,9 +2307,16 @@ public final class MainActivity extends Activity {
             View empty = content.findViewWithTag("chatEmptyState");
             empty.setLayoutParams(new LinearLayout.LayoutParams(-1, -2, 1));
         }
-        ScrollView target = scroll;
-        viewHandler.post(() -> target.scrollTo(0, centered ? 0 : position));
+        conversationListScroll.afterRender(centered);
         if (!centered) requestPrefetchViewport();
+    }
+
+    private void rememberConversationListContext() {
+        Bundle context = conversationListScroll.context();
+        if (context == null) return;
+        context.putString("filter", conversationFilter);
+        context.putString("query", searchInput == null ? "" : searchInput.getText().toString());
+        context.putBoolean("searchVisible", searchBar != null && searchBar.getVisibility() == View.VISIBLE);
     }
 
     private boolean renderDiscussionSection(String query) {
@@ -3133,6 +3272,8 @@ public final class MainActivity extends Activity {
         remoteCompaction = null;
         remoteGoal = null; remoteTasks = new JSONArray();
         remoteQueue = new JSONArray(); canQueue = false; queueVersion = -1; queueSignature = ""; queueSteeringGoalId = "";
+        archivedConversation = null;
+        archivedRestorable = false;
         displayedConversation = null;
         outgoingMessage = pendingCommand();
         if (outgoingMessage != null && !conversationId.equals(outgoingMessage.optString("conversationId"))) outgoingMessage = null;
@@ -3155,11 +3296,13 @@ public final class MainActivity extends Activity {
         remoteEmptyState = new ChatEmptyState(this, chatStyle, "brand", tr("从这里开始", "Start here"),
             tr("描述任务，继续电脑上的工作。", "Describe a task to continue on this computer."));
         remoteEmptyState.setVisibility(View.GONE); content.addView(remoteEmptyState);
+        archivedBar = column(); archivedBar.setTag("remoteArchivedBar");
+        archivedBar.setVisibility(View.GONE); content.addView(archivedBar);
         messages = column(); content.addView(messages);
         workInline = column(); workInline.setVisibility(View.GONE); content.addView(workInline);
         approvals = column(); workInline.addView(approvals); approvalSignature = "";
-        // Goal and scheduled-task state sits directly above the composer, where
-        // it is visible while typing but never covers the transcript.
+        // Keep work cards available to the shared work sheet. Its entry is the
+        // existing composer footer, without a separate summary row.
         automationBar = column(); automationBar.setTag("remoteAutomation");
         automationBar.setVisibility(View.GONE); workInline.addView(automationBar);
         LinearLayout composerBar = bottomBar("composerBar");
@@ -3187,23 +3330,7 @@ public final class MainActivity extends Activity {
         backgroundWorkBar.addView(backgroundWorkStop, stopBackgroundParams);
         LinearLayout.LayoutParams backgroundParams = new LinearLayout.LayoutParams(-1, -2); backgroundParams.setMargins(0, 0, 0, dp(6));
         workInline.addView(backgroundWorkBar, backgroundParams);
-        workSummaryBar = text("", Palette.TEXT_SMALL, muted);
-        workSummaryBar.setTag("remoteWorkSummary");
-        workSummaryBar.setGravity(Gravity.CENTER_VERTICAL);
-        workSummaryBar.setSingleLine(true);
-        workSummaryBar.setEllipsize(android.text.TextUtils.TruncateAt.END);
-        workSummaryBar.setMinHeight(dp(48));
-        workSummaryBar.setPadding(dp(12), 0, dp(10), 0);
-        workSummaryBar.setBackground(new RippleDrawable(ColorStateList.valueOf(Palette.RIPPLE_ON_CARD),
-            capsule(Palette.of(this).controlFill), capsule(Color.WHITE)));
-        workSummaryBar.setFocusable(true);
-        workSummaryBar.setVisibility(View.GONE);
-        workSummaryBar.setOnClickListener(view -> showWorkSheet());
-        LinearLayout.LayoutParams summaryParams = new LinearLayout.LayoutParams(-2, -2);
-        summaryParams.gravity = Gravity.START;
-        summaryParams.setMargins(0, 0, 0, dp(4));
         LinearLayout dock = (LinearLayout) composerBar.getParent();
-        dock.addView(workSummaryBar, dock.indexOfChild(composerBar), summaryParams);
         queueBar = column(); queueBar.setTag("remoteMessageQueue");
         queueBar.setVisibility(View.GONE);
         LinearLayout.LayoutParams queueParams = new LinearLayout.LayoutParams(-1, -2);
@@ -3341,7 +3468,7 @@ public final class MainActivity extends Activity {
 
     private void startConversationSync() {
         if (!networkActive() || !EmbeddedNetwork.online() || !credentials.has("token")
-                || !(screen.equals("home") || screen.equals("detail"))) return;
+                || !screen.equals("detail")) return;
         int ticket = generation;
         JSONObject target;
         try { target = new JSONObject(credentials.toString()); }
@@ -3469,6 +3596,8 @@ public final class MainActivity extends Activity {
         String server = snapshot.optString("instanceId"); long nextCursor = snapshot.optLong("cursor", -1);
         if (server.equals(instance) && nextCursor < cursor) return;
         connected = true; controlAllowed = snapshot.optString("permission").equals("control"); conversationSeq = conversation.optLong("seq");
+        archivedConversation = snapshot.optJSONObject("archived");
+        archivedRestorable = snapshot.optBoolean("canRestore");
         prefetch.put(credentials, snapshot);
         if (!server.equals(instance)) { queueVersion = -1; clearSubtasks(); }
         boolean following = !historyDetached && (initialMessageScroll || pendingScrollView == scroll && pendingScrollPosition == Integer.MAX_VALUE
@@ -3519,6 +3648,7 @@ public final class MainActivity extends Activity {
         if (!canQueue) remoteQueue = new JSONArray();
         applyQueue(snapshot);
         renderMessages(lastLive);
+        renderArchivedDetail();
         renderAutomation(snapshot);
         if (foreground && snapshot.optJSONArray("messages") != null && snapshot.optJSONArray("messages").length() > 0) replies().markRead(credentials, conversation);
         syncReplyRead(conversation);
@@ -3536,7 +3666,7 @@ public final class MainActivity extends Activity {
 
     private void syncReplyRead(JSONObject conversation) {
         long reply = conversation.optLong("lastReplyAt", 0);
-        if (!foreground || api == null || !conversation.has("replyReadAt") || reply <= 0) return;
+        if (archivedConversation != null || !foreground || api == null || !conversation.has("replyReadAt") || reply <= 0) return;
         String target = conversation.optString("id");
         RemoteReadSync.Request request = replyReadSync.observe(replyReadScope(target), reply, conversation.optLong("replyReadAt", 0));
         sendReplyRead(request, api, credentials.optString("token"), target, generation);
@@ -3720,7 +3850,7 @@ public final class MainActivity extends Activity {
         });
         subtaskPage.setOnDismissListener(dialog -> { if (subtaskPage == dialog) subtaskPage = null; });
         subtaskPage.update(remoteSubtasks);
-        subtaskPage.setControlAvailable(connected && controlAllowed && !commandBusy && pendingCommand() == null);
+        subtaskPage.setControlAvailable(connected && controlAllowed && archivedConversation == null && !commandBusy && pendingCommand() == null);
         subtaskPage.show();
     }
 
@@ -3733,8 +3863,10 @@ public final class MainActivity extends Activity {
         connected = false; controlAllowed = false; clearSubtasks(); clearHistory();
         lastLive = null; remotePreparation = null; remoteSettings = null;
         remoteQueue = new JSONArray(); canQueue = false; queueVersion = -1; queueSteeringGoalId = "";
+        archivedConversation = null;
+        archivedRestorable = false;
         if (messages != null) messages.removeAllViews();
-        renderApprovals(); renderAutomation(new JSONObject()); updateControls();
+        renderApprovals(); renderArchivedDetail(); renderAutomation(new JSONObject()); updateControls();
     }
 
     private void clearMessageScroll() {
@@ -4060,6 +4192,8 @@ public final class MainActivity extends Activity {
     }
 
     private void releasePageViews() {
+        rememberConversationListContext();
+        conversationListScroll.detach();
         if (codexResetDialog != null) { codexResetDialog.dismiss(); codexResetDialog = null; }
         // PageTransitions captures the outgoing hierarchy before detaching it.
         viewHandler.removeCallbacksAndMessages(null); clearMessageScroll();
@@ -4071,15 +4205,17 @@ public final class MainActivity extends Activity {
         if (computerDialog != null) { computerDialog.dismiss(); computerDialog = null; }
         if (queueDialog != null) { queueDialog.dismiss(); queueDialog = null; }
         if (workDialog != null) { workDialog.dismiss(); workDialog = null; }
+        workApprovalSection = null;
         workAutomationSection = null;
         queueSheetPanel = null;
         if (remoteApprovalDialog != null) { remoteApprovalDialog.dismiss(); remoteApprovalDialog = null; }
         if (visualizationDialog != null) { visualizationDialog.dismiss(); visualizationDialog = null; }
         remoteApprovalKey = ""; locationConsent.cancel();
         messages = null; older = null; remoteEmptyState = null;
+        archivedBar = null;
         composer = null; chatComposer = null; sendButton = null; stopButton = null;
         retryMessage = null; approvals = null; automationBar = null; queueBar = null; workInline = null;
-        backgroundWorkBar = null; backgroundWorkLabel = null; backgroundWorkStop = null; workSummaryBar = null;
+        backgroundWorkBar = null; backgroundWorkLabel = null; backgroundWorkStop = null;
         imageTray = null; imageStrip = null; attachButton = null; modelButton = null; permissionButton = null;
         addressInput = null; portInput = null; nameInput = null; codeInput = null; pairButton = null; scanButton = null;
         handler.removeCallbacks(searchRemote); searchInput = null; searchBar = null;
@@ -4355,10 +4491,36 @@ public final class MainActivity extends Activity {
         } else if (commandBusy) value = tr("正在提交操作…", "Submitting action…");
         else value = RemoteWorkStatus.conversation(displayedConversation, lastLive, remoteCompaction, chinese);
         if (value.isEmpty()) value = loadingImages ? tr("正在读取附件…", "Loading attachments…")
+            : archivedConversation != null ? tr("已在电脑归档 · 只读", "Archived on your computer · Read-only")
             : editingSeq > 0 ? tr("正在编辑上一条消息", "Editing previous message")
             : !controlAllowed ? tr("只读会话", "Read-only conversation")
             : remoteQueue.length() > 0 ? tr("等待处理队列…", "Waiting for queued messages…") : tr("就绪", "Ready");
-        workStatus.work(value);
+        JSONArray approvalRows = lastLive == null ? null : lastLive.optJSONArray("approvals");
+        int approvalsCount = approvalRows == null ? 0 : approvalRows.length();
+        int backgroundCount = RemoteWorkStatus.backgroundCount(displayedConversation);
+        boolean automation = remoteGoal != null || remoteTasks.length() > 0;
+        JSONObject pendingAction = pendingCommand();
+        boolean failed = pendingAction != null && (pendingAction.optBoolean("uncertain") || pendingAction.optBoolean("timedOut"));
+        if (outgoingMessage != null) {
+            String delivery = outgoingMessage.optString("delivery");
+            failed |= delivery.equals("failed") || delivery.equals("unconfirmed");
+        }
+        String priority = archivedConversation == null ? workPriority(approvalsCount, failed, automation, backgroundCount) : "none";
+        if (connected && !commandBusy) {
+            if (priority.equals("approvals") && pending == null) {
+                value = RemoteWorkStatus.approval(approvalRows, chinese) + tr(" · " + approvalsCount + " 项", " · " + approvalsCount);
+            } else if (priority.equals("failed")) {
+                value = tr("发送未确认", "Send unconfirmed");
+            } else if (priority.equals("automation") || priority.equals("background")) {
+                String detail = RemoteWorkStatus.automation(remoteGoal, remoteTasks, chinese);
+                // A live reply owns the main status; append background counts
+                // only when the main status is not already describing them.
+                if (backgroundCount > 0 && !value.equals(RemoteWorkStatus.background(displayedConversation, chinese)))
+                    detail += (detail.isEmpty() ? "" : " · ") + tr("后台任务 " + backgroundCount, "Background tasks " + backgroundCount);
+                if (!detail.isEmpty()) value = value.equals(tr("就绪", "Ready")) ? detail : value + " · " + detail;
+            }
+        }
+        workStatus.work(value, priority.equals("none") ? null : this::showWorkSheet);
     }
 
     private void reportError(String zh, String en, Exception error) {
@@ -4368,10 +4530,11 @@ public final class MainActivity extends Activity {
     private void updateControls() {
         updateWorkStatus();
         updateBackgroundWorkControls();
-        if (subtaskPage != null) subtaskPage.setControlAvailable(connected && controlAllowed && !commandBusy && pendingCommand() == null);
+        renderWorkApprovals();
+        if (subtaskPage != null) subtaskPage.setControlAvailable(connected && controlAllowed && archivedConversation == null && !commandBusy && pendingCommand() == null);
         if (sendButton == null || conversationId == null) return;
         boolean pending = (pendingCommand() != null);
-        boolean available = connected && controlAllowed && !commandBusy;
+        boolean available = connected && controlAllowed && archivedConversation == null && !commandBusy;
         boolean configurable = available && !pending && remoteSettings != null && remoteSettings.optBoolean("modelEditable", remoteSettings.optBoolean("editable"));
         if (!configurable && settingsPopup != null) { settingsPopup.dismiss(); settingsPopup = null; }
         if (modelButton != null) {
@@ -4402,12 +4565,12 @@ public final class MainActivity extends Activity {
             attachButton.setAlpha(available && !pending && !loadingImages ? 1f : .45f);
         }
         boolean stopping = RemotePendingCommands.get(credentials, conversationId, true) != null;
-        boolean stoppable = lastLive != null || canStopStart && remotePreparation != null;
+        boolean stoppable = archivedConversation == null && (lastLive != null || canStopStart && remotePreparation != null);
         stopButton.setEnabled(connected && controlAllowed && stoppable && !stopping);
         boolean showQueueSend = queueing && hasMessage;
         sendButton.setVisibility(!stoppable || showQueueSend ? View.VISIBLE : View.GONE);
         stopButton.setVisibility(stoppable && !showQueueSend ? View.VISIBLE : View.GONE);
-        composer.setEnabled(!commandBusy && !pending);
+        composer.setEnabled(!commandBusy && !pending && archivedConversation == null);
         if (retryMessage != null) retryMessage.setEnabled(pending);
         if (workStatus != null) workStatus.retry(stopping ? this::retryStopCommand
             : pending ? this::retryCommand : null);
@@ -4416,7 +4579,7 @@ public final class MainActivity extends Activity {
             if (child instanceof Button) child.setEnabled(available && !pending);
         }
         renderQueue();
-        refreshWorkSummaryBar();
+        updateWorkStatus();
         renderWorkAutomation();
     }
 
@@ -4435,75 +4598,18 @@ public final class MainActivity extends Activity {
             ? tr("后台状态未知 · %d", "Background status unknown · %d") : tr("后台任务 · %d", "Background tasks · %d"), count));
         boolean stopping = RemotePendingCommands.get(credentials, conversationId, true) != null;
         backgroundWorkStop.setText(stopping ? tr("正在停止…", "Stopping…") : tr("停止后台任务", "Stop background tasks"));
-        boolean available = connected && controlAllowed && !commandBusy && pendingCommand() == null && !stopping
+        boolean available = connected && controlAllowed && archivedConversation == null && !commandBusy && pendingCommand() == null && !stopping
             && RemoteWorkStatus.stoppableBackgroundTasks(displayedConversation).length() > 0;
         backgroundWorkStop.setEnabled(available); backgroundWorkStop.setAlpha(available ? 1f : .45f);
-        refreshWorkSummaryBar();
+        updateWorkStatus();
     }
 
-    private void refreshWorkSummaryBar() {
-        if (workSummaryBar == null || !screen.equals("detail")) return;
-        JSONArray approvalRows = lastLive == null ? null : lastLive.optJSONArray("approvals");
-        int approvalsCount = approvalRows == null ? 0 : approvalRows.length();
-        int backgroundCount = RemoteWorkStatus.backgroundCount(displayedConversation);
-        int queueCount = remoteQueue.length();
-        boolean automation = automationBar != null && automationBar.getVisibility() == View.VISIBLE && automationBar.getChildCount() > 0;
-        JSONObject pending = pendingCommand();
-        boolean failed = pending != null && (pending.optBoolean("uncertain") || pending.optBoolean("timedOut"));
-        if (outgoingMessage != null) {
-            String delivery = outgoingMessage.optString("delivery");
-            failed |= delivery.equals("failed") || delivery.equals("unconfirmed");
-        }
-        Palette palette = Palette.of(this);
-        String text = "";
-        int color = palette.muted;
-        boolean actionable = approvalsCount > 0 || failed || automation || backgroundCount > 0 || queueCount > 0;
-        if (!actionable) {
-            workSummaryBar.setVisibility(View.GONE);
-            return;
-        }
-        String priority = workPriority(approvalsCount, failed, automation, backgroundCount, queueCount);
-        if (priority.equals("approvals")) {
-            text = tr("待处理 " + approvalsCount, "Needs attention " + approvalsCount);
-            color = palette.warning;
-        } else if (priority.equals("failed")) {
-            text = tr("发送未确认", "Send unconfirmed");
-            color = palette.error;
-        } else if (priority.equals("automation")) {
-            text = tr("目标/任务", "Goal/tasks");
-            color = palette.accent;
-        } else if (priority.equals("background")) {
-            text = tr("后台 " + backgroundCount, "Background " + backgroundCount);
-            color = palette.accent;
-        } else if (priority.equals("queue")) {
-            text = tr("排队 " + queueCount, "Queued " + queueCount);
-            color = palette.accent;
-        }
-        workSummaryBar.setVisibility(text.isEmpty() ? View.GONE : View.VISIBLE);
-        if (text.isEmpty()) return;
-        boolean detailsAvailable = approvalsCount > 0 || queueCount > 0 || automation || backgroundCount > 0 || failed;
-        workSummaryBar.setText(text + (detailsAvailable ? "  ›" : ""));
-        workSummaryBar.setClickable(detailsAvailable);
-        workSummaryBar.setOnClickListener(detailsAvailable ? view -> showWorkSheet() : null);
-        workSummaryBar.setTextColor(color);
-    }
-
-    static String workPriority(int approvals, boolean failed, boolean automation, int background, int queue) {
+    static String workPriority(int approvals, boolean failed, boolean automation, int background) {
         if (approvals > 0) return "approvals";
         if (failed) return "failed";
         if (automation) return "automation";
         if (background > 0) return "background";
-        if (queue > 0) return "queue";
         return "none";
-    }
-
-    private void revealWorkView(View target) {
-        if (target == null || scroll == null || content == null) return;
-        if (workInline != null) workInline.setVisibility(View.VISIBLE);
-        android.graphics.Rect bounds = new android.graphics.Rect();
-        target.getDrawingRect(bounds);
-        content.offsetDescendantRectToMyCoords(target, bounds);
-        scroll.smoothScrollTo(0, Math.max(0, bounds.top - dp(12)));
     }
 
     private void showWorkSheet() {
@@ -4521,37 +4627,11 @@ public final class MainActivity extends Activity {
         JSONArray approvalRows = lastLive == null ? null : lastLive.optJSONArray("approvals");
         int backgroundCount = RemoteWorkStatus.backgroundCount(displayedConversation);
         boolean added = false;
-        if (approvalRows != null && approvalRows.length() > 0) {
-            added = true;
-            panel.addView(sheetSection(tr("等待你处理", "Needs attention")));
-            for (int index = 0; index < approvalRows.length(); index++) {
-                JSONObject request = approvalRows.optJSONObject(index);
-                if (request == null) continue;
-                TextView title = text(request.optString("toolName"), Palette.TEXT_ROW_STRONG, ink);
-                title.setPadding(0, dp(8), 0, dp(2)); panel.addView(title);
-                TextView details = text(request.optString("details"), Palette.TEXT_SMALL, muted);
-                details.setMaxLines(4); details.setEllipsize(android.text.TextUtils.TruncateAt.END);
-                panel.addView(details);
-                boolean questions = request.optJSONArray("questions") != null && request.optJSONArray("questions").length() > 0;
-                if (questions) {
-                    TextView answer = style.label(tr("需要在会话中回答问题", "Answer this in the conversation"), Palette.TEXT_NOTE, accent);
-                    answer.setPadding(0, dp(8), 0, dp(4));
-                    answer.setFocusable(true);
-                    answer.setOnClickListener(view -> { dialog.dismiss(); revealWorkView(approvals); });
-                    panel.addView(answer);
-                } else {
-                    LinearLayout actions = new LinearLayout(this);
-                    actions.setPadding(0, dp(6), 0, 0);
-                    Button deny = button(tr("拒绝", "Deny"), () -> submitSheetApproval(request, false, dialog), false);
-                    Button allow = button(tr("允许一次", "Allow once"), () -> submitSheetApproval(request, true, dialog), true);
-                    actions.addView(deny, new LinearLayout.LayoutParams(0, -2, 1));
-                    LinearLayout.LayoutParams allowParams = new LinearLayout.LayoutParams(0, -2, 1);
-                    allowParams.setMarginStart(dp(8));
-                    actions.addView(allow, allowParams);
-                    panel.addView(actions);
-                }
-            }
-        }
+        workApprovalSection = column();
+        workApprovalSignature = "";
+        panel.addView(workApprovalSection);
+        renderWorkApprovals();
+        added = approvalRows != null && approvalRows.length() > 0;
         JSONObject pending = pendingCommand();
         boolean failed = pending != null && (pending.optBoolean("uncertain") || pending.optBoolean("timedOut"));
         if (failed) {
@@ -4611,10 +4691,139 @@ public final class MainActivity extends Activity {
         sheetScroll.addView(panel);
         dialog.setContentView(sheetScroll);
         dialog.setOnDismissListener(dismissed -> {
-            if (workDialog == dialog) { workDialog = null; workAutomationSection = null; }
+            if (workDialog == dialog) { workDialog = null; workApprovalSection = null; workAutomationSection = null; }
         });
         style.sheetWindow(dialog.getWindow(), sheetScroll);
         dialog.show();
+    }
+
+    private void addApprovalSummary(LinearLayout parent, JSONObject request, boolean compact) {
+        String description = RemoteApprovalDialog.description(request);
+        if (!description.isEmpty()) {
+            TextView details = text(description, Palette.TEXT_NOTE, muted);
+            if (compact) { details.setMaxLines(4); details.setEllipsize(android.text.TextUtils.TruncateAt.END); }
+            details.setTypeface(Typeface.MONOSPACE); details.setTextIsSelectable(true); parent.addView(details);
+        }
+        JSONArray questions = request.optJSONArray("questions");
+        for (int index = 0; questions != null && index < questions.length(); index++) {
+            JSONObject question = questions.optJSONObject(index); if (question == null) continue;
+            TextView preview = text(question.optString("question", question.optString("header")), Palette.TEXT_NOTE, ink);
+            preview.setPadding(0, dp(8), 0, dp(6)); preview.setTextIsSelectable(true); parent.addView(preview);
+        }
+    }
+
+    private void renderWorkApprovals() {
+        if (workApprovalSection == null) return;
+        JSONArray requests = controlAllowed && lastLive != null ? lastLive.optJSONArray("approvals") : null;
+        boolean enabled = connected && controlAllowed && !commandBusy && pendingCommand() == null;
+        long runId = lastLive == null ? 0 : lastLive.optLong("runId");
+        String server = instance, target = conversationId;
+        String signature = target + ":" + server + ":" + runId + ":" + requests + ":" + enabled + ":" + chinese;
+        if (signature.equals(workApprovalSignature)) return;
+        workApprovalSignature = signature; workApprovalSection.removeAllViews();
+        if (requests == null || requests.length() == 0) return;
+        workApprovalSection.addView(sheetSection(tr("等待你处理", "Needs attention")));
+        android.app.Dialog sheet = workDialog;
+        for (int index = 0; index < requests.length(); index++) {
+            JSONObject request = requests.optJSONObject(index); if (request == null) continue;
+            TextView title = text(request.optString("toolName"), Palette.TEXT_ROW_STRONG, ink);
+            title.setPadding(0, dp(8), 0, dp(2)); workApprovalSection.addView(title);
+            addApprovalSummary(workApprovalSection, request, true);
+            if (!RemoteApprovalDialog.supported(request)) {
+                workApprovalSection.addView(text(tr("此请求暂不支持手机回答，请在电脑处理。", "This request cannot be answered on this phone. Respond on the computer."), Palette.TEXT_NOTE, muted));
+            } else if (RemoteApprovalDialog.hasQuestions(request)) {
+                Button answer = button(tr("回答问题", "Answer questions"), () -> {
+                    if (!currentRemoteApproval(request, target, server, runId)) return;
+                    sheet.dismiss(); showRemoteQuestions(request, target, server, runId);
+                }, true);
+                answer.setTag("workApprovalAnswer:" + request.optString("requestId")); answer.setEnabled(enabled);
+                workApprovalSection.addView(answer);
+            } else {
+                LinearLayout actions = new LinearLayout(this); actions.setPadding(0, dp(6), 0, 0);
+                Button deny = button(tr("拒绝", "Deny"), () -> submitSheetApproval(request, false, target, server, runId, sheet), false);
+                Button allow = button(tr("允许一次", "Allow once"), () -> submitSheetApproval(request, true, target, server, runId, sheet), true);
+                deny.setEnabled(enabled); allow.setEnabled(enabled);
+                actions.addView(deny, new LinearLayout.LayoutParams(0, -2, 1));
+                LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(0, -2, 1); params.setMarginStart(dp(8));
+                actions.addView(allow, params); workApprovalSection.addView(actions);
+            }
+        }
+    }
+
+    /**
+     * Keeps an archived conversation readable without pretending its controls
+     * still work. The snapshot carries the archive marker and a read permission,
+     * so this banner is the only place that explains why the input is empty.
+     */
+    private void renderArchivedDetail() {
+        if (archivedBar == null) return;
+        archivedBar.removeAllViews();
+        boolean archived = archivedConversation != null;
+        archivedBar.setVisibility(archived ? View.VISIBLE : View.GONE);
+        if (chatComposer != null) chatComposer.bar().setVisibility(archived ? View.GONE : View.VISIBLE);
+        if (!archived) return;
+        LinearLayout card = column(); card.setTag("remoteArchivedCard");
+        card.setPadding(dp(14), dp(12), dp(14), dp(10));
+        card.setBackground(chatStyle.rounded(surface));
+        TextView title = text(tr("已在电脑归档", "Archived on your computer"), Palette.TEXT_ROW_STRONG, ink);
+        title.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        card.addView(title);
+        TextView detail = text(tr("聊天记录仍保留，这里是只读状态。", "The transcript is still here and read-only."), Palette.TEXT_NOTE, muted);
+        detail.setTag("remoteArchivedDetail");
+        card.addView(detail);
+        if (archivedRestorable && !commandBusy) {
+            TextView restore = text(tr("恢复会话", "Restore conversation"), Palette.TEXT_NOTE, accent);
+            restore.setTag("remoteArchivedRestore");
+            restore.setMinHeight(dp(48));
+            restore.setGravity(Gravity.CENTER_VERTICAL);
+            restore.setPadding(dp(4), 0, dp(4), 0);
+            restore.setFocusable(true);
+            restore.setContentDescription(tr("恢复这个归档会话", "Restore this archived conversation"));
+            restore.setOnClickListener(view -> confirmRestoreArchivedDetail());
+            card.addView(restore);
+        }
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, -2);
+        params.setMargins(0, 0, 0, dp(10));
+        archivedBar.addView(card, params);
+    }
+
+    private void clearArchivedAfterRestore() {
+        archivedConversation = null;
+        archivedRestorable = false;
+        renderArchivedDetail();
+        if (lastLive == null) updateControls();
+    }
+
+    private void confirmRestoreArchivedDetail() {
+        if (archivedConversation == null || !archivedRestorable || commandBusy) return;
+        new CamelliaDialog.Builder(this).setTitle(tr("恢复会话？", "Restore conversation?"))
+            .setMessage(tr("会话会回到正常的会话列表，并重新允许发送消息。", "The conversation returns to the normal list and becomes writable again."))
+            .setNegativeButton(tr("取消", "Cancel"), null)
+            .setPositiveButton(tr("恢复", "Restore"), (dialog, which) -> {
+                try {
+                    JSONObject payload = command("restore").put("instanceId", instance)
+                        .put("conversationId", conversationId)
+                        .put("expectedSeq", conversationSeq);
+                    submitRestore(payload);
+                } catch (Exception error) {
+                    reportError("无法保存恢复请求", "Could not save restore action", error);
+                }
+            }).show();
+    }
+
+    // Restore is journaled at the collection level because it names the
+    // conversation in its payload. Sending it down the detail command URL would
+    // be rejected by the remote protocol's target check.
+    private void submitRestore(JSONObject payload) throws Exception {
+        if (!foreground || !connected || !archivedRestorable || commandBusy || pendingCommand() != null) return;
+        JSONObject saved = new JSONObject(credentials.toString());
+        JSONObject pending = new JSONObject().put("conversationId", conversationId).put("payload", payload);
+        RemotePendingCommands.put(saved, pending, false);
+        store.save(saved); credentials = saved;
+        setStatusNotice(tr("正在恢复会话…", "Restoring conversation…"));
+        updateControls();
+        commandCheckDeadline = android.os.SystemClock.elapsedRealtime() + COMMAND_CONFIRM_TIMEOUT_MS;
+        retryCommand(false);
     }
 
     private void renderWorkAutomation() {
@@ -4668,23 +4877,44 @@ public final class MainActivity extends Activity {
         return section;
     }
 
-    private void submitSheetApproval(JSONObject request, boolean allow, android.app.Dialog sheet) {
-        if (!connected || !controlAllowed || commandBusy || lastLive == null || pendingCommand() != null) return;
-        long runId = lastLive.optLong("runId");
-        String server = instance;
-        String target = conversationId;
+    private boolean currentRemoteApproval(JSONObject request, String target, String server, long runId) {
+        if (!screen.equals("detail") || !connected || !controlAllowed || commandBusy || pendingCommand() != null
+                || target == null || !target.equals(conversationId) || !server.equals(instance) || lastLive == null || lastLive.optLong("runId") != runId) return false;
+        JSONArray requests = lastLive.optJSONArray("approvals");
+        for (int index = 0; requests != null && index < requests.length(); index++) {
+            JSONObject current = requests.optJSONObject(index);
+            if (current != null && current.optString("requestId").equals(request.optString("requestId"))
+                    && current.optString("fingerprint").equals(request.optString("fingerprint")) && RemoteApprovalDialog.supported(current)) return true;
+        }
+        return false;
+    }
+
+    private boolean sendRemoteApproval(JSONObject request, String target, String server, long runId, boolean allow, JSONObject input, String optionId) throws Exception {
+        if (!foreground || !currentRemoteApproval(request, target, server, runId)) return false;
+        JSONObject payload = command("approve").put("instanceId", server).put("runId", runId)
+            .put("approvalId", request.getString("requestId")).put("fingerprint", request.getString("fingerprint")).put("allow", allow);
+        if (input != null) payload.put("input", input);
+        if (optionId != null) payload.put("optionId", optionId);
+        submitCommand(payload); return true;
+    }
+
+    private void showRemoteQuestions(JSONObject request, String target, String server, long runId) {
+        if (!currentRemoteApproval(request, target, server, runId)) return;
+        if (remoteApprovalDialog != null) remoteApprovalDialog.dismiss();
+        remoteApprovalKey = target + ":" + server + ":" + runId + ":" + request.optString("fingerprint");
+        remoteApprovalDialog = RemoteApprovalDialog.show(this, request, conversationTitle,
+            (allow, input, optionId) -> sendRemoteApproval(request, target, server, runId, allow, input, optionId));
+    }
+
+    private void submitSheetApproval(JSONObject request, boolean allow, String target, String server, long runId, android.app.Dialog sheet) {
+        if (!currentRemoteApproval(request, target, server, runId) || RemoteApprovalDialog.hasQuestions(request)) return;
         String title = allow ? tr("允许此操作？", "Allow this operation?") : tr("拒绝此操作？", "Deny this operation?");
         new CamelliaDialog.Builder(this).setTitle(title)
             .setMessage(request.optString("toolName") + "\n" + request.optString("details"))
             .setNegativeButton(tr("取消", "Cancel"), null)
             .setPositiveButton(allow ? tr("允许一次", "Allow once") : tr("拒绝", "Deny"), (dialog, which) -> {
-                if (!target.equals(conversationId) || !server.equals(instance) || lastLive == null
-                    || lastLive.optLong("runId") != runId || !connected || commandBusy || pendingCommand() != null) return;
                 try {
-                    submitCommand(command("approve").put("instanceId", server).put("runId", runId)
-                        .put("approvalId", request.getString("requestId"))
-                        .put("fingerprint", request.getString("fingerprint")).put("allow", allow));
-                    sheet.dismiss();
+                    if (sendRemoteApproval(request, target, server, runId, allow, null, null) && sheet != null) sheet.dismiss();
                 } catch (Exception error) {
                     reportError("无法保存审批操作。", "Could not save approval.", error);
                 }
@@ -4708,6 +4938,13 @@ public final class MainActivity extends Activity {
 
     private void renderQueue() {
         if (queueBar == null) return;
+        if (archivedConversation != null) {
+            dismissQueueSheet();
+            queueSignature = "";
+            queueBar.removeAllViews();
+            queueBar.setVisibility(View.GONE);
+            return;
+        }
         boolean enabled = connected && controlAllowed && !commandBusy && !(pendingCommand() != null);
         String signature = remoteQueue.toString() + ":" + enabled + ":" + (lastLive == null ? 0 : lastLive.optLong("runId")) + ":" + queueSteeringGoalId;
         if (signature.equals(queueSignature)) return;
@@ -4715,7 +4952,7 @@ public final class MainActivity extends Activity {
         queueBar.removeAllViews(); queueBar.setVisibility(remoteQueue.length() == 0 ? View.GONE : View.VISIBLE);
         if (remoteQueue.length() == 0) {
             dismissQueueSheet();
-            refreshWorkSummaryBar();
+            updateWorkStatus();
             return;
         }
         JSONObject first = remoteQueue.optJSONObject(0);
@@ -4779,7 +5016,7 @@ public final class MainActivity extends Activity {
         trayParams.setMargins(dp(8), dp(4), dp(8), dp(8));
         queueBar.addView(tray, trayParams);
         refreshQueueSheet();
-        refreshWorkSummaryBar();
+        updateWorkStatus();
     }
 
     private boolean queueHasState(String wanted) {
@@ -5170,6 +5407,12 @@ public final class MainActivity extends Activity {
     private void renderAutomationViews() {
         if (automationBar == null) return;
         automationBar.removeAllViews();
+        if (archivedConversation != null) {
+            automationBar.setVisibility(View.GONE);
+            if (queueBar != null) queueBar.setVisibility(View.GONE);
+            updateWorkStatus();
+            return;
+        }
         int taskCount = remoteTasks.length();
         automationBar.setVisibility(remoteGoal != null || taskCount > 0 ? View.VISIBLE : View.GONE);
         automationBar.setPadding(0, dp(4), 0, dp(4));
@@ -5182,7 +5425,7 @@ public final class MainActivity extends Activity {
                 if (task != null) automationBar.addView(automationTask(task));
             }
         }
-        refreshWorkSummaryBar();
+        updateWorkStatus();
         renderWorkAutomation();
     }
 
@@ -5191,10 +5434,7 @@ public final class MainActivity extends Activity {
         boolean armed = goal.optBoolean("armed");
         boolean running = phase.equals("active") && armed;
         JSONObject waiting = running ? goal.optJSONObject("waiting") : null;
-        String label = phase.equals("complete") ? tr("目标已完成", "Goal complete")
-            : phase.equals("blocked") ? tr("目标受阻", "Goal blocked")
-            : waiting != null ? tr("目标等待中", "Goal waiting")
-            : running ? tr("目标进行中", "Goal running") : tr("目标已暂停", "Goal paused");
+        String label = RemoteWorkStatus.goal(goal, chinese);
         LinearLayout card = automationCard(); card.setTag("remoteGoal");
         LinearLayout row = new LinearLayout(this); row.setOrientation(LinearLayout.HORIZONTAL);
         row.setGravity(Gravity.CENTER_VERTICAL); row.setPadding(dp(12), dp(10), dp(12), dp(10));
@@ -5276,7 +5516,7 @@ public final class MainActivity extends Activity {
     // Automation controls are existing commands, so the request/retry rules and
     // the per-command idempotency journal apply unchanged.
     private void submitAutomation(String action, String operation, String taskId) {
-        if (!connected || !controlAllowed || commandBusy || (pendingCommand() != null)) return;
+        if (!connected || !controlAllowed || archivedConversation != null || commandBusy || (pendingCommand() != null)) return;
         try {
             JSONObject payload = command(action).put("instanceId", instance).put("operation", operation);
             if (taskId != null) payload.put("taskId", taskId);
@@ -5286,7 +5526,8 @@ public final class MainActivity extends Activity {
 
     private void renderApprovals() {
         viewHandler.post(this::notifyApprovalRequests);
-        JSONArray requests = controlAllowed && lastLive != null ? lastLive.optJSONArray("approvals") : null;
+        renderWorkApprovals();
+        JSONArray requests = controlAllowed && archivedConversation == null && lastLive != null ? lastLive.optJSONArray("approvals") : null;
         String signature = instance + ":" + (lastLive == null ? "" : lastLive.optLong("runId")) + ":" + String.valueOf(requests);
         String scope = conversationId + ":" + instance + ":" + (lastLive == null ? "" : lastLive.optLong("runId")) + ":";
         boolean stillPending = false;
@@ -5299,44 +5540,24 @@ public final class MainActivity extends Activity {
         for (int index = 0; index < requests.length(); index++) {
             JSONObject request = requests.optJSONObject(index); if (request == null) continue;
             approvals.addView(text(request.optString("toolName"), Palette.TEXT_ROW_STRONG, accent));
-            TextView details = text(request.optString("details"), Palette.TEXT_NOTE, ink); details.setTypeface(Typeface.MONOSPACE); details.setTextIsSelectable(true); approvals.addView(details);
-            if (!request.optBoolean("responseSupported", request.optBoolean("actionable"))) {
-                approvals.addView(text(tr("此请求需要电脑处理（问答或内容过长）。", "Handle this request on the computer (questions or oversized details)."), Palette.TEXT_NOTE, muted)); continue;
+            addApprovalSummary(approvals, request, false);
+            if (!RemoteApprovalDialog.supported(request)) {
+                approvals.addView(text(tr("此请求暂不支持手机回答，请在电脑处理。", "This request cannot be answered on this phone. Respond on the computer."), Palette.TEXT_NOTE, muted)); continue;
             }
-            long runId = lastLive.optLong("runId"); String server = instance;
-            if (request.optJSONArray("questions") != null && request.optJSONArray("questions").length() > 0) {
-                approvals.addView(button(tr("回答问题", "Answer questions"), () -> {
-                    if (!connected || !controlAllowed || commandBusy || (pendingCommand() != null)) return;
-                    if (remoteApprovalDialog != null) remoteApprovalDialog.dismiss();
-                    String target = conversationId;
-                    remoteApprovalKey = scope + request.optString("fingerprint");
-                    remoteApprovalDialog = RemoteApprovalDialog.show(this, request, conversationTitle, (allow, input, optionId) -> {
-                        if (!target.equals(conversationId) || !server.equals(instance) || lastLive == null || lastLive.optLong("runId") != runId || !connected || commandBusy || (pendingCommand() != null)) return false;
-                        JSONObject payload = command("approve").put("instanceId", server).put("runId", runId).put("approvalId", request.getString("requestId"))
-                            .put("fingerprint", request.getString("fingerprint")).put("allow", allow);
-                        if (input != null) payload.put("input", input); if (optionId != null) payload.put("optionId", optionId);
-                        submitCommand(payload); return true;
-                    });
-                }, true)); continue;
+            long runId = lastLive.optLong("runId"); String server = instance, target = conversationId;
+            if (RemoteApprovalDialog.hasQuestions(request)) {
+                approvals.addView(button(tr("回答问题", "Answer questions"), () -> showRemoteQuestions(request, target, server, runId), true)); continue;
             }
             for (boolean allow : new boolean[]{false, true}) {
-                approvals.addView(button(allow ? tr("允许一次", "Allow once") : tr("拒绝", "Deny"), () -> {
-                    if (!connected || !controlAllowed || commandBusy || (pendingCommand() != null)) return;
-                    new CamelliaDialog.Builder(this).setTitle(allow ? tr("确认允许此操作？", "Allow this operation?") : tr("拒绝此操作？", "Deny this operation?"))
-                        .setMessage(request.optString("toolName") + "\n" + request.optString("details"))
-                        .setNegativeButton(tr("取消", "Cancel"), null).setPositiveButton(allow ? tr("允许一次", "Allow once") : tr("拒绝", "Deny"), (dialog, which) -> {
-                            try { submitCommand(command("approve").put("instanceId", server).put("runId", runId).put("approvalId", request.getString("requestId"))
-                                .put("fingerprint", request.getString("fingerprint")).put("allow", allow)); }
-                            catch (Exception error) { reportError("无法保存审批操作。", "Could not save approval.", error); }
-                        }).show();
-                }, allow));
+                approvals.addView(button(allow ? tr("允许一次", "Allow once") : tr("拒绝", "Deny"),
+                    () -> submitSheetApproval(request, allow, target, server, runId, null), allow));
             }
         }
-        refreshWorkSummaryBar();
+        updateWorkStatus();
     }
 
     private void notifyApprovalRequests() {
-        if (!foreground || !screen.equals("detail") || !connected || !controlAllowed || lastLive == null) return;
+        if (!foreground || !screen.equals("detail") || !connected || !controlAllowed || archivedConversation != null || lastLive == null) return;
         String scope = new JSONArray().put(credentials.optString("address")).put(credentials.optString("deviceId"))
             .put(instance).put("conversation").put(conversationId).put(lastLive.optString("runId")).toString();
         MobileHaptics.pendingRequests(this, approvals, scope, lastLive.optJSONArray("approvals"));
@@ -5369,7 +5590,9 @@ public final class MainActivity extends Activity {
 
     private void submitCommand(JSONObject payload) throws Exception {
         boolean stop = payload.optString("action").equals("stop") || payload.optString("action").equals("stop-start") || payload.optString("action").equals("stop-background-work");
-        if (!foreground || !connected || !controlAllowed || (!stop && (commandBusy || pendingCommand() != null))
+        boolean restoring = payload.optString("action").equals("restore");
+        if (!foreground || !connected || (!controlAllowed && !(restoring && archivedConversation != null && archivedRestorable)) || (!restoring && archivedConversation != null)
+                || (!stop && (commandBusy || pendingCommand() != null))
                 || stop && RemotePendingCommands.get(credentials, conversationId, true) != null) return;
         JSONObject saved = new JSONObject(credentials.toString());
         JSONObject pending = new JSONObject().put("conversationId", conversationId).put("payload", payload);
@@ -5464,13 +5687,19 @@ public final class MainActivity extends Activity {
     }
 
     private void retryPendingCommand(JSONObject pending, boolean userInitiated, boolean urgent) {
-        if (!foreground || !connected || !controlAllowed || pending == null) return;
+        if (!foreground || !connected || pending == null) return;
         String target = pending.optString("conversationId"); JSONObject payload = pending.optJSONObject("payload");
         if (payload == null || !target.equals(conversationId)) return;
+        boolean restoring = payload.optString("action").equals("restore");
+        if (!controlAllowed && !(restoring && archivedConversation != null && archivedRestorable)) return;
+        // Restore is the one command that must keep working while archived;
+        // every other pending write waits for the conversation to be restored.
+        if (archivedConversation != null && !restoring) return;
         String key = commandKey(credentials, payload);
         if (commandRequests.contains(key)) return;
         if (!urgent) commandBusy = true;
         boolean sending = payload.optString("action").equals("send") || payload.optString("action").equals("resend");
+        boolean collectionCommand = restoring;
         // Only the user-facing entry point opens a confirmation window; the
         // automatic checks reuse it. Re-arming on every poll would push the
         // deadline out forever and the wait would never report a timeout.
@@ -5492,10 +5721,11 @@ public final class MainActivity extends Activity {
         (urgent ? urgentWorker : commandWorker).submit(() -> {
             try {
                 JSONObject result;
-                try { result = client.json(query ? "/v1/commands/" + payload.optString("requestId") : "/v1/conversations/" + target + "/commands", token, query ? null : payload); }
+                String submitPath = collectionCommand ? "/v1/commands" : "/v1/conversations/" + target + "/commands";
+                try { result = client.json(query ? "/v1/commands/" + payload.optString("requestId") : submitPath, token, query ? null : payload); }
                 catch (RemoteApi.Failure missing) {
                     if (!query || missing.status != 404) throw missing;
-                    result = client.json("/v1/conversations/" + target + "/commands", token, payload);
+                    result = client.json(submitPath, token, payload);
                 }
                 JSONObject receipt = result;
                 commandHandler.post(() -> receiveCommand(owner, payload, receipt, urgent, deadline));
@@ -5769,6 +5999,8 @@ public final class MainActivity extends Activity {
                 }
                 if (workStatus != null) workStatus.clear();
                 if (currentState && conversationId.equals(target)) applyQueue(result);
+                if (payload.optString("action").equals("restore") && conversationId.equals(target))
+                    clearArchivedAfterRestore();
                 if (submitted && result.optString("state").equals("queued")) {
                     outgoingMessage = null; renderMessages(lastLive);
                 } else if (submitted && outgoingMessage != null) {
@@ -5824,7 +6056,7 @@ public final class MainActivity extends Activity {
         new CamelliaDialog.Builder(this).setTitle(tr("移除这台电脑？", "Forget this computer?"))
             .setMessage(tr("将删除手机上的凭据。若要撤销权限，还需在电脑端撤销此设备。", "This deletes credentials on the phone. Also revoke this device on the computer to remove its authorization."))
             .setNegativeButton(tr("取消", "Cancel"), null).setPositiveButton(tr("移除", "Forget"), (dialog, which) -> {
-                try { closeCommandClients(); store.remove(computer.getString("address")); listCache.remove(computer); prefetch.remove(computer, null); credentials = store.load(); computersScreen(); refreshComputers(); }
+                try { closeCommandClients(); store.remove(computer.getString("address")); listCache.remove(computer); homeCache.remove(computer); prefetch.remove(computer, null); credentials = store.load(); computersScreen(); refreshComputers(); }
                 catch (Exception error) { reportError("无法清除凭据，请重试。", "Could not remove credentials. Try again.", error); }
             }).show();
     }

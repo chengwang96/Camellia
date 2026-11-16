@@ -25,6 +25,10 @@ final class ChatStatusState {
     void reconnected() { if (connectionError) clear(); }
     void clear() { notice = ""; error = false; connectionError = false; expiresAt = 0; }
     boolean isError() { return error; }
+    boolean showsWork(long now) {
+        text(now);
+        return !error && notice.isEmpty();
+    }
     String text(long now) {
         if (!error && now >= expiresAt) notice = "";
         return notice.isEmpty() ? work : notice;

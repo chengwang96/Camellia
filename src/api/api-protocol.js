@@ -145,30 +145,96 @@ function convertResponse(body, from, to, model) {
 }
 
 // Parse frames across TCP/UTF-8 boundaries; never assume a chunk is a whole event.
+// Implements the WHATWG event-stream line rules: CRLF, LF and a lone CR all end
+// a line, comment lines are ignored, and an event is dispatched when a blank
+// line arrives. At end() a complete final frame without its blank line is still
+// accepted; truncated JSON is dropped instead of aborting the stream.
 class SSEParser {
-  constructor(onFrame) { this.decoder = new StringDecoder('utf8'); this.buffer = ''; this.onFrame = onFrame; }
+  constructor(onFrame, { log = () => {} } = {}) {
+    this.decoder = new StringDecoder('utf8');
+    this.buffer = '';
+    this.data = [];
+    this.eventType = '';
+    this.eventSize = 0;
+    this.onFrame = onFrame;
+    this.log = log;
+  }
   feed(chunk) { this.buffer += this.decoder.write(chunk); this.drain(); }
-  end() { this.buffer += this.decoder.end(); this.drain(); if (this.buffer.trim()) this.frame(this.buffer); this.buffer = ''; }
-  drain() {
-    let match;
-    while ((match = /\r?\n\r?\n/.exec(this.buffer))) {
-      const frame = this.buffer.slice(0, match.index);
-      this.buffer = this.buffer.slice(match.index + match[0].length);
-      this.frame(frame);
+  end() {
+    this.buffer += this.decoder.end();
+    this.drain(true);
+    // Some providers end the stream immediately after the last data line
+    // without the terminating blank line. Feed that unterminated line once;
+    // complete JSON is accepted, truncated JSON is dropped silently.
+    if (this.buffer) this.line(this.buffer);
+    this.buffer = '';
+    this.dispatch(true);
+    this.data = [];
+    this.eventType = '';
+  }
+  drain(final = false) {
+    let index = 0;
+    let lineStart = 0;
+    while (index < this.buffer.length) {
+      const character = this.buffer[index];
+      if (character === '\n') {
+        this.line(this.buffer.slice(lineStart, index));
+        index += 1;
+        lineStart = index;
+        continue;
+      }
+      if (character === '\r') {
+        // A trailing CR may be the first half of a CRLF split across chunks.
+        if (index + 1 >= this.buffer.length && !final) break;
+        this.line(this.buffer.slice(lineStart, index));
+        index += !final && this.buffer[index + 1] === '\n' ? 2 : 1;
+        lineStart = index;
+        continue;
+      }
+      index += 1;
     }
+    this.buffer = this.buffer.slice(lineStart);
     if (this.buffer.length > 16 * 1024 * 1024) throw new Error("SSE event exceeded the size limit");
   }
-  frame(raw) {
-    let event = '';
-    const data = [];
-    for (const line of raw.split(/\r?\n/)) {
-      if (line.startsWith('event:')) event = line.slice(6).trim();
-      if (line.startsWith('data:')) data.push(line.slice(5).replace(/^ /, ''));
+  line(line) {
+    if (line === '') { this.dispatch(); return; }
+    this.eventSize += line.length + 1;
+    if (this.eventSize > 16 * 1024 * 1024) throw new Error('SSE event exceeded the size limit');
+    if (line.startsWith(':')) return;
+    const colon = line.indexOf(':');
+    const field = colon === -1 ? line : line.slice(0, colon);
+    let value = colon === -1 ? '' : line.slice(colon + 1);
+    if (value.startsWith(' ')) value = value.slice(1);
+    if (field === 'event') this.eventType = value;
+    else if (field === 'data') this.data.push(value);
+  }
+  dispatch(tail = false) {
+    const data = this.data;
+    const event = this.eventType;
+    this.data = [];
+    this.eventType = '';
+    this.eventSize = 0;
+    if (!data.length) return;
+    const value = data.join('\n');
+    if (value === '[DONE]') { this.onFrame('[DONE]', event); return; }
+    let parsed;
+    try { parsed = JSON.parse(value); }
+    catch (error) {
+      // A malformed or truncated frame must not abort a healthy stream. An
+      // explicit error frame carries its reason in plain text, so keep it
+      // shaped like a normal error event for the router to report.
+      if (event === 'error') {
+        this.onFrame({ type: 'error', error: { message: value } }, event);
+      } else if (!tail) {
+        this.log('SSEParser: skipped an unreadable event: ' + error.message);
+      }
+      return;
     }
-    if (data.length) {
-      const value = data.join('\n');
-      this.onFrame(value === '[DONE]' ? '[DONE]' : JSON.parse(value), event);
+    if (parsed === null || typeof parsed !== 'object') {
+      this.log('SSEParser: skipped a non-object event');
+      return;
     }
+    this.onFrame(parsed, event);
   }
 }
 const frame = (obj, event = '') => (event ? `event: ${event}\n` : '') + `data: ${typeof obj === 'string' ? obj : JSON.stringify(obj)}\n\n`;

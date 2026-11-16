@@ -2,6 +2,15 @@
 
 const $ = (id) => document.getElementById(id);
 const context = { sessionId: null, workspaceId: null };
+function watchConversation(pending = false) {
+  const request = window.dshDesktop.watchConversation?.({ sessionId: context.sessionId, pending });
+  request?.catch(() => {});
+}
+function setConversationSessionId(id) {
+  context.sessionId = id;
+  watchConversation();
+}
+watchConversation();
 let discussionVisible = false, discussionOpening = false, discussionSurface, discussionNavigationSeq = 0;
   const chat = $('chat');
   const emptyStateTemplate = $('emptyState').cloneNode(true);
@@ -523,11 +532,11 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       '</button>' + codeCopyButton() + '</div></div><pre class="md-code"><code>' + (latex || !highlight ? esc(content) : window.CamelliaMarkdownPreview.highlight(language, content)) + '</code></pre>' +
       (latex ? latexPreviewMarkup() : '') + '</div>';
   }
-  function mdRender(src, documentMode = false, baseUrl = '') {
+  function mdRender(src, documentMode = false, baseUrl = '', sources = null) {
     if (documentMode) return window.CamelliaMarkdownPreview.render(src, { baseUrl, sourceLines: true, codeBlock: (language, code) => renderCodeBlock(language, code, true) });
     const cwd = sidebar.sessions.find(session => session.id === context.sessionId)?.cwd
       || sidebar.workspaces.find(workspace => workspace.id === context.workspaceId)?.path || '';
-    const inline = value => window.CamelliaMarkdownLinks.renderInline(value, cwd);
+    const inline = value => window.CamelliaMarkdownLinks.renderInline(value, cwd, sources);
     const tokens = [];
     let text = String(src).replace(/\r\n?/g, '\n');
     // Protect math before Markdown rules, including backticks inside TeX text.
@@ -672,6 +681,10 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     }
     output.push(prose(text.slice(offset)));
     return output.join('');
+  }
+
+  function replyMarkdown(src, sources = []) {
+    return mdRender(src, false, '', window.CamelliaChatControls.sourceRegistry(sources));
   }
 
   chat.addEventListener('click', event => {
@@ -2071,12 +2084,10 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     const div = document.createElement('div');
     div.className = 'msg-user';
     div.messageData = { text, attachments: atts || [], seq: meta.seq, at: meta.at };
-    const b = document.createElement('div');
-    b.className = 'bubble md';
     // A prompt is rendered with the same rules as a reply so a pasted snippet
     // keeps its formatting; `textContent` stays the copy/edit source of truth.
-    b.innerHTML = mdRender(text);
-    div.appendChild(b);
+    // An attachment-only message has no body, so it renders no empty bubble.
+    renderUserBubble(div, text);
     if (atts && atts.length) {
       const chips = document.createElement('div');
       chips.className = 'attchips';
@@ -2092,7 +2103,8 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       }
       div.appendChild(chips);
     }
-    const actions = messageActions(meta.at, () => div.messageData.text);
+    const actions = messageActions(meta.at, () => div.messageData.text || (div.messageData.attachments || [])
+      .map(attachment => attachment.name).filter(Boolean).join(', '));
     const edit = document.createElement('button');
     edit.type = 'button'; edit.className = 'message-edit'; edit.title = 'Edit message'; edit.setAttribute('aria-label', 'Edit message'); edit.hidden = true;
     edit.dataset.i18nAttrs = 'title aria-label';
@@ -2111,8 +2123,8 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     if (!attempt || !context.sessionId) return;
     const persisted = !existing && Number.isFinite(attempt.at)
       ? [...chat.querySelectorAll('.msg-user')].reverse().find(row => row.messageData?.seq
-        && row.messageData.at >= attempt.at && row.messageData.text === (attempt.text || '[Attachments]')) : null;
-    const div = existing || persisted || addUser(attempt.text || '[Attachments]', attempt.attachments, { at: attempt.at || Date.now() });
+        && row.messageData.at >= attempt.at && String(row.messageData.text || '') === String(attempt.text || '')) : null;
+    const div = existing || persisted || addUser(attempt.text, attempt.attachments, { at: attempt.at || Date.now() });
     if (div.querySelector('.failed-send')) return;
     const cancelled = attempt.cancelled || window.CamelliaContextOverflow.requestCancelledText(attempt.error);
     const controls = document.createElement('div'); controls.className = 'failed-send';
@@ -2165,6 +2177,14 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
   function beginMessageEdit(div) {
     if (conversationBusy() || contextBusy() || !div.messageData.seq || div !== [...chat.querySelectorAll('.msg-user')].at(-1)) return;
     cancelMessageEdit();
+    if (!div.messageData.attachments.length && !div.querySelector('.bubble')) {
+      // An empty row may have no bubble to hide while editing, but the row
+      // still needs a visible body for the restored transcript state.
+      const bubble = document.createElement('div');
+      bubble.className = 'bubble md';
+      div.prepend(bubble);
+      div.classList.remove('attachment-only');
+    }
     const form = document.createElement('form'); form.className = 'message-editor';
     const textarea = document.createElement('textarea'); textarea.setAttribute('aria-label', 'Edit message'); textarea.value = div.messageData.text;
     const hint = document.createElement('div'); hint.className = 'message-edit-hint'; hint.textContent = 'The previous reply and tool history are cleared. File changes are kept.';
@@ -2217,11 +2237,27 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
 
   // The transcript shows a resent message immediately. The editor stays in the
   // DOM but hidden, so a rejected request can reopen it with the same draft.
+  function renderUserBubble(div, text) {
+    const hasText = Boolean(String(text || '').trim());
+    let bubble = div.querySelector('.bubble');
+    if (!hasText) {
+      bubble?.remove();
+      div.classList.add('attachment-only');
+      return;
+    }
+    if (!bubble) {
+      bubble = document.createElement('div');
+      bubble.className = 'bubble md';
+      div.prepend(bubble);
+    }
+    bubble.innerHTML = mdRender(text);
+    div.classList.remove('attachment-only');
+  }
+
   function setUserMessageContent(div, text, at) {
     div.messageData.text = text;
     div.messageData.at = at;
-    const bubble = div.querySelector('.bubble');
-    if (bubble) bubble.innerHTML = mdRender(text);
+    renderUserBubble(div, text);
     const time = div.querySelector('.message-actions time');
     if (!time) return;
     if (!at) { time.textContent = ''; time.removeAttribute('datetime'); time.removeAttribute('title'); return; }
@@ -2278,7 +2314,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
   }
 
   function renderPendingSend(pending) {
-    const div = addUser(pending.displayText || pending.text || '[Attachments]', pending.attachments || [], { at: pending.at, scrollToBottom: false });
+    const div = addUser(pending.displayText ?? pending.text, pending.attachments || [], { at: pending.at, scrollToBottom: false });
     div.messageData.pendingSend = pending;
     showPendingSend(pending.sessionId, div, 'Sending…');
     return div;
@@ -2342,10 +2378,19 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     const sendContext = { sessionId: state.sessionId, openSeq: sessionOpenSeq, dispatched: true, cancelled: false };
     pendingConversationSends.set(state.sessionId, sendContext);
     sending = true; restoringRun = true; acceptSessionEvents = true;
-    // Clear the old reply immediately. Keep its nodes until the backend accepts
-    // the revision so a rejected request can restore the unchanged transcript.
-    const previousReply = [];
-    while (state.div.nextSibling) { previousReply.push(state.div.nextSibling); state.div.nextSibling.remove(); }
+    // Hide the old reply until the backend accepts the revision. Keeping its
+    // nodes connected preserves iframe state and resource listeners if the
+    // edit is rejected. Actual removal is permanent and triggers disposal.
+    const previousReply = new Map();
+    for (let node = state.div.nextSibling; node; node = node.nextSibling) {
+      previousReply.set(node, { display: node.style?.getPropertyValue('display'),
+        priority: node.style?.getPropertyPriority('display') });
+      node.style?.setProperty('display', 'none', 'important');
+    }
+    const discardPreviousReply = () => {
+      for (const node of previousReply.keys()) node.remove();
+      previousReply.clear();
+    };
     // From here on the message belongs to the conversation, not to the editor.
     // Compaction can hold the request for a while, so the pending row carries
     // the stop action while the request is being accepted.
@@ -2363,6 +2408,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     } catch (error) { res = { ok: false, error: error.message }; }
     if (pendingConversationSends.get(state.sessionId) === sendContext) pendingConversationSends.delete(state.sessionId);
     if (sendContext.openSeq !== sessionOpenSeq) {
+      discardPreviousReply();
       pendingRow.remove();
       void sidebar.load();
       if (!res?.ok) {
@@ -2371,6 +2417,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
           error: cancelled ? 'Cancelled' : 'Could not resend: ' + (res?.error || 'No response from the app'), isError: !cancelled });
       }
       if (context.sessionId === state.sessionId && !loadingSession && !sending) {
+        setUserMessageContent(state.div, originalText, originalAt);
         await openHistorySession(state.sessionId);
       }
       updateConversationControls();
@@ -2379,8 +2426,16 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     sending = false;
     if (!res?.ok) {
       pendingRow.remove();
-      while (state.div.nextSibling) state.div.nextSibling.remove();
-      state.div.after(...previousReply);
+      for (let node = state.div.nextSibling; node;) {
+        const next = node.nextSibling;
+        if (!previousReply.has(node)) node.remove();
+        node = next;
+      }
+      for (const [node, style] of previousReply) {
+        if (style.display) node.style.setProperty('display', style.display, style.priority);
+        else node.style?.removeProperty('display');
+      }
+      previousReply.clear();
       restoringRun = false;
       for (const event of eventsDuringRestore.splice(0)) handleEvent(event);
       clearRunStatus();
@@ -2391,6 +2446,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       setStatus(reopenMessageEditor(state, originalText, originalAt, draftText, error, !cancelled));
       return;
     }
+    discardPreviousReply();
     pendingRow.remove();
     state.form.remove();
     state.div.messageData.seq = res.userSeq;
@@ -2694,7 +2750,10 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       return;
     }
     const previous = body.processLayout;
-    if (previous?.revision === (body.processRevision || 0) && previous.finished === finished) return;
+    if (previous?.revision === (body.processRevision || 0) && previous.finished === finished) {
+      for (const group of previous.sourceGroups) window.CamelliaChatControls.renumberSources(group);
+      return;
+    }
     const latestThinking = entries.findLast(el => el.classList.contains('think'));
     for (const el of entries) {
       if (el.classList.contains('think') && el !== latestThinking) el.remove();
@@ -2706,14 +2765,15 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       return el.markdownHasContent;
     });
     const settled = texts.filter(el => el.dataset.phase !== 'commentary');
-    let visible = (finished ? settled : texts).slice(-1);
-    if (finished) {
-      const lastActivity = entries.findLastIndex(el => !el.classList.contains('md') && !el.classList.contains('visualize-block'));
-      if (lastActivity >= 0) visible = settled.filter(el => el.dataset.phase === 'final_answer' || entries.indexOf(el) > lastActivity);
-      else if (settled.some(el => el.dataset.phase === 'final_answer')) visible = settled.filter(el => el.dataset.phase === 'final_answer');
-    }
-    visible = [...visible, ...visuals];
-    body.processLayout = { revision: body.processRevision || 0, finished, visible };
+    const lastActivity = entries.findLastIndex(el => !el.classList.contains('md') && !el.classList.contains('visualize-block'));
+    let answers = settled.slice(-1);
+    if (lastActivity >= 0) answers = settled.filter(el => el.dataset.phase === 'final_answer' || entries.indexOf(el) > lastActivity);
+    else if (settled.some(el => el.dataset.phase === 'final_answer')) answers = settled.filter(el => el.dataset.phase === 'final_answer');
+    // Progress links have their own scope and never consume answer numbers.
+    const sourceGroups = [answers, ...texts.filter(el => !answers.includes(el)).map(el => [el])];
+    for (const group of sourceGroups) window.CamelliaChatControls.renumberSources(group);
+    const visible = [...(finished ? answers : texts.slice(-1)), ...visuals];
+    body.processLayout = { revision: body.processRevision || 0, finished, visible, sourceGroups };
     const archived = entries.filter(el => !visible.includes(el) && (!el.classList.contains('think') || el === latestThinking));
     let process = body.querySelector(':scope > .execution-process');
     if (archived.length && !process) {
@@ -2980,7 +3040,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
         if (b.resetMarkdown) { b.markdown?.dispose(); b.markdown = null; }
         if (!b.markdown) {
           b.markdown = window.CamelliaStreamingMarkdown.create(b.el, {
-            render: mdRender, codeBlock: renderCodeBlock, onCodeChange: updateStreamingLatex,
+            render: replyMarkdown, codeBlock: renderCodeBlock, onCodeChange: updateStreamingLatex,
           });
           b.markdown.append(body, body);
         } else b.markdown.append(b.pendingBody, body);
@@ -3152,7 +3212,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
         if (thinking && el.foldedThinkEl) reused.add(el.foldedThinkEl);
         else delete el.foldedThinkEl;
         if (!el.markdownFinal || el.artifactText !== text) {
-          window.CamelliaStreamingMarkdown.reconcile(el, mdRender(text), updateStreamingLatex);
+          window.CamelliaStreamingMarkdown.reconcile(el, replyMarkdown(text), updateStreamingLatex);
           el.artifactText = text;
           el.markdownFinal = true;
           el.markdownHasContent = !!(el.textContent.trim() || el.querySelector('.chat-inline-image, .chat-inline-video'));
@@ -3620,16 +3680,8 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     }
     if (restoringRun) { eventsDuringRestore.push(ev); return; }
     if (ev.session_id !== context.sessionId) {
-      // Live content for the conversation on screen must never be dropped
-      // silently; a mismatched id here means the view lost track of it.
-      if (running && ['gui:tool', 'result', 'assistant', 'stream_event'].includes(ev.type)) {
-        const pair = 'session:' + ev.session_id + ':' + context.sessionId;
-        if (pair !== droppedRunReport) {
-          droppedRunReport = pair;
-          reportRendererDiagnostic('dropped ' + ev.type + ' for session ' + ev.session_id
-            + ' while the view holds ' + context.sessionId);
-        }
-      }
+      // Already-queued events and new-send buffering can outlive navigation.
+      // Output belonging to another conversation is ordinary background work.
       return;
     }
     if (ev.type === 'conversation:remote-queue') { applyRemoteQueue(ev); return; }
@@ -3741,7 +3793,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       // A native engine id must never replace the conversation the view is
       // showing: every later event carries the conversation id and would then
       // be dropped as another conversation's output.
-      if (!context.sessionId) context.sessionId = ev.session_id || context.sessionId;
+      if (!context.sessionId) setConversationSessionId(ev.session_id || context.sessionId);
       else if (ev.session_id && ev.session_id !== context.sessionId)
         reportRendererDiagnostic('init reported session ' + ev.session_id + ' while the view holds ' + context.sessionId);
       context.workspaceId = ev.workspaceId || null;
@@ -3911,7 +3963,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       }
       window.CamelliaTurnDetails.render(turnEl, { ...ev, ...ev.turnMetrics, requestUsage });
       if (ev.session_id) {
-        context.sessionId = ev.session_id;
+        setConversationSessionId(ev.session_id);
         context.workspaceId = ev.workspaceId || null;
       }
       const artifactTools = Object.values(pendingTools).filter(card => card.finished && !card.failed);
@@ -4163,7 +4215,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     }
     chat.querySelector('.switch-hint')?.remove();
     clearTextChoice();
-    const userMessage = addUser(displayText || "[Attachments]", atts, { at: sentAt, scrollToBottom: !queuedMessage });
+    const userMessage = addUser(displayText, atts, { at: sentAt, scrollToBottom: !queuedMessage });
     setRunning(true);
     setRunStatus('Working…');
     updateSendEnabled();
@@ -4175,6 +4227,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       const settings = await chatApi.getSettings({ sessionId: sendContext.sessionId }, sendContext.engine);
       if (sendContext.cancelled) throw new Error('Request canceled before sending');
       sendContext.dispatched = true;
+      if (sendContext.openSeq === sessionOpenSeq && (!sendContext.sessionId || sendContext.fork)) watchConversation(true);
       res = await chatApi.send({
         prompt: queuedMessage?.prompt || buildPrompt(text, atts),
         displayText,
@@ -4224,6 +4277,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       return Boolean(res.ok);
     }
     sending = false;
+    if (!res.ok) watchConversation();
     // The run is dispatched: refresh the controls so a model change can be
     // queued behind it even if the engine has not emitted an event yet.
     updateConversationControls();
@@ -4265,7 +4319,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       if (running) setStatus("Forking session…");
     }
     if (running) currentRunId = res.runId;
-    if (res.sessionId) context.sessionId = res.sessionId;
+    if (res.sessionId) setConversationSessionId(res.sessionId);
     userMessage.messageData.seq = res.userSeq;
     loadedEngine = harnessId;
     restoringRun = false;
@@ -4490,7 +4544,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     closePops();
     acceptSessionEvents = false;
     currentRunId = null;
-    context.sessionId = null;
+    setConversationSessionId(null);
     // The previous reset ran before the id was cleared; render the new
     // session's empty state now that there is no conversation to inspect.
     contextPanel?.reset();
@@ -5074,7 +5128,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
   new ResizeObserver(updatePanelReservation).observe(mainElement);
   new MutationObserver(updatePanelReservation).observe(mainElement, { attributes: true, attributeFilter: ['class'] });
   updatePanelReservation();
-  const goalUI = createClaudeGoalUI({ $, context, canChangeContext: () => !editingMessage && !handoffForCurrentSession() && canChangeContext() && !running, openHistorySession, setStatus,
+  const goalUI = createClaudeGoalUI({ $, context, setSessionId: setConversationSessionId, watchConversation, canChangeContext: () => !editingMessage && !handoffForCurrentSession() && canChangeContext() && !running, openHistorySession, setStatus,
     acceptEvents: () => { acceptSessionEvents = true; }, onChange: () => { sidebar.updateLabel(); updateConversationControls(); queueMicrotask(drainMessageQueue); }, openActionMenu, closePops });
 
   // /find turns the composer into a file search box: type what you want, and
@@ -5210,7 +5264,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     loadingSession = true; input.disabled = true;
     historyOpening = true;
     restoringRun = true;
-    context.sessionId = id;
+    setConversationSessionId(id);
     // resetConversationView cleared the panel while the old session id was
     // still current; clear it again for the incoming id so it shows the new
     // conversation's loading state instead of the previous one's request.
@@ -5227,7 +5281,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       const res = await chatApi.loadSession(id);
       if (seq !== sessionOpenSeq) return false;
       if (!res.ok) {
-        context.sessionId = null;
+        setConversationSessionId(null);
         contextPanel?.reset();
         reviewPanel?.reset();
         conversationActivity = null;
@@ -5250,7 +5304,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
         if (seq !== sessionOpenSeq) return false;
         if (res.settings?.ok === false) throw new Error(res.settings.error);
       }
-      context.sessionId = id;
+      setConversationSessionId(id);
       // The side panel follows the conversation: fetch the incoming session's
       // snapshot now that its engine is confirmed, not only when a run event
       // happens to refresh it.
@@ -5520,7 +5574,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
                 body.processBlocks.push(think);
                 body.appendChild(think);
               }
-              const el = document.createElement('div'); el.className = 'md'; el.innerHTML = mdRender(text);
+              const el = document.createElement('div'); el.className = 'md'; el.innerHTML = replyMarkdown(text, m.sources);
               el.dataset.phase = block.phase || 'commentary';
               el.artifactText = text;
               body.processBlocks.push(el);
@@ -5566,7 +5620,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
   async function applyLiveRun(live, { recoverFailure = true, requestUsage = null } = {}) {
     if (!live) { acceptSessionEvents = true; return true; }
     const openSeq = sessionOpenSeq;
-    context.sessionId = live.sessionId; context.workspaceId = live.workspaceId;
+    setConversationSessionId(live.sessionId); context.workspaceId = live.workspaceId;
     currentRunId = live.runId; acceptSessionEvents = true;
     turnEl = null; blocks = {}; pendingTools = {}; todoItems = null; todoPanelEl = null;
     if (live.engine) turnEngine = live.engine;
@@ -5861,7 +5915,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       if (!discussionVisible) {
         saveDraft(); ++sessionOpenSeq; resetConversationView(); closeFilePreview();
         loadingSession = false; input.disabled = false;
-        context.sessionId = null; context.workspaceId = null;
+        setConversationSessionId(null); context.workspaceId = null;
         contextPanel?.reset();
         reviewPanel?.reset();
         discussionVisible = true; document.querySelector('.app > .main').hidden = true;

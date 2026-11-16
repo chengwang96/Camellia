@@ -74,9 +74,11 @@ public class RemoteAutomationTest extends InstrumentationTestCase {
     }
 
     private View openWorkSheet() throws Exception {
-        View summary = activity.getWindow().getDecorView().findViewWithTag("remoteWorkSummary");
-        assertTrue(summary.isShown());
-        assertTrue(summary.performClick());
+        assertNull(activity.getWindow().getDecorView().findViewWithTag("remoteWorkSummary"));
+        TextView footer = activity.getWindow().getDecorView().findViewWithTag("connectionStatus");
+        assertTrue(footer.isShown());
+        assertTrue(footer.getText().toString().contains("目标") || footer.getText().toString().contains("定时任务"));
+        assertTrue(footer.performClick());
         assertTrue(workSheet().isShowing());
         return workSheet().getWindow().getDecorView();
     }
@@ -108,7 +110,25 @@ public class RemoteAutomationTest extends InstrumentationTestCase {
             assertFalse("Read-only devices cannot control the goal", sheet.findViewWithTag("remoteGoalToggle").isEnabled());
             render(null);
             assertNull("Removing automation must clear an open sheet", sheet.findViewWithTag("remoteGoal"));
-            assertEquals(View.GONE, activity.getWindow().getDecorView().findViewWithTag("remoteWorkSummary").getVisibility());
+            assertEquals("就绪", ((TextView) activity.getWindow().getDecorView().findViewWithTag("connectionStatus")).getText().toString());
+        });
+    }
+
+    public void testFooterCombinesLiveGoalScheduledAndBackgroundWork() {
+        ui(() -> {
+            JSONObject automation = new JSONObject().put("goal", new JSONObject().put("id", "footer-goal")
+                .put("objective", "核对测试结果").put("phase", "active").put("armed", true))
+                .put("tasks", new JSONArray().put(new JSONObject().put("id", "footer-task")
+                    .put("instruction", "检查构建").put("status", "scheduled").put("intervalMinutes", 10)));
+            render(automation, new JSONArray(), new JSONObject().put("runId", 7).put("text", "正在核对"), "control");
+            field("displayedConversation", new JSONObject().put("id", "automation-test").put("activity", "running").put("backgroundTaskCount", 2));
+            var update = MainActivity.class.getDeclaredMethod("updateControls"); update.setAccessible(true); update.invoke(activity);
+            TextView footer = activity.getWindow().getDecorView().findViewWithTag("connectionStatus");
+            assertEquals("正在回复… · 目标进行中 · 定时任务 1 · 后台任务 2  ›", footer.getText().toString());
+            assertEquals(1, footer.getMaxLines());
+            View sheet = openWorkSheet();
+            assertNotNull(sheet.findViewWithTag("remoteGoalObjective"));
+            assertNotNull(sheet.findViewWithTag("remoteTask"));
         });
     }
 
@@ -157,7 +177,7 @@ public class RemoteAutomationTest extends InstrumentationTestCase {
             var detail = MainActivity.class.getDeclaredMethod("detailScreen"); detail.setAccessible(true); detail.invoke(activity);
             assertNull(workSheet());
             render(null);
-            assertEquals(View.GONE, activity.getWindow().getDecorView().findViewWithTag("remoteWorkSummary").getVisibility());
+            assertEquals("就绪", ((TextView) activity.getWindow().getDecorView().findViewWithTag("connectionStatus")).getText().toString());
         });
     }
 

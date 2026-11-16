@@ -2,7 +2,7 @@
 
 // Goal lives inside the composer: a chip marks draft mode or the running goal,
 // and the chip's menu carries details and controls. No bar above the input.
-function createClaudeGoalUI({ $, context, canChangeContext, openHistorySession, acceptEvents, setStatus, onChange, openActionMenu, closePops }) {
+function createClaudeGoalUI({ $, context, setSessionId, watchConversation, canChangeContext, openHistorySession, acceptEvents, setStatus, onChange, openActionMenu, closePops }) {
   let goalState = null, draft = false, criterion = '', pending = false, ticker = null, savedPlaceholder = null;
   const input = $('input');
   const shortcutBindings = window.CamelliaShortcuts?.watchBindings(window.dshDesktop);
@@ -156,16 +156,20 @@ function createClaudeGoalUI({ $, context, canChangeContext, openHistorySession, 
     if (pending) return false;
     pending = true;
     const sessionId = context.sessionId;
+    if (!sessionId) watchConversation(true);
     try {
       const res = await action();
       if (!res?.ok) throw new Error(res?.error || 'Could not update the goal');
       if (sessionId !== context.sessionId) return false;
-      if (res.sessionId) context.sessionId = res.sessionId;
+      if (res.sessionId) setSessionId(res.sessionId);
       receiveGoal(res.goal);
       if (message) setStatus(message);
       return true;
     } catch (error) { setStatus(error.message); return false; }
-    finally { pending = false; }
+    finally {
+      if (!sessionId && sessionId === context.sessionId) watchConversation();
+      pending = false;
+    }
   }
 
   // The composer send button starts the goal while draft mode is on.

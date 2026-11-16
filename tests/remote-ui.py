@@ -13,6 +13,12 @@ bridge = """(() => {
     if (window.remoteTestFailure) return { ok: false, error: 'Mobile access is unavailable' };
     if (action === 'start') { state.running = true; state.address = 'http://100.80.1.2:43127'; }
     if (action === 'stop') { state.running = false; state.address = null; }
+    if (action === 'set-name') {
+      state.computerName = payload.name;
+      return { ok: true, result: { ...structuredClone(state),
+        embeddedNetworkSync: { synced: true, hostName: payload.name.toLowerCase().replaceAll(' ', '-') },
+        tailscaleSync: { synced: true, deviceId: 'node', name: payload.name } } };
+    }
     if (action === 'invite') {
       window.lastInviteScope = payload.workspaceIds;
       window.lastInviteOptions = payload;
@@ -49,10 +55,13 @@ with sync_playwright() as playwright:
             expect(page.locator('#error')).to_be_empty()
             expect(page.get_by_role('heading', name='手机访问', exact=True)).to_be_visible()
             expect(page.locator('#invite')).to_be_disabled()
-            expect(page.get_by_role('checkbox')).to_have_count(0)
+            expect(page.locator('#relayUse')).to_have_count(1)
             expect(page.locator('#invite')).to_be_disabled()
             page.get_by_role('button', name='开启手机访问', exact=True).click()
             expect(page.locator('#address')).to_have_text('http://100.80.1.2:43127')
+            page.locator('#deviceName').fill('Work PC')
+            page.get_by_role('button', name='保存名称', exact=True).click()
+            expect(page.locator('#deviceNameStatus')).to_contain_text('已同步到 Tailscale')
             page.get_by_role('button', name='生成配对码').click()
             expect(page.locator('#qr img')).to_have_count(1)
             expect(page.locator('#code')).to_have_text('preview-pairing-code')
@@ -61,7 +70,7 @@ with sync_playwright() as playwright:
             assert page.evaluate('window.lastInviteOptions.includeUnassigned') is True
             page.evaluate("remoteTest.workspaces.push({id:'future', name:'Future workspace'})")
             page.get_by_role('button', name='刷新二维码').click()
-            expect(page.get_by_role('checkbox')).to_have_count(0)
+            expect(page.locator('#relayUse')).to_have_count(1)
             expect(page.locator('#qr img')).to_have_count(1)
             expect(page.locator('#code')).to_have_text('preview-pairing-code')
             expect(page.locator('#refreshInvite')).to_be_enabled()
@@ -98,7 +107,12 @@ with sync_playwright() as playwright:
             page.evaluate("remoteTest.language = 'en'")
             page.get_by_role('button', name='开启手机访问', exact=True).click()
             expect(page.get_by_role('heading', name='Mobile access', exact=True)).to_be_visible()
-            expect(page.get_by_role('checkbox')).to_have_count(0)
+            expect(page.locator('#relayUse')).to_have_count(1)
+            page.locator('#deviceName').fill('Work PC')
+            page.get_by_role('button', name='Save name', exact=True).click()
+            expect(page.locator('#deviceNameStatus')).to_contain_text('Synced to Tailscale')
+            switch_style = page.locator('#relayUse').evaluate("element => { const style = getComputedStyle(element); return { width: style.width, height: style.height, radius: style.borderRadius }; }")
+            assert switch_style == {'width': '36px', 'height': '21px', 'radius': '20px'}, switch_style
             page.evaluate("remoteTest.workspaces = []")
             page.get_by_role('button', name='Disable mobile access', exact=True).click()
             expect(page.locator('#invite')).to_be_disabled()
@@ -107,6 +121,28 @@ with sync_playwright() as playwright:
             page.get_by_role('button', name='Generate pairing code', exact=True).click()
             expect(page.locator('#qr img')).to_have_count(1)
             assert page.evaluate('window.lastInviteOptions') == {'workspaceIds': [], 'allWorkspaces': True, 'includeUnassigned': True}
+            page.evaluate('window.scrollTo(0, 1e6)')
+            page.wait_for_timeout(100)
+            tail = page.evaluate("""() => {
+              const scroller = document.scrollingElement;
+              const sections = [...document.querySelectorAll('main > section, main > details')]
+                .filter(section => getComputedStyle(section).display !== 'none');
+              return {
+                atEnd: scroller.scrollTop === scroller.scrollHeight - scroller.clientHeight,
+                cardBottom: sections.at(-1).getBoundingClientRect().bottom,
+                mainBottom: document.querySelector('main').getBoundingClientRect().bottom,
+                documentTop: scroller.scrollTop,
+                actionsHidden: document.querySelector('#error').getBoundingClientRect().height === 0
+                  && getComputedStyle(document.querySelector('#retry')).display === 'none'
+              };
+            }""")
+            assert tail['atEnd'], tail
+            assert abs(tail['cardBottom'] - tail['mainBottom']) <= 1, tail
+            assert tail['actionsHidden'], tail
+            page.mouse.move(page.viewport_size['width'] / 2, page.viewport_size['height'] / 2)
+            page.mouse.wheel(0, 600)
+            page.wait_for_timeout(100)
+            assert page.evaluate('document.scrollingElement.scrollTop') == tail['documentTop']
             assert not errors, errors
             page.close()
         print('PASS: remote-access controls, scopes, approval, revocation, themes, localization and layout')

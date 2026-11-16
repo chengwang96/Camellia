@@ -26,10 +26,20 @@ struct ConversationActionsMenu: View {
 
     private func row(_ title: String, icon: String, destructive: Bool = false,
                      action: @escaping () -> Void) -> some View {
-        Button { onDismiss(); action() } label: {
+        PopupActionRow(title: title, icon: icon, destructive: destructive) { onDismiss(); action() }
+    }
+}
+
+struct PopupActionRow: View {
+    let title: String
+    let icon: String
+    var destructive = false
+    let action: () -> Void
+    var body: some View {
+        Button(action: action) {
             HStack(spacing: 14) {
                 MobileLineIcon(name: icon, size: 23)
-                Text(LocalizedStringKey(title)).font(.system(size: Palette.textDialog))
+                Text(LocalizedStringKey(title)).font(.system(size: Palette.textDialog)).lineLimit(1).truncationMode(.tail)
                 Spacer(minLength: 0)
             }
             .foregroundColor(destructive ? Palette.error : Palette.ink)
@@ -37,7 +47,7 @@ struct ConversationActionsMenu: View {
             .frame(maxWidth: .infinity, minHeight: 56, alignment: .leading)
             .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.plain).help(Text(LocalizedStringKey(title)))
     }
 }
 
@@ -61,11 +71,12 @@ struct ConversationMenuOverlay<Content: View>: View {
     let anchor: CGRect?
     let rows: Int
     let onDismiss: () -> Void
+    var preferredWidth: CGFloat = 192
     @ViewBuilder let content: () -> Content
 
     var body: some View {
         GeometryReader { geometry in
-            let width = min(192, max(1, geometry.size.width - 24))
+            let width = min(preferredWidth, max(1, geometry.size.width - 24))
             let height = min(CGFloat(rows * 56 + 16), max(1, geometry.size.height - 16))
             let left = max(12, min(anchor?.minX ?? 12, geometry.size.width - width - 12))
             let top = max(8, min(anchor?.maxY ?? 8, geometry.size.height - height - 8))

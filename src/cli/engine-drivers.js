@@ -23,6 +23,7 @@ const { nativeEditingSupported } = require('../engines/native-edit-boundary');
 const { snapshotTranscript } = require('../engines/native-fork');
 const { harnessThinkingRoute } = require('../api/harness-thinking');
 const { explicitContextCap } = require('../api/context-capacity');
+const { withSessionAffinity } = require('../api/session-affinity');
 
 function claudeSpec({ settings, opts, home, route, environment, history, mcpFile, contextWindow }) {
   const env = { ...environment, CLAUDE_CONFIG_DIR: home };
@@ -130,7 +131,7 @@ function createEngineDrivers({ root, dataDir, loadConfig, saveConfig, onEvent, g
       const spec = kimiSpawnSpec({ runtime: locate('kimi').file, home: subscription ? kimiHome : path.join(dataDir, 'kimi-api', opts.conversationId),
         config: native.config('kimi'), mcp: JSON.stringify(native.config('kimi', 'mcp')),
         connection: settings.connection, model: settings.model, contextWindow: context(settings.model) || settings.contextWindow,
-        route: subscription ? undefined : getRoute(), env: environment(), sharedSubscription: subscription, thinkingBudget: settings.thinkingBudget || '' });
+        route: subscription ? undefined : withSessionAffinity(getRoute(), opts.conversationId), env: environment(), sharedSubscription: subscription, thinkingBudget: settings.thinkingBudget || '' });
       const previous = kimiPool.get(opts)?.shutdown();
       const session = new KimiSession({ name: 'Kimi', gen: ++generation, settings, opts, spec, exe: process.execPath, spawn, history: kimiHistory, log: noLog,
         usageMeter: createUsageMeter('kimi', { settings, home: kimiHome, version: locate('kimi').version }),
@@ -162,7 +163,7 @@ function createEngineDrivers({ root, dataDir, loadConfig, saveConfig, onEvent, g
       const settings = { ...claude.settings(), ...opts.settings, cwd: opts.cwd, nativeRevision: native.fingerprint('claude') };
       const current = cached(claudePool, opts, settings); if (current) return current;
       if (settings.connection !== 'subscription' && !models().includes(settings.model)) throw new Error('Choose a configured API model');
-      const spec = claudeSpec({ settings, opts, home: claudeHome, route: settings.connection === 'subscription' ? null : getRoute(),
+      const spec = claudeSpec({ settings, opts, home: claudeHome, route: settings.connection === 'subscription' ? null : withSessionAffinity(getRoute(), opts.conversationId),
         contextWindow: settings.connection === 'subscription' ? undefined
           : explicitContextCap(contextCapacity?.budget({ model: settings.model, protocol: 'anthropic' })),
         environment: environment(), history: claudeHistory, mcpFile: native.path('claude', 'mcp') });

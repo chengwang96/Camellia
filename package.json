@@ -180,6 +180,7 @@
       }
     },
     "asarUnpack": [
+      "src/engines/background-process.cjs",
       "src/shared/json-lines.js",
       "src/engines/goal-mcp-stdio.js",
       "src/engines/goal-tools.js",

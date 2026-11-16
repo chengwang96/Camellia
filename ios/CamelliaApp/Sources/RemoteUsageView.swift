@@ -121,15 +121,11 @@ struct RemoteUsageView: View {
     @State private var source = ""
     @State private var account = ""
     @State private var model = ""
-    @State private var choice: Choice?
+    @State private var choice: ChoiceDropdownRequest?
+    @State private var computerMenu = false
+    @State private var computerAnchor: CGRect?
     @State private var detailsExpanded = false
     @State private var filtersExpanded = false
-    private struct Choice {
-        let title: String
-        let labels: [String]
-        let selected: Int
-        let choose: (Int) -> Void
-    }
     private var paired: [PairedComputer] { app.computers.filter(\.isPaired) }
     private var accounts: [JSONObject] { usage.data?.accounts(source: source) ?? [] }
     private var rows: [JSONObject] { usage.data?.rows(range: range, source: source, account: account, model: model) ?? [] }
@@ -146,9 +142,12 @@ struct RemoteUsageView: View {
                                 Text(usage.computer?.displayName ?? t("选择电脑", "Choose a computer")).font(.system(size: Palette.textBody, weight: .medium)).foregroundColor(Palette.ink).lineLimit(1)
                                 Text(status).font(.system(size: Palette.textSmall)).foregroundColor(Palette.secondary).fixedSize(horizontal: false, vertical: true)
                             }.frame(maxWidth: .infinity, alignment: .leading)
-                            MobileLineIcon(name: "down", size: 14).foregroundColor(Palette.secondary)
+                            MobileLineIcon(name: "down", size: 14).rotationEffect(.degrees(computerMenu ? 180 : 0)).foregroundColor(Palette.secondary)
                         }.padding(.leading, 8).padding(.trailing, 4).padding(.vertical, 4).frame(minHeight: 56).contentShape(Rectangle())
                     }.buttonStyle(.plain).accessibilityIdentifier("usageComputer")
+                        .background(GeometryReader { geometry in
+                            Color.clear.preference(key: UsageComputerAnchorKey.self, value: geometry.frame(in: .named("usage-page")))
+                        })
                     Button { usage.fetch(force: true) } label: {
                         Image(systemName: "arrow.clockwise").font(.system(size: 20)).foregroundColor(Palette.accent).frame(width: 48, height: 48).contentShape(Rectangle())
                     }.buttonStyle(.plain).accessibilityLabel(t("刷新", "Refresh"))
@@ -181,12 +180,15 @@ struct RemoteUsageView: View {
             }.id(tab + (usage.computer?.address ?? ""))
         }
         .settingsPage(title: "额度与用量", onBack: onClose)
+        .coordinateSpace(name: "usage-page")
+        .onPreferenceChange(UsageComputerAnchorKey.self) { computerAnchor = $0 }
         .onAppear(perform: start)
-        .onDisappear { usage.stop() }
+        .onDisappear { computerMenu = false; usage.stop() }
         .onReceive(usage.$data, perform: reconcileFilters)
         .onChange(of: usage.detail) { _ in detailsExpanded = false }
-        .onChange(of: phase) { value in if value == .active { start() } else { usage.stop() } }
-        .overlay { choicePanel }
+        .onChange(of: phase) { value in if value == .active { start() } else { computerMenu = false; usage.stop() } }
+        .overlay { computerMenuPanel }
+        .choiceDropdownHost($choice)
     }
     private func start() {
         usage.chinese = app.usesChinese
@@ -246,12 +248,12 @@ struct RemoteUsageView: View {
     private var filters: some View {
         VStack(spacing: 0) {
             if tab == "quota" {
-                textControl(sourceName, action: chooseSource).frame(maxWidth: .infinity, alignment: .leading)
+                textControl(sourceName, expanded: choice?.anchor == "类型", action: chooseSource).frame(maxWidth: .infinity, alignment: .leading).choiceDropdownAnchor("类型")
             } else {
                 HStack(spacing: 8) {
-                    textControl(rangeName) {
+                    textControl(rangeName, expanded: choice?.anchor == "时间") {
                         select("时间", ["1", "7", "30", "all"], [t("今天", "Today"), t("最近 7 天", "Last 7 days"), t("最近 30 天", "Last 30 days"), t("全部", "Total")], range) { range = $0; model = "" }
-                    }
+                    }.choiceDropdownAnchor("时间")
                     textControl(t("筛选", "Filters") + (activeFilters == 0 ? "" : " · \(activeFilters)"), expanded: filtersExpanded, highlighted: filtersExpanded || activeFilters > 0) { filtersExpanded.toggle() }
                         .accessibilityIdentifier("usageFiltersToggle")
                         .accessibilityValue(filtersExpanded ? t("已展开", "Expanded") : t("已收起", "Collapsed"))
@@ -300,33 +302,37 @@ struct RemoteUsageView: View {
                 Text(LocalizedStringKey(title)).foregroundColor(Palette.secondary)
                 Spacer(minLength: 12)
                 Text(value).foregroundColor(Palette.ink).lineLimit(2).multilineTextAlignment(.trailing)
-                MobileLineIcon(name: "right", size: 14).foregroundColor(Palette.secondary)
+                MobileLineIcon(name: "down", size: 14).rotationEffect(.degrees(choice?.anchor == title ? 180 : 0)).foregroundColor(Palette.secondary)
             }.font(.system(size: Palette.textBody)).padding(.horizontal, 14).padding(.vertical, 8).frame(minHeight: 48).contentShape(Rectangle())
-        }.buttonStyle(.plain)
+        }.buttonStyle(.plain).choiceDropdownAnchor(title)
     }
     private func select(_ title: String, _ ids: [String], _ labels: [String], _ selected: String, action: @escaping (String) -> Void) {
-        choice = Choice(title: title, labels: labels, selected: ids.firstIndex(of: selected) ?? 0, choose: { index in action(ids[index]); choice = nil })
+        computerMenu = false
+        choice = ChoiceDropdownRequest(anchor: title, title: title, labels: labels, selected: ids.firstIndex(of: selected) ?? 0,
+            searchable: title == "模型" || title == "账号 / Key", choose: { index in action(ids[index]) })
     }
     private func chooseComputer() {
         guard !paired.isEmpty else { return }
-        let targets = paired
-        choice = Choice(title: "选择电脑", labels: targets.map(\.displayName), selected: targets.firstIndex { $0.address == usage.computer?.address } ?? 0, choose: { index in
-            account = ""; model = ""; usage.select(targets[index], store: app.store); choice = nil
-        })
+        choice = nil; computerMenu.toggle()
     }
-    @ViewBuilder private var choicePanel: some View {
-        if let choice {
+    @ViewBuilder private var computerMenuPanel: some View {
+        if computerMenu, let anchor = computerAnchor {
             GeometryReader { geometry in
-                ZStack(alignment: .bottom) {
-                    Color.black.opacity(0.28).ignoresSafeArea().onTapGesture { self.choice = nil }
-                    ScrollView(showsIndicators: false) {
-                        SettingsChoicePanel(title: choice.title, labels: choice.labels, selected: choice.selected,
-                                            onChoose: choice.choose, onCancel: { self.choice = nil })
-                    }
-                    .frame(width: min(560, geometry.size.width - 24))
-                    .frame(maxHeight: geometry.size.height * 0.8)
-                    .background(Palette.grouped).clipShape(RoundedRectangle(cornerRadius: Palette.sheetRadius))
-                    .padding(.bottom, 12)
+                let width = min(264, max(1, geometry.size.width - 24))
+                let left = max(12, min(anchor.maxX - width, geometry.size.width - width - 12))
+                let top = anchor.maxY + 8
+                ZStack(alignment: .topLeading) {
+                    PopupDismissArea { computerMenu = false }
+                    ComputerPickerPopupView(maxHeight: max(1, min(520, geometry.size.height - top - 8)), onAction: { action in
+                        computerMenu = false
+                        if case .open(let computer) = action, computer.address != usage.computer?.address {
+                            account = ""; model = ""; usage.select(computer, store: app.store)
+                        }
+                    }, computers: paired, selectedAddress: usage.computer?.address, selectionOnly: true)
+                        .environmentObject(app)
+                        .frame(width: width)
+                        .padding(.leading, left).padding(.top, top)
+                        .accessibilityIdentifier("usageComputerMenu")
                 }
             }
         }
@@ -451,3 +457,8 @@ struct RemoteUsageView: View {
 }
 
 private extension JSONObject { var textID: String { text("id") } }
+
+private struct UsageComputerAnchorKey: PreferenceKey {
+    static var defaultValue: CGRect? = nil
+    static func reduce(value: inout CGRect?, nextValue: () -> CGRect?) { value = nextValue() ?? value }
+}

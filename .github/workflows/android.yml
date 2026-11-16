@@ -172,6 +172,7 @@ jobs:
             LocalImageComposerTest MarkdownTest PermissionToolTest PopupCoordinatesTest
             RemoteApiResponseTest RemoteFeedbackTest RemoteSettingsLayoutTest SettingsTest
             UiConsistencyTest SettingsControlsTest SubtaskPageLayoutTest ModernSettingsLayoutTest NavigationVeilTest SettingsFeedbackTest
+            ChoiceDropdownTest ComposerAttachmentOverflowTest RemoteApprovalSheetTest WorkbenchServersTest ConversationListScrollTest
           )
           ui_selection="$(node scripts/android-ci-shards.cjs --index "$SHARD" --total "$SHARD_COUNT" "${ui_classes[@]}")"
           printf '%s\n' "$ui_selection" > .ci-logs/android-ui-selection.txt

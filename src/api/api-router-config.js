@@ -252,13 +252,13 @@ function normalizeConfig(raw = {}, previous = null, options = {}) {
 }
 
 function loadConfig(file) {
-  const raw = readJson(file, {});
+  let raw = readJson(file, {});
   // Optional one-time recovery of older counters. IDs make repeated loads
   // harmless after the archive is written into the main configuration.
   const recovery = readJson(file + '.usage-recovery.json', null);
   if (recovery) {
     if (recovery.version !== 1 || !Array.isArray(recovery.entries)) throw new Error('Invalid usage recovery file');
-    raw.usageArchive = [...(raw.usageArchive || []), ...recovery.entries];
+    raw = { ...raw, usageArchive: [...(raw.usageArchive || []), ...recovery.entries] };
   }
   const cfg = normalizeConfig(raw);
   let metadata;

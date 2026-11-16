@@ -27,6 +27,7 @@ public class ConnectionTestDialogTest extends InstrumentationTestCase {
         final long heartbeatInterval;
         final CountDownLatch entered = new CountDownLatch(2), release = new CountDownLatch(1), cleaned = new CountDownLatch(1);
         final AtomicInteger closes = new AtomicInteger();
+        JSONObject route;
         Transport(int mode) { this(mode, 75); }
         Transport(int mode, long heartbeatInterval) { this.mode = mode; this.heartbeatInterval = heartbeatInterval; }
         @Override public JSONObject status() throws Exception {
@@ -40,6 +41,7 @@ public class ConnectionTestDialogTest extends InstrumentationTestCase {
             while (!release.await(heartbeatInterval, TimeUnit.MILLISECONDS)) listener.heartbeat();
         }
         @Override public void close() { closes.incrementAndGet(); release.countDown(); cleaned.countDown(); }
+        @Override public JSONObject path() { return route; }
     }
 
     @Override protected void setUp() throws Exception {
@@ -100,6 +102,21 @@ public class ConnectionTestDialogTest extends InstrumentationTestCase {
         });
         waitForReport(); assertEquals(2, runs.get());
         ui(() -> { assertEquals("测试完成", ((TextView) view("camelliaDialogTitle")).getText().toString()); assertSame(owner, field("credentials")); });
+    }
+
+    public void testReportContainsIndependentPathEvidenceAndTheBuildNumber() throws Exception {
+        Transport transport = new Transport(2);
+        transport.route = new JSONObject().put("path", "direct").put("endpoint", "203.0.113.4:41641").put("latencyMs", 533);
+        show(transport, new ConnectionStabilityCheck.Config(1000, 100, 500, 500, 500, 400));
+        waitForReport();
+        ui(() -> {
+            String report = ((TextView) view("connectionTestReport")).getText().toString();
+            assertTrue(report, report.contains("路径探测（手机 → 此电脑）"));
+            assertTrue(report, report.contains("直连 · 点对点 · 203.0.113.4:41641 · 533.0 ms"));
+            assertTrue(report, report.contains("不要求同一局域网"));
+            assertTrue(report, report.contains("(build "));
+            assertSame(owner, field("credentials"));
+        });
     }
 
     public void testActivityStopCancelsItsTestAndDoesNotLeaveAResultPopup() throws Exception {

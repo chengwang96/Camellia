@@ -13,6 +13,7 @@ const { readJson, writeText } = require('../shared/json-store');
 const { grokEditBoundary, grokUpdatesFile } = require('./native-edit-boundary');
 const { copyGrokFork } = require('./native-fork');
 const { harnessThinkingRoute } = require('../api/harness-thinking');
+const { withSessionAffinity } = require('../api/session-affinity');
 
 // Allow the native CLI's cold Windows startup before its ACP server is ready.
 const GROK_STARTUP_TIMEOUT_MS = 60000;
@@ -92,6 +93,7 @@ class GrokSession extends AcpSession {
   }
 
   receive(message) {
+    if (this.dead) return;
     const params = message.params, update = params?.update;
     if (message.method === '_x.ai/session_notification' && update?.sessionUpdate === 'subagent_spawned'
         && (params.sessionId === this.sessionId || this.childSessions?.has(params.sessionId))) {
@@ -234,7 +236,7 @@ function createGrokChat({ dataDir, loadConfig, saveConfig, getRoute, getModels, 
     } else {
       selected.model = modelId(selected.model);
       if (!selected.model || !getModels().includes(selected.model)) throw new Error('Select a configured API model first');
-      route = getRoute();
+      route = withSessionAffinity(getRoute(), opts.conversationId);
       selected.contextWindow = getContextWindow(selected.model) || selected.contextWindow;
       const storageId = opts.forkSourceConversationId || opts.conversationId;
       sessionHome = path.join(home, 'api', ...(storageId ? ['conversations', storageId] : ['standalone']));

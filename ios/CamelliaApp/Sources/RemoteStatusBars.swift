@@ -15,24 +15,68 @@ struct RemoteStatusBars: View {
 
     var body: some View {
         VStack(spacing: 6) {
-            if model.transcript.showsGoal, let goal = model.transcript.automation?.goal {
-                GoalCard(goal: goal)
-            }
-            let tasks = model.transcript.automation?.tasks ?? []
-            if !tasks.isEmpty {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(model.usesChinese ? "定时任务 · \(tasks.count)"
-                         : "Scheduled · \(tasks.count)")
-                        .font(.caption2)
-                        .foregroundColor(Palette.muted)
-                        .padding(.horizontal, 12)
-                    ForEach(tasks) { task in TaskCard(task: task) }
+            if model.isArchivedConversation {
+                ArchivedConversationCard()
+            } else {
+                if model.transcript.showsGoal, let goal = model.transcript.automation?.goal {
+                    GoalCard(goal: goal)
+                }
+                let tasks = model.transcript.automation?.tasks ?? []
+                if !tasks.isEmpty {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(model.usesChinese ? "定时任务 · \(tasks.count)"
+                             : "Scheduled · \(tasks.count)")
+                            .font(.caption2)
+                            .foregroundColor(Palette.muted)
+                            .padding(.horizontal, 12)
+                        ForEach(tasks) { task in TaskCard(task: task) }
+                    }
+                }
+                if !model.transcript.queue.isEmpty {
+                    QueueCard(entries: model.transcript.queue)
                 }
             }
-            if !model.transcript.queue.isEmpty {
-                QueueCard(entries: model.transcript.queue)
+        }
+    }
+}
+
+/// A conversation the computer archived while this phone was reading it.
+///
+/// The desktop keeps the transcript readable and sends a read permission, so
+/// the detail page must not look like lost access. It says what happened and
+/// offers the one command that is still meaningful here: restore. Restoring is
+/// a normal archive command against this conversation's own sequence.
+private struct ArchivedConversationCard: View {
+    @EnvironmentObject private var model: AppModel
+
+    var body: some View {
+        HStack(spacing: 10) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("已在电脑归档")
+                    .font(.caption.weight(.medium))
+                    .foregroundColor(Palette.ink)
+                Text("聊天记录仍保留，这里是只读状态。")
+                    .font(.caption2)
+                    .foregroundColor(Palette.muted)
+            }
+            Spacer(minLength: 8)
+            if model.transcript.canRestoreArchived {
+                Button("恢复会话") { model.restoreOpenConversation() }
+                    .font(.caption.weight(.medium))
+                    .buttonStyle(.plain)
+                    .foregroundColor(Palette.accent)
+                    .frame(minHeight: 40)
+                    .padding(.horizontal, 10)
+                    .background(Capsule(style: .continuous).fill(Palette.background))
+                    .disabled(model.commandBusy || model.hasPendingDetailOperation)
+                    .accessibilityLabel("恢复这个归档会话")
             }
         }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(RoundedRectangle(cornerRadius: Palette.smallRadius, style: .continuous)
+            .fill(Palette.surface))
+        .padding(.horizontal, 8)
     }
 }
 

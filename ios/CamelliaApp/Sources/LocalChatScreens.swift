@@ -72,9 +72,17 @@ struct LocalChatListView: View {
                                         onDismiss: { menuConversation = nil }) {
                     conversationActions(conversation)
                 }
+            } else if let workspace = workspaceMenu {
+                ConversationMenuOverlay(anchor: rowFrames["workspace:" + workspace.id], rows: 2,
+                                        onDismiss: closeWorkspaceMenu, preferredWidth: 264) {
+                    VStack(spacing: 0) {
+                        PopupActionRow(title: "重命名", icon: "edit") { chooseWorkspaceAction(0, workspace: workspace) }
+                        PopupActionRow(title: "移除工作区（保留会话）", icon: "delete", destructive: true) { chooseWorkspaceAction(1, workspace: workspace) }
+                    }.padding(.vertical, 8).padding(.horizontal, 8)
+                }
             }
         }
-        .onDisappear { menuConversation = nil }
+        .onDisappear { menuConversation = nil; workspaceMenu = nil }
     }
 
     private var list: some View {
@@ -235,13 +243,13 @@ struct LocalChatListView: View {
 
             Spacer(minLength: 8)
 
-            Button { workspaceMenu = workspace } label: {
+            Button { menuConversation = nil; workspaceMenu = workspace } label: {
                 Image(systemName: "ellipsis")
                     .font(.system(size: Palette.textTitle))
                     .foregroundColor(Palette.muted)
                     .frame(width: 48, height: 48)
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.plain).conversationMenuAnchor("workspace:" + workspace.id, space: "local-conversation-list")
             .accessibilityLabel(locale.identifier.lowercased().hasPrefix("zh")
                 ? "\(workspace.displayName) 的更多操作"
                 : "More actions for \(workspace.displayName)")
@@ -487,18 +495,7 @@ struct LocalChatListView: View {
     }
 
     @ViewBuilder private var listActionPanel: some View {
-        if let workspace = workspaceMenu {
-            ZStack(alignment: .bottom) {
-                Color.black.opacity(0.28).ignoresSafeArea()
-                    .onTapGesture { closeWorkspaceMenu() }
-                SettingsActionListPanel(title: workspace.displayName,
-                                        labels: ["重命名", "移除工作区（保留会话）"],
-                                        onChoose: { index in chooseWorkspaceAction(index, workspace: workspace) })
-                    .frame(maxWidth: 560)
-                    .padding(.horizontal, 12)
-                    .padding(.bottom, 12)
-            }
-        } else if let alert {
+        if let alert {
             switch alert {
             case .text(let prompt):
                 ZStack(alignment: .bottom) {

@@ -26,6 +26,9 @@ async function run() {
   const background = process.argv.includes('--background');
   const reconcile = process.argv.includes('--reconcile');
   const swarm = process.argv.includes('--swarm');
+  const swarmOff = process.argv.includes('--swarm-off');
+  const desktop = process.argv.includes('--desktop');
+  const fork = process.argv.includes('--fork');
   const parallel = Math.min(16, Math.max(1, Number(process.argv.find(value => value.startsWith('--parallel='))?.split('=')[1] || (swarm ? 2 : 1))));
   const selected = process.argv.slice(2).filter(value => !value.startsWith('--'));
   const engines = selected.length ? selected : ['claude', 'dsh', 'kimi', 'grok', 'antigravity'];
@@ -42,11 +45,11 @@ async function run() {
     if (title) tool = { name: 'session_title', arguments: JSON.stringify({ session_title: 'Subagent fixture' }) };
     else if (!launched && JSON.stringify(body.messages).includes('PARENT_SUBAGENT_FIXTURE')) {
       launched = true;
-      const name = { claude: 'Agent', kimi: swarm ? 'AgentSwarm' : 'Agent', dsh: 'subagent', grok: 'spawn_subagent', antigravity: 'invoke_subagent' }[current];
+      const name = { claude: 'Agent', kimi: swarm || swarmOff ? 'AgentSwarm' : 'Agent', dsh: 'subagent', grok: 'spawn_subagent', antigravity: 'invoke_subagent' }[current];
       const declaration = body.tools?.find(row => row.function.name === name);
       if (!declaration) { res.writeHead(500); res.end('Missing ' + name + ': ' + toolNames.join(', ')); return; }
       const args = { description: 'Inspect fixture', prompt: 'CHILD_SUBAGENT_FIXTURE: Return child fixture complete.', run_in_background: background };
-      if (current === 'kimi' && swarm) Object.assign(args, { items: ['one', 'two'], prompt_template: 'CHILD_SUBAGENT_FIXTURE: Return child fixture complete for {{item}}.' });
+      if (current === 'kimi' && (swarm || swarmOff)) Object.assign(args, { items: ['one', 'two'], prompt_template: 'CHILD_SUBAGENT_FIXTURE: Return child fixture complete for {{item}}.' });
       if (current === 'claude') args.subagent_type = 'general-purpose';
       const properties = declaration.function.parameters.properties || {};
       for (const key of Object.keys(args)) if (!(key in properties)) delete args[key];
@@ -100,7 +103,7 @@ async function run() {
       const home = path.join(root, engine, 'home'), cwd = path.join(root, engine, 'workspace'); fs.mkdirSync(cwd, { recursive: true });
       const env = isolatedEnvironment(path.join(root, engine), process.execPath), events = [], logs = [];
       const settings = { cwd, model: 'fixture-model', permissionMode: 'full' };
-      const common = { runtime: engine === 'dsh' ? runtime : runtime.file, home, model: settings.model,
+      const common = { runtime: engine === 'dsh' ? (desktop ? { file: runtime.file } : runtime) : runtime.file, home, model: settings.model,
         route: { baseUrl: router.url, authToken: 'proxy-managed' }, env, permissionMode: 'full' };
       const spec = engine === 'grok' ? grokSpawnSpec(common) : engine === 'kimi' ? kimiSpawnSpec(common)
         : engine === 'dsh' ? dshAcpSpec(common) : engine === 'antigravity' ? antigravitySpawnSpec({ ...common, runtime,
@@ -135,12 +138,21 @@ async function run() {
       }
       try {
         session.start();
-        const result = await new Promise((resolve, reject) => {
+        const prompt = text => new Promise((resolve, reject) => {
           const timer = setTimeout(() => { session.kill(); reject(new Error(engine + ' timed out\n' + logs.slice(-8).join('\n'))); }, 60000);
           done = value => { clearTimeout(timer); resolve(value); };
-          session.sendUserMessage('PARENT_SUBAGENT_FIXTURE: Spawn one native child to return the fixture marker.');
+          session.sendUserMessage(text);
         });
-        const expected = engine === 'claude' ? parallel : swarm && ['kimi', 'antigravity'].includes(engine) ? 2 : 1;
+        if (engine === 'dsh' && fork) {
+          assert.equal((await prompt('FORK_SOURCE_FIXTURE: Reply before creating an ordinary fork.')).is_error, false);
+          const sourceId = session.sessionId;
+          const child = await session.request('session/camellia_fork', { sessionId: sourceId, cwd, mcpServers: [] });
+          assert.notEqual(child.sessionId, sourceId);
+          session.sessionId = child.sessionId;
+          childRequests = 0;
+        }
+        const result = await prompt('PARENT_SUBAGENT_FIXTURE: Spawn one native child to return the fixture marker.');
+        const expected = engine === 'claude' ? parallel : (swarm || swarmOff) && ['kimi', 'antigravity'].includes(engine) ? 2 : 1;
         if (reconcile) {
           assert.ok(['claude', 'kimi'].includes(engine));
           const deadline = Date.now() + 10000;
@@ -176,6 +188,13 @@ async function run() {
         const tools = events.filter(event => event.type === 'gui:tool');
         const diagnostic = JSON.stringify({ result, tasks, tools, logs: logs.slice(-8) });
         assert.equal(result.is_error, false, diagnostic);
+        if (engine === 'kimi' && swarmOff) {
+          assert.equal(session.children.size, expected, diagnostic);
+          assert.ok([...session.children.values()].every(task => task.status === 'failed' && /Swarm mode is off/.test(task.result)), diagnostic);
+          assert.equal(childRequests, 1, 'A disabled swarm must not execute any children');
+          console.log('PASS: kimi disabled swarm settles all child cards as failed instead of leaving them running');
+          continue;
+        }
         assert.ok(childRequests >= expected + 1, engine + ' did not execute its native children: ' + diagnostic);
         assert.ok(tasks.some(task => ['starting', 'running'].includes(task.status)), engine + ' did not report child startup: ' + diagnostic);
         assert.equal(session.children.size, expected, engine + ' duplicated or lost child cards: ' + diagnostic);

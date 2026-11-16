@@ -11,7 +11,16 @@ $required = @('CAMELLIA_ANDROID_KEYSTORE', 'CAMELLIA_ANDROID_KEYSTORE_PASSWORD',
 $loadedLocalSigning = $false
 $originalPath = $env:PATH
 $originalGoPath = $env:GOPATH
+$originalGoToolchain = $env:GOTOOLCHAIN
 $originalJavaToolOptions = $env:JAVA_TOOL_OPTIONS
+$localAndroidHome = Join-Path $repoRoot 'dist/android-tools/sdk'
+$localJavaHome = Join-Path $repoRoot 'dist/android-tools/jdk/jdk-17.0.16+8'
+if (-not $env:ANDROID_HOME -or -not (Test-Path -LiteralPath (Join-Path $env:ANDROID_HOME 'build-tools/35.0.0/apksigner.bat') -PathType Leaf)) {
+    if (Test-Path -LiteralPath (Join-Path $localAndroidHome 'build-tools/35.0.0/apksigner.bat') -PathType Leaf) { $env:ANDROID_HOME = $localAndroidHome }
+}
+if (-not $env:JAVA_HOME -or -not (Test-Path -LiteralPath (Join-Path $env:JAVA_HOME 'bin/java.exe') -PathType Leaf)) {
+    if (Test-Path -LiteralPath (Join-Path $localJavaHome 'bin/java.exe') -PathType Leaf) { $env:JAVA_HOME = $localJavaHome }
+}
 if ($SizeBaseline -and $ReleaseTests) { throw 'Baseline measurement and optimized Release tests are separate builds.' }
 if (-not $Abis.Count -or @($Abis | Sort-Object -Unique).Count -ne $Abis.Count) { throw 'Select at least one distinct release ABI.' }
 if ($SizeBaseline -and -not $OutputDirectory) { throw 'A baseline requires an explicit output directory.' }
@@ -41,7 +50,27 @@ if ((Split-Path $env:CAMELLIA_ANDROID_KEYSTORE -Leaf) -ieq 'debug.keystore') { t
 if (-not $env:ANDROID_HOME -or -not $env:JAVA_HOME) { throw 'Set ANDROID_HOME and JAVA_HOME (JDK 17) first.' }
 
 if (-not $SkipTailnet) {
-    if (-not (Get-Command go -ErrorAction SilentlyContinue)) {
+    $goCommand = Get-Command go -ErrorAction SilentlyContinue
+    $pinnedGo = $null
+    if ($goCommand) {
+        $goVersion = (& $goCommand.Source version 2>$null)
+        if ($goVersion -notmatch '^go version go1\.26\.3 ') { $goCommand = $null }
+    }
+    if (-not $goCommand) {
+        $pinnedGo = Get-ChildItem -Path (Join-Path $env:USERPROFILE 'go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.3.windows-amd64/bin/go.exe') -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+        if (-not $pinnedGo) {
+            $pinnedGo = Get-Item -LiteralPath 'C:\Program Files\Go\bin\go.exe' -ErrorAction SilentlyContinue
+        }
+        if ($pinnedGo) {
+            $goVersion = (& $pinnedGo.FullName version 2>$null)
+            if ($goVersion -notmatch '^go version go1\.26\.3 ') { $pinnedGo = $null }
+        }
+    }
+    if ($pinnedGo) {
+        $env:PATH = (Split-Path $pinnedGo.FullName -Parent) + ';' + $env:PATH
+        $env:GOTOOLCHAIN = 'local'
+    } elseif (-not $goCommand) {
         $localGoBin = Join-Path $repoRoot 'dist/android-tools/go/bin'
         if (-not (Test-Path -LiteralPath (Join-Path $localGoBin 'go.exe') -PathType Leaf)) {
             throw 'Go is required to rebuild Tailnet. Install Go or provide the local dist/android-tools/go toolchain.'
@@ -142,6 +171,8 @@ Write-Output $releaseCertificate
     $env:PATH = $originalPath
     if ($null -eq $originalGoPath) { Remove-Item Env:GOPATH -ErrorAction SilentlyContinue }
     else { $env:GOPATH = $originalGoPath }
+    if ($null -eq $originalGoToolchain) { Remove-Item Env:GOTOOLCHAIN -ErrorAction SilentlyContinue }
+    else { $env:GOTOOLCHAIN = $originalGoToolchain }
     if ($null -eq $originalJavaToolOptions) { Remove-Item Env:JAVA_TOOL_OPTIONS -ErrorAction SilentlyContinue }
     else { $env:JAVA_TOOL_OPTIONS = $originalJavaToolOptions }
     if ($loadedLocalSigning) {

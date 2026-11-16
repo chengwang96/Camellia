@@ -263,6 +263,40 @@ test('desktop scope authorization always grants current and future workspaces wi
   assert.equal(stored.permission, 'control');
 });
 
+test('saving the computer name also renames the embedded node', async context => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'remote-name-'));
+  context.after(() => removeTree(root));
+  const calls = [];
+  const network = {
+    child: {},
+    snapshot: { state: 'Running', address: '100.80.1.2', deviceId: 'node', hostName: 'old-name' },
+    async start() {},
+    async status() { return this.snapshot; },
+    async login() {},
+    async openLogin() {},
+    async listen() {},
+    async stop() {},
+    async setHostname(hostname) { calls.push(hostname); this.snapshot = { ...this.snapshot, hostName: hostname }; return { hostName: hostname }; },
+  };
+  const handlers = new Map();
+  const settings = { webContents: { mainFrame: {} }, isDestroyed: () => false };
+  let savedName = '';
+  const controller = createRemoteDesktop({ app: { getPath: () => root },
+    ipcMain: { handle: (channel, callback) => handlers.set(channel, callback) },
+    manager: { workspaces: { sessionMeta: () => ({ workspaces: [] }) } }, loadConfig: () => ({}),
+    getSettingsWindow: () => settings, networkFactory: () => network,
+    computerName: () => savedName || 'old-name', saveComputerName: name => { savedName = name; return name; } });
+  context.after(() => controller.close());
+  const command = handlers.get('dsh:remote-control');
+  const event = { sender: settings.webContents, senderFrame: settings.webContents.mainFrame };
+  assert.equal((await command(event, { action: 'start' })).ok, true);
+  const response = await command(event, { action: 'set-name', payload: { name: 'Work PC' } });
+  assert.equal(response.ok, true);
+  assert.equal(response.result.computerName, 'Work PC');
+  assert.deepEqual(calls, ['work-pc']);
+  assert.equal(network.snapshot.hostName, 'work-pc');
+});
+
 test('a transient network state and an address change recover without reenabling manually', async context => {
   const { controller, command, network, calls } = startupHarness(context, [trustedPhone()]);
   await controller.startTrustedDevices(); assert.equal(calls.listen, 1);

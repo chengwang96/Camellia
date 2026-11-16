@@ -146,12 +146,21 @@
       && (!token.attrGet('title') || controls.test(token.attrGet('title')))) {
       token.attrSet('title', target.path ? target.path + (target.line ? ':' + target.line : '') : target.href);
     }
+    const sourceNumber = !target.path && !target.mailto && !mediaKind(target.href) && environment.sources
+      ? environment.sources.numberFor(target.href) : 0;
+    if (sourceNumber) token.attrSet('data-chat-source', String(sourceNumber));
     return renderer.renderToken(tokens, index, options);
   };
   parser.renderer.rules.link_close = (tokens, index, options, environment) => {
     let open = index - 1;
     while (open >= 0 && tokens[open].type !== 'link_open') open--;
-    return destination(tokens[open]?.attrGet('href'), environment.cwd) ? '</a>' : '</span>';
+    const target = destination(tokens[open]?.attrGet('href'), environment.cwd);
+    if (!target) return '</span>';
+    const sourceNumber = Number(tokens[open]?.attrGet('data-chat-source')) || 0;
+    return '</a>' + (sourceNumber
+      ? '<a class="md-source-marker" href="' + escape(target.href) + '" target="_blank" rel="noopener noreferrer"'
+        + ' aria-label="Source ' + sourceNumber + '" title="Open source ' + sourceNumber + '">' + sourceNumber + '</a>'
+      : '');
   };
   // Local files and explicit http(s) URLs render inline, matching the file
   // preview. The browser only issues the request because the author wrote an
@@ -180,5 +189,5 @@
       + '" loading="lazy" decoding="async" referrerpolicy="no-referrer">';
   };
 
-  return { destination, renderInline: (source, cwd = '') => parser.renderInline(source, { cwd }), protectMath: math.protect, renderMath: math.html };
+  return { destination, renderInline: (source, cwd = '', sources = null) => parser.renderInline(source, { cwd, sources }), protectMath: math.protect, renderMath: math.html };
 });

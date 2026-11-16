@@ -55,6 +55,13 @@ class Bridge:
     def update(self, update):
         emit({"method": "session/update", "params": {"sessionId": self.session_id, "update": update}})
 
+    def child_call(self, name, args, tool_id):
+        if name not in ("start_subagent", "invoke_subagent"):
+            return
+        for slot, entry in enumerate(args.get("Subagents", [])):
+            self.child_specs.append({"tool_id": tool_id, "slot": slot,
+                                     "title": entry.get("Role") or entry.get("TypeName"), "prompt": entry.get("Prompt", "")})
+
     def child_step(self, step, terminal=False):
         if not step.parent_trajectory_id or not step.trajectory_id:
             return
@@ -138,12 +145,9 @@ class Bridge:
         @hooks.pre_tool_call_decide
         async def before_tool(tool):
             name = tool.name.value if isinstance(tool.name, types.BuiltinTools) else tool.name
+            self.child_call(name, tool.args, tool.id or tool.step_id)
             self.update({"sessionUpdate": "tool_call", "toolCallId": tool.id or tool.step_id,
                          "title": name, "rawInput": tool.args, "status": "in_progress", **self.child_meta(tool)})
-            if name == "start_subagent":
-                for slot, entry in enumerate(tool.args.get("Subagents", [])):
-                    self.child_specs.append({"tool_id": tool.id or tool.step_id, "slot": slot,
-                                             "title": entry.get("Role") or entry.get("TypeName"), "prompt": entry.get("Prompt", "")})
             return types.HookResult(allow=True)
 
         @hooks._pre_step

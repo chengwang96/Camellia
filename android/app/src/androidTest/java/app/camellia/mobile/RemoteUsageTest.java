@@ -50,11 +50,124 @@ public class RemoteUsageTest extends InstrumentationTestCase {
         getInstrumentation().runOnMainSync(() -> {
             try {
                 activity.getWindow().getDecorView().findViewWithTag(tag).performClick();
-                var field = RemoteUsageActivity.class.getDeclaredField("dialog"); field.setAccessible(true);
-                android.app.Dialog chooser = (android.app.Dialog) field.get(activity);
-                chooser.getWindow().getDecorView().findViewWithTag("settingsChoice:" + index).performClick();
+                var field = RemoteUsageActivity.class.getDeclaredField("choiceDropdown"); field.setAccessible(true);
+                ChoiceDropdown chooser = (ChoiceDropdown) field.get(activity);
+                chooser.panel.findViewWithTag("dropdownChoice:" + index).performClick();
             } catch (Exception error) { throw new AssertionError(error); }
         });
+    }
+    private ComputerPickerPopup computerPicker(Activity activity) {
+        try {
+            var field = RemoteUsageActivity.class.getDeclaredField("computerPicker"); field.setAccessible(true);
+            return (ComputerPickerPopup) field.get(activity);
+        } catch (Exception error) { throw new AssertionError(error); }
+    }
+    private void waitForComputerMenu(Activity activity, boolean open) throws Exception {
+        long deadline = android.os.SystemClock.uptimeMillis() + 5000;
+        while (android.os.SystemClock.uptimeMillis() < deadline) {
+            AtomicBoolean ready = new AtomicBoolean();
+            getInstrumentation().runOnMainSync(() -> {
+                ComputerPickerPopup picker = computerPicker(activity);
+                ready.set(open ? picker != null && picker.isShowing() && picker.panel.hasWindowFocus() : picker == null);
+            });
+            if (ready.get()) return;
+            Thread.sleep(25);
+        }
+        fail(open ? "Dropdown did not receive window focus" : "Dropdown did not close");
+    }
+    public void testChineseComputerDropdownAnchorsScrollsAndDismisses() throws Exception { runComputerDropdown("zh-CN", "light"); }
+    public void testEnglishComputerDropdownAnchorsScrollsAndDismisses() throws Exception { runComputerDropdown("en", "dark"); }
+    private void runComputerDropdown(String language, String theme) throws Exception {
+        var context = getInstrumentation().getTargetContext(); var vault = new CredentialStore(context);
+        var cachedVault = new CredentialStore(context, "remote-account-usage");
+        JSONObject original = vault.load(), originalCache = cachedVault.load();
+        String oldLanguage = MobilePreferences.get(context, "language"), oldTheme = MobilePreferences.get(context, "theme");
+        var factory = RemoteUsageActivity.clientFactory; Activity activity = null;
+        String second = "http://100.80.1.3:43127";
+        JSONObject oldData = new JSONObject(snapshot().toString().replace("Wallet", "Old Wallet"));
+        JSONObject newData = new JSONObject(snapshot().toString().replace("Wallet", "New Wallet"));
+        var reads = new java.util.concurrent.atomic.AtomicInteger();
+        boolean longList = language.equals("en");
+        try {
+            MobilePreferences.set(context, "language", language); MobilePreferences.set(context, "theme", theme);
+            vault.save(new JSONObject()); cachedVault.save(new JSONObject()); ComputerStore computers = new ComputerStore(vault);
+            for (int i = 0; i < (longList ? 16 : 5); i++) computers.save(new JSONObject().put("address", "http://100.80.1." + (i + 2) + ":43127")
+                .put("token", "a".repeat(43)).put("computerName", i < 5 ? new String[]{"HP", "ROG", "MacBook", "CUHK", "Mac mini"}[i] : "A very long computer name for dropdown overflow " + i));
+            String activeChatAddress = computers.load().optString("address");
+            RemoteUsageActivity.clientFactory = address -> new RemoteApi(address) {
+                @Override public JSONObject json(String path, String token, JSONObject payload) throws java.io.IOException {
+                    if (path.equals("/v1/status")) try { return new JSONObject().put("capabilities", new org.json.JSONArray().put("account-usage")); } catch (Exception e) { throw new java.io.IOException(e); }
+                    reads.incrementAndGet(); return address.equals(second) ? newData : oldData;
+                }
+            };
+            activity = getInstrumentation().startActivitySync(new Intent(context, RemoteUsageActivity.class).putExtra("address", ADDRESS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+            waitFor(activity, "Old Wallet"); Activity current = activity; int initialReads = reads.get();
+            getInstrumentation().runOnMainSync(() -> current.getWindow().getDecorView().findViewWithTag("usageComputer").performClick());
+            getInstrumentation().waitForIdleSync();
+            getInstrumentation().runOnMainSync(() -> {
+                View anchor = current.getWindow().getDecorView().findViewWithTag("usageComputer");
+                ComputerPickerPopup picker = computerPicker(current); assertNotNull(picker); assertTrue(picker.isShowing());
+                int[] origin = new int[2], menu = new int[2]; anchor.getLocationOnScreen(origin); picker.panel.getLocationOnScreen(menu);
+                int gap = menu[1] - origin[1] - anchor.getHeight();
+                assertTrue("Dropdown stays below its anchor", gap >= 0 && gap <= Math.round(12 * context.getResources().getDisplayMetrics().density));
+                android.graphics.Rect visible = new android.graphics.Rect(); anchor.getWindowVisibleDisplayFrame(visible);
+                assertTrue(menu[0] >= visible.left && menu[0] + picker.panel.getWidth() <= visible.right);
+                assertTrue(menu[1] + picker.panel.getHeight() <= visible.bottom);
+                assertNull(picker.panel.findViewWithTag("pickerAddComputer")); assertNull(picker.panel.findViewWithTag("pickerManageComputers"));
+                assertTrue(picker.panel.findViewWithTag("switchComputer:" + ADDRESS).isSelected());
+                assertFalse(picker.panel.findViewWithTag("switchComputer:" + second).isSelected());
+                android.widget.ScrollView scroll = picker.panel.findViewWithTag("computerPickerScroll");
+                assertEquals("Only long lists need to scroll", longList, scroll.canScrollVertically(1));
+                scroll.fullScroll(View.FOCUS_DOWN);
+            });
+            screenshot("quota-usage-computer-dropdown-long-" + language + ".png");
+            getInstrumentation().runOnMainSync(() -> {
+                ComputerPickerPopup picker = computerPicker(current);
+                android.widget.ScrollView scroll = picker.panel.findViewWithTag("computerPickerScroll"); assertEquals(longList, scroll.getScrollY() > 0);
+                picker.panel.findViewWithTag("switchComputer:" + ADDRESS).performClick();
+                assertNull(computerPicker(current)); assertFalse(current.getWindow().getDecorView().findViewWithTag("usageComputer").isSelected());
+                current.getWindow().getDecorView().findViewWithTag("usageComputer").performClick();
+            });
+            assertEquals("Reselecting the current device does not refetch", initialReads, reads.get());
+            waitForComputerMenu(current, true);
+            getInstrumentation().sendKeyDownUpSync(android.view.KeyEvent.KEYCODE_BACK); waitForComputerMenu(current, false);
+            getInstrumentation().runOnMainSync(() -> {
+                assertNull(computerPicker(current)); assertFalse(current.isFinishing());
+                current.getWindow().getDecorView().findViewWithTag("usageComputer").performClick();
+            });
+            waitForComputerMenu(current, true);
+            int[] outside = new int[2];
+            getInstrumentation().runOnMainSync(() -> {
+                View header = current.getWindow().getDecorView().findViewWithTag("settingsHeader"); header.getLocationOnScreen(outside);
+                outside[0] += header.getWidth() / 2; outside[1] += header.getHeight() / 2;
+            });
+            long time = android.os.SystemClock.uptimeMillis();
+            for (int action : new int[]{android.view.MotionEvent.ACTION_DOWN, android.view.MotionEvent.ACTION_UP}) {
+                android.view.MotionEvent event = android.view.MotionEvent.obtain(time, android.os.SystemClock.uptimeMillis(), action, outside[0], outside[1], 0);
+                getInstrumentation().getUiAutomation().injectInputEvent(event, true); event.recycle();
+            }
+            waitForComputerMenu(current, false);
+            getInstrumentation().runOnMainSync(() -> {
+                assertNull("Outside tap closes the dropdown", computerPicker(current));
+                current.getWindow().getDecorView().findViewWithTag("usageComputer").performClick();
+                computerPicker(current).panel.findViewWithTag("switchComputer:" + second).performClick();
+            });
+            waitFor(activity, "New Wallet");
+            assertEquals("Usage selection must not switch the active chat", activeChatAddress, computers.load().optString("address"));
+            getInstrumentation().runOnMainSync(() -> {
+                current.getWindow().getDecorView().findViewWithTag("usageComputer").performClick();
+                assertTrue(computerPicker(current).panel.findViewWithTag("switchComputer:" + second).isSelected());
+            });
+            screenshot("quota-usage-computer-dropdown-" + language + ".png");
+            getInstrumentation().runOnMainSync(current::finish); activity = null;
+            getInstrumentation().waitForIdleSync();
+            assertNull("Leaving the page dismisses its menu", computerPicker(current));
+        } finally {
+            if (activity != null) { Activity current = activity; getInstrumentation().runOnMainSync(current::finish); }
+            getInstrumentation().waitForIdleSync(); RemoteUsageActivity.clientFactory = factory;
+            vault.save(original); cachedVault.save(originalCache);
+            MobilePreferences.set(context, "language", oldLanguage); MobilePreferences.set(context, "theme", oldTheme);
+        }
     }
     public void testChineseUsageReadingsStatisticsOfflineAndRevocation() throws Exception { runScreen("zh-CN", "light"); }
     public void testEnglishDarkUsageReadingsStatisticsOfflineAndRevocation() throws Exception { runScreen("en", "dark"); }
@@ -128,10 +241,10 @@ public class RemoteUsageTest extends InstrumentationTestCase {
             screenshot("quota-usage-choice-" + language + ".png");
             getInstrumentation().runOnMainSync(() -> {
                 try {
-                    var field = RemoteUsageActivity.class.getDeclaredField("dialog"); field.setAccessible(true);
-                    android.app.Dialog chooser = (android.app.Dialog) field.get(current);
-                    assertNotNull(chooser.getWindow().getDecorView().findViewWithTag("settingsChoicePanel"));
-                    chooser.cancel();
+                    var field = RemoteUsageActivity.class.getDeclaredField("choiceDropdown"); field.setAccessible(true);
+                    ChoiceDropdown chooser = (ChoiceDropdown) field.get(current);
+                    assertNotNull(chooser.panel.findViewWithTag("choiceDropdown"));
+                    chooser.dismiss();
                     assertEquals(chinese ? "366.3亿" : "36.6B", ((TextView) current.getWindow().getDecorView().findViewWithTag("usageTotalTokens")).getText().toString());
                 } catch (Exception e) { throw new AssertionError(e); }
             });
@@ -322,11 +435,7 @@ public class RemoteUsageTest extends InstrumentationTestCase {
             getInstrumentation().runOnMainSync(() -> {
                 try {
                     current.getWindow().getDecorView().findViewWithTag("usageComputer").performClick();
-                    var field = RemoteUsageActivity.class.getDeclaredField("dialog"); field.setAccessible(true);
-                    android.app.Dialog chooser = (android.app.Dialog) field.get(current);
-                    field = RemoteUsageActivity.class.getDeclaredField("computers"); field.setAccessible(true);
-                    @SuppressWarnings("unchecked") var targets = (java.util.List<JSONObject>) field.get(current);
-                    for (int i = 0; i < targets.size(); i++) if (targets.get(i).optString("address").equals(second)) chooser.getWindow().getDecorView().findViewWithTag("settingsChoice:" + i).performClick();
+                    computerPicker(current).panel.findViewWithTag("switchComputer:" + second).performClick();
                 } catch (Exception error) { throw new AssertionError(error); }
             });
             waitFor(activity, "New Wallet");

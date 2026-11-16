@@ -38,6 +38,7 @@ final class ComputerPickerPopup {
         LinearLayout rows = new LinearLayout(anchor.getContext()); rows.setOrientation(LinearLayout.VERTICAL);
         rows.setPadding(dp(8), dp(8), dp(8), dp(8));
         ScrollView scroll = ScrollViews.plain(anchor.getContext()); scroll.setVerticalScrollBarEnabled(false);
+        scroll.setTag("computerPickerScroll");
         scroll.addView(rows); panel.addView(scroll);
         popup = new PopupWindow(panel, -2, -2, true);
         GradientDrawable face = new GradientDrawable(); face.setColor(style.background); face.setCornerRadius(dp(Palette.RADIUS_GROUP));
@@ -52,31 +53,43 @@ final class ComputerPickerPopup {
             TextView state = label(entry.state, 12, style.muted); state.setMaxLines(2); state.setEllipsize(TextUtils.TruncateAt.END);
             state.setPadding(0, dp(3), 0, 0); state.setTag("pickerState:" + entry.address);
             state.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
-            copy.addView(state); states.put(entry.address, state);
+            if (!entry.state.isEmpty()) copy.addView(state);
+            states.put(entry.address, state);
             row.addView(copy, new LinearLayout.LayoutParams(0, -2, 1));
             row.setSelected(entry.selected);
             row.setContentDescription(entry.name + (entry.selected ? (chinese ? "，当前电脑" : ", current computer") : ""));
+            row.setTooltipText(entry.name);
+            row.setAccessibilityDelegate(new View.AccessibilityDelegate() {
+                @Override public void onInitializeAccessibilityNodeInfo(View view, android.view.accessibility.AccessibilityNodeInfo info) {
+                    super.onInitializeAccessibilityNodeInfo(view, info); info.setClassName("android.widget.RadioButton");
+                    info.setCheckable(true); info.setChecked(entry.selected);
+                }
+            });
             if (entry.selected) {
                 ImageView check = new ImageView(anchor.getContext()); check.setImageDrawable(new LineIcon("check", style.accent));
                 check.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
                 row.addView(check, new LinearLayout.LayoutParams(dp(22), dp(22)));
             }
         }
-        if (!entries.isEmpty()) {
+        if (!entries.isEmpty() && (add != null || manage != null)) {
             View divider = new View(anchor.getContext()); divider.setBackgroundColor(new SettingsStyle(anchor.getContext()).divider);
             LinearLayout.LayoutParams space = new LinearLayout.LayoutParams(-1, dp(1)); space.setMargins(dp(14), dp(8), dp(14), dp(8));
             rows.addView(divider, space);
         }
-        action(rows, "plus", chinese ? "添加电脑" : "Add computer", "pickerAddComputer", add);
-        action(rows, "settings", chinese ? "管理电脑" : "Manage computers", "pickerManageComputers", manage);
+        if (add != null) action(rows, "plus", chinese ? "添加电脑" : "Add computer", "pickerAddComputer", add);
+        if (manage != null) action(rows, "settings", chinese ? "管理电脑" : "Manage computers", "pickerManageComputers", manage);
         Rect visible = new Rect(); anchor.getWindowVisibleDisplayFrame(visible);
         int width = PopupSurface.menuWidth(anchor.getContext(), visible, PopupSurface.COMPACT_MENU_MAX_WIDTH_DP);
-        int limit = Math.max(dp(96), Math.min(dp(520), visible.height() - dp(32)));
+        int[] position = new int[2]; anchor.getLocationOnScreen(position);
+        int belowTop = position[1] + anchor.getHeight() + dp(8), aboveBottom = position[1] - dp(8);
+        int belowSpace = Math.max(0, visible.bottom - dp(8) - belowTop);
+        int aboveSpace = Math.max(0, aboveBottom - visible.top - dp(8));
+        boolean below = belowSpace >= dp(96) || belowSpace >= aboveSpace;
+        int limit = Math.max(1, Math.min(dp(520), below ? belowSpace : aboveSpace));
         panel.measure(View.MeasureSpec.makeMeasureSpec(width, View.MeasureSpec.EXACTLY), View.MeasureSpec.makeMeasureSpec(limit, View.MeasureSpec.AT_MOST));
         int height = Math.min(limit, panel.getMeasuredHeight());
-        int[] position = new int[2]; anchor.getLocationOnScreen(position);
         int left = Math.max(visible.left + dp(12), Math.min(position[0] + anchor.getWidth() - width, visible.right - width - dp(12)));
-        int top = Math.max(visible.top + dp(8), Math.min(position[1] + anchor.getHeight() + dp(8), visible.bottom - height - dp(8)));
+        int top = below ? belowTop : aboveBottom - height;
         popup.setWidth(width); popup.setHeight(height);
         panel.capture(anchor.getRootView(), left, top, width, height);
         popup.showAtLocation(anchor, Gravity.TOP | Gravity.LEFT, left, top);
@@ -108,6 +121,7 @@ final class ComputerPickerPopup {
     }
 
     boolean isShowing() { return popup.isShowing(); }
+    void onDismiss(Runnable action) { popup.setOnDismissListener(action::run); }
     void dismiss() { popup.dismiss(); }
     private int dp(int value) { return style.dp(value); }
 }

@@ -10,6 +10,7 @@ const path = require('node:path');
 const { setImmediate: nextEventLoopTurn } = require('node:timers/promises');
 const { pathToFileURL } = require('node:url');
 const { liveWebContents } = require('./live-web-contents');
+const conversationEventFilter = new (require('./conversation-event-filter').ConversationEventFilter)();
 const { startApiRouter } = require('../api/api-router.js');
 const routerConfig = require('../api/api-router-config.js');
 const { createCompactionSummarizer } = require('../api/compaction-summarizer.js');
@@ -43,6 +44,7 @@ const { createDshChat } = require('../engines/dsh-session');
 const { createGrokChat } = require('../engines/grok-session');
 const { createGrokAccount } = require('../engines/grok-account');
 const { harnessThinkingRoute } = require('../api/harness-thinking');
+const { withSessionAffinity } = require('../api/session-affinity');
 const { createZoomController, readLegacyZoom } = require('./zoom-controller');
 const { createSettingsWindowSizeCache, settingsWindowBounds } = require('./settings-window-size');
 const settingsWindowSizes = createSettingsWindowSizeCache({
@@ -57,6 +59,7 @@ const { pluginCacheMaintenanceStatus, requestPluginCacheMaintenance, cancelPlugi
 const { IdleSessionReaper } = require('../engines/idle-session-reaper');
 const { attachInputContextMenu } = require('./input-context-menu');
 const { attachImageContextMenu } = require('./image-context-menu');
+const { attachExternalNavigation } = require('./external-navigation');
 const { describePreview } = require('./file-preview');
 const gitService = require('./git-service').createGitService();
 const { ENGINES: SUBSCRIPTION_MODEL_ENGINES } = require('../shared/subscription-models');
@@ -935,7 +938,7 @@ function claudeSpawnSpec(settings, opts) {
   // Unified routing: the proxy owns upstream credentials for every harness.
   // The route also carries the selected effort: the CLI's native fallback
   // (including High with MAX_THINKING_TOKENS=0) must not override it.
-  const route = harnessThinkingRoute(resolveClaudeRoute(), settings.thinkingBudget || '');
+  const route = harnessThinkingRoute(withSessionAffinity(resolveClaudeRoute(), opts.conversationId), settings.thinkingBudget || '');
   if (!settings.model) throw new Error("Select a configured model in the composer first");
   const overlayEnv = { ...managedClaudeModelEnv(settings.model),
     ANTHROPIC_BASE_URL: route.baseUrl, ANTHROPIC_AUTH_TOKEN: route.authToken, ANTHROPIC_API_KEY: '' };
@@ -1148,7 +1151,7 @@ function ensureKimiSession(settings, opts) {
     if (!account.models.some(model => model.id === settings.model)) throw new Error('Refresh the Kimi account and select an available model');
   } else {
     settings.model = routerConfig.modelId(settings.model);
-    route = resolveClaudeRoute();
+    route = withSessionAffinity(resolveClaudeRoute(), opts.conversationId);
     if (!routerConfig.publicState(readOllamaProxyConfig()).models.includes(settings.model)) throw new Error("No route is available for this model. Add one in Camellia settings.");
     const configuredContext = modelContextWindow(settings.model);
     if (configuredContext) settings.contextWindow = configuredContext;
@@ -1405,7 +1408,8 @@ sharedConversations = new SharedConversations({ dir: path.join(app.getPath('user
     // A deferred settings or network change retires a busy engine once its
     // turn ends.
     if (event.type === 'conversation:turn-end') retirePendingEngines();
-    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('dsh:conversation-event', event);
+    if (mainWindow && !mainWindow.isDestroyed() && conversationEventFilter.allows(mainWindow.webContents, event))
+      mainWindow.webContents.send('dsh:conversation-event', event);
     remoteDesktop?.publish(event);
   },
   onGoal: goal => { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('dsh:conversation-goal', goal); },
@@ -1432,7 +1436,8 @@ remoteDesktop = require('./remote/desktop').createRemoteDesktop({ app, BrowserWi
     available();
   }, log,
   manager: sharedConversations, rendererRoot: RENDERER_ROOT, loadConfig, getSettingsWindow: () => settingsWindow, apiRoutes: apiRoutesBundle,
-  networkFactory: sharedDesktopNetwork.factory, computerName, saveComputerName: name => normalizeComputerName(saveConfig({ computerName: normalizeComputerName(name) }).computerName) });
+  networkFactory: sharedDesktopNetwork.factory, computerName,
+  saveComputerName: name => normalizeComputerName(saveConfig({ computerName: normalizeComputerName(name) }).computerName) });
 const cliDevices = require('./remote/devices-desktop').createDevicesDesktop({ app, ipcMain, BrowserWindow, windowChrome,
   safeStorage: require('electron').safeStorage, shell, dialog, nativeImage: require('electron').nativeImage,
   getSurfaces: () => [settingsWindow, nativeSettingsView].map(liveWebContents).filter(Boolean),
@@ -1685,6 +1690,9 @@ function openSettingsWindow(target = {}) {
     });
     opening.window = settingsWindow; settingsOpening = null;
     const settingsContents = settingsWindow.webContents;
+    attachExternalNavigation(settingsContents, {
+      openExternal: url => shell.openExternal(url), onError: error => log(`External link: ${error.message}`),
+    });
     settingsWindow.setMenu(null);
     const closingWindow = settingsWindow;
     let settingsClosing = false, ownerStateBeforeClose = null;
@@ -1705,14 +1713,21 @@ function openSettingsWindow(target = {}) {
       // that second request instead of re-entering the close flow.
       if (settingsClosing) { log('Settings close: ignored a repeated close while saving'); return; }
       settingsClosing = true;
-      if (!ownerStateBeforeClose && owner && !owner.isDestroyed()) {
-        ownerStateBeforeClose = { minimized: owner.isMinimized(), visible: owner.isVisible() };
-      }
       void flushSettingsWindow().then(saved => {
         settingsClosing = false;
         if (closingWindow.isDestroyed()) return;
         if (!saved) { closingWindow.focus(); return; }
         settingsCloseReady = true;
+        if (owner && !owner.isDestroyed()) {
+          ownerStateBeforeClose = { minimized: owner.isMinimized(), visible: owner.isVisible(),
+            focused: closingWindow.isFocused() || owner.isFocused() };
+          // Windows can reactivate the previously used external application
+          // when its foreground owned window is destroyed. Hand focus to the
+          // workbench first, but recheck after saving so switching away during
+          // the save does not pull the user back into Camellia.
+          if (!appQuitting && ownerStateBeforeClose.focused && ownerStateBeforeClose.visible
+            && !ownerStateBeforeClose.minimized && !owner.isFocused()) owner.focus();
+        }
         closingWindow.close();
       });
     });
@@ -1736,9 +1751,11 @@ function openSettingsWindow(target = {}) {
       void setSettingsBackdrop(owner, false);
       // Windows can leave an owner minimized when its owned Settings window
       // closes. Only undo that when the owner was visible and not minimized
-      // when the close started, so an intentional minimize is preserved.
+      // immediately before closing, with Camellia still active. Do not schedule
+      // a delayed restore that could undo a subsequent minimize or app switch.
       const restoreOwner = () => {
         if (appQuitting || !owner || owner.isDestroyed() || !ownerStateBeforeClose
+          || !ownerStateBeforeClose.focused
           || ownerStateBeforeClose.minimized || !ownerStateBeforeClose.visible
           || !owner.isMinimized()) return;
         log('Settings close: restoring the workbench after an unexpected minimize');
@@ -1746,7 +1763,6 @@ function openSettingsWindow(target = {}) {
         owner.show();
       };
       restoreOwner();
-      setTimeout(restoreOwner, 120);
     });
     const destination = opening.target;
     settingsWindow.loadFile(path.join(RENDERER_ROOT, 'settings/api-settings.html'), { query: { page: destination.page || 'general', engine: destination.engine || 'dsh', ...(destination.focus ? { focus: destination.focus } : {}) } });
@@ -1788,12 +1804,8 @@ function createMainWindow() {
   mainWindow.on('page-title-updated', event => event.preventDefault());
   mainWindow.once('ready-to-show', () => { mainWindow.show(); });
 
-  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    try {
-      const u = new URL(url);
-      if (u.protocol === 'http:' || u.protocol === 'https:') { void shell.openExternal(u.href); }
-    } catch (_e) {}
-    return { action: 'deny' };
+  attachExternalNavigation(mainWindow.webContents, {
+    openExternal: url => shell.openExternal(url), onError: error => log(`External link: ${error.message}`),
   });
 
   return mainWindow;
@@ -2582,11 +2594,19 @@ if (!gotSingleInstanceLock) {
     page: path.join(RENDERER_ROOT, 'discussions/discussions.html'), chatPage: path.join(RENDERER_ROOT, 'chat/workbench.html'),
     navigate: query => switchMode('discussions', null, query), getWindow: () => mainWindow });
   ipcMain.handle('dsh:switch-mode', (_event, mode) => navigateMode(mode));
+  ipcMain.handle('dsh:conversation-watch', (event, payload) => {
+    if (!mainWindow || mainWindow.isDestroyed() || event?.sender !== mainWindow.webContents)
+      return { ok: false, error: 'Only the conversation window can change its subscription' };
+    try {
+      conversationEventFilter.watch(event.sender, payload);
+      return { ok: true };
+    } catch (error) { return { ok: false, error: error.message }; }
+  });
   ipcMain.handle('dsh:conversation-command', async (_event, { engine, action, payload, historyPage }) => {
     try { return await sharedConversations.command(engine, action, payload, { historyPage }); }
     catch (error) { return { ok: false, error: error.message }; }
     finally {
-      if (!['list-sessions', 'load-session', 'get-live', 'get-settings', 'goal-get', 'task-list', 'list-attachable-conversations', 'list-attachable-artifacts', 'visualize-get', 'visualize-state'].includes(action))
+      if (!['list-sessions', 'load-session', 'get-live', 'get-settings', 'goal-get', 'task-list', 'list-attachable-conversations', 'list-attachable-artifacts', 'visualize-get', 'visualize-state', 'diagnostic'].includes(action))
         remoteDesktop?.publish();
     }
   });

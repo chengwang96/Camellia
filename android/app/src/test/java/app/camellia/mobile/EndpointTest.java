@@ -115,6 +115,15 @@ public class EndpointTest {
         }
     }
 
+    @Test public void acceptsOnlyTheExactWorkbenchRoutes() {
+        Endpoint endpoint = new Endpoint("http://100.64.0.1:43127");
+        assertEquals("http://100.64.0.1:43127/v1/workbench", endpoint.uri("/v1/workbench").toString());
+        assertEquals("http://100.64.0.1:43127/v1/workbench/events", endpoint.uri("/v1/workbench/events").toString());
+        for (String invalid : new String[]{"/v1/workbench/", "/v1/workbench?offset=0", "/v1/workbench/events?x=1", "/v1/workbench/events/extra", "/v1/workbench//events"}) {
+            assertThrows(invalid, IllegalArgumentException.class, () -> endpoint.uri(invalid));
+        }
+    }
+
     @Test public void canonicalizesTailnetAddressOnly() {
         assertEquals("http://100.64.0.1:43127", new Endpoint(" http://100.64.0.1:43127/ ").origin());
         assertEquals("http://100.127.255.255:1", new Endpoint("http://100.127.255.255:1").origin());

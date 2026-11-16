@@ -274,10 +274,40 @@ owner's release policy. Idle retention stops processes without deleting chats
 or members' native histories.
 
 Completed streaming turns release their replay buffers, and Codex releases its
-output-item indexes. Deleting a shared conversation releases idle native sessions
+output-item indexes. Native subagent routing uses weak references: the engine
+pool owns the session lifetime, and permanent conversation deletion removes its
+routing entries. Idle release does not pin the last turn's transport/tool buffers
+through subagent controls. Failed shutdowns remain connected for retry.
+Deleting a shared conversation releases idle native sessions
 from every engine pool. Failed shutdowns remain tracked. The test harness uses
 its own process event emitter so repeated fixtures do not leak crash handlers
 onto the real Node process.
+
+Removed visualization cards dispose document/window listeners and theme
+observers through a shared removal observer. Conversation replacement and
+message truncation therefore release detached cards, while synchronous layout
+moves preserve their controls. Disposal flushes pending card state and ignores
+late load responses. The observer does not keep a registry of card DOM nodes.
+An edit/resend keeps the old reply connected but hidden until acceptance, so
+rejection, cancellation and transport errors restore the same live iframe and
+card state. Acceptance permanently removes that reply; navigation also disposes
+it. This avoids treating an asynchronous edit rollback as permanent removal.
+
+Reference verification streams JSONL strings and numeric tokens instead of
+buffering a whole row. Legacy tool rows larger than 32 MiB can be verified with
+bounded string chunks, including escaped paths near the end. Every key/value is
+scanned conservatively; malformed or unfinished JSON still stops deletion.
+Nesting is limited to 1,024 containers. The separate 32 MiB bound for standalone
+JSON metadata records remains in force. Source identity checks, cancellation and
+event-loop yields still apply.
+
+Run `node --expose-gc --test tests/session-retention.test.js` for released-session
+GC checks, `node --test tests/json-reference-scanner.test.js tests/storage-cleanup.test.js`
+for streamed references, and `python tests/visualize-lifecycle-ui.py` for card
+replacement, reparenting, pending saves and late loads in an isolated browser.
+`python tests/visualize-edit-rollback-ui.py` exercises the actual chat edit/resend
+path, including rejected/canceled sends, transport errors, acceptance and
+navigation while pending, and verifies restored card state updates and final GC.
 
 These targeted fixes and regression tests are not a proof that every engine or
 renderer is free of memory leaks; that requires a long-running heap/process soak.

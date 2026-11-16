@@ -97,7 +97,7 @@ class RemoteDiscussions {
   }
   artifactReader() {
     return {
-      conversation: (device, id) => { this.authorize(device); try { return this.getService().manager.get(id); } catch { fail(404, 'Discussion not found'); } },
+      readableConversation: (device, id) => { this.authorize(device); try { return this.getService().manager.get(id); } catch { fail(404, 'Discussion not found'); } },
       manager: { rows: state => state.messages.flatMap(message => {
         const delivery = state.deliveries.find(d => d.id === message.deliveryId);
         const attached = (message.attachments || []).map(a => ({ path: a.path }));

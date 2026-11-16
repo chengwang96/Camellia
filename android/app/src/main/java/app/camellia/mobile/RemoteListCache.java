@@ -17,6 +17,7 @@ import java.util.function.Consumer;
 final class RemoteListCache {
     static final long WRITE_DELAY_MS = 250;
     private static RemoteListCache shared;
+    private static RemoteListCache workbench;
     private final Storage storage;
     private final Consumer<Exception> errors;
     private final ScheduledThreadPoolExecutor writer = new ScheduledThreadPoolExecutor(1,
@@ -24,6 +25,7 @@ final class RemoteListCache {
     private final Object gate = new Object();
     private final LinkedHashMap<String, String> entries = new LinkedHashMap<>();
     private final long delayNanos;
+    private final int entryLimit, rowLimit;
     private long revision, saved, writingRevision, scheduleToken, dirtyAt = -1;
     private boolean writing, closed;
     private ScheduledFuture<?> scheduled;
@@ -39,22 +41,38 @@ final class RemoteListCache {
         return shared;
     }
 
+    static synchronized RemoteListCache workbench(Context context) {
+        if (workbench == null) workbench = new RemoteListCache(new CredentialStore(context, "remote-workbench-cache"), true);
+        return workbench;
+    }
+
     RemoteListCache(CredentialStore storage) {
+        this(storage, false);
+    }
+
+    private RemoteListCache(CredentialStore storage, boolean completeWorkbench) {
         this(new Storage() {
             @Override public JSONObject load() throws Exception { return storage.load(); }
             @Override public void save(JSONObject value) throws Exception { storage.save(value); }
-        }, error -> Log.w("CamelliaListCache", "Remote list cache could not be read or saved", error), WRITE_DELAY_MS);
+        }, error -> Log.w("CamelliaListCache", "Remote list cache could not be read or saved", error), WRITE_DELAY_MS, completeWorkbench);
     }
 
     RemoteListCache(Storage storage, Consumer<Exception> errors, long delayMillis) {
+        this(storage, errors, delayMillis, false);
+    }
+
+    RemoteListCache(Storage storage, Consumer<Exception> errors, long delayMillis, boolean completeWorkbench) {
         this.storage = storage; this.errors = errors; delayNanos = TimeUnit.MILLISECONDS.toNanos(delayMillis);
+        // Home is scoped to saved pairings and receives bounded summaries, not history pages.
+        entryLimit = completeWorkbench ? Integer.MAX_VALUE : 20;
+        rowLimit = completeWorkbench ? Integer.MAX_VALUE : 1000;
         writer.setRemoveOnCancelPolicy(true);
         try {
             JSONObject loaded = storage.load(); Iterator<String> keys = loaded.keys();
             while (keys.hasNext()) {
                 String key = keys.next(); JSONObject entry = loaded.optJSONObject(key);
                 if (entry != null) entries.put(key, entry.toString());
-                if (entries.size() > 20) entries.remove(entries.keySet().iterator().next());
+                if (entries.size() > entryLimit) entries.remove(entries.keySet().iterator().next());
             }
         } catch (Exception error) { errors.accept(error); }
     }
@@ -71,9 +89,9 @@ final class RemoteListCache {
         if (!credentials.has("token")) return;
         try {
             JSONArray bounded = new JSONArray();
-            for (int index = 0; index < Math.min(1000, conversations.length()); index++) bounded.put(conversations.get(index));
+            for (int index = 0; index < Math.min(rowLimit, conversations.length()); index++) bounded.put(conversations.get(index));
             String value = new JSONObject().put("conversations", bounded)
-                .put("nextOffset", conversations.length() > 1000 ? 1000 : nextOffset)
+                .put("nextOffset", conversations.length() > rowLimit ? rowLimit : nextOffset)
                 .put("workspaces", workspaces).put("includeUnassigned", independent).toString();
             if (value == null) throw new java.io.IOException("Invalid remote list cache entry");
             String key = key(credentials);
@@ -81,7 +99,7 @@ final class RemoteListCache {
                 if (closed) return;
                 if (!value.equals(entries.get(key))) {
                     entries.put(key, value);
-                    while (entries.size() > 20) {
+                    while (entries.size() > entryLimit) {
                         Iterator<String> keys = entries.keySet().iterator(); String evicted = keys.next();
                         if (evicted.equals(key)) evicted = keys.next(); entries.remove(evicted);
                     }

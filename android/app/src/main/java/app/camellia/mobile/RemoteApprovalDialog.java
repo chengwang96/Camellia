@@ -13,6 +13,15 @@ import java.util.List;
 /** One question/permission form for ordinary remote chat and discussions. */
 final class RemoteApprovalDialog {
     interface Answer { boolean send(boolean allow, JSONObject input, String optionId) throws Exception; }
+    static boolean hasQuestions(JSONObject request) {
+        JSONArray questions = request.optJSONArray("questions");
+        return questions != null && questions.length() > 0;
+    }
+    static boolean supported(JSONObject request) { return request.optBoolean("responseSupported", request.optBoolean("actionable")); }
+    static String description(JSONObject request) {
+        String details = request.optString("details").trim();
+        return String.join("\n", request.optString("reason"), details.equals("{}") ? "" : details).trim();
+    }
     private static final class Field {
         JSONObject question; EditText custom; final List<ChoiceRow> choices = new ArrayList<>();
     }
@@ -21,8 +30,7 @@ final class RemoteApprovalDialog {
         ChatStyle style = new ChatStyle(activity);
         LinearLayout body = new LinearLayout(activity); body.setOrientation(LinearLayout.VERTICAL);
         body.setPadding(style.dp(18), style.dp(8), style.dp(18), style.dp(8));
-        String nativeDetails = request.optString("details"), reason = request.optString("reason");
-        String description = String.join("\n", reason, nativeDetails.equals("{}") ? "" : nativeDetails).trim();
+        String description = description(request);
         if (!description.isEmpty()) {
             TextView details = new TextView(activity); details.setText(description);
             details.setTextSize(13); details.setTextColor(style.muted); details.setTypeface(Typeface.MONOSPACE); details.setTextIsSelectable(true); body.addView(details);

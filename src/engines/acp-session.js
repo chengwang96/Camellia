@@ -45,6 +45,8 @@ class AcpSession extends StreamingSession {
     this.eventSeq = 0;
     this.subagents = new NativeSubagents(spec.modeEngine || name.toLowerCase(), (task, replacesIds) => {
       for (const request of this.permissions.values()) if (replacesIds?.includes(request.subagentId)) request.subagentId = task.id;
+      if (['completed', 'failed', 'stopped', 'unavailable'].includes(task.status))
+        for (const [id, request] of this.permissions) if (request.subagentId === task.id) this.permissions.delete(id);
       this.emit({ type: 'gui:subagent', task, ...(replacesIds ? { replacesIds } : {}) });
     });
     this.children = this.subagents.children;
@@ -121,7 +123,7 @@ class AcpSession extends StreamingSession {
       else if (message.id !== undefined) {
         const child = message.params?._meta?.camelliaSubagentId && this.children.get(this.subagents.resolve(message.params._meta.camelliaSubagentId));
         if (message.method === 'session/request_permission' && message.params.sessionId === this.sessionId
-            && (this.running || child && ['starting', 'running', 'waiting'].includes(child.status)) && !this.cancelled && !this.compaction) {
+            && (child ? !['completed', 'failed', 'stopped'].includes(child.status) : this.running) && !this.cancelled && !this.compaction) {
           const requestId = String(message.id);
           this.permissions.set(requestId, message);
           const tool = message.params.toolCall || {};

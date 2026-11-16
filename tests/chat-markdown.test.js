@@ -98,6 +98,17 @@ test('code examples remain literal and links in tables render with the same rule
   assert.match(html, /<strong>Ready<\/strong> <code class="md-inline">a\|b<\/code>/);
 });
 
+test('code examples never reserve numbers before an actual reply citation', () => {
+  const cited = [];
+  const registry = { numberFor(url) { cited.push(url); return cited.length; } };
+  const html = chatRenderer()(
+    '`[Inline example](https://example.com/inline)`\n\n'
+    + '```md\n[Block example](https://example.com/block)\n```\n\n'
+    + '[Source](https://example.com/source)', false, '', registry);
+  assert.deepEqual(cited, ['https://example.com/source']);
+  assert.match(html, /data-chat-source="1"/);
+});
+
 test('incomplete streaming links stay readable until their closing delimiter arrives', () => {
   const render = chatRenderer(), partial = '[多账号管理](D:/Code/DSH/docs/configuration.md:62';
   assert.equal(render(partial), '<p class="md-paragraph">' + partial + '</p>');

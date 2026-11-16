@@ -11,7 +11,7 @@ function identity(conversation, canonical, stat) {
 }
 
 function files(reader, device, conversationId, selection) {
-  const conversation = reader.conversation(device, conversationId);
+  const conversation = reader.readableConversation(device, conversationId);
   const rows = reader.manager.rows ? reader.manager.rows(conversation) : reader.manager.messages(conversation);
   const result = new Map();
   const turns = [];
@@ -84,8 +84,8 @@ async function openArtifact(reader, device, conversationId, id) {
     handle = await fs.promises.open(file.canonical, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0));
     const stat = await handle.stat();
     const canonical = await fs.promises.realpath(file.canonical);
-    const conversation = reader.conversation(device, conversationId);
-    if (file.managedConversationId) reader.conversation(device, file.managedConversationId);
+    const conversation = reader.readableConversation(device, conversationId);
+    if (file.managedConversationId) reader.readableConversation(device, file.managedConversationId);
     if (!stat.isFile() || identity(conversation, canonical, stat) !== id) fail(404, 'Artifact changed; refresh the list');
     return { ...file, handle };
   } catch (error) {

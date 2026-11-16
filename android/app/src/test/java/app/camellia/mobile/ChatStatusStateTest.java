@@ -7,9 +7,11 @@ public class ChatStatusStateTest {
     @Test public void unreadFailureSurvivesSnapshotsAndReconnect() {
         ChatStatusState state = new ChatStatusState(); state.work("Ready");
         state.error("Send unconfirmed", false); state.work("Replying");
+        assertFalse("An unread failure must open its details rather than work controls", state.showsWork(10000));
         state.error("Connection interrupted", true); state.reconnected();
         assertEquals("Send unconfirmed", state.text(10000)); assertTrue(state.isError());
         state.clear(); assertEquals("Replying", state.text(10000)); assertFalse(state.isError());
+        assertTrue(state.showsWork(10000));
     }
 
     @Test public void connectionRecoveryClearsOnlyItsOwnFailure() {
@@ -22,8 +24,10 @@ public class ChatStatusStateTest {
     @Test public void briefNoticeExpiresWithoutAnIncomingSnapshot() {
         ChatStatusState state = new ChatStatusState(); state.work("Ready");
         state.notice("History loaded", 1000); state.work("Ready");
+        assertFalse(state.showsWork(3000));
         assertEquals("History loaded", state.text(3000));
         assertEquals("Ready", state.text(5000));
+        assertTrue(state.showsWork(5000));
     }
 
     @Test public void newWorkReplacesSuccessNoticeButNotError() {

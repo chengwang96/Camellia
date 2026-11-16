@@ -5,15 +5,20 @@ const path = require('node:path');
 const YAML = require('yaml');
 const { writeText } = require('../shared/json-store');
 
-// DSH 0.2 imports settings.yaml only after boot. ACP/headless requests must
-// receive their model and permission configuration in the initial composition.
-function dshLaunchArgs({ runtime, home, profile, config }) {
+function dshVersion(runtime) {
   let version = runtime.version;
   if (!version) {
     try { version = JSON.parse(fs.readFileSync(path.resolve(path.dirname(runtime.file), '../package.json'), 'utf8')).version; }
     catch (error) { if (error.code !== 'ENOENT') throw error; }
   }
-  const [major, minor] = String(version || '0.1').split('.').map(Number);
+  return String(version || '0.1');
+}
+
+// DSH 0.2 imports settings.yaml only after boot. ACP/headless requests must
+// receive their model and permission configuration in the initial composition.
+function dshLaunchArgs({ runtime, home, profile, config }) {
+  const version = dshVersion(runtime);
+  const [major, minor] = version.split('.').map(Number);
   const args = [runtime.file, '--profile', profile];
   fs.mkdirSync(home, { recursive: true });
   if (major > 0 || minor >= 2) {
@@ -104,4 +109,4 @@ function cleanupLegacyRoute(file) {
   return true;
 }
 
-module.exports = { readCredential, syncPoolProvider, cleanupLegacyRoute, dshLaunchArgs };
+module.exports = { readCredential, syncPoolProvider, cleanupLegacyRoute, dshLaunchArgs, dshVersion };

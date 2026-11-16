@@ -456,6 +456,17 @@
   .msg-user .bubble .chat-inline-image { border-color: #ffffff40; }
   .msg-user .bubble eq, .msg-user .bubble eqn { color: #fff; }
   .msg-user .attchips { display: flex; flex-wrap: wrap; gap: 6px; justify-content: flex-end; margin-top: 6px; }
+  .msg-user.attachment-only { padding-bottom: 34px; }
+  .msg-user.attachment-only .attchips { margin-top: 0; max-width: 85%; }
+  .msg-user.attachment-only .attchip-inline {
+    padding: 7px 12px; border-radius: 13px;
+    border: 1px solid var(--dsw-alias-border-l2);
+    background: var(--dsw-alias-bg-muted);
+    font: var(--f-xxs-12); color: var(--dsw-alias-label-secondary);
+    max-width: min(320px, 80vw);
+  }
+  .msg-user.attachment-only .attchip-inline-icon { color: var(--dsw-static-deepseek-500); }
+  .msg-user.attachment-only .attchip-inline-icon svg { width: 15px; height: 15px; }
   .message-actions { position: absolute; bottom: 0; right: 0; display: flex; align-items: center; gap: 6px; opacity: 0; transition: opacity .12s; }
   .msg-user:hover .message-actions, .msg-user:focus-within .message-actions { opacity: 1; }
   .message-actions time { font: var(--f-xxs-12); color: var(--dsw-alias-label-tertiary); margin-right: 4px; }
@@ -715,6 +726,106 @@
   }
   .tool-preview-file { display: inline-flex; align-items: center; max-width: 100%; margin: 10px 0 0; padding: 6px 10px; border: 1px solid var(--dsw-alias-border-l2); border-radius: 8px; background: var(--dsw-alias-bg-layer-1); color: var(--dsw-static-deepseek-500); font: var(--f-xxs-12); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
   .tool-preview-file:hover { background: var(--dsw-alias-interactive-bg-hover); }
+
+  /* Structured web search output */
+  .web-search-results {
+    margin: 0; padding: 0; list-style: none;
+    display: flex; flex-direction: column; gap: 8px;
+  }
+  .web-search-result {
+    padding: 8px 10px; border-radius: 8px;
+    background: var(--dsw-alias-bg-soft);
+    border: 1px solid var(--dsw-alias-border-l2);
+  }
+  .web-search-title {
+    display: block; color: var(--dsw-static-deepseek-500);
+    font: var(--f-xs-strong-13); text-decoration: none;
+    overflow-wrap: anywhere;
+  }
+  .web-search-title:hover { text-decoration: underline; }
+  .web-search-title:focus-visible { outline: 2px solid currentColor; outline-offset: 2px; }
+  .web-search-meta {
+    margin-top: 3px; color: var(--dsw-alias-label-tertiary);
+    font: var(--f-xxxs-11); overflow-wrap: anywhere;
+  }
+  .web-search-summary {
+    margin-top: 5px; color: var(--dsw-alias-label-secondary);
+    font: var(--f-xxs-12); line-height: 1.55; overflow-wrap: anywhere;
+  }
+  .web-search-note {
+    padding-top: 8px; color: var(--dsw-alias-label-tertiary);
+    font: var(--f-xxxs-11);
+  }
+  .md-source-marker {
+    display: inline-flex; align-items: center; justify-content: center;
+    min-width: 15px; height: 15px; margin-left: 2px; padding: 0 4px;
+    border-radius: 999px; background: var(--dsw-alias-bg-soft);
+    border: 1px solid var(--dsw-alias-border-l2);
+    color: var(--dsw-alias-label-tertiary);
+    font: var(--f-xxxs-11); line-height: 1; vertical-align: super;
+    text-decoration: none; user-select: none; cursor: pointer;
+  }
+  .md-source-marker:hover { color: var(--dsw-static-deepseek-500); border-color: currentColor; text-decoration: none; }
+  .md-source-marker:focus-visible { outline: 2px solid currentColor; outline-offset: 2px; }
+  .md a[data-chat-source]:hover + .md-source-marker {
+    color: var(--dsw-static-deepseek-500);
+    border-color: currentColor;
+  }
+  .tool-output-err {
+    color: var(--dsw-alias-state-error-primary);
+    font: var(--f-xxs-12); overflow-wrap: anywhere;
+  }
+
+  /* Structured page fetch output */
+  /* A page card owns its own size: scrolling the outer JSON box would hide the
+     preview, the expand control and the character count behind a second scrollbar. */
+  .tool-output:has(.web-fetch-card), .tool-output:has(.web-fetch-error) { max-height: none; }
+  .web-fetch-card {
+    padding: 8px 10px; border-radius: 8px;
+    background: var(--dsw-alias-bg-soft);
+    border: 1px solid var(--dsw-alias-border-l2);
+  }
+  .web-fetch-title {
+    display: block; color: var(--dsw-static-deepseek-500);
+    font: var(--f-xs-strong-13); text-decoration: none;
+    overflow-wrap: anywhere;
+  }
+  .web-fetch-title:hover { text-decoration: underline; }
+  .web-fetch-title:focus-visible { outline: 2px solid currentColor; outline-offset: 2px; }
+  .web-fetch-meta {
+    margin-top: 3px; color: var(--dsw-alias-label-tertiary);
+    font: var(--f-xxxs-11); overflow-wrap: anywhere;
+  }
+  .web-fetch-content {
+    margin: 8px 0 0; padding: 8px 10px; border-radius: 8px;
+    background: var(--dsw-alias-bg-layer-1);
+    border: 1px solid var(--dsw-alias-border-l2);
+    color: var(--dsw-alias-label-secondary);
+    font: var(--f-xxs-12); line-height: 1.6;
+    white-space: pre-wrap; word-break: break-word;
+    /* Bound the preview itself, not the surrounding card, so the page title,
+       the expand control and the character count stay visible together. */
+    max-height: 220px; overflow-y: auto;
+  }
+  .web-fetch-more { margin-top: 6px; }
+  .web-fetch-more > summary {
+    cursor: pointer; color: var(--dsw-alias-label-tertiary);
+    font: var(--f-xxxs-11); padding: 2px 0;
+  }
+  .web-fetch-more > summary:hover { color: var(--dsw-alias-label-secondary); }
+  .web-fetch-more > summary:focus-visible { outline: 2px solid currentColor; outline-offset: 2px; }
+  .web-fetch-stats, .web-fetch-empty {
+    padding-top: 6px; color: var(--dsw-alias-label-tertiary);
+    font: var(--f-xxxs-11);
+  }
+  .web-fetch-error-message {
+    margin: 0; color: var(--dsw-alias-state-error-primary);
+    font: var(--f-xxs-12); overflow-wrap: anywhere;
+  }
+  .web-fetch-error-meta {
+    margin: 4px 0 0; color: var(--dsw-alias-label-tertiary);
+    font: var(--f-xxxs-11); overflow-wrap: anywhere;
+  }
 
   /* Run result chip */
   .run-result {

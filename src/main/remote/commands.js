@@ -100,6 +100,33 @@ class RemoteCommands {
       || !workspaceId && !(device.allWorkspaces || device.includeUnassigned)) fail(404, 'Conversation not found');
     return conversation;
   }
+  // Restore is the one command an archived detail page must still be able to
+  // send. It is deliberately narrow: the device must retain control, the
+  // conversation must be archived right now, and its sequence is checked by
+  // perform() exactly as before. All other archived writes stay refused.
+  authorizeRestore(deviceId, id, requestId = null) {
+    const device = this.access.devices.find(item => item.id === deviceId);
+    if (!device || device.permission !== 'control') fail(403, 'Control permission required');
+    const conversation = this.reader.manager.items.get(id);
+    const meta = this.reader.manager.workspaces.sessionMeta();
+    if (!conversation) fail(404, 'Conversation not found');
+    if (meta.archived[id]) {
+      if (!this.reader.readable(device, conversation, meta)) fail(404, 'Conversation not found');
+      return conversation;
+    }
+    // A retried restore after it already succeeded must return its receipt.
+    // The caller checks the journal before dispatch; this path only has to let
+    // the same request reach that replay instead of turning it into a 404.
+    // A restore journal is keyed by the payload's conversation id, so find it
+    // directly instead of relying on the route variable that is null here.
+    const prior = requestId && this.entries.find(entry => entry.key === device.id + ':' + requestId
+      && entry.action === 'restore' && (entry.conversationId === id || entry.scopes && Object.hasOwn(entry.scopes, id)));
+    if (!prior) fail(404, 'Conversation not found');
+    const workspace = meta.sessionWorkspace[id] ?? null;
+    if (!(device.allWorkspaces || (workspace === null ? device.includeUnassigned : device.workspaceIds.includes(workspace))))
+      fail(403, 'Conversation scope changed');
+    return conversation;
+  }
   authorizeWorkspace(deviceId) {
     const device = this.access.devices.find(item => item.id === deviceId);
     if (!device || device.permission !== 'control' || device.allWorkspaces !== true) fail(403, 'Creating workspaces requires control of all workspaces');
@@ -157,7 +184,8 @@ class RemoteCommands {
       }
     } else if (['create-workspace', 'delete-workspace', 'rename-workspace'].includes(action) && id === null) this.authorizeWorkspace(device.id);
     else if (action === 'create' && id === null) this.authorizeCreate(device.id, payload.workspaceId);
-    else if (['archive', 'restore'].includes(action) && id === null) this.authorizeArchive(device.id, payload.conversationId);
+    else if (action === 'restore' && id === null) this.authorizeRestore(device.id, payload.conversationId, requestId);
+    else if (action === 'archive' && id === null) this.authorizeArchive(device.id, payload.conversationId);
     else this.authorize(device.id, id);
     if (action.startsWith('codex-reset-')) this.authorizeReset(device.id, id);
     if (action === 'subagent-command') {
@@ -180,9 +208,13 @@ class RemoteCommands {
     const entry = { key, fingerprint, at: Date.now(), conversationId: id, action, scopes: {} };
     if (managing) entry.scopes = Object.fromEntries(payload.targets.map(target => [target.id, this.reader.summary(this.authorize(device.id, target.id)).workspaceId]));
     else if (id) entry.scopes[id] = this.reader.summary(this.authorize(device.id, id)).workspaceId;
-    else if (['archive', 'restore'].includes(action)) entry.scopes[payload.conversationId] = this.reader.summary(this.authorizeArchive(device.id, payload.conversationId)).workspaceId;
+    else if (['archive', 'restore'].includes(action)) entry.scopes[payload.conversationId] =
+      this.reader.summary(action === 'restore'
+        ? this.authorizeRestore(device.id, payload.conversationId, requestId)
+        : this.authorizeArchive(device.id, payload.conversationId)).workspaceId;
     else if (action === 'create') entry.scopes.create = payload.workspaceId;
     if (action === 'move') entry.scopes.destination = payload.workspaceId;
+    if (action === 'restore') entry.conversationId = payload.conversationId;
     this.entries.push(entry);
     try { this.save(); } catch (error) { this.entries.pop(); throw error; }
     return receipt(await this.acknowledgement(this.dispatch(entry, device.id, id, payload)));
@@ -252,7 +284,7 @@ class RemoteCommands {
       return { ok: true, state: 'accepted', conversation: this.reader.summary(created) };
     }
     const conversationId = ['archive', 'restore'].includes(payload.action) ? payload.conversationId : id;
-    const conversation = payload.action === 'restore' ? this.authorizeArchive(deviceId, conversationId) : this.authorize(deviceId, conversationId), manager = this.reader.manager;
+    const conversation = payload.action === 'restore' ? this.authorizeRestore(deviceId, conversationId, payload.requestId) : this.authorize(deviceId, conversationId), manager = this.reader.manager;
     if (payload.action === 'stop-background-work')
       return { ...await manager.stopBackgroundWork({ sessionId: id, tasks: payload.tasks }), state: 'accepted' };
     if (payload.action === 'subagent-command') {
@@ -440,7 +472,9 @@ class RemoteCommands {
     }
   }
   async messageAttachment(device, id, seq, index) {
-    const conversation = this.reader.conversation(device, id);
+    // Message attachments belong to the transcript, which stays readable while
+    // a conversation is archived. This is not a control path.
+    const conversation = this.reader.readableConversation(device, id);
     if (!Number.isSafeInteger(seq) || seq < 1 || !Number.isSafeInteger(index) || index < 0 || index >= MAX_COUNT)
       fail(400, 'Invalid attachment location');
     const rows = this.reader.manager.rows ? this.reader.manager.rows(conversation) : this.reader.manager.messages(conversation);

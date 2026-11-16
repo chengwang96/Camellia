@@ -969,6 +969,12 @@ test('mobile clients receive child state in full and incremental snapshots with 
   assert.equal(delta.subagents[0].artifacts, undefined, 'raw child file paths never enter mobile snapshots');
   child.status = 'running'; child.approvals = [];
   assert.equal(reader.snapshot(device, visible.id, undefined, full.historyVersion).subagents[0].status, 'running');
+  child.status = 'completed'; child.result = 'Child final answer'; child.canStop = false;
+  const completed = reader.snapshot(device, visible.id, undefined, full.historyVersion);
+  assert.equal(completed.messages, undefined, 'child completion does not require a parent transcript change');
+  assert.equal(completed.subagents[0].status, 'completed');
+  assert.equal(completed.subagents[0].result, 'Child final answer');
+  assert.equal(completed.subagents[0].canStop, false);
   child.approvals = [{ requestId: 'child-approval', fingerprint: 'child-fingerprint' }];
   const read = reader.snapshot({ ...device, permission: 'read' }, visible.id, undefined, full.historyVersion);
   assert.equal(read.permission, 'read'); assert.equal(read.subagents[0].pendingApprovals, 1);
@@ -1282,7 +1288,11 @@ test('artifact listing and streaming expose only authorized workspace deliverabl
   assert.equal((await request(gateway, route + '/' + file.id, { token })).status, 404);
   const updated = (await request(gateway, route, { token })).body.artifacts.find(entry => entry.name === filename);
   manager.workspaces.archiveSession(visible.id, true);
-  assert.equal((await request(gateway, route + '/' + updated.id, { token })).status, 404);
+  // An archived conversation keeps its transcript, and its referenced files
+  // stay readable from that read-only snapshot.
+  const archivedFile = await fetch(gateway.url + route + '/' + updated.id, { headers: { Authorization: `Bearer ${token}` } });
+  assert.equal(archivedFile.status, 200);
+  assert.equal(await archivedFile.text(), 'changed');
   manager.workspaces.archiveSession(visible.id, false);
   fs.unlinkSync(path.join(root, filename));
   assert.equal((await request(gateway, route + '/' + updated.id, { token })).status, 404);
@@ -1503,6 +1513,34 @@ test('artifact listing resolves the same roots as the desktop and paginates with
   const file = first.artifacts[0];
   manager.workspaces.recordContext(visible.id, 'private', workspace);
   await assert.rejects(openArtifact(reader, device, visible.id, file.id), /not found/);
+});
+
+test('interrupted artifact downloads resume at the exact offset and revalidate identity and authorization', async context => {
+  const { root, manager, gateway, access, visible, pair } = fixture(context);
+  const original = Buffer.alloc(512 * 1024);
+  for (let i = 0; i < original.length; i++) original[i] = i % 251;
+  const filename = path.join(root, 'resume.apk'); fs.writeFileSync(filename, original);
+  manager.append(visible, { role: 'assistant', text: '`resume.apk`' });
+  const { token, deviceId } = pair(); await gateway.start('127.0.0.1', 0);
+  const base = `/v1/conversations/${visible.id}/artifacts`;
+  const file = (await request(gateway, base, { token })).body.artifacts[0];
+  const url = gateway.url + base + '/' + file.id;
+  const initial = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+  const reader = initial.body.getReader(), prefix = (await reader.read()).value;
+  await reader.cancel();
+  const resumed = await fetch(url, { headers: { Authorization: `Bearer ${token}`, Range: `bytes=${prefix.length}-` } });
+  assert.equal(resumed.status, 206);
+  assert.equal(resumed.headers.get('content-range'), `bytes ${prefix.length}-${original.length - 1}/${original.length}`);
+  assert.equal(Number(resumed.headers.get('content-length')), original.length - prefix.length);
+  assert.deepEqual(Buffer.concat([prefix, Buffer.from(await resumed.arrayBuffer())]), original);
+  for (const range of ['bytes=-1-', 'bytes=0-4', `bytes=${original.length}-`, 'bytes=9999999999999999999999999-']) {
+    const invalid = await fetch(url, { headers: { Authorization: `Bearer ${token}`, Range: range } });
+    assert.equal(invalid.status, 416); await invalid.body.cancel();
+  }
+  access.revoke(deviceId);
+  assert.equal((await fetch(url, { headers: { Authorization: `Bearer ${token}`, Range: 'bytes=4-' } })).status, 401);
+  const next = pair(); fs.writeFileSync(filename, 'changed file');
+  assert.equal((await fetch(url, { headers: { Authorization: `Bearer ${next.token}`, Range: 'bytes=4-' } })).status, 404);
 });
 
 test('artifact downloads allow eight concurrent readers and release closed connections', async context => {
@@ -1855,7 +1893,12 @@ test('read model isolates workspace scope and strips paths, credentials and nati
   for (const field of ['apiKey', 'attachments', 'artifacts', 'segments', 'cwd']) assert.ok(!JSON.stringify(snapshot).includes(`"${field}"`));
   assert.deepEqual(Object.keys(snapshot.settings).sort(), ['appliesNextTurn', 'connection', 'editable', 'engine', 'fastMode', 'model', 'modelEditable', 'models', 'permissionLevels', 'permissionMode', 'quickSwitch', 'supportsFast', 'thinking', 'version']);
   manager.workspaces.archiveSession(visible.id, true);
-  assert.throws(() => reader.snapshot(device, visible.id), /not found/);
+  // The archived conversation stays readable to an already-authorized phone,
+  // but its snapshot grants no control and exposes no configurable settings.
+  const archived = reader.snapshot(device, visible.id);
+  assert.equal(archived.permission, 'read');
+  assert.ok(archived.archived.at > 0);
+  assert.equal(archived.settings, undefined);
   manager.workspaces.archiveSession(visible.id, false);
   manager.workspaces.recordContext(visible.id, 'private', visible.cwd);
   assert.equal(reader.list(device).conversations.length, 0);
@@ -2561,6 +2604,40 @@ test('mobile archive hides the conversation, deduplicates and rejects stale stat
   ]);
 });
 
+test('an open detail stream survives archiving as a read-only snapshot', { timeout: 8000 }, async context => {
+  const { gateway, manager, access, reader, visible, pair } = fixture(context);
+  const credential = pair(), device = access.devices.find(item => item.id === credential.deviceId);
+  await gateway.start('127.0.0.1', 0);
+  const connection = await stream(gateway, visible.id, credential.token), send = payload =>
+    request(gateway, '/v1/commands', { token: credential.token, method: 'POST', payload });
+  const original = await connection.next();
+  assert.equal(original.permission, 'control');
+  assert.equal(original.archived, undefined);
+  assert.equal((await send({ requestId: require('node:crypto').randomUUID(), instanceId: gateway.instanceId,
+    action: 'archive', conversationId: visible.id, expectedSeq: visible.seq })).body.ok, true);
+  const retained = await connection.next();
+  assert.equal(retained.permission, 'read');
+  assert.ok(retained.archived.at > 0);
+  assert.deepEqual(retained.messages.map(row => row.text), ['Hello', 'World']);
+  assert.equal(retained.settings, undefined);
+  assert.deepEqual(reader.list(device).conversations.map(row => row.id), []);
+  connection.close();
+  const reconnected = await stream(gateway, visible.id, credential.token);
+  const readOnly = await reconnected.next();
+  assert.equal(readOnly.permission, 'read');
+  assert.ok(readOnly.archived.at > 0);
+  // The detail page's restore names the conversation in the payload, exactly
+  // like the Android and iOS detail clients do while still read-only.
+  const restore = { requestId: require('node:crypto').randomUUID(), instanceId: gateway.instanceId,
+    action: 'restore', conversationId: visible.id, expectedSeq: visible.seq };
+  assert.equal((await request(gateway, '/v1/commands', { token: credential.token, method: 'POST', payload: restore })).body.ok, true);
+  const writable = await reconnected.next();
+  assert.equal(writable.permission, 'control');
+  assert.equal(writable.archived, undefined);
+  reconnected.close();
+  assert.equal(manager.workspaces.sessionMeta().archived[visible.id], undefined);
+});
+
 test('mobile conversation actions rename, pin and delete with scoped deduplicated requests', async context => {
   const { gateway, manager, reader, access, visible, hidden, pair } = fixture(context);
   const credential = pair(), device = access.devices.find(item => item.id === credential.deviceId);
@@ -2672,14 +2749,22 @@ test('workspace rename is scoped, checks old name and deduplicates retries', asy
 });
 
 test('batch deletion supports 100 targets through the HTTP command limit', async context => {
-  const { gateway, manager, pair } = fixture(context);
+  const { gateway, manager, commands, pair } = fixture(context);
   const credential = pair(); await gateway.start('127.0.0.1', 0);
   const targets = Array.from({ length: 100 }, () => { const conversation = manager.create('codex', 'allowed'); return { id: conversation.id, seq: conversation.seq }; });
   const payload = { action: 'delete', requestId: require('node:crypto').randomUUID(), instanceId: gateway.instanceId, targets };
   assert.ok(JSON.stringify(payload).length > 4096);
   const reply = await request(gateway, '/v1/commands', { token: credential.token, method: 'POST', payload });
   assert.equal(reply.status, 200);
-  assert.equal(reply.body.ok, true);
+  // Disk-heavy parallel runs may legitimately cross the one-second pending
+  // acknowledgement window. Wait for that same operation and read its receipt;
+  // never repeat a destructive POST just to wait for completion.
+  if (reply.body.state === 'pending') {
+    await commands.pending.get(credential.deviceId + ':' + payload.requestId);
+  } else assert.equal(reply.body.ok, true, JSON.stringify(reply.body));
+  const completed = await request(gateway, '/v1/commands/' + payload.requestId, { token: credential.token });
+  assert.equal(completed.status, 200);
+  assert.equal(completed.body.ok, true, JSON.stringify(completed.body));
   assert.ok(targets.every(target => !manager.items.has(target.id)));
 });
 
@@ -2690,7 +2775,21 @@ test('archived listing and restore obey workspace scopes and reject stale sequen
   await manager.command('kimi', 'archive-session', { id: hidden.id, archived: true });
   const archived = await request(gateway, '/v1/archived?offset=0', { token: credential.token });
   assert.deepEqual(archived.body.conversations.map(entry => entry.id), [visible.id]);
-  assert.equal((await request(gateway, `/v1/conversations/${visible.id}`, { token: credential.token })).status, 404);
+  // An already-open phone keeps the transcript. The snapshot is read-only and
+  // names the archive state instead of looking like a deleted conversation.
+  const retained = await request(gateway, `/v1/conversations/${visible.id}`, { token: credential.token });
+  assert.equal(retained.status, 200);
+  assert.equal(retained.body.permission, 'read');
+  assert.ok(retained.body.archived.at > 0);
+  assert.equal(retained.body.settings, undefined);
+  assert.deepEqual(retained.body.messages.map(row => row.text), ['Hello', 'World']);
+  // Archived is a read-only view, not a control path: an ordinary write is
+  // still refused by the desktop even though the transcript remains visible.
+  const refused = await request(gateway, `/v1/conversations/${visible.id}/commands`, { token: credential.token, method: 'POST',
+    payload: { requestId: require('node:crypto').randomUUID(), instanceId: gateway.instanceId,
+      action: 'send', prompt: 'Should not send', expectedSeq: visible.seq } });
+  assert.notEqual(refused.body.ok, true);
+  assert.equal((await request(gateway, `/v1/conversations/${hidden.id}`, { token: credential.token })).status, 404);
   const payload = { action: 'restore', conversationId: visible.id, expectedSeq: visible.seq, requestId: require('node:crypto').randomUUID(), instanceId: gateway.instanceId };
   const send = value => request(gateway, '/v1/commands', { token: credential.token, method: 'POST', payload: value });
   assert.equal((await send({ ...payload, conversationId: hidden.id })).status, 404);
@@ -2698,6 +2797,7 @@ test('archived listing and restore obey workspace scopes and reject stale sequen
   assert.equal((await send(payload)).body.ok, true);
   assert.equal((await send(payload)).body.ok, true);
   assert.equal((await request(gateway, `/v1/conversations/${visible.id}`, { token: credential.token })).status, 200);
+  assert.equal((await request(gateway, `/v1/conversations/${visible.id}`, { token: credential.token })).body.permission, 'control');
   assert.equal((await request(gateway, '/v1/archived', { token: credential.token })).body.conversations.length, 0);
   assert.deepEqual(events.filter(event => event.type === 'conversation:archived'), [
     { type: 'conversation:archived', session_id: visible.id, engine: 'codex', archived: false },

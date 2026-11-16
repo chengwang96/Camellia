@@ -161,6 +161,26 @@ async function main() {
   await wait(() => openingFrame.shows === 1, 'modal shown after backdrop paint');
   assert.equal(settingsChildren().length, 1, 'repeated clicks open only one settings window');
   await wait(() => settings.webContents.executeJavaScript('getComputedStyle(document.body).visibility === "visible"'), 'settings language');
+  const settingsTail = await settings.webContents.executeJavaScript(`(() => {
+    const scroller = document.querySelector('.scroll-content');
+    scroller.scrollTop = scroller.scrollHeight;
+    const visible = element => {
+      const style = getComputedStyle(element), rect = element.getBoundingClientRect();
+      return style.display !== 'none' && style.visibility !== 'hidden'
+        && Number(style.opacity) > 0 && rect.width > 0 && rect.height > 0;
+    };
+    const page = document.getElementById('generalPage');
+    const last = [...page.children].filter(visible).at(-1);
+    return {max: scroller.scrollHeight - scroller.clientHeight, top: scroller.scrollTop,
+      gap: scroller.getBoundingClientRect().bottom - last.getBoundingClientRect().bottom,
+      paddingBottom: getComputedStyle(scroller).paddingBottom,
+      documentHeight: document.scrollingElement.scrollHeight, viewportHeight: innerHeight};
+  })()`);
+  assert.ok(settingsTail.max > 0, JSON.stringify(settingsTail));
+  assert.ok(Math.abs(settingsTail.top - settingsTail.max) <= 1, JSON.stringify(settingsTail));
+  assert.equal(settingsTail.paddingBottom, '0px', JSON.stringify(settingsTail));
+  assert.ok(Math.abs(settingsTail.gap) <= 1, JSON.stringify(settingsTail));
+  assert.ok(settingsTail.documentHeight <= settingsTail.viewportHeight + 1, JSON.stringify(settingsTail));
   const layout = await settings.webContents.executeJavaScript(`(() => {
     const rect = document.querySelector('.settings-main').getBoundingClientRect();
     return {top:rect.top,bottom:rect.bottom,height:innerHeight,

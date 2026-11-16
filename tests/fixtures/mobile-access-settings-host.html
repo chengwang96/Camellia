@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:">
+<title>Mobile access settings fixture — Camellia</title>
+<link rel="stylesheet" href="../../src/renderer/shared/ui-theme.css">
+<link rel="stylesheet" href="../../src/renderer/settings/api-settings.css">
+<link rel="stylesheet" href="../../src/renderer/settings/device-settings.css">
+</head><body>
+<main class="scroll-content">
+  <section id="mobilePage" class="page device-settings">
+    <section class="device-section device-card device-connection" aria-labelledby="mobile-connectionTitle">
+      <div class="device-heading"><h2 id="mobile-connectionTitle" data-copy="connection">连接</h2><span id="mobile-status" class="device-status" role="status"></span></div>
+      <div class="device-toolbar"><p id="mobile-address" class="device-address"></p><button id="mobile-copyAddress" data-copy="copyAddress">复制地址</button><button id="mobile-toggle" class="primary" disabled>…</button><span id="mobile-copyStatus" class="hint" role="status" aria-live="polite"></span></div>
+      <div id="mobile-networkControls" hidden><p id="mobile-networkState" class="hint" role="status"></p><button id="mobile-login" hidden data-copy="login">登录 Tailscale</button></div>
+      <details class="mobile-help device-help">
+        <summary data-copy="connectionHelp">连接与权限说明</summary>
+        <p class="hint" data-copy="network"></p><p id="mobile-lifetime" class="hint"></p>
+        <p class="hint" data-copy="footer"></p>
+        <button id="mobile-logout" hidden data-copy="logout">退出 Tailscale 登录</button>
+      </details>
+    </section>
+    <section class="device-section device-card device-pair" aria-labelledby="mobile-pairTitle">
+      <div class="device-heading"><h2 id="mobile-pairTitle" data-copy="pair">配对设备</h2><span id="mobile-pairSummary" class="device-status"></span></div>
+      <div class="device-name-row"><label for="mobile-deviceName" data-copy="deviceName">本机名称</label><input id="mobile-deviceName" maxlength="80" autocomplete="off"><button id="mobile-saveDeviceName" data-copy="deviceNameSave">保存名称</button><button id="mobile-invite" disabled data-copy="generate" class="primary">生成配对码</button></div>
+      <p id="mobile-deviceNameStatus" class="hint" role="status"></p>
+      <div id="mobile-invitation" hidden><div class="mobile-pair-layout"><div id="mobile-qr" class="qr"></div><div class="mobile-pair-details"><code id="mobile-code"></code><p id="mobile-expires" class="hint" role="timer"></p><p class="hint sr-only" data-copy="scanHint"></p><div class="pair-code-actions"><button id="mobile-refreshInvite" hidden data-copy="refreshCode">刷新二维码</button></div></div></div></div>
+      <div id="mobile-pairPending" class="mobile-pair-success" role="status" hidden><span class="mobile-success-mark" aria-hidden="true">…</span><div><strong id="mobile-pairPendingLabel" data-copy="pairWaiting">等待电脑授权</strong><span id="mobile-pendingName"></span></div></div>
+      <div id="mobile-pair-success" class="mobile-pair-success" role="status" hidden><span class="mobile-success-mark" aria-hidden="true">✓</span><div><strong data-copy="pairSuccess">配对成功</strong><span id="mobile-pairedName"></span></div><button id="mobile-continuePair" data-copy="continuePair">继续配对</button></div>
+      <p id="mobile-pairFailed" class="hint" role="status" hidden data-copy="pairFailed">配对请求已结束，请重新生成二维码。</p>
+      <div id="mobile-pending"></div>
+    </section>
+    <section class="device-section device-card" aria-labelledby="mobile-devicesTitle"><div class="device-heading"><h2 id="mobile-devicesTitle" data-copy="devices">已授权设备</h2><span id="mobile-devicesSummary" class="device-status"></span></div><div id="mobile-devices"></div></section>
+    <section class="device-section device-card network-path" aria-labelledby="mobile-pathTitle">
+      <div class="device-heading"><h2 id="mobile-pathTitle" data-copy="pathTitle">网络路径</h2><span id="mobile-pathSummary" class="device-status"></span></div>
+      <p id="mobile-relayPathError" class="hint error" role="status" hidden></p>
+      <div id="mobile-relayConfig" class="relay-config">
+        <div class="relay-setting"><span id="mobile-relaySwitchLabel" data-copy="relayUse">使用中继</span><input id="mobile-relayUse" type="checkbox" role="switch" aria-labelledby="mobile-relaySwitchLabel" aria-describedby="mobile-pathHint"></div>
+        <p id="mobile-pathHint" class="hint sr-only" data-copy="pathHint">关闭时由 Tailscale 自动选路。</p>
+        <div class="relay-fields" id="mobile-relayChoice" hidden>
+          <label for="mobile-relayDevice" data-copy="relayDevice">选择中继设备</label>
+          <div class="relay-device-controls">
+            <select id="mobile-relayDevice"></select>
+            <input id="mobile-relayName" maxlength="63" autocomplete="off" spellcheck="false" aria-describedby="mobile-relayRenameHint mobile-relayStatus" hidden>
+            <button id="mobile-relayRename" type="button" data-copy="rename">重命名</button>
+            <button id="mobile-relayRenameSave" type="button" class="primary" data-copy="renameSave" hidden>保存</button>
+            <button id="mobile-relayRenameCancel" type="button" data-copy="renameCancel" hidden>取消</button>
+          </div>
+          <p id="mobile-relayRenameHint" class="hint relay-rename-hint" data-copy="relayRenameHint" hidden></p>
+        </div>
+        <p id="mobile-relayStatus" class="hint" role="status" aria-live="polite" hidden></p>
+      </div>
+    </section>
+    <details class="device-section device-card advanced-settings" aria-labelledby="mobile-tailscaleTitle">
+      <summary><span id="mobile-tailscaleTitle" data-copy="tailscaleTitle">Tailscale 管理 API</span><span id="mobile-tailscaleStatus" class="device-status" role="status"></span></summary>
+      <div class="advanced-body">
+        <div id="mobile-tailscaleDetails" class="tailscale-details"></div>
+        <div id="mobile-tailscaleForm" class="tailscale-form" hidden>
+          <label for="mobile-tailscaleClientId" data-copy="tailscaleClientId">OAuth Client ID</label>
+          <input id="mobile-tailscaleClientId" autocomplete="off" spellcheck="false" maxlength="200">
+          <label for="mobile-tailscaleClientSecret" data-copy="tailscaleClientSecret">OAuth Client Secret</label>
+          <input id="mobile-tailscaleClientSecret" type="password" autocomplete="new-password" spellcheck="false" maxlength="400">
+          <p class="hint" data-copy="tailscaleScopeHint">创建 OAuth Client 时选择 policy_file: write 和 devices:core: write，可加 tag:camellia-desktop。</p>
+          <div class="device-toolbar tailscale-actions">
+            <button id="mobile-tailscaleOpen" type="button" data-copy="tailscaleOpen">打开 Tailscale 凭据页</button>
+            <button id="mobile-tailscaleSave" type="button" class="primary" data-copy="tailscaleSave">验证并保存</button>
+          </div>
+        </div>
+        <div class="device-toolbar tailscale-actions">
+          <button id="mobile-tailscaleRefresh" type="button" data-copy="tailscaleRefresh">刷新状态</button>
+          <button id="mobile-tailscaleRemove" type="button" class="danger" data-copy="tailscaleRemove" hidden>移除凭证</button>
+        </div>
+        <p id="mobile-tailscaleFeedback" class="hint" role="status" aria-live="polite"></p>
+      </div>
+    </details>
+    <p id="mobile-error" class="device-feedback" role="alert"></p>
+    <div class="mobile-page-actions"><button id="mobile-retry" hidden data-copy="retry">重试</button><button id="mobile-openPanel" hidden data-copy="openPanel">打开独立手机访问面板</button></div>
+  </section>
+</main>
+<script src="../../src/renderer/remote/remote.js"></script>
+</body></html>

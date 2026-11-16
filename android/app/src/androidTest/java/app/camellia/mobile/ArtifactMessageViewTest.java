@@ -41,6 +41,11 @@ public class ArtifactMessageViewTest extends InstrumentationTestCase {
                     assertEquals(2, opens.get());
                     more.performClick(); assertEquals(View.VISIBLE, overflow.getVisibility());
                     more.performClick(); assertEquals(View.GONE, overflow.getVisibility());
+                    ArtifactMessageView ipaCard = new ArtifactMessageView(context,
+                        List.of("研究报告.pdf", "Camellia-iOS.ipa"), true, reference -> opens.incrementAndGet());
+                    ipaCard.measure(View.MeasureSpec.makeMeasureSpec(width, View.MeasureSpec.EXACTLY), View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED));
+                    ipaCard.layout(0, 0, width, ipaCard.getMeasuredHeight());
+                    assertEquals("安装包 · IPA", meta(ipaCard, "Camellia-iOS.ipa"));
                     if (scale == 1f) {
                         android.graphics.Bitmap bitmap = android.graphics.Bitmap.createBitmap(width, card.getHeight(), android.graphics.Bitmap.Config.ARGB_8888);
                         card.draw(new android.graphics.Canvas(bitmap));
@@ -52,5 +57,10 @@ public class ArtifactMessageViewTest extends InstrumentationTestCase {
             } catch (Throwable error) { failure.set(error); }
         });
         if (failure.get() != null) throw new AssertionError(failure.get());
+    }
+
+    private static String meta(View row, String name) {
+        TextView text = row.findViewWithTag("artifactMeta:" + name);
+        return text == null ? "" : text.getText().toString();
     }
 }

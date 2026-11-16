@@ -93,7 +93,7 @@ sdk.types.StepType = SimpleNamespace(TOOL_CALL="TOOL_CALL")
 bridge = Bridge({"home": "unused"})
 updates = []
 bridge.update = updates.append
-bridge.child_specs = [{"tool_id": "spawn", "slot": 0, "title": "Fixture Reader", "prompt": "Read fixture"}]
+bridge.child_call("invoke_subagent", {"Subagents": [{"Role": "Fixture Reader", "Prompt": "Read fixture"}]}, "spawn")
 step = SimpleNamespace(trajectory_id="child", parent_trajectory_id="root", id="child:0", source="USER",
                        content="Read fixture", error="", is_complete_response=False)
 bridge.child_step(step)
@@ -119,3 +119,16 @@ step.type = "TOOL_CALL"
 step.error = "Recoverable tool failure"
 bridge.child_step(step, terminal=True)
 assert updates[-1]["task"]["status"] == "running", "A failed tool is not a failed child task"
+
+for name in ["invoke_subagent", "start_subagent"]:
+    bridge = Bridge({"home": "unused"})
+    bridge.update = updates.append
+    bridge.child_call(name, {"Subagents": [{"Role": "Reader one", "Prompt": "Read one"},
+                                         {"Role": "Reader two", "Prompt": "Read two"}]}, "batch")
+    for index, prompt in enumerate(["Read two", "Read one"]):
+        step = SimpleNamespace(trajectory_id="child-" + str(index), parent_trajectory_id="root", id="step", source="USER",
+                               content="[Message] content=" + prompt, error="", is_complete_response=False)
+        bridge.child_step(step)
+        assert updates[-1]["task"]["toolCallId"] == "batch"
+        assert updates[-1]["task"]["slot"] == 1 - index
+print("PASS: SDK subagent tool aliases bind out-of-order child trajectories to their original batch slots")

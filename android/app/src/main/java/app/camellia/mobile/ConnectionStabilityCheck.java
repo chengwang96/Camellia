@@ -20,6 +20,7 @@ final class ConnectionStabilityCheck implements AutoCloseable {
     interface Transport extends AutoCloseable {
         JSONObject status() throws Exception;
         void events(Events listener) throws Exception;
+        default JSONObject path() throws Exception { return null; }
         @Override void close();
     }
     interface Listener {
@@ -44,6 +45,7 @@ final class ConnectionStabilityCheck implements AutoCloseable {
         final boolean streamConnected, finished;
         final Issue issue;
         final Exception error;
+        final java.util.List<ComputerRoute.Sample> paths;
         Snapshot(State state, long now) {
             elapsed = Math.max(0, now - state.start); duration = state.config.duration;
             attempts = state.attempts; successes = state.successes; failures = state.failures;
@@ -52,6 +54,7 @@ final class ConnectionStabilityCheck implements AutoCloseable {
             average = successes == 0 ? 0 : Math.round((double) state.total / successes);
             jitter = successes < 2 ? 0 : Math.round((double) state.jitterTotal / (successes - 1));
             streamConnected = state.streamConnected; finished = state.finished; issue = state.issue; error = state.error;
+            paths = java.util.List.copyOf(state.paths);
         }
     }
 
@@ -59,6 +62,7 @@ final class ConnectionStabilityCheck implements AutoCloseable {
     static final class State {
         final Config config;
         final long start;
+        final java.util.List<ComputerRoute.Sample> paths = new java.util.ArrayList<>();
         long requestAt, nextRequest, lastFrame, total, minimum = Long.MAX_VALUE, maximum, previousLatency, jitterTotal;
         int attempts, successes, failures, slowRequests, heartbeats, snapshots;
         boolean inFlight, streamConnected, finished;
@@ -88,6 +92,11 @@ final class ConnectionStabilityCheck implements AutoCloseable {
             streamConnected = true; snapshots++; lastFrame = now;
         }
         void heartbeat(long now) { if (!finished) { heartbeats++; lastFrame = now; } }
+        void path(JSONObject value, long now) {
+            if (finished || value == null) return;
+            if (paths.size() == 8) paths.remove(0);
+            paths.add(new ComputerRoute.Sample(Math.max(0, now - start), value));
+        }
         private boolean instance(JSONObject value) {
             String next = value.optString("instanceId");
             if (next.isEmpty()) return true; // Existing desktops without stamps can still test transport stability.
@@ -116,8 +125,11 @@ final class ConnectionStabilityCheck implements AutoCloseable {
     private final Config config;
     private final AtomicBoolean closed = new AtomicBoolean();
     private final ScheduledExecutorService timer = Executors.newSingleThreadScheduledExecutor(action -> new Thread(action, "camellia-connection-test-watchdog"));
-    private final ExecutorService workers = Executors.newFixedThreadPool(2, action -> new Thread(action, "camellia-connection-test"));
+    // Discovery pings must not queue behind SSE or inflate the HTTP request latency.
+    private final ExecutorService workers = Executors.newFixedThreadPool(3, action -> new Thread(action, "camellia-connection-test"));
     private State state;
+    private boolean pathInFlight;
+    private long nextPath;
 
     ConnectionStabilityCheck(Transport transport, Config config, Listener listener) {
         this.transport = transport; this.config = config; this.listener = listener;
@@ -165,6 +177,16 @@ final class ConnectionStabilityCheck implements AutoCloseable {
             work(() -> {
                 try { JSONObject reply = transport.status(); post(() -> state.reply(reply, now())); }
                 catch (Exception error) { post(() -> state.requestFailed(error)); }
+            });
+        }
+        if (state.successes > 0 && !pathInFlight && time >= nextPath && time - state.start < config.duration) {
+            pathInFlight = true; nextPath = time + 5_000;
+            work(() -> {
+                JSONObject probe;
+                try { probe = transport.path(); }
+                catch (Exception ignored) { probe = new JSONObject(java.util.Map.of("path", "unreachable")); }
+                JSONObject result = probe;
+                post(() -> { pathInFlight = false; state.path(result, now()); });
             });
         }
         listener.progress(state.snapshot(time));

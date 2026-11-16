@@ -58,18 +58,33 @@ public class NetworkLifecycleTest {
         assertEquals(1, backend.closed);
     }
 
-    @Test public void routeChangeDiscardsInFlightNodeBeforeReplacementUsesDirectory() throws Exception {
+    @Test public void routeChangeDuringStartupKeepsIdentityAndRefreshesBeforePublication() throws Exception {
         backend.blockCreation();
         CompletableFuture<Token> old = lifecycle.node();
         assertTrue(backend.createStarted.await(1, TimeUnit.SECONDS));
         route.incrementAndGet();
         responsive(() -> lifecycle.routeChanged());
-        cancelled(old);
         CompletableFuture<Token> next = lifecycle.node();
         assertFalse(next.isDone());
         backend.createRelease.countDown();
-        assertEquals(2, next.get(2, TimeUnit.SECONDS).id);
-        assertEquals(List.of("create:1", "close:1", "create:2"), backend.events);
+        assertSame(old.get(2, TimeUnit.SECONDS), next.get(2, TimeUnit.SECONDS));
+        assertEquals(List.of("create:1", "route:1"), backend.events);
+    }
+
+    @Test public void cellularRouteUpdatesPreserveAnActiveDownloadAndItsNativeNode() throws Exception {
+        Token node = lifecycle.node().get(2, TimeUnit.SECONDS);
+        lifecycle.retainTransfer();
+        lifecycle.background();
+        for (int i = 0; i < 3; i++) {
+            route.incrementAndGet();
+            lifecycle.routeChanged().get(2, TimeUnit.SECONDS);
+            assertSame(node, lifecycle.node().get(2, TimeUnit.SECONDS));
+            assertFalse(node.closed);
+        }
+        assertEquals(1, backend.created);
+        assertEquals(0, backend.closed);
+        assertEquals(3, backend.refreshed);
+        lifecycle.releaseTransfer();
     }
 
     @Test public void slowCloseKeepsUiResponsiveAndBlocksOnlyTheNextCreation() throws Exception {
@@ -234,7 +249,7 @@ public class NetworkLifecycleTest {
         CountDownLatch createStarted = new CountDownLatch(0), createRelease = new CountDownLatch(0);
         CountDownLatch closeStarted = new CountDownLatch(0), closeRelease = new CountDownLatch(0);
         CountDownLatch modeStarted = new CountDownLatch(0), modeRelease = new CountDownLatch(0);
-        volatile int created, closed, live;
+        volatile int created, closed, live, refreshed;
         volatile boolean savedMode = true, failNextMode, failNextClose;
         String identity = "old";
         void blockCreation() { createStarted = new CountDownLatch(1); createRelease = new CountDownLatch(1); }
@@ -257,6 +272,10 @@ public class NetworkLifecycleTest {
             modeStarted.countDown(); assertTrue(modeRelease.await(3, TimeUnit.SECONDS));
             if (failNextMode) { failNextMode = false; throw new IOException("save failed"); }
             savedMode = value; events.add("mode:" + value);
+        }
+        @Override public void networkChanged(Token node) {
+            assertEquals("lifecycle-unit", Thread.currentThread().getName());
+            assertFalse(node.closed); refreshed++; events.add("route:" + node.id);
         }
         @Override public void forget() {
             assertEquals("lifecycle-unit", Thread.currentThread().getName()); assertEquals(0, live);

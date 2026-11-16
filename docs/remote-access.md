@@ -7,11 +7,25 @@ Camellia's desktop gateway lets an approved Android device read and control desk
 1. On the desktop, open **Settings → Mobile access** and enable the embedded network. Sign in through the official Tailscale browser flow. The desktop shows its own Tailnet address, usually `100.x.x.x:43127`.
 2. Sign the Android client into the same Tailnet. The embedded phone and desktop nodes are distinct devices; Tailnet policy and device approval must allow their connection.
 3. Generate a pairing code on the desktop. Scan its QR code on Android or enter the displayed address and one-time code manually. The code expires after five minutes.
-4. Review the device name on the desktop and explicitly approve the request. New approvals cover current and future workspaces and standalone conversations; archived conversations remain unavailable.
+4. Review the device name on the desktop and explicitly approve the request. New approvals cover current and future workspaces and standalone conversations. Archived conversations stay out of the ordinary list but remain readable, and only restorable, when a phone is already viewing one.
 
 The QR code contains a versioned JSON object with `v`, `type`, `address`, and `code`. It does not carry the computer name or a device token. Existing restricted devices keep their scope until explicitly upgraded or paired again. Revoke a device in Mobile access to close its streams and reject future requests. Closing the settings panel does not close the gateway; fully quitting Camellia or sleeping the computer interrupts access. If trusted devices remain, the desktop may restore the gateway at startup with its saved login, without opening a browser or creating a new approval.
 
-Mobile access and **CLI devices** share the desktop embedded node. Signing out or stopping that network also disconnects CLI devices. Neither side installs a system VPN or changes Tailscale ACLs, firewall rules, MagicDNS, or sleep settings. If a page reports `Local remote-access window required` after a source update, fully quit the old desktop process, including the tray instance, and restart it.
+Mobile access and **CLI devices** share the desktop embedded node. Signing out or stopping that network also disconnects CLI devices. Neither side installs a system VPN or changes firewall rules, MagicDNS, or sleep settings. If a page reports `Local remote-access window required` after a source update, fully quit the old desktop process, including the tray instance, and restart it.
+
+## Choose a network path
+
+Tailscale chooses the path automatically for every phone-to-computer connection. It first tries a direct UDP connection, then a peer relay when the tailnet grants one, and finally Tailscale's DERP relays. It keeps retrying a direct path and upgrades the connection when possible. The phone labels each computer with the observed route: **Direct · peer-to-peer**, **VPS relay · Peer Relay**, or **Public relay · DERP**.
+
+Direct UDP can cross the public internet using NAT traversal; it does not require the phone and computer to share a router, LAN or city. The phone classifies the target's discovery-ping response, rather than inferring the path from Wi-Fi, geographic distance or HTTP latency. Refreshing computer status or changing the phone network clears previous labels, and results from an older refresh cannot overwrite the current one. Failed probes remove the old label without marking a successful HTTP connection as failed.
+
+Settings → Mobile access → **Network path** is a switch for this computer, not a tailnet-wide relay manager. It is off by default, so Tailscale chooses direct or DERP automatically. Turning it on lets the user choose one device that already has the `Peer Relay` marker in the Tailscale admin console. Saving writes a grant whose `src` is this computer's Tailnet IPv4 address and whose `dst` is the selected relay's Tailnet IPv4 address. It does not add or replace device tags or change another computer's relay access. Turning the switch off removes only that exact grant.
+
+Camellia reads the whole policy file, validates the candidate, and writes it with the ETag from that read, so a concurrent ACL edit fails instead of being overwritten. Existing relay grants, including tag-based and broader grants, are recognized as usable and left unchanged. The switch controls authorization only; it does not start the relay service or select a route outside Tailscale's direct-then-peer-relay-then-DERP order.
+
+The Tailscale REST API does not expose whether a device has enabled its relay UDP port. Camellia therefore treats a configured grant as the authoritative relay marker; the candidate picker asks the user to choose only servers that already run `tailscale set --relay-server-port`. It cannot discover an unconfigured relay service automatically.
+
+An OAuth client is optional for this step. Create it from the Tailscale Trust credentials page with `policy_file:write` and `devices:core:write`; Camellia stores the client secret with Electron `safeStorage`. The grant takes effect only when the VPS also runs `tailscale set --relay-server-port=<port>` and its firewall or cloud security group allows that UDP port. Applying the grant does not start or configure the relay process.
 
 ## Security and data boundaries
 
@@ -24,7 +38,7 @@ The desktop advertises `desktop-restart` only to full-device control devices. `P
 - Application HTTP travels inside the Tailscale tunnel. The Android client accepts only an explicit Tailnet IPv4 address and port, does not follow redirects, and does not send its token through a system HTTP proxy. Host and Origin checks block cross-origin browser use.
 - Authorized devices can read conversation text and referenced artifact bytes. Secrets written in a message body are part of that body; Camellia does not redact them. API keys are absent from ordinary status and history responses.
 - An all-access control device can request a `camellia-api-routes` v2 export through `GET /v1/api-keys`; it contains plaintext provider keys. Android asks for confirmation before replacing its own encrypted provider configuration. The desktop configuration is not changed.
-- Access is checked again for every request and event stream. Archiving or moving a conversation out of an older restricted scope removes access; revocation closes streams. Pairing is rate limited, and at most 16 event streams (four per device) are allowed.
+- Access is checked again for every request and event stream. Archiving leaves an already-open transcript readable with `permission: "read"` and an `archived` marker, so the phone shows a read-only archived state instead of treating it as deleted; every write command is still refused until it is restored. Moving a conversation out of an older restricted scope removes access, and revocation closes streams. Pairing is rate limited, and at most 16 event streams (four per device) are allowed.
 
 ## Diagnose a phone connection
 
@@ -55,6 +69,8 @@ Every event subscription begins with a current snapshot, so clients can use it d
 | GET | `/v1/conversations/{id}/attachments/{seq}/{index}` | Bytes for an attachment the phone sent on that message, scoped to the gateway's mobile-upload folders. |
 | GET | `/v1/conversations/{id}/events` | Server-sent snapshot when the conversation changes. |
 | GET | `/v1/conversations/events` | Server-sent list snapshots with `listVersion`, `instanceId`, cursor, and a current first page in `conversationList`. |
+| GET | `/v1/workbench` | All authorized active conversations plus the ten most recent idle conversations, sorted by activity time. Lightweight summaries omit transcripts, files and task commands. |
+| GET | `/v1/workbench/events` | Server-sent home snapshots in `workbench`, with a content-derived `listVersion`. Advertised as `workbench-summary`. |
 | GET | `/v1/api-keys` | Plaintext API-route export; requires all-access control permission and the `api-keys` capability. |
 | GET | `/v1/account-usage` | Sanitized subscription quotas, API balances and local usage aggregates; requires all-access control and the `account-usage` capability. |
 | POST | `/v1/account-usage/refresh` | Submit `{}` to start a coalesced account refresh; returns immediately with the current snapshot. |
@@ -62,6 +78,8 @@ Every event subscription begins with a current snapshot, so clients can use it d
 User rows may include `attachedFiles` with each file's display name, image flag and, for newly uploaded files, byte size. The attachment endpoint resolves the named message and index again, serves only files this gateway stored under its `device-attachments` or `mobile-images` folders, and never exposes a phone or desktop filesystem path. Desktop-local files that appear in the same history row remain name-only on the phone.
 
 `POST /v1/conversations/{id}/commands` accepts an idempotent `requestId`, the current `instanceId`, and an `action`. Supported actions include `send`, `find`, `stop`, `approve`, `configure`, `compact`, queue control, Goal control, and scheduled-task control when advertised in `capabilities`. `send` accepts `prompt`, `expectedSeq`, and optional `queue: true`; a queue holds at most 50 messages per conversation and 200 overall. `/find …` text is answered on the desktop without starting an engine; a newer client can use the dedicated `find` action. An approval is bound to `runId`, `approvalId`, and a content fingerprint, and only grants or denies one request. `stop` must match the current `runId`.
+
+Android's Work status sheet previews pending questions and opens the same answer form as the conversation's Answer questions button. Single-choice, multiple-choice and typed answers return to the original native request; Later leaves it pending and Skip questions sends no selected answer. Empty native input (`{}`) is hidden. The sheet refreshes when requests or control permissions change, and submissions recheck the conversation, server instance, run and fingerprint. Requests without `responseSupported` remain desktop-only. iOS ordinary-conversation question forms remain a separate parity gap.
 
 Desktop composer messages and paired-device messages share one computer-owned queue ordered by host acceptance time. Both desktop and phone show the merged order with each entry's original `desktop` or `mobile` source. Either device can edit, remove, or send an entry into the current task. In-place edits retain the original source, device authorization, queue position, and prepared attachments; a stale edit cannot overwrite a newer one. Phone snapshots and command receipts carry attachment names and image flags without computer filesystem paths. Queue removals, pauses, and resumes keep the same order for the remaining entries.
 

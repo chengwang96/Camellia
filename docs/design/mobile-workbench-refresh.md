@@ -1,19 +1,19 @@
 # Mobile Workbench Refresh
 
-Status: Android phone and tablet landscape split-screen implementation is in the `1.1.1` hardware-test channel (build 117); iPad composition remains future work.
+Status: Implemented on Android phones and in tablet landscape split views, including multi-server Home and the unified composer footer; iPad composition remains future work.
 
-This document describes the planned visual refresh for the Android and iOS clients. Except for the throttled Workbench activity refresh described below, it does not change navigation, network, draft, command, approval, or conversation data behavior.
+This document describes the mobile visual refresh and Android's multi-server Workbench. Home aggregates authorized summaries without changing draft, command, approval or conversation-detail behavior. iOS still has the older Home and navigation structure where noted below.
 
 ## Android implementation
 
-Build 117 applies the phone visual layer:
+The Android implementation uses:
 
 - Runtime design tokens in `Palette`, with compact radii and the neutral workbench background.
 - `AgentBadge`, `StatusPill`, and `WorkbenchNavigation` shared views.
 - Compact session rows with file/workspace/time context and all/running/waiting/files/archived filters that wrap to two rows on narrow phones.
-- A Running section followed by an idle-only Recent section, both painted from cache and kept current by a live conversation-list subscription while Workbench is visible. Returning from the background reopens the subscription and refreshes from the paired computer; desktops without the event endpoint fall back to a 15-second poll. Local chat and settings share a compact shortcut card; computer management lives in the Computers destination.
+- Android's Running and idle-only Recent sections aggregate every paired server, paint cached summaries immediately and update independently through lightweight Workbench subscriptions. Slow or disconnected hosts never gate other hosts or chat requests. Old servers use paginated list subscriptions, with independent polling when streams are unavailable. Local chat and settings share a compact shortcut card; computer management lives in the Computers destination. iOS's older Home does not yet have these sections.
 - A four-destination phone navigation bar for Workbench, Sessions, Computers, and Settings.
-- A priority-folded `remoteWorkSummary` row for approvals, failed commands, goals/tasks, background work, and queue, backed by a WorkSheet with direct approval/background actions and section details. A plain running turn is already shown by the transcript/status line, so it does not create this row.
+- A single composer footer combines the current reply state with approvals, unconfirmed commands, goal state, scheduled-task counts and background work. There is no separate work-summary row above the composer. Tap the footer to open the WorkSheet for approvals, goal/task controls and background actions. Unread errors keep their details; pending commands retain same-request retry, with a Work status action in that dialog. Queued messages use the dedicated queue tray for their count, delivery state, preview and management action.
 - The Goal/tasks section reads the conversation's automation snapshot independently of its live turn. It shows full selectable objectives/instructions and existing pause/resume controls directly in the scrollable sheet, updates when automation changes, and applies the same completed-goal visibility rule as the inline bar.
 - Compact ToolActivity and Artifact rows.
 - Compact Settings groups for account/connection, application/permissions, data/diagnostics and about.
@@ -76,7 +76,7 @@ The phone remains portrait-only. The first tablet composition is the wide remote
 3. **Borders over shadows.** Hairlines and tonal surfaces establish hierarchy; reserve shadows for the composer and sheets.
 4. **Compact, not cramped.** Aim for a 16dp page gutter and 12-14dp card padding while keeping 48dp touch targets.
 5. **Message-first chat.** Assistant content reads on the page; tool activity collapses into one row instead of becoming another card stack.
-6. **One status summary.** Goal, queue, background work, and approvals share one summary bar with a priority rule and a dedicated sheet.
+6. **One status footer.** Reply state, goals, scheduled tasks, background work and approvals share the composer footer and work sheet; queued messages retain their dedicated tray.
 7. **Desktop continuity.** Reuse engine badges, status terms, model labels, permission terms, and artifact language rather than inventing mobile-only vocabulary.
 
 ## Tokens
@@ -183,17 +183,16 @@ The primary object on Workbench. Shows title, latest preview, engine, computer, 
 
 Compact conversation row with engine badge, title, preview, computer/workspace context, time, and status. Supports selection mode, unread marker, long press menu, and swipe actions only where the underlying state is reversible. Preserve the existing accessibility labels and test tags.
 
-### `WorkSummaryBar`
+### `ChatStatusLine`
 
-Single row above the composer. Priority order:
+The composer footer carries the current reply state. Additional work uses this priority order:
 
 1. Approval or question requiring the reader
-2. Failed or timed-out command
-3. Running goal or active turn
+2. Failed or unconfirmed command
+3. Goal or scheduled-task state
 4. Background task count
-5. Queue count
 
-The collapsed row shows the highest-priority state and a short count. Tapping opens `WorkSheet`; expanding must not duplicate the same information in separate inline cards.
+When additional work is present, tapping the footer opens `WorkSheet`. Unread errors open their details instead; unconfirmed commands retain retry with the original request ID, and that dialog also offers a Work status action. Queue counts and management stay in `QueueTray` and `QueueSheet`. Do not add a separate summary row above the composer.
 
 ### `ToolActivityRow`
 
@@ -205,7 +204,7 @@ File icon, filename, type/size, state, and one primary action. Keep artifact ref
 
 ### `ApprovalSheet`
 
-Modal height adapts to content and safe area. Header states what is being requested, body shows the exact command/path/context, actions use clear primary and secondary labels, and destructive/deny actions remain visually distinct. Approval must remain reachable from the WorkSummaryBar and notification deep links.
+Modal height adapts to content and safe area. Header states what is being requested, body shows the exact command/path/context, actions use clear primary and secondary labels, and destructive/deny actions remain visually distinct. Approval must remain reachable from the composer footer and notification deep links.
 
 ### `Composer`
 
@@ -251,12 +250,12 @@ Brand/engine mark, one short heading, one explanatory sentence, and at most two 
 - The shortcut group contains only **Local chat** and **Settings**. Computer management uses the bottom **Computers** destination; Workbench has no duplicate computer shortcut, connection-state label or connection-retry actions.
 - No count subtitle and no duplicate continue card. The first card is not repeated again below itself.
 - `运行中` section for running, permission/question and background-work conversations. It omits itself when nothing is active.
-- `最近` section for idle conversations only. It paints the existing cache first, then requests `/v1/conversations?offset=0` when Workbench becomes visible and is online and paired. Requests are coalesced and throttled to five seconds. Pulls and live pushes update the existing list without rebuilding the page, navigation or scrolling container. Cards are reused by conversation identity and visible presentation, so changes to undisplayed stream metadata do not detach them.
+- `最近` section merges idle conversations by `updatedAt` across all paired servers. Three rows are shown initially; View all expands the cached summaries in place across servers. Each server contributes its ten latest idle rows and every active row through `/v1/workbench/events`. Summaries have a separate persistent cache and never replace full conversation-list pages. Rows display their server name and use server address plus conversation ID as their identity. Clicking a row selects its saved server credentials before opening the conversation; background home refreshes never change the selected server.
 - List changes are coalesced during a touch gesture and its fling, then applied after 180ms without scrolling. The cache and subscription remain current while the gesture runs. Inserts, removals and reordering preserve the surviving visible card's offset; leaving the page discards pending UI work. Expanding/collapsing Running uses the same list update and does not restart the subscription.
 - Each running/recent row owns its own activity label. There is no page-level running/waiting total, so a completed run cannot leave a separate summary claiming that some other conversation is still running.
 - Bottom navigation.
 
-The refresh reuses the authorized conversation-list endpoint rather than opening a second connection. It is skipped while Workbench is hidden or offline and when a refresh is already in flight, so returning to Workbench cannot fan out duplicate requests.
+Each paired server owns a single coalesced home subscription on its own worker, independent of chat and command workers. Opening has a 12-second deadline; 45 seconds without a snapshot or heartbeat makes a live stream stale. Failures retry with backoff up to two minutes (429 waits at least one minute); 401/403 remove cached rows and wait for an explicit retry. A fast host updates its cards as soon as its snapshot arrives; a slow host does not gate it, and an offline host does not keep the page in a loading state. While the server's first snapshot is pending its cached rows say Checking status; once that connection attempt fails they say Offline · Previously running (or Offline · Status unconfirmed). A host whose stream succeeded but whose cached row is still unverified keeps Previously running or Status unconfirmed. Servers with no snapshot show a compact per-server notice. Home, computer-status, prefetch, image and import clients must carry an Activity context so the embedded Tailnet handles them; a context-free `RemoteApi` silently bypasses it. Leaving Home, backgrounding or changing routes cancels subscriptions and rejects late callbacks. Pull refresh restarts subscriptions at most once per five seconds without a top spinner or footer. Servers without the new endpoint use legacy list events and fetch every remaining page so older active tasks are not lost; servers without either stream poll every 15 seconds, or 30 seconds after a slow response. Existing card reuse, scroll anchoring and touch/fling coalescing still apply.
 
 ### Sessions
 
@@ -280,7 +279,7 @@ The refresh reuses the authorized conversation-list endpoint rather than opening
 - Message canvas with user bubble and assistant content on the page.
 - `ToolActivityRow` for process details.
 - `ArtifactCard` for delivered files.
-- One `WorkSummaryBar`.
+- One `ChatStatusLine` in the composer footer.
 - One compact `QueueTray` above the composer when messages are queued; full queue management opens in `QueueSheet`.
 - `Composer`.
 
@@ -308,8 +307,8 @@ Refactor order:
 1. Add semantic color/metric aliases and update `AgentBadge`, `StatusPill`, `SessionRow`, and `SettingsRow` primitives.
 2. Apply the system to Settings and Workbench using existing data.
 3. Replace the conversation list presentation while preserving loading, prefetch, selection, and search behavior.
-4. Apply the chat header, `ToolActivityRow`, `ArtifactCard`, and `WorkSummaryBar`.
-5. Consolidate approval, goal, task, queue, and background affordances into the work sheet.
+4. Apply the chat header, `ToolActivityRow`, `ArtifactCard`, and `ChatStatusLine`.
+5. Consolidate approval, goal, task and background controls in `WorkSheet`; preserve queue management in `QueueSheet`.
 6. Run visual and accessibility regression across phone and the tablet remote-chat split.
 
 Keep the current state ownership until the visual layer is stable. In particular, do not combine this work with a remote connection lifecycle refactor.
@@ -323,7 +322,7 @@ Use the same tokens and component names in SwiftUI. Keep the existing `PageStack
 - The implemented split applies to remote chat: a `300–360dp` session sidebar at the left and the existing chat as the right pane.
 - Workbench, Sessions, Computers and Settings remain single-column for now; the bottom navigation has not yet become a rail.
 - Workbench and Settings remain single centered columns on tablet portrait.
-- `WorkSummaryBar`, `ApprovalSheet`, and `Composer` keep the same appearance in both compositions.
+- `ChatStatusLine`, `ApprovalSheet`, and `Composer` keep the same appearance in both compositions.
 
 The split is enabled only when the available window is at least `840dp` wide, `600dp` tall, and wider than it is tall. Phone-sized devices remain portrait-only.
 
@@ -344,7 +343,7 @@ Behavior:
 - Existing unit and instrumentation suites remain green.
 - Drafts, attachments, edit targets, pending commands, approval deep links, and selected conversation survive page replacement and rotation.
 - Conversation list loading, pagination, prefetch, search, multi-select, archive, and rename remain unchanged.
-- Workbench activity refresh is skipped while hidden, offline or already running, and does not create a second remote connection.
+- Workbench subscriptions are coalesced per server, stop while hidden or offline, and do not consume chat or command request lanes.
 
 Release:
 
@@ -354,5 +353,5 @@ Release:
 ## Resolved implementation choices
 
 1. Workbench, Sessions, Computers and Settings are the four bottom-navigation destinations.
-2. Workbench paints recent conversations from cache, then refreshes activity through the existing list endpoint while visible.
-3. Approvals and questions take priority over failed commands, Goals/tasks, background work and the queue in `WorkSummaryBar`.
+2. Android Workbench paints all paired servers' cached tasks, then updates each through the lightweight summary stream while visible, retaining the legacy paginated fallback.
+3. Approvals and questions take priority over failed or unconfirmed commands, goals, scheduled tasks and background work in `ChatStatusLine`; queue state stays in `QueueTray`.

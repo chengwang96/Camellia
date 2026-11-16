@@ -15,7 +15,7 @@ public class WorkbenchScrollTest extends InstrumentationTestCase {
     private MainActivity activity;
     private JSONObject credentials;
     private JSONArray rows;
-    private RemoteConversationSync sync;
+    private RemoteWorkbenchSync sync;
     private RemoteApi.SnapshotListener listener;
     private final java.util.concurrent.atomic.AtomicInteger subscriptions = new java.util.concurrent.atomic.AtomicInteger();
 
@@ -32,15 +32,18 @@ public class WorkbenchScrollTest extends InstrumentationTestCase {
         for (int index = 0; index < 35; index++) rows.put(new JSONObject()
             .put("id", "scroll-" + index).put("title", "Work " + index)
             .put("engine", "codex").put("activity", "running").put("updatedAt", at));
+        RemoteListCache.workbench(context).remove(credentials);
         RemoteListCache.get(context).put(credentials, rows, -1, new JSONArray(), true);
         activity = (MainActivity) getInstrumentation().startActivitySync(new Intent(context, MainActivity.class)
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
         CountDownLatch opened = new CountDownLatch(1);
-        sync = new RemoteConversationSync(address -> new RemoteApi(address) {
+        sync = new RemoteWorkbenchSync(address -> new RemoteApi(address) {
             final CountDownLatch closed = new CountDownLatch(1);
-            @Override public void listEvents(String token, SnapshotListener callback) {
+            @Override void workbenchEvents(String token, SnapshotListener callback, SseReader.HeartbeatListener heartbeat) throws java.io.IOException {
                 subscriptions.incrementAndGet();
                 listener = callback;
+                try { callback.onSnapshot(new JSONObject().put("workbench", new JSONObject().put("conversations", rows))); }
+                catch (Exception error) { throw new java.io.IOException(error); }
                 opened.countDown();
                 try { closed.await(); }
                 catch (InterruptedException error) { Thread.currentThread().interrupt(); }
@@ -48,14 +51,14 @@ public class WorkbenchScrollTest extends InstrumentationTestCase {
             @Override public void cancel() { closed.countDown(); }
         });
         main(() -> {
-            ((RemoteConversationSync) field("conversationSync")).close();
-            field("conversationSync", sync);
+            ((RemoteWorkbenchSync) field("homeSync")).close();
+            field("homeSync", sync);
             field("credentials", credentials);
             field("foreground", false);
             field("homeRunningExpanded", true);
             invoke("homeScreen");
             field("foreground", true);
-            invoke("startConversationSync");
+            invoke("refreshHomeConversations");
         });
         assertTrue(opened.await(3, TimeUnit.SECONDS));
         getInstrumentation().waitForIdleSync();
@@ -67,14 +70,15 @@ public class WorkbenchScrollTest extends InstrumentationTestCase {
         getInstrumentation().waitForIdleSync();
         var context = getInstrumentation().getTargetContext();
         RemoteListCache.get(context).remove(credentials);
+        RemoteListCache.workbench(context).remove(credentials);
         new CredentialStore(context).clear();
         super.tearDown();
     }
 
     public void testInvisiblePushBurstKeepsPageAndCardsAttached() throws Exception {
         View[] original = new View[6];
-        String[] tags = {"workbenchNav", "homeConversations", "homeActive:scroll-0",
-            "homeActive:scroll-2", "homeShortcuts", "homeRunningSection"};
+        String[] tags = {"workbenchNav", "homeConversations", "homeActive:http://100.80.1.8:43127#scroll-0",
+            "homeActive:http://100.80.1.8:43127#scroll-2", "homeShortcuts", "homeRunningSection"};
         main(() -> { for (int i = 0; i < tags.length; i++) original[i] = view(tags[i]); });
         int[] detached = {0};
         main(() -> original[2].addOnAttachStateChangeListener(new View.OnAttachStateChangeListener() {
@@ -97,18 +101,18 @@ public class WorkbenchScrollTest extends InstrumentationTestCase {
     public void testVisibleChangeReplacesOnlyTheChangedCard() throws Exception {
         View[] original = new View[3];
         main(() -> {
-            original[0] = view("homeActive:scroll-0");
-            original[1] = view("homeActive:scroll-1");
+            original[0] = view("homeActive:http://100.80.1.8:43127#scroll-0");
+            original[1] = view("homeActive:http://100.80.1.8:43127#scroll-1");
             original[2] = view("workbenchNav");
         });
         rows.getJSONObject(0).put("title", "Needs attention").put("activity", "permission");
         push(rows);
         awaitTitle(0, "Needs attention");
         main(() -> {
-            assertNotSame(original[0], view("homeActive:scroll-0"));
-            assertSame(original[1], view("homeActive:scroll-1"));
+            assertNotSame(original[0], view("homeActive:http://100.80.1.8:43127#scroll-0"));
+            assertSame(original[1], view("homeActive:http://100.80.1.8:43127#scroll-1"));
             assertSame(original[2], view("workbenchNav"));
-            String status = ((TextView) view("homeActiveStatus:scroll-0")).getText().toString();
+            String status = ((TextView) view("homeActiveStatus:http://100.80.1.8:43127#scroll-0")).getText().toString();
             assertTrue(status.equals("等待电脑处理") || status.equals("Waiting for desktop input"));
         });
     }
@@ -118,20 +122,16 @@ public class WorkbenchScrollTest extends InstrumentationTestCase {
         View[] unchanged = new View[1];
         rows.getJSONObject(0).put("title", "Fresh from pull");
         main(() -> {
-            unchanged[0] = view("homeActive:scroll-1");
+            unchanged[0] = view("homeActive:http://100.80.1.8:43127#scroll-1");
             field("homeRefreshAt", 0L);
-            field("homeClientFactory", (java.util.function.Function<String, RemoteApi>) address -> new RemoteApi(address) {
-                @Override public JSONObject json(String path, String token, JSONObject payload) {
-                    try { return new JSONObject().put("conversations", rows).put("nextOffset", -1); }
-                    catch (Exception error) { throw new AssertionError(error); }
-                }
-            });
-            invoke("refreshHomeConversations");
+            java.lang.reflect.Field refresh = RefreshScrollView.class.getDeclaredField("refresh");
+            refresh.setAccessible(true);
+            ((Runnable) refresh.get(scroll)).run();
         });
         awaitTitle(0, "Fresh from pull");
         main(() -> {
             assertSame(scroll, field("scroll"));
-            assertSame(unchanged[0], view("homeActive:scroll-1"));
+            assertSame(unchanged[0], view("homeActive:http://100.80.1.8:43127#scroll-1"));
         });
     }
 
@@ -139,9 +139,9 @@ public class WorkbenchScrollTest extends InstrumentationTestCase {
         Object scroll = field("scroll");
         main(() -> {
             view("homeRunningToggle").performClick();
-            assertNull(view("homeActive:scroll-3"));
+            assertNull(view("homeActive:http://100.80.1.8:43127#scroll-3"));
             view("homeRunningToggle").performClick();
-            assertNotNull(view("homeActive:scroll-34"));
+            assertNotNull(view("homeActive:http://100.80.1.8:43127#scroll-34"));
             assertSame(scroll, field("scroll"));
         });
         SystemClock.sleep(200);
@@ -170,7 +170,7 @@ public class WorkbenchScrollTest extends InstrumentationTestCase {
         View[] anchor = new View[1];
         int[] offset = new int[1];
         main(() -> {
-            View row = view("homeActive:scroll-8");
+            View row = view("homeActive:http://100.80.1.8:43127#scroll-8");
             WorkbenchList list = (WorkbenchList) view("homeConversations");
             scroll.scrollTo(0, list.getTop() + row.getTop() + 10);
             touch(scroll, MotionEvent.ACTION_DOWN);
@@ -199,7 +199,7 @@ public class WorkbenchScrollTest extends InstrumentationTestCase {
         main(() -> {
             WorkbenchList list = (WorkbenchList) view("homeConversations");
             for (int i = 1; i < rows.length(); i++) {
-                View candidate = view("homeActive:scroll-" + i);
+                View candidate = view("homeActive:http://100.80.1.8:43127#scroll-" + i);
                 if (list.getTop() + candidate.getBottom() > scroll.getScrollY()) {
                     anchor[0] = candidate;
                     offset[0] = list.getTop() + candidate.getTop() - scroll.getScrollY();
@@ -213,13 +213,13 @@ public class WorkbenchScrollTest extends InstrumentationTestCase {
         push(rows);
         for (int attempt = 0; attempt < 60; attempt++) {
             boolean[] applied = {false};
-            main(() -> applied[0] = view("homeRecent:scroll-0") != null);
+            main(() -> applied[0] = view("homeRecent:http://100.80.1.8:43127#scroll-0") != null);
             if (applied[0]) break;
             SystemClock.sleep(25);
         }
         getInstrumentation().waitForIdleSync();
         main(() -> {
-            assertNotNull(view("homeRecent:scroll-0"));
+            assertNotNull(view("homeRecent:http://100.80.1.8:43127#scroll-0"));
             assertSame("Cards below a completed run remain attached", anchor[0], view((String) anchor[0].getTag()));
             WorkbenchList list = (WorkbenchList) view("homeConversations");
             assertEquals("Removing rows above the viewport must preserve its visible card offset",
@@ -247,7 +247,7 @@ public class WorkbenchScrollTest extends InstrumentationTestCase {
 
     private void push(JSONArray conversations) throws Exception {
         // Copy each wire snapshot so later test mutations cannot change an already queued push.
-        listener.onSnapshot(new JSONObject().put("conversationList", new JSONObject()
+        listener.onSnapshot(new JSONObject().put("workbench", new JSONObject()
             .put("conversations", new JSONArray(conversations.toString())).put("nextOffset", -1)
             .put("workspaces", new JSONArray()).put("includeUnassigned", true)));
     }
@@ -264,7 +264,7 @@ public class WorkbenchScrollTest extends InstrumentationTestCase {
 
     private View view(String tag) { return activity.getWindow().getDecorView().findViewWithTag(tag); }
     private String title(int index) {
-        TextView title = view("homeActive:scroll-" + index).findViewWithTag("conversationRowTitle");
+        TextView title = view("homeActive:http://100.80.1.8:43127#scroll-" + index).findViewWithTag("conversationRowTitle");
         return title.getText().toString();
     }
     private void touch(ChatScrollView scroll, int action) {

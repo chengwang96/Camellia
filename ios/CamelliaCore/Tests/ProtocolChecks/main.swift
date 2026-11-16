@@ -585,6 +585,34 @@ do {
 }
 
 do {
+    // An archived conversation is still a conversation. The desktop sends the
+    // transcript with `permission: read` plus an `archived` marker; the client
+    // must keep the rows, surface the marker and withdraw control, not treat it
+    // like a deleted session.
+    let transcript = RemoteTranscript()
+    _ = transcript.apply(remoteSnapshot(
+        "{\"instanceId\":\"A\",\"cursor\":3,\"permission\":\"read\",\"archived\":{\"at\":123},\"canRestore\":true,"
+        + "\"messages\":[{\"seq\":1,\"role\":\"user\",\"text\":\"before\"},{\"seq\":2,\"role\":\"assistant\",\"text\":\"archived reply\"}]}"
+    ))
+    checkEqual(transcript.messages.map { $0.message.seq }, [1, 2], "an archived snapshot keeps its transcript")
+    checkEqual(transcript.archivedAt, 123, "the archive marker reaches the transcript")
+    checkEqual(transcript.permission, .read, "an archived snapshot is read-only")
+    check(!(transcript.permission?.canDrive ?? true), "an archived snapshot cannot drive commands")
+    check(transcript.canRestoreArchived, "the archived snapshot offers restore")
+
+    _ = transcript.apply(remoteSnapshot(
+        "{\"instanceId\":\"A\",\"cursor\":4,\"permission\":\"control\","
+        + "\"messages\":[{\"seq\":1,\"role\":\"user\",\"text\":\"before\"},{\"seq\":2,\"role\":\"assistant\",\"text\":\"archived reply\"}]}"
+    ))
+    checkEqual(transcript.archivedAt, 0, "restoring removes the archive marker on the next snapshot")
+    checkEqual(transcript.permission, .control, "and the conversation becomes writable again")
+    check(!transcript.canRestoreArchived, "and no longer offers restore")
+    transcript.clearArchivedAfterRestore()
+    checkEqual(transcript.archivedAt, 0, "an accepted restore clears the archive banner before the next snapshot")
+    check(!transcript.canRestoreArchived, "and clears the restore action with it")
+}
+
+do {
     // An earlier page is folded in by seq, with no supersede: its first seq is
     // smaller than anything cached, so `apply` would delete the newer rows the
     // person is reading. `mergeOlder` must add the older rows and keep the rest.
@@ -2616,12 +2644,17 @@ do {
                "a path inside a code fence is an example, not a file")
     checkEqual(ArtifactReferences.names(from: "`readme.md`"), ["readme.md"], "markdown counts as a file")
     checkEqual(ArtifactReferences.names(from: "`a.PDF`"), ["a.PDF"], "the extension match ignores case")
+    checkEqual(ArtifactReferences.names(from: "`dist/Camellia.ipa` `dist/Camellia.pkg` `dist/Camellia.aab`"),
+               ["Camellia.ipa", "Camellia.pkg", "Camellia.aab"], "Apple and Android installers count as files")
     checkEqual(ArtifactReferences.names(from: "`a.pdf` `b.pdf` `c.pdf`", limit: 2), ["a.pdf", "b.pdf"],
                "the walk stops at the limit")
 }
 
 do {
     checkEqual(ArtifactReferences.kind(of: "setup.exe"), .package, "an installer is a package")
+    checkEqual(ArtifactReferences.kind(of: "Camellia.IPA"), .package, "an iOS app package is a package")
+    checkEqual(ArtifactReferences.kind(of: "Camellia.pkg"), .package, "a macOS installer package is a package")
+    checkEqual(ArtifactReferences.kind(of: "Camellia.aab"), .package, "an Android app bundle is a package")
     checkEqual(ArtifactReferences.kind(of: "报告.pdf"), .pdf, "a PDF is a PDF")
     checkEqual(ArtifactReferences.kind(of: "data.csv"), .spreadsheet, "a CSV is a spreadsheet")
     checkEqual(ArtifactReferences.kind(of: "notes.md"), .text, "markdown is text for the purpose of the label")

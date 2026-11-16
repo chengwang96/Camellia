@@ -148,7 +148,8 @@ test('Android aggregate requires the package and all shards, including on failur
   assert.equal(Number(run.env.SHARD_COUNT), jobs.ui.strategy.matrix.shard.length);
   const classes = run.run.match(/ui_classes=\(([\s\S]*?)\)/)[1].trim().split(/\s+/);
   assert.equal(new Set(classes).size, classes.length);
-  for (const name of ['ModernSettingsLayoutTest', 'NavigationVeilTest', 'UiConsistencyTest', 'SettingsFeedbackTest']) assert.ok(classes.includes(name), name);
+  for (const name of ['ModernSettingsLayoutTest', 'NavigationVeilTest', 'UiConsistencyTest', 'SettingsFeedbackTest',
+    'ChoiceDropdownTest', 'ComposerAttachmentOverflowTest', 'RemoteApprovalSheetTest', 'WorkbenchServersTest', 'ConversationListScrollTest']) assert.ok(classes.includes(name), name);
   const gateway = run.run.match(/if \[ "\$SHARD" = 1 \]; then([\s\S]*?)\nfi/)[1];
   for (const fixture of ['pairing', 'gateway', 'discussions']) assert.match(gateway, new RegExp('android-' + fixture + '-smoke\\.cjs'));
   const bash = process.platform === 'win32' ? 'C:/Program Files/Git/bin/bash.exe' : '/bin/bash';

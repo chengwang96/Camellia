@@ -17,6 +17,7 @@ import (
 	"strconv"
 	"time"
 
+	"tailscale.com/ipn"
 	"tailscale.com/tsnet"
 )
 
@@ -132,7 +133,21 @@ func (service *helper) execute(request command) (any, error) {
 				break
 			}
 		}
-		return map[string]any{"state": status.BackendState, "loginUrl": status.AuthURL, "address": address}, nil
+		deviceID, hostName := "", ""
+		if status.Self != nil {
+			deviceID, hostName = string(status.Self.ID), status.Self.HostName
+		}
+		return map[string]any{"state": status.BackendState, "loginUrl": status.AuthURL, "address": address,
+			"deviceId": deviceID, "hostName": hostName}, nil
+	case "set-hostname":
+		hostname, err := nodeHostname(request.Hostname)
+		if err != nil {
+			return nil, err
+		}
+		if _, err := client.EditPrefs(ctx, &ipn.MaskedPrefs{HostnameSet: true, Prefs: ipn.Prefs{Hostname: hostname}}); err != nil {
+			return nil, err
+		}
+		return map[string]any{"hostName": hostname}, nil
 	case "login":
 		return nil, client.StartLoginInteractive(ctx)
 	case "logout":

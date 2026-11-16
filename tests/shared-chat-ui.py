@@ -711,7 +711,7 @@ with sync_playwright() as p:
         # even though the composer holds an unrelated draft.
         expect(page.locator('.message-editor')).to_be_hidden()
         expect(page.locator('.msg-user .bubble')).to_have_text('Corrected task B')
-        expect(page.locator('#chat')).not_to_contain_text('Stopped Task B')
+        expect(page.locator('#chat')).not_to_contain_text('Stopped Task B', use_inner_text=True)
         expect(page.locator('.pending-send')).to_contain_text('Restarting this turn')
         page.screenshot(path=str(preview/f'edit-pending-send-{engine}.png'),animations='disabled')
         page.locator('.pending-send button').click()
@@ -725,7 +725,7 @@ with sync_playwright() as p:
         page.locator('.message-editor button.primary').click()
         expect(page.locator('.message-editor')).to_be_hidden()
         expect(page.locator('.msg-user .bubble')).to_have_text('Corrected task B')
-        expect(page.locator('#chat')).not_to_contain_text('Streaming Task B')
+        expect(page.locator('#chat')).not_to_contain_text('Streaming Task B', use_inner_text=True)
         assert page.evaluate('actions.filter(a=>a.action==="send" && a.payload.editSeq).length')==2
         page.evaluate('window.releaseEdit()')
         page.wait_for_function('running && !sending')

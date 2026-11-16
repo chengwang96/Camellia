@@ -78,6 +78,10 @@ final class ConnectionTestDialog implements AutoCloseable {
             @Override public void events(ConnectionStabilityCheck.Events listener) throws Exception {
                 events.listEvents(token, listener::snapshot, listener::heartbeat);
             }
+            @Override public JSONObject path() throws Exception {
+                if (!EmbeddedNetwork.enabled()) return null;
+                return EmbeddedNetwork.path(java.net.URI.create(address).getHost());
+            }
             @Override public void close() { try { requests.cancel(); } finally { events.cancel(); } }
         };
     }
@@ -158,6 +162,13 @@ final class ConnectionTestDialog implements AutoCloseable {
         text.append('\n').append(tr("相邻请求平均抖动：", "Mean successive request jitter: ")).append(value.jitter).append(" ms");
         text.append('\n').append(tr("实时连接：", "Live connection: ")).append(value.streamConnected ? tr("已建立", "Opened") : tr("未建立", "Not opened"))
             .append(tr("，心跳 ", ", heartbeats ")).append(value.heartbeats).append(tr("，更新 ", ", updates ")).append(value.snapshots);
+        text.append('\n').append(tr("路径探测（手机 → 此电脑）：", "Path probes (phone → this computer): "));
+        if (value.paths.isEmpty()) text.append(tr("无已完成的路径样本，不能据此判断直连或中继", "No completed path samples; direct or relayed transport is unconfirmed"));
+        else {
+            for (ComputerRoute.Sample sample : value.paths) text.append('\n').append(ComputerRoute.evidence(sample, chinese));
+            text.append('\n').append(tr("点对点可跨公网，不要求同一局域网；路径可能在两次探测之间变化。",
+                "Peer-to-peer can cross the internet without a shared LAN. The path may change between probes."));
+        }
         text.append("\nGET /v1/status\nSSE /v1/conversations/events");
         if (value.error != null) text.append('\n').append(tr("错误详情：", "Error details: ")).append(ErrorDetails.describe(value.error));
         return sanitize(text.toString());
@@ -179,7 +190,10 @@ final class ConnectionTestDialog implements AutoCloseable {
         return names.isEmpty() ? tr("其他网络", "Other network") : String.join(" / ", names);
     }
     private String version() {
-        try { return activity.getPackageManager().getPackageInfo(activity.getPackageName(), 0).versionName; }
+        try {
+            var info = activity.getPackageManager().getPackageInfo(activity.getPackageName(), 0);
+            return info.versionName + " (build " + info.versionCode + ")";
+        }
         catch (android.content.pm.PackageManager.NameNotFoundException ignored) { return "?"; }
     }
     private void copy() {

@@ -91,10 +91,6 @@ final class AttachmentImages {
             }, () -> AttachmentStore.preview(application, reference));
     }
 
-    static Source remote(String address, String token, String conversation, long seq, int index, long size) {
-        return remote(address, token, conversation, seq, index, size, RemoteApi::new);
-    }
-
     static Source remote(String address, String token, String conversation, long seq, int index, long size, Function<String, RemoteApi> clients) {
         return new Source("remote\n" + address + "\n" + token + "\n" + conversation + "\n" + seq + "\n" + index + "\n" + size, () -> {
             if (seq < 1 || index < 0 || index >= ChatAttachments.MAX_COUNT || size > ChatAttachments.IMAGE_MAX_BYTES

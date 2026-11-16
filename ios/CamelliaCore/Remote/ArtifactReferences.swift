@@ -71,7 +71,9 @@ public enum ArtifactReferences {
     /// Fenced code is stripped first: a path inside a code block is being shown
     /// as an example far more often than it is a file the answer made.
     private static let fencePattern = "```.*?(?:```|$)"
-    private static let extensions = "(?i).+\\.(apk|exe|msi|dmg|deb|rpm|pdf|docx?|pptx?|xlsx?|csv|tsv|txt|md|html?|png|jpe?g|gif|webp|svg|mp4|m4v|mov|webm|mp3|wav)$"
+    private static let packageExtensions = ["apk", "aab", "ipa", "exe", "msi", "dmg", "pkg", "deb", "rpm", "appimage"]
+    private static let extensions = "(?i).+\\.(" + packageExtensions.joined(separator: "|")
+        + "|pdf|docx?|pptx?|xlsx?|csv|tsv|txt|md|html?|png|jpe?g|gif|webp|svg|mp4|m4v|mov|webm|mp3|wav)$"
     private static let schemes = "(?i)^(https?|data|javascript|mailto):.*"
 
     private static let reference = try? NSRegularExpression(pattern: referencePattern)
@@ -123,8 +125,9 @@ public enum ArtifactReferences {
 
     /// Classifies a file name by its extension.
     public static func kind(of name: String) -> ArtifactKind {
-        switch fileExtension(of: name) {
-        case "APK", "EXE", "MSI", "DMG", "DEB", "RPM": return .package
+        let ext = fileExtension(of: name)
+        if packageExtensions.contains(ext.lowercased()) { return .package }
+        switch ext {
         case "PDF": return .pdf
         case "DOC", "DOCX": return .word
         case "XLS", "XLSX", "CSV", "TSV": return .spreadsheet

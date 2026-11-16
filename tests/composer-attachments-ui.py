@@ -107,6 +107,24 @@ with sync_playwright() as playwright:
             expect(page.locator('#attachRow .attchip')).to_have_count(12)
             expect(page.locator('#attachRow .attchip').first).to_be_visible()
             assert_editor_in_view(page)
+
+            # A pasted image can be the whole message. It stays one readable
+            # attachment row instead of an empty user bubble plus a loose chip.
+            page.locator('#attachRow .attchip-x').first.click()
+            page.evaluate('''() => {
+              addUser('', [{path:'C:/Users/me/AppData/Local/Camellia/pasted-image.png',
+                name:'pasted-image.png', isImage:true}], {at:Date.now(), scrollToBottom:true});
+            }''')
+            attached = page.locator('.msg-user.attachment-only').last
+            expect(attached.locator(':scope > .bubble')).to_have_count(0)
+            expect(attached.locator('.attchip-inline')).to_have_count(1)
+            expect(attached.locator('.attchip-inline')).to_contain_text('pasted-image.png')
+            expect(attached.locator('.attchips + .message-actions')).to_have_count(1)
+            box = attached.locator('.attchip-inline').bounding_box()
+            assert box['height'] >= 28, box
+            assert box['width'] > 130, box
+            if width == 1440 and theme == 'light' and engine == 'codex':
+                attached.screenshot(path=str(output / 'attachment-only-message.png'), animations='disabled')
             page.close()
             cases += 1
     browser.close()

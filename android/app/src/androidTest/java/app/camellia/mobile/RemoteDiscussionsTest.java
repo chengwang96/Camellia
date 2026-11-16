@@ -78,6 +78,65 @@ public class RemoteDiscussionsTest extends InstrumentationTestCase {
         });
     }
 
+    public void testReplyModeDropdownPreservesDraftAndSelectsInPlace() throws Exception {
+        offlineFixture();
+        ui(() -> {
+            field(activity, "connected", true); invoke("controls", new Class<?>[0]);
+            EditText input = (EditText) view("discussionComposer"); input.setText("Keep this draft"); input.setSelection(4);
+            ((ChatComposer) field(activity, "composer")).model.performClick();
+            ChoiceDropdown menu = (ChoiceDropdown) field(activity, "choiceDropdown"); assertTrue(menu.isShowing());
+            menu.panel.findViewWithTag("dropdownChoice:1").performClick();
+            assertEquals("serial", field(activity, "mode")); assertEquals("Keep this draft", input.getText().toString()); assertEquals(4, input.getSelectionStart());
+            assertNull(field(activity, "choiceDropdown"));
+        });
+    }
+    public void testDiscussionActionMenusAnchorAndDeleteStillRequiresConfirmation() throws Exception {
+        offlineFixture();
+        waitFor(() -> view("discussionPageMenu").getWidth() > 0);
+        ui(() -> view("discussionPageMenu").performClick()); getInstrumentation().waitForIdleSync();
+        ui(() -> {
+            ConversationMenu menu = (ConversationMenu) field(activity, "actionMenu"); assertTrue(menu.isShowing());
+            assertNotNull(menu.panel.findViewWithTag("conversationAction:settings"));
+            menu.panel.findViewWithTag("conversationAction:settings").performClick();
+        });
+        getInstrumentation().waitForIdleSync();
+        ui(() -> {
+            ConversationMenu groupMenu = (ConversationMenu) field(activity, "actionMenu"); assertTrue(groupMenu.isShowing());
+            groupMenu.panel.findViewWithTag("conversationAction:delete").performClick();
+        });
+        getInstrumentation().waitForIdleSync();
+        ui(() -> {
+            AlertDialog confirm = (AlertDialog) field(activity, "dialog"); assertTrue(confirm.isShowing());
+            assertTrue(((JSONObject) field(activity, "pending")).length() == 0);
+            confirm.getButton(AlertDialog.BUTTON_NEGATIVE).performClick();
+            assertEquals(groupId, field(activity, "groupId"));
+            invoke("pageMenu", new Class<?>[0]);
+        });
+        getInstrumentation().waitForIdleSync();
+        ui(() -> {
+            invoke("releasePageViews", new Class<?>[0]);
+            assertNull(field(activity, "actionMenu"));
+        });
+    }
+    public void testDiscussionPermissionUsesSharedMenuAndRetainsBusyGuard() throws Exception {
+        offlineFixture();
+        waitFor(() -> view("discussionPermission").getWidth() > 0);
+        ui(() -> {
+            field(activity, "rich", true); field(activity, "connected", true); invoke("controls", new Class<?>[0]);
+            view("discussionPermission").performClick();
+        });
+        getInstrumentation().waitForIdleSync();
+        ui(() -> {
+            RemoteSettingsPopup menu = (RemoteSettingsPopup) field(activity, "permissionPopup"); assertNotNull(menu);
+            View panel = (View) field(menu, "surface");
+            assertTrue(panel.findViewWithTag("remotePermissionOption:ask").isSelected());
+            assertNotNull(panel.findViewWithTag("remotePermissionOption:auto")); assertNotNull(panel.findViewWithTag("remotePermissionOption:full"));
+            menu.dismiss(); assertTrue(((JSONObject) field(activity, "pending")).length() == 0);
+            ((JSONObject) field(activity, "group")).put("active", true); invoke("controls", new Class<?>[0]);
+            assertFalse(view("discussionPermission").isEnabled()); invoke("showPermissionMenu", new Class<?>[0]);
+            assertFalse(menu.isShowing(view("discussionPermission")));
+        });
+    }
     public void testConnectUsesInitialEventSnapshotWithoutADuplicateRead() throws Exception {
         offlineFixture();
         var queries = new java.util.concurrent.atomic.AtomicInteger();
@@ -417,7 +476,7 @@ public class RemoteDiscussionsTest extends InstrumentationTestCase {
         String first = group.getJSONArray("participants").getJSONObject(0).getString("id"), second = group.getJSONArray("participants").getJSONObject(1).getString("id");
         ui(() -> {
             view("discussionSelect:" + first).performClick(); view("discussionSelect:" + second).performClick();
-            ((ChatComposer) field(activity, "composer")).model.performClick(); dialogView("settingsChoice:1").performClick();
+            ((ChatComposer) field(activity, "composer")).model.performClick(); ((ChoiceDropdown) field(activity, "choiceDropdown")).panel.findViewWithTag("dropdownChoice:1").performClick();
             ((EditText) view("discussionComposer")).setText("Discuss the design"); view("discussionSend").performClick();
         });
         waitFor(() -> ((java.util.Map<?, ?>) field(activity, "messages")).size() == 3 && ((EditText) view("discussionComposer")).length() == 0);

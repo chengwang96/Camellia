@@ -27,7 +27,6 @@ struct ComputersView: View {
                         .padding(.top, 22)
                         .padding(.bottom, 14)
 
-                    SettingsGroupLabel(title: "我的电脑")
                     SettingsCard {
                         ForEach(Array(model.computers.enumerated()), id: \.element.address) { index, computer in
                             if index > 0 { computerDivider }
@@ -252,11 +251,13 @@ private struct ComputerRow: View {
     @ViewBuilder private var statusLine: some View {
         if computer.isPaired {
             HStack(spacing: 6) {
-                Text(verbatim: ComputerStatus.display(state, chinese: model.usesChinese))
+                Text(verbatim: ComputerStatus.isConnected(state) || ComputerStatus.isChecking(state)
+                     ? ComputerStatus.display(state, chinese: model.usesChinese)
+                     : (model.usesChinese ? "连接失败" : "Connection failed"))
                     .font(.caption)
                     .foregroundColor(ComputerStatus.isConnected(state) || ComputerStatus.isChecking(state)
                                      ? Palette.muted : .red)
-                    .lineLimit(2)
+                    .lineLimit(1)
                     .multilineTextAlignment(.leading)
             }
         } else {
@@ -1165,6 +1166,7 @@ struct SettingsView: View {
 private struct GeneralSettingsView: View {
     @EnvironmentObject private var model: AppModel
     @State private var choice: Choice?
+    @State private var dropdown: ChoiceDropdownRequest?
     @State private var pickingFolder = false
     @State private var savingFolder = false
     @State private var folderError: String?
@@ -1269,13 +1271,25 @@ private struct GeneralSettingsView: View {
                 }
             }
         }
+        .choiceDropdownHost($dropdown)
     }
 
     private func preferenceRow(icon: String, title: String, value: String, choice: Choice) -> some View {
-        Button { self.choice = choice } label: {
-            SettingsRowLabel(icon: icon, title: title, value: value)
+        Button {
+            if choice == .language {
+                dropdown = ChoiceDropdownRequest(anchor: title, title: title, labels: choiceLabels(choice), selected: selectedIndex(choice),
+                    localizeLabels: true, choose: { select($0, for: choice) })
+            } else { self.choice = choice }
+        } label: {
+            HStack(spacing: 0) {
+                SettingsRowLabel(icon: icon, title: title, value: value, showsChevron: choice != .language)
+                if choice == .language {
+                    MobileLineIcon(name: "down", size: 14).rotationEffect(.degrees(dropdown == nil ? 0 : 180))
+                        .foregroundColor(Palette.secondary).padding(.trailing, 16)
+                }
+            }
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.plain).choiceDropdownAnchor(title)
     }
 
     private var downloadFolderLabel: String {

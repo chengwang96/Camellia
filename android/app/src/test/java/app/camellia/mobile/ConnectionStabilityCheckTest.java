@@ -108,4 +108,45 @@ public class ConnectionStabilityCheckTest {
             assertEquals(ConnectionStabilityCheck.Issue.STREAM_ERROR, result.get().issue); }
         finally { check.close(); }
     }
+
+    @Test public void pathSamplesPreserveChangesWithoutAffectingTheConnectionVerdict() throws Exception {
+        var state = state();
+        JSONObject direct = new JSONObject().put("path", "direct").put("endpoint", "203.0.113.4:41641").put("latencyMs", 533);
+        state.path(direct, 1000);
+        var earlier = state.snapshot(1000);
+        direct.put("endpoint", "changed");
+        state.path(new JSONObject().put("path", "derp").put("derpRegionCode", "sin"), 6000);
+        state.path(new JSONObject().put("path", "unreachable"), 11000);
+        assertNull(state.issue); assertEquals(0, state.failures);
+        assertEquals(1, earlier.paths.size()); assertEquals("203.0.113.4:41641", earlier.paths.get(0).endpoint);
+        assertEquals(3, state.snapshot(11000).paths.size());
+        assertEquals("derp", state.snapshot(11000).paths.get(1).path);
+        state.fail(ConnectionStabilityCheck.Issue.STREAM_ERROR, null);
+        state.path(direct, 12000); assertEquals(3, state.snapshot(12000).paths.size());
+    }
+
+    @Test public void stalledPathProbeCannotBlockHttpSamplesOrCompletion() throws Exception {
+        CountDownLatch pathEntered = new CountDownLatch(1), release = new CountDownLatch(1), done = new CountDownLatch(1);
+        AtomicReference<ConnectionStabilityCheck.Snapshot> result = new AtomicReference<>();
+        var transport = new ConnectionStabilityCheck.Transport() {
+            @Override public JSONObject status() throws Exception { return reply(FIRST); }
+            @Override public void events(ConnectionStabilityCheck.Events listener) throws Exception {
+                listener.snapshot(reply(FIRST));
+                while (!release.await(20, TimeUnit.MILLISECONDS)) listener.heartbeat();
+            }
+            @Override public JSONObject path() throws Exception {
+                pathEntered.countDown(); release.await(); return new JSONObject().put("path", "direct");
+            }
+            @Override public void close() { release.countDown(); }
+        };
+        var check = new ConnectionStabilityCheck(transport, new ConnectionStabilityCheck.Config(800, 50, 300, 300, 300, 250), new ConnectionStabilityCheck.Listener() {
+            @Override public void progress(ConnectionStabilityCheck.Snapshot value) { }
+            @Override public void complete(ConnectionStabilityCheck.Snapshot value) { result.set(value); done.countDown(); }
+        });
+        try {
+            check.start(); assertTrue(pathEntered.await(3, TimeUnit.SECONDS)); assertTrue(done.await(3, TimeUnit.SECONDS));
+            assertNull(result.get().issue); assertTrue(result.get().successes >= 4); assertEquals(0, result.get().failures);
+            assertTrue("An unfinished probe must not claim a path", result.get().paths.isEmpty());
+        } finally { check.close(); release.countDown(); }
+    }
 }

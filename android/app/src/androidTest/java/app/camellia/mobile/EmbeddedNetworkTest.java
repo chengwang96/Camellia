@@ -40,7 +40,7 @@ public class EmbeddedNetworkTest extends InstrumentationTestCase {
         }
     }
 
-    public void testChangedRouteReplacesNativeNodeButKeepsEncryptedIdentity() throws Exception {
+    public void testChangedRouteKeepsNativeNodeAndPreparedDownloadOpen() throws Exception {
         var context = getInstrumentation().getTargetContext();
         EmbeddedNetwork.initialize(context);
         boolean previousMode = EmbeddedNetwork.enabled();
@@ -58,12 +58,13 @@ public class EmbeddedNetworkTest extends InstrumentationTestCase {
             });
             var first = EmbeddedNetwork.node();
             assertSame(first, EmbeddedNetwork.node());
+            var request = first.prepare("GET", "http://100.64.0.1:43127/v1/status", "", "");
             route.available("cellular");
+            lifecycle().routeChanged().get(10, java.util.concurrent.TimeUnit.SECONDS);
             var second = EmbeddedNetwork.node();
-            assertNotSame(first, second);
+            assertSame(first, second);
             assertSame(second, EmbeddedNetwork.node());
-            try { first.prepare("GET", "http://100.64.0.1:43127/v1/status", "", ""); fail("Old node remains open"); }
-            catch (Exception expected) { assertTrue(expected.getMessage().contains("closed")); }
+            request.setRangeStart(3); request.close();
             assertTrue(new JSONObject(second.status()).has("state"));
             assertEquals("retained", identity.load().optString("lifecycle-retained-fixture"));
         } finally {

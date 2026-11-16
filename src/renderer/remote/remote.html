@@ -12,10 +12,10 @@
   <link rel="stylesheet" href="../shared/window-chrome.css">
 </head>
 <body>
-  <main>
-    <header><span class="eyebrow">CAMELLIA / TAILSCALE</span><h1 data-copy="title">手机访问</h1><p data-copy="intro">通过 Tailscale 连接手机。</p></header>
-    <section aria-labelledby="connectionTitle">
-      <div class="heading"><h2 id="connectionTitle" data-copy="connection">连接</h2><span id="status" class="status"></span></div>
+  <main class="device-settings mobile-access">
+    <header><h1 data-copy="title">手机访问</h1></header>
+    <section class="device-section device-card device-connection" aria-labelledby="connectionTitle">
+      <div class="heading device-heading"><h2 id="connectionTitle" data-copy="connection">连接</h2><span id="status" class="status device-status"></span></div>
       <div class="connection-row"><p id="address" class="address"></p><button id="copyAddress" data-copy="copyAddress">复制地址</button><button id="toggle" class="primary" disabled>…</button><span id="copyStatus" class="hint" role="status" aria-live="polite"></span></div>
       <div id="networkControls" hidden><p id="networkState" class="hint" role="status"></p><button id="login" hidden data-copy="login">登录 Tailscale</button></div>
       <details class="mobile-help">
@@ -27,20 +27,59 @@
         <button id="logout" hidden data-copy="logout">退出 Tailscale 登录</button>
       </details>
     </section>
-    <section aria-labelledby="pairTitle">
-      <h2 id="pairTitle" data-copy="pair">配对设备</h2>
-      <label for="deviceName" data-copy="deviceName">本机名称</label>
-      <div class="name-row"><input id="deviceName" maxlength="80" autocomplete="off"><button id="saveDeviceName" data-copy="deviceNameSave">保存名称</button></div>
-      <p class="hint" data-copy="deviceNameHint"></p><p id="deviceNameStatus" class="hint" role="status"></p>
-      <button id="invite" disabled data-copy="generate">生成配对码</button>
-      <div id="invitation" hidden><div class="pair-layout"><div id="qr" class="qr"></div><div class="pair-details"><code id="code"></code><p id="expires" class="hint"></p><p class="hint" data-copy="scanHint">用手机扫码填入地址和配对码，也可手动输入。</p></div></div></div>
-      <button id="refreshInvite" hidden data-copy="refreshCode">刷新二维码</button>
+    <section class="device-section device-card device-pair" aria-labelledby="pairTitle">
+      <div class="heading device-heading"><h2 id="pairTitle" data-copy="pair">配对设备</h2><span id="pairSummary" class="status device-status"></span></div>
+      <div class="device-name-row"><label for="deviceName" data-copy="deviceName">本机名称</label><input id="deviceName" maxlength="80" autocomplete="off"><button id="saveDeviceName" data-copy="deviceNameSave">保存名称</button><button id="invite" disabled data-copy="generate" class="primary">生成配对码</button></div>
+      <p id="deviceNameStatus" class="hint" role="status"></p>
+      <div id="invitation" hidden><div class="pair-layout"><div id="qr" class="qr"></div><div class="pair-details"><code id="code"></code><p id="expires" class="hint"></p><p class="hint" data-copy="scanHint">用手机扫码填入地址和配对码，也可手动输入。</p><div class="pair-code-actions"><button id="refreshInvite" hidden data-copy="refreshCode">刷新二维码</button></div></div></div></div>
       <div id="pairPending" class="pair-success" role="status" hidden><span class="success-mark" aria-hidden="true">…</span><div><strong id="pairPendingLabel" data-copy="pairWaiting">等待电脑授权</strong><span id="pendingName"></span></div></div>
       <div id="pair-success" class="pair-success" role="status" hidden><span class="success-mark" aria-hidden="true">✓</span><div><strong data-copy="pairSuccess">配对成功</strong><span id="pairedName"></span></div><button id="continuePair" data-copy="continuePair">继续配对</button></div>
       <p id="pairFailed" class="hint" role="status" hidden data-copy="pairFailed">配对请求已结束，请重新生成二维码。</p>
       <div id="pending"></div>
     </section>
-    <section aria-labelledby="devicesTitle"><h2 id="devicesTitle" data-copy="devices">已授权设备</h2><div id="devices"></div></section>
+    <section class="device-section" aria-labelledby="devicesTitle"><div class="heading device-heading"><h2 id="devicesTitle" data-copy="devices">已授权设备</h2><span id="devicesSummary" class="status device-status"></span></div><div id="devices"></div></section>
+    <section class="device-section device-card network-path" aria-labelledby="pathTitle">
+      <div class="heading device-heading"><h2 id="pathTitle" data-copy="pathTitle">网络路径</h2><span id="pathSummary" class="status device-status"></span></div>
+      <p id="relayPathError" class="hint error" role="status" hidden></p>
+      <div id="relayConfig" class="relay-config">
+        <div class="relay-setting"><span id="relaySwitchLabel" data-copy="relayUse">使用中继</span><input id="relayUse" type="checkbox" role="switch" aria-labelledby="relaySwitchLabel" aria-describedby="pathHint"></div>
+        <p id="pathHint" class="hint sr-only" data-copy="pathHint">关闭时由 Tailscale 自动选路。</p>
+        <div class="relay-fields" id="relayChoice" hidden>
+          <label for="relayDevice" data-copy="relayDevice">选择中继设备</label>
+          <div class="relay-device-controls">
+            <select id="relayDevice"></select>
+            <input id="relayName" maxlength="63" autocomplete="off" spellcheck="false" aria-describedby="relayRenameHint relayStatus" hidden>
+            <button id="relayRename" type="button" data-copy="rename">重命名</button>
+            <button id="relayRenameSave" type="button" class="primary" data-copy="renameSave" hidden>保存</button>
+            <button id="relayRenameCancel" type="button" data-copy="renameCancel" hidden>取消</button>
+          </div>
+          <p id="relayRenameHint" class="hint relay-rename-hint" data-copy="relayRenameHint" hidden></p>
+        </div>
+        <p id="relayStatus" class="hint" role="status" aria-live="polite" hidden></p>
+      </div>
+    </section>
+    <details class="device-section device-card advanced-settings" aria-labelledby="tailscaleTitle">
+      <summary><span id="tailscaleTitle" data-copy="tailscaleTitle">Tailscale 管理 API</span><span id="tailscaleStatus" class="status device-status" role="status"></span></summary>
+      <div class="advanced-body">
+      <div id="tailscaleDetails" class="tailscale-details"></div>
+      <div id="tailscaleForm" class="tailscale-form" hidden>
+        <label for="tailscaleClientId" data-copy="tailscaleClientId">OAuth Client ID</label>
+        <input id="tailscaleClientId" autocomplete="off" spellcheck="false" maxlength="200">
+        <label for="tailscaleClientSecret" data-copy="tailscaleClientSecret">OAuth Client Secret</label>
+        <input id="tailscaleClientSecret" type="password" autocomplete="new-password" spellcheck="false" maxlength="400">
+        <p class="hint" data-copy="tailscaleScopeHint">创建 OAuth Client 时选择 policy_file: write 和 devices:core: write，可加 tag:camellia-desktop。</p>
+        <div class="tailscale-actions">
+          <button id="tailscaleOpen" type="button" data-copy="tailscaleOpen">打开 Tailscale 凭据页</button>
+          <button id="tailscaleSave" type="button" class="primary" data-copy="tailscaleSave">验证并保存</button>
+        </div>
+      </div>
+      <div class="tailscale-actions">
+        <button id="tailscaleRefresh" type="button" data-copy="tailscaleRefresh">刷新状态</button>
+        <button id="tailscaleRemove" type="button" class="danger" data-copy="tailscaleRemove" hidden>移除凭证</button>
+      </div>
+      <p id="tailscaleFeedback" class="hint" role="status" aria-live="polite"></p>
+      </div>
+    </details>
     <p id="error" role="alert"></p>
     <button id="retry" hidden data-copy="retry">重试</button>
   </main>

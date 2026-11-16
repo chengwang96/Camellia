@@ -17,6 +17,7 @@ const { valid } = require('./permission-levels');
 const { accountSummary, accountsFor, normalizeLabel, DEFAULT_ACCOUNT_ID } = require('./subscription-accounts');
 const { getDiscussionLaunch, buildDiscussionSpec, assertDiscussionPoolAccess } = require('./discussions/native-launch');
 const { harnessThinkingRoute } = require('../api/harness-thinking');
+const { withSessionAffinity } = require('../api/session-affinity');
 
 function antigravitySpawnSpec({ runtime, home, route, config = {}, env, python, executionPolicy, thinkingBudget }) {
   // Explicit main-process launch input, never a native settings/permission-mode
@@ -138,7 +139,7 @@ function createAntigravity({ dataDir, cliSettingsFile, node, openLogin, loadConf
     const sharedPython = !discussion && python() || null;
     const spec = discussion ? buildDiscussionSpec(discussion, runtime, selected) : subscription ? subscriptionSpawnSpec({ runtime, home, env: environment(), proxyUrl: selected.proxyUrl,
       model: selected.model, effort: selected.thinkingBudget })
-      : antigravitySpawnSpec({ runtime, home, route: getRoute(), env: environment(),
+      : antigravitySpawnSpec({ runtime, home, route: withSessionAffinity(getRoute(), opts.conversationId), env: environment(),
         python: sharedPython?.file ? sharedPython : null, config: readJson(path.join(home, 'settings.json'), {}), thinkingBudget: selected.thinkingBudget || '' });
     const previousClosed = current?.shutdown();
     const next = new AntigravitySession({ name: 'Antigravity', gen: ++generation, settings: selected, opts,

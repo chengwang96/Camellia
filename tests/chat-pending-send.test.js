@@ -35,6 +35,7 @@ function fixture() {
     saveDraft: () => drafts.set('draft:' + state.context.sessionId, { text: state.input.value, attachments: state.attachments.slice() }),
     restoreDraft() { state.input.value = drafts.get('draft:' + state.context.sessionId)?.text || ''; },
     addUser: text => { userTexts.push(text); return { messageData: {}, remove() {} }; }, buildPrompt: text => text,
+    watchConversation() {}, setConversationSessionId(id) { state.context.sessionId = id; },
     showFailedSend: attempt => { state.failedSend = attempt; },
     setRunning: value => { state.running = value; }, setStatus: text => { state.statusText = text; },
     handleEvent() {}, clearTextChoice() {},

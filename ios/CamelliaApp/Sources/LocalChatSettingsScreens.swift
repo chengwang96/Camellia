@@ -402,7 +402,7 @@ private struct ProviderEditorView: View {
     @State private var existingKeys: [LocalProviderDefinition.Key]
     @State private var replacementKeys: [ProviderKeyDraft]
     @State private var modelLines: String
-    @State private var choosingProtocol = false
+    @State private var protocolDropdown: ChoiceDropdownRequest?
     @State private var failure = ""
     @State private var editingKeys = false
 
@@ -448,7 +448,7 @@ private struct ProviderEditorView: View {
                             HStack {
                                 Text(protocolDisplay)
                                 Spacer()
-                                Image(systemName: "chevron.right")
+                                MobileLineIcon(name: "down", size: 14).rotationEffect(.degrees(protocolDropdown == nil ? 0 : 180))
                             }
                             .foregroundColor(Palette.ink)
                             .padding(.horizontal, 16)
@@ -458,7 +458,7 @@ private struct ProviderEditorView: View {
                             .overlay(RoundedRectangle(cornerRadius: Palette.settingsControlRadius, style: .continuous)
                                 .stroke(Palette.fieldBorder, lineWidth: 1))
                         }
-                        .buttonStyle(.plain)
+                        .buttonStyle(.plain).choiceDropdownAnchor("providerProtocol")
 
                         fieldLabel("Anthropic Endpoint（可选）")
                         textField("https://", text: $anthropicBaseURL)
@@ -535,30 +535,15 @@ private struct ProviderEditorView: View {
         .padding(.top, 14)
         .padding(.bottom, 18)
         .background(Palette.grouped.ignoresSafeArea())
-        .overlay(alignment: .bottom) {
-            if choosingProtocol {
-                ZStack(alignment: .bottom) {
-                    Color.black.opacity(0.28).ignoresSafeArea()
-                        .onTapGesture { choosingProtocol = false }
-                    SettingsChoicePanel(title: "API 协议", labels: ["OpenAI", "Anthropic", "Dual"],
-                                        selected: ["openai", "anthropic", "dual"].firstIndex(of: protocolName) ?? 0,
-                                        onChoose: { index in
-                                            protocolName = ["openai", "anthropic", "dual"][index]
-                                            choosingProtocol = false
-                                        },
-                                        onCancel: { choosingProtocol = false })
-                        .frame(maxWidth: 560)
-                        .padding(.horizontal, 12)
-                        .padding(.bottom, 12)
-                }
-            }
-        }
+        .choiceDropdownHost($protocolDropdown)
         .onDisappear { replacementKeys = [] }
     }
 
     private func openProtocolChoice() {
         UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
-        choosingProtocol = true
+        protocolDropdown = ChoiceDropdownRequest(anchor: "providerProtocol", title: "API 协议", labels: ["OpenAI", "Anthropic", "Dual"],
+            selected: ["openai", "anthropic", "dual"].firstIndex(of: protocolName) ?? 0,
+            choose: { protocolName = ["openai", "anthropic", "dual"][$0] })
     }
 
     private var protocolDisplay: String {

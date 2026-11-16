@@ -31,6 +31,20 @@ public class RemoteListCacheTest {
         assertEquals("camellia-list-cache", storage.thread);
     }
 
+    @Test public void workbenchRetainsEveryPairedServerAndDoesNotTruncateActiveSummaries() throws Exception {
+        Storage storage = new Storage();
+        RemoteListCache cache = new RemoteListCache(storage, error -> fail(error.toString()), 60_000, true);
+        caches.add(cache);
+        for (int index = 0; index < 25; index++) put(cache, "computer-" + index, "token", index);
+        assertNotNull(cache.get(credentials("computer-0", "token")));
+        JSONArray active = new JSONArray();
+        for (int index = 0; index < 1001; index++) active.put(new JSONObject().put("id", "active-" + index));
+        cache.put(credentials("computer-0", "token"), active, -1, new JSONArray(), false);
+        assertEquals(1001, cache.get(credentials("computer-0", "token")).getJSONArray("conversations").length());
+        cache.flush().get(5, TimeUnit.SECONDS);
+        assertEquals(25, storage.saved.length());
+    }
+
     @Test public void slowSaveKeepsOneLatestStateWithoutAQueue() throws Exception {
         Storage storage = new Storage(); storage.block = true; RemoteListCache cache = cache(storage);
         put(cache, "computer", "token", 0); CompletableFuture<Void> first = cache.flush();

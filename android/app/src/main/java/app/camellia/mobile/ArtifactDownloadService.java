@@ -162,7 +162,7 @@ public final class ArtifactDownloadService extends Service {
             EmbeddedNetwork.retainTransfer(); retained = true;
             wake = getSystemService(PowerManager.class).newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "Camellia:artifactDownload");
             wake.acquire(6 * 60 * 60_000L);
-            client = new RemoteApi(job.address);
+            client = new RemoteApi(this, job.address);
             worker.execute(this::download);
         } catch (Exception error) {
             worker.execute(() -> { cleanup(job.destination); finish("failed", tr("无法启动后台下载，请重新选择文件。", "Cannot start background download. Select the file again.")); });

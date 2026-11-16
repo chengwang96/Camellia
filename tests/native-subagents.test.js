@@ -149,6 +149,34 @@ test('Grok child session routes and streamed text survive late native identity m
   assert.equal(session.children.size, 2);
 });
 
+test('Grok ignores child notifications after its process disconnects', () => {
+  const { session } = fixture('grok', GrokSession);
+  const receive = update => session.receive({ method: '_x.ai/session_notification', params: { sessionId: 'root', update } });
+  receive({ sessionUpdate: 'subagent_spawned', subagent_id: 'child', attempt_id: 'one' });
+  session.close(new Error('Disconnected'));
+  session.receive({ method: '_x.ai/session_notification', params: { sessionId: 'child', update: { sessionUpdate: 'response_started' } } });
+  receive({ sessionUpdate: 'subagent_spawned', subagent_id: 'late-child' });
+  assert.equal(session.children.get('child').status, 'unavailable');
+  assert.equal(session.children.has('late-child'), false);
+});
+
+test('ACP terminal child updates invalidate outstanding child approvals', () => {
+  const { session } = fixture();
+  session.update({ sessionUpdate: 'camellia_subagent', task: { id: 'child', status: 'running' } });
+  session.receive({ id: 'approval', method: 'session/request_permission', params: { sessionId: 'root',
+    _meta: { camelliaSubagentId: 'child' }, toolCall: { title: 'Write' },
+    options: [{ kind: 'allow_once', optionId: 'yes' }] } });
+  session.update({ sessionUpdate: 'camellia_subagent', task: { id: 'child', status: 'completed' } });
+  assert.equal(session.permissions.has('approval'), false);
+  assert.equal(session.answerPermission('approval', true), false);
+  assert.equal(session.children.get('child').status, 'completed');
+  session.receive({ id: 'late', method: 'session/request_permission', params: { sessionId: 'root',
+    _meta: { camelliaSubagentId: 'child' }, toolCall: { title: 'Late write' },
+    options: [{ kind: 'allow_once', optionId: 'yes' }] } });
+  assert.equal(session.permissions.has('late'), false);
+  assert.equal(session.children.get('child').status, 'completed');
+});
+
 test('Kimi journal recovery ignores old history, reads split UTF-8, and settles background children without locks', async t => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'camellia-kimi-children-'));
   t.after(() => { assert.equal(path.dirname(root), os.tmpdir()); assert.ok(path.basename(root).startsWith('camellia-kimi-children-')); removeTree(root); });

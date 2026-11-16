@@ -105,6 +105,14 @@ public final class RemoteTranscript {
     /// Set once the first snapshot lands; until then the client must not offer
     /// commands, because it does not yet know the permission level.
     public private(set) var connected = false
+    /// Set while the computer has this conversation archived. The computer
+    /// sends a read permission and this marker together; keeping the marker
+    /// explicit means the UI can distinguish "archived" from "this pairing is
+    /// read-only", which it otherwise would not see.
+    public private(set) var archivedAt: Int64 = 0
+    /// The snapshot's own answer to whether restoring is allowed. It is true
+    /// only for an archived conversation that this device still controls.
+    public private(set) var canRestoreArchived = false
 
     private var goalVisibility = RemoteGoalVisibility()
 
@@ -143,6 +151,8 @@ public final class RemoteTranscript {
 
         conversation = snapshot.conversation ?? conversation
         permission = snapshot.permission
+        archivedAt = snapshot.archivedAt
+        canRestoreArchived = snapshot.canRestore
         settings = snapshot.settings
         if let tasks = snapshot.subagents { subagents = tasks }
 
@@ -188,6 +198,8 @@ public final class RemoteTranscript {
         queueSteeringGoalId = ""
         conversation = nil
         permission = nil
+        archivedAt = 0
+        canRestoreArchived = false
         live = nil
         preparation = nil
         subagents = []
@@ -198,6 +210,15 @@ public final class RemoteTranscript {
         showsGoal = false
         goalVisibility.reset()
         connected = false
+    }
+
+    /// Clears the archive presentation once the desktop accepts restore.
+    /// The next snapshot remains authoritative for permissions and settings;
+    /// this only prevents the read-only banner from lingering over an
+    /// already-restored conversation.
+    public func clearArchivedAfterRestore() {
+        archivedAt = 0
+        canRestoreArchived = false
     }
 
     /// A reconnect is not a new conversation. Keep the visible messages and
@@ -219,6 +240,8 @@ public final class RemoteTranscript {
         live = nil
         preparation = nil
         permission = nil
+        archivedAt = 0
+        canRestoreArchived = false
         connected = false
         queue = []
         canQueue = false

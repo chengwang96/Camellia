@@ -1,7 +1,6 @@
 package app.camellia.mobile;
 
 import android.app.Activity;
-import android.app.Dialog;
 import android.content.Context;
 import android.os.Bundle;
 import android.os.Handler;
@@ -21,7 +20,7 @@ import java.util.List;
 import java.util.concurrent.Executors;
 
 public final class RemoteUsageActivity extends Activity {
-    static java.util.function.Function<String, RemoteApi> clientFactory = RemoteApi::new;
+    static java.util.function.Function<String, RemoteApi> clientFactory;
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final java.util.concurrent.ExecutorService worker = Executors.newSingleThreadExecutor();
     private SettingsStyle style;
@@ -38,7 +37,9 @@ public final class RemoteUsageActivity extends Activity {
     private TextView computerName, status, quotaTab, usageTab;
     private ImageButton refresh;
     private ScrollView scroll;
-    private Dialog dialog;
+    private ChoiceDropdown choiceDropdown;
+    private ComputerPickerPopup computerPicker;
+    private android.widget.ImageView computerArrow;
     private AccountUsageCache cache;
     private android.icu.text.CompactDecimalFormat countFormat;
 
@@ -73,8 +74,9 @@ public final class RemoteUsageActivity extends Activity {
         status = style.label("", Palette.TEXT_SMALL, style.secondary); status.setTag("usageStatus");
         status.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE); identity.addView(status);
         selector.addView(identity, new LinearLayout.LayoutParams(0, -2, 1));
-        android.widget.ImageView arrow = new android.widget.ImageView(this); arrow.setImageDrawable(new LineIcon("down", style.secondary));
-        selector.addView(arrow, new LinearLayout.LayoutParams(dp(14), dp(14)));
+        computerArrow = new android.widget.ImageView(this); computerArrow.setImageDrawable(new LineIcon("down", style.secondary));
+        computerArrow.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+        selector.addView(computerArrow, new LinearLayout.LayoutParams(dp(14), dp(14)));
         connection.addView(selector, new LinearLayout.LayoutParams(0, -2, 1));
         refresh = new ChatStyle(this).lineButton("refresh", tr("刷新", "Refresh"), () -> fetch(true)); refresh.setTag("usageRefresh");
         LinearLayout.LayoutParams refreshParams = new LinearLayout.LayoutParams(dp(48), dp(48)); refreshParams.setMarginStart(dp(8)); connection.addView(refresh, refreshParams);
@@ -105,9 +107,9 @@ public final class RemoteUsageActivity extends Activity {
             } catch (Exception error) { handler.post(() -> { if (active && ticket == generation) { notice = tr("无法读取配对信息，请返回重新打开。", "Cannot read pairing. Go back and reopen this page."); render(); } }); }
         });
     }
-    @Override protected void onStop() { active = false; generation++; handler.removeCallbacksAndMessages(null); if (client != null) client.cancel(); loading = false; EmbeddedNetwork.background(); super.onStop(); }
-    @Override protected void onDestroy() { if (dialog != null) dialog.dismiss(); worker.shutdownNow(); super.onDestroy(); }
-    @Override public void finish() { super.finish(); PageTransitions.closeActivity(this); }
+    @Override protected void onStop() { if (choiceDropdown != null) choiceDropdown.dismiss(); if (computerPicker != null) computerPicker.dismiss(); active = false; generation++; handler.removeCallbacksAndMessages(null); if (client != null) client.cancel(); loading = false; EmbeddedNetwork.background(); super.onStop(); }
+    @Override protected void onDestroy() { if (choiceDropdown != null) choiceDropdown.dismiss(); worker.shutdownNow(); super.onDestroy(); }
+    @Override public void finish() { if (choiceDropdown != null) choiceDropdown.dismiss(); if (computerPicker != null) computerPicker.dismiss(); super.finish(); PageTransitions.closeActivity(this); }
     @Override protected void onSaveInstanceState(Bundle saved) { super.onSaveInstanceState(saved); saved.putString("address", address); saved.putString("tab", tab); saved.putString("range", range); saved.putString("source", source); saved.putString("account", accountId); saved.putString("model", model); }
     private String tr(String zh, String en) { return chinese ? zh : en; }
     private int dp(int value) { return style.dp(value); }
@@ -126,13 +128,27 @@ public final class RemoteUsageActivity extends Activity {
     private LinearLayout column() { LinearLayout value = new LinearLayout(this); value.setOrientation(LinearLayout.VERTICAL); return value; }
     private String name(JSONObject item) { return item.optString("computerName", item.optString("address")); }
     private void chooseComputer() {
-        String[] labels = computers.stream().map(this::name).toArray(String[]::new);
-        int current = 0; for (int i = 0; i < computers.size(); i++) if (computers.get(i).optString("address").equals(address)) current = i;
-        if (labels.length > 0) choose(tr("选择电脑", "Choose a computer"), labels, current, i -> select(computers.get(i)));
+        if (computerPicker != null && computerPicker.isShowing()) { computerPicker.dismiss(); return; }
+        if (computers.isEmpty()) return;
+        if (choiceDropdown != null) choiceDropdown.dismiss();
+        var entries = new ArrayList<ComputerPickerPopup.Entry>();
+        for (JSONObject target : computers) {
+            String targetAddress = target.optString("address");
+            entries.add(new ComputerPickerPopup.Entry(targetAddress, name(target), "", targetAddress.equals(address),
+                () -> { if (!targetAddress.equals(address)) select(target); }));
+        }
+        computerPicker = new ComputerPickerPopup(selector, new ChatStyle(this), chinese, entries, null, null);
+        computerArrow.setImageDrawable(new LineIcon("up", style.secondary)); selector.setSelected(true);
+        computerPicker.onDismiss(() -> {
+            computerArrow.setImageDrawable(new LineIcon("down", style.secondary)); selector.setSelected(false); computerPicker = null;
+        });
     }
-    private void choose(String title, String[] labels, int selected, java.util.function.IntConsumer action) {
-        if (dialog != null) dialog.dismiss();
-        dialog = new SettingsChoiceDialog(this, title, labels, selected, tr("取消", "Cancel"), action::accept); dialog.show();
+    private void choose(String tag, String title, String[] labels, int selected, boolean searchable, java.util.function.IntConsumer action) {
+        if (choiceDropdown != null) choiceDropdown.dismiss();
+        if (computerPicker != null) computerPicker.dismiss();
+        View anchor = getWindow().getDecorView().findViewWithTag(tag);
+        choiceDropdown = new ChoiceDropdown(anchor, title, labels, selected, searchable, action);
+        choiceDropdown.onDismiss(() -> choiceDropdown = null);
     }
     private void select(JSONObject selected) {
         generation++; polls = 0; handler.removeCallbacksAndMessages(null); if (client != null) client.cancel(); loading = false;
@@ -156,7 +172,7 @@ public final class RemoteUsageActivity extends Activity {
         loading = true; if (force) polls = 0; notice = ""; noticeTitle = ""; detail = ""; detailsExpanded = false; render();
         int ticket = generation; JSONObject target = computer;
         Boolean knownSupport = supported;
-        RemoteApi request = clientFactory.apply(address); client = request;
+        RemoteApi request = clientFactory == null ? new RemoteApi(this, address) : clientFactory.apply(address); client = request;
         worker.execute(() -> {
             JSONObject result = null; Exception failure = null; boolean cacheFailed = false; Boolean capability = knownSupport;
             try {
@@ -252,7 +268,7 @@ public final class RemoteUsageActivity extends Activity {
         row.addView(style.label(title, Palette.TEXT_BODY, style.secondary), new LinearLayout.LayoutParams(0, -2, .38f));
         TextView current = style.label(value, Palette.TEXT_BODY, style.ink); current.setGravity(Gravity.END); current.setMaxLines(2);
         current.setEllipsize(android.text.TextUtils.TruncateAt.END); row.addView(current, new LinearLayout.LayoutParams(0, -2, .62f));
-        android.widget.ImageView arrow = new android.widget.ImageView(this); arrow.setImageDrawable(new LineIcon("right", style.secondary));
+        android.widget.ImageView arrow = new android.widget.ImageView(this); arrow.setImageDrawable(new LineIcon("down", style.secondary));
         LinearLayout.LayoutParams arrowParams = new LinearLayout.LayoutParams(dp(14), dp(14)); arrowParams.setMarginStart(dp(8)); row.addView(arrow, arrowParams);
         group.addView(row);
     }
@@ -309,7 +325,7 @@ public final class RemoteUsageActivity extends Activity {
     private String sourceName() { return source.equals("api") ? "API" : source.equals("subscription") ? tr("订阅", "Subscription") : tr("全部类型", "All types"); }
     private void chooseSource() {
         String[] labels = {tr("全部类型", "All types"), tr("订阅", "Subscription"), "API"}; String[] ids = {"", "subscription", "api"};
-        choose(tr("类型", "Type"), labels, Math.max(0, java.util.Arrays.asList(ids).indexOf(source)), i -> { source = ids[i]; accountId = ""; model = ""; render(); });
+        choose("usageSource", tr("类型", "Type"), labels, Math.max(0, java.util.Arrays.asList(ids).indexOf(source)), false, i -> { source = ids[i]; accountId = ""; model = ""; render(); });
     }
     private void quota() {
         int shown = 0;
@@ -348,7 +364,7 @@ public final class RemoteUsageActivity extends Activity {
     private void history() {
         String[] ranges = {"1", "7", "30", "all"}; String[] names = {tr("今天", "Today"), tr("最近 7 天", "Last 7 days"), tr("最近 30 天", "Last 30 days"), tr("全部", "All")};
         LinearLayout controls = new LinearLayout(this); controls.setGravity(Gravity.CENTER_VERTICAL); controls.setPadding(0, 0, 0, dp(8));
-        controls.addView(textControl(names[java.util.Arrays.asList(ranges).indexOf(range)], "usageRange", () -> choose(tr("时间", "Period"), names, java.util.Arrays.asList(ranges).indexOf(range), i -> { range = ranges[i]; model = ""; render(); })), new LinearLayout.LayoutParams(0, -2, 1));
+        controls.addView(textControl(names[java.util.Arrays.asList(ranges).indexOf(range)], "usageRange", () -> choose("usageRange", tr("时间", "Period"), names, java.util.Arrays.asList(ranges).indexOf(range), false, i -> { range = ranges[i]; model = ""; render(); })), new LinearLayout.LayoutParams(0, -2, 1));
         int activeFilters = (source.isEmpty() ? 0 : 1) + (accountId.isEmpty() ? 0 : 1) + (model.isEmpty() ? 0 : 1);
         TextView toggle = textControl(tr("筛选", "Filters"), "usageFiltersToggle", () -> { filtersExpanded = !filtersExpanded; render(); });
         LinearLayout.LayoutParams toggleParams = new LinearLayout.LayoutParams(0, -2, 1); toggleParams.setMarginStart(dp(8));
@@ -360,14 +376,14 @@ public final class RemoteUsageActivity extends Activity {
         accountNames.add(tr("全部账号", "All accounts")); accountIds.add("");
         for (JSONObject account : accounts) { accountNames.add(account.optString("provider") + " · " + account.optString("label") + (account.optBoolean("archived") ? tr(" · 历史 Key", " · Previous key") : "")); accountIds.add(account.optString("id")); }
         if (!accountIds.contains(accountId)) accountId = "";
-        filterRow(filters, tr("账号 / Key", "Account / key"), accountNames.get(accountIds.indexOf(accountId)), "usageAccount", () -> choose(tr("账号 / Key", "Account / key"), accountNames.toArray(new String[0]), accountIds.indexOf(accountId), i -> { accountId = accountIds.get(i); model = ""; render(); }));
+        filterRow(filters, tr("账号 / Key", "Account / key"), accountNames.get(accountIds.indexOf(accountId)), "usageAccount", () -> choose("usageAccount", tr("账号 / Key", "Account / key"), accountNames.toArray(new String[0]), accountIds.indexOf(accountId), true, i -> { accountId = accountIds.get(i); model = ""; render(); }));
         var models = new java.util.TreeSet<String>(); for (JSONObject row : AccountUsage.rows(data, range, source, accountId, "")) if (!row.optString("model").isEmpty()) models.add(row.optString("model"));
         var modelIds = new ArrayList<String>(); modelIds.add(""); modelIds.addAll(models); if (!modelIds.contains(model)) model = "";
         activeFilters = (source.isEmpty() ? 0 : 1) + (accountId.isEmpty() ? 0 : 1) + (model.isEmpty() ? 0 : 1);
         updateControl(toggle, tr("筛选", "Filters") + (activeFilters == 0 ? "" : " · " + activeFilters), filtersExpanded, filtersExpanded || activeFilters > 0);
         toggle.setContentDescription(toggle.getText() + tr("，筛选类型、账号和模型，", ", filter by type, account and model, ") + (filtersExpanded ? tr("已展开", "expanded") : tr("已收起", "collapsed")));
         var modelNames = new ArrayList<String>(modelIds); modelNames.set(0, tr("全部模型", "All models"));
-        filterRow(filters, tr("模型", "Model"), modelNames.get(modelIds.indexOf(model)), "usageModel", () -> choose(tr("模型", "Model"), modelNames.toArray(new String[0]), modelIds.indexOf(model), i -> { model = modelIds.get(i); render(); }));
+        filterRow(filters, tr("模型", "Model"), modelNames.get(modelIds.indexOf(model)), "usageModel", () -> choose("usageModel", tr("模型", "Model"), modelNames.toArray(new String[0]), modelIds.indexOf(model), true, i -> { model = modelIds.get(i); render(); }));
         var rows = AccountUsage.rows(data, range, source, accountId, model);
         LinearLayout summary = contentCard(); summary.setTag("usageSummary");
         summary.addView(style.label(tr("Token 总量", "Total tokens"), Palette.TEXT_NOTE, style.secondary));

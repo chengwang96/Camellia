@@ -15,6 +15,7 @@ import (
 
 	"tailscale.com/ipn"
 	"tailscale.com/ipn/ipnstate"
+	"tailscale.com/tailcfg"
 )
 
 func TestConnectionFailureCodesAreSafeAndSpecific(t *testing.T) {
@@ -36,6 +37,64 @@ func TestConnectionFailureCodesAreSafeAndSpecific(t *testing.T) {
 	} {
 		if got := connectionError(check.err, check.cancelled, check.timeout, check.connected, check.state).Error(); got != "CAMELLIA_"+check.want {
 			t.Fatalf("expected %s, got %s", check.want, got)
+		}
+	}
+}
+
+type fakePathClient struct {
+	result *ipnstate.PingResult
+	err    error
+}
+
+func (client fakePathClient) Ping(context.Context, netip.Addr, tailcfg.PingType) (*ipnstate.PingResult, error) {
+	return client.result, client.err
+}
+
+func TestPathKeepsProbeFailureOutOfConnectionState(t *testing.T) {
+	address := netip.MustParseAddr("100.80.1.2")
+	for _, check := range []struct {
+		name   string
+		client fakePathClient
+		want   string
+	}{
+		{"probe error", fakePathClient{err: errors.New("probe failed")}, "unreachable"},
+		{"missing result", fakePathClient{}, "unreachable"},
+		{"ping error field", fakePathClient{result: &ipnstate.PingResult{Err: "timeout"}}, "unreachable"},
+	} {
+		got, err := probePath(context.Background(), check.client, address)
+		if err != nil {
+			t.Fatalf("%s: %v", check.name, err)
+		}
+		var probe struct {
+			Path string `json:"path"`
+		}
+		if json.Unmarshal([]byte(got), &probe) != nil || probe.Path != check.want {
+			t.Fatalf("%s: wanted %s, got %s", check.name, check.want, got)
+		}
+	}
+}
+
+func TestPathReportsTheSelectedRoute(t *testing.T) {
+	address := netip.MustParseAddr("100.80.1.2")
+	for _, check := range []struct {
+		name   string
+		result *ipnstate.PingResult
+		want   string
+	}{
+		{"direct", &ipnstate.PingResult{Endpoint: "203.0.113.4:41641", LatencySeconds: .02}, "direct"},
+		{"peer relay", &ipnstate.PingResult{PeerRelay: "203.0.113.5:40000:vni:1", LatencySeconds: .1}, "peer-relay"},
+		{"derp", &ipnstate.PingResult{DERPRegionID: 17, DERPRegionCode: "lax", LatencySeconds: .4}, "derp"},
+		{"unknown", &ipnstate.PingResult{}, "unknown"},
+	} {
+		got, err := probePath(context.Background(), fakePathClient{result: check.result}, address)
+		if err != nil {
+			t.Fatalf("%s: %v", check.name, err)
+		}
+		var probe struct {
+			Path string `json:"path"`
+		}
+		if json.Unmarshal([]byte(got), &probe) != nil || probe.Path != check.want {
+			t.Fatalf("%s: wanted %s, got %s", check.name, check.want, got)
 		}
 	}
 }
@@ -316,6 +375,36 @@ func TestUnexecutedResponseIsFinished(t *testing.T) {
 }
 
 type errorReader struct{}
+
+func TestDownloadRangeIsSentBeforeExecutionAndReportsResponseBounds(t *testing.T) {
+	node := testNode(func(request *http.Request) (*http.Response, error) {
+		if request.Header.Get("Range") != "bytes=3-" {
+			t.Fatalf("missing range: %v", request.Header)
+		}
+		return &http.Response{StatusCode: 206, Header: http.Header{"Content-Type": {"application/octet-stream"}, "Content-Range": {"bytes 3-7/8"}},
+			ContentLength: 5, Body: io.NopCloser(strings.NewReader("defgh")), Request: request}, nil
+	})
+	response, err := node.Prepare("GET", "http://100.80.1.2:43127/v1/file", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Close()
+	if err := response.SetRangeStart(-1); err == nil {
+		t.Fatal("accepted negative range")
+	}
+	if err := response.SetRangeStart(3); err != nil {
+		t.Fatal(err)
+	}
+	if err := response.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if response.ContentRange() != "bytes 3-7/8" || response.ContentLength() != 5 || response.StatusCode() != 206 {
+		t.Fatal("lost resumed response bounds")
+	}
+	if err := response.SetRangeStart(4); err == nil {
+		t.Fatal("changed range after execution")
+	}
+}
 
 func (errorReader) Read([]byte) (int, error) { return 0, syscall.ECONNRESET }
 

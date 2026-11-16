@@ -12,14 +12,33 @@ import org.json.JSONObject;
 
 public class NavigationTest extends InstrumentationTestCase {
     private CredentialStore encrypted;
+    private android.app.Instrumentation.ActivityMonitor activities;
 
     @Override protected void setUp() throws Exception {
         super.setUp();
+        activities = getInstrumentation().addMonitor(MainActivity.class.getName(), null, false);
         encrypted = new CredentialStore(getInstrumentation().getTargetContext()); encrypted.clear();
         EmbeddedNetwork.initialize(getInstrumentation().getTargetContext()); EmbeddedNetwork.setEnabled(false);
     }
 
-    @Override protected void tearDown() throws Exception { encrypted.clear(); super.tearDown(); }
+    @Override protected void tearDown() throws Exception {
+        try {
+            Activity activity = activities.getLastActivity();
+            if (activity != null) {
+                getInstrumentation().runOnMainSync(activity::finish);
+                long deadline = android.os.SystemClock.uptimeMillis() + 5000;
+                while (!activity.isDestroyed() && android.os.SystemClock.uptimeMillis() < deadline) {
+                    getInstrumentation().waitForIdleSync(); android.os.SystemClock.sleep(20);
+                }
+                assertTrue("Finish activity cleanup before clearing its credential fixture", activity.isDestroyed());
+                var field = MainActivity.class.getDeclaredField("worker"); field.setAccessible(true);
+                java.util.concurrent.ExecutorService worker = (java.util.concurrent.ExecutorService) field.get(activity);
+                assertTrue("Drain draft writes before clearing the next test's credentials",
+                    worker.awaitTermination(5, java.util.concurrent.TimeUnit.SECONDS));
+            }
+            encrypted.clear();
+        } finally { getInstrumentation().removeMonitor(activities); super.tearDown(); }
+    }
 
     private JSONObject computer(String address, String token) throws Exception {
         return new JSONObject().put("address", address).put("token", token.repeat(43)).put("deviceId", token);
@@ -52,20 +71,27 @@ public class NavigationTest extends InstrumentationTestCase {
             });
             long deadline = android.os.SystemClock.uptimeMillis() + 3000;
             java.util.concurrent.atomic.AtomicBoolean complete = new java.util.concurrent.atomic.AtomicBoolean();
+            java.util.concurrent.atomic.AtomicReference<String> observed = new java.util.concurrent.atomic.AtomicReference<>("");
             while (!complete.get() && android.os.SystemClock.uptimeMillis() < deadline) {
                 getInstrumentation().runOnMainSync(() -> {
                     boolean ready = true;
+                    StringBuilder states = new StringBuilder();
                     for (String address : addresses) {
                         TextView label = activity.getWindow().getDecorView().findViewWithTag("computerState:" + address);
                         String state = label.getText().toString();
-                        ready &= state.equals(RemoteApi.failureMessage(new RemoteApi.Failure(401), true))
-                            || state.equals(RemoteApi.failureMessage(new RemoteApi.Failure(401), false));
+                        View row = activity.getWindow().getDecorView().findViewWithTag("computer:" + address);
+                        String details = String.valueOf(row.getContentDescription());
+                        states.append(address).append('=').append(state).append(" [").append(details).append("];");
+                        ready &= state.equals("连接失败") || state.equals("Connection failed");
+                        ready &= details.contains(RemoteApi.failureMessage(new RemoteApi.Failure(401), true))
+                            || details.contains(RemoteApi.failureMessage(new RemoteApi.Failure(401), false));
                     }
+                    observed.set(states.toString());
                     complete.set(ready);
                 });
                 if (!complete.get()) android.os.SystemClock.sleep(20);
             }
-            assertTrue("All computer checks must finish even when chat workers are busy", complete.get());
+            assertTrue("All computer checks must finish even when chat workers are busy: " + observed.get(), complete.get());
             getInstrumentation().runOnMainSync(() -> {
                 try {
                     invoke(activity, "refreshComputers");
@@ -344,7 +370,8 @@ public class NavigationTest extends InstrumentationTestCase {
             parent.indexOfChild(status));
         if (barTag != null) {
             assertEquals(parent.indexOfChild(bar) + 1, parent.indexOfChild(status));
-            assertFalse(bar.getClipChildren()); assertFalse(bar.getClipToPadding());
+            assertTrue(bar.getClipChildren()); assertTrue(bar.getClipToPadding());
+            assertFalse(parent.getClipChildren()); assertFalse(parent.getClipToPadding());
         } else assertNull(parent.findViewWithTag("searchBarDock"));
         assertEquals(android.text.TextUtils.TruncateAt.END, status.getEllipsize());
         String[] messages = {

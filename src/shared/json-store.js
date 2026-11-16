@@ -4,10 +4,32 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { randomUUID } = require('node:crypto');
 
+let readSnapshot = null;
+const MISSING = Symbol('missing JSON file');
+
+// A synchronous read-only projection can visit the same settings through many
+// engines and conversations. Share its parsed files, not a long-lived cache:
+// the next projection must see edits from settings and other processes.
+// Nested projections share the scope; never retain it across an await.
+function withJsonReadSnapshot(read) {
+  if (readSnapshot) return read();
+  readSnapshot = new Map();
+  try { return read(); }
+  finally { readSnapshot = null; }
+}
+
 function readJson(file, fallback) {
-  try { return JSON.parse(fs.readFileSync(file, 'utf8').replace(/^\uFEFF/, '')); }
+  if (readSnapshot?.has(file)) {
+    const value = readSnapshot.get(file);
+    return value === MISSING ? fallback : value;
+  }
+  try {
+    const value = JSON.parse(fs.readFileSync(file, 'utf8').replace(/^\uFEFF/, ''));
+    readSnapshot?.set(file, value);
+    return value;
+  }
   catch (err) {
-    if (err.code === 'ENOENT') return fallback;
+    if (err.code === 'ENOENT') { readSnapshot?.set(file, MISSING); return fallback; }
     // JSON.parse error messages may contain source text, including API keys.
     throw new Error(`Cannot read configuration ${file}: ${err instanceof SyntaxError ? "Invalid JSON" : err.code || "Unable to load"}`, { cause: err });
   }
@@ -24,6 +46,7 @@ function readRecoverableJson(file, fallback, report = () => {}, valid = () => tr
     if (!(error.cause instanceof SyntaxError) && !error.invalidRecord) throw error;
     const backupFile = file + '.invalid-' + randomUUID();
     fs.renameSync(file, backupFile);
+    readSnapshot?.delete(file);
     report(Object.assign(new Error(`Saved data could not be loaded; original retained at ${backupFile}`, { cause: error }), { backupFile }));
     return fallback;
   }
@@ -44,6 +67,7 @@ function sleepSync(ms) {
 }
 
 function writeText(file, data) {
+  readSnapshot?.delete(file);
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const temporary = `${file}.${process.pid}.${randomUUID()}.tmp`;
   try {
@@ -62,4 +86,4 @@ function writeText(file, data) {
   }
 }
 
-module.exports = { readJson, readRecoverableJson, writeJson, writeText };
+module.exports = { readJson, readRecoverableJson, writeJson, writeText, withJsonReadSnapshot };

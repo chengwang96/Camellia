@@ -120,6 +120,7 @@ contextBridge.exposeInMainWorld('dshDesktop', {
   switchMode: (mode) => ipcRenderer.invoke('dsh:switch-mode', mode),
   onHarnessNavigate: callback => subscribe('dsh:harness-navigate', callback),
   conversationCommand: payload => ipcRenderer.invoke('dsh:conversation-command', payload),
+  watchConversation: payload => ipcRenderer.invoke('dsh:conversation-watch', payload),
   visualizeGet: payload => ipcRenderer.invoke('dsh:visualize-get', payload),
   visualizeState: payload => ipcRenderer.invoke('dsh:visualize-state', payload),
   visualizeExport: payload => ipcRenderer.invoke('dsh:visualize-export', payload),

@@ -34,6 +34,7 @@ public final class SettingsActivity extends Activity {
     private TextView storageStatus;
     private Runnable dismissStatus;
     private AlertDialog dialog;
+    private ChoiceDropdown choiceDropdown;
     private java.util.concurrent.ExecutorService worker;
     private boolean computerBusy;
     private boolean finishingAfterSave;
@@ -94,13 +95,15 @@ public final class SettingsActivity extends Activity {
 
     @Override protected void onSaveInstanceState(Bundle saved) { super.onSaveInstanceState(saved); saved.putString("section", section); }
     @Override protected void onStop() {
+        if (choiceDropdown != null) choiceDropdown.dismiss();
         clearStatus();
         pages.finishTransition();
         if (store != null) try { store.flush(stored(value -> {})); } catch (Exception error) { storageFailure(error); }
         super.onStop();
     }
-    @Override protected void onDestroy() { clearStatus(); if (dialog != null) dialog.dismiss(); if (worker != null) worker.shutdownNow(); super.onDestroy(); }
+    @Override protected void onDestroy() { clearStatus(); if (choiceDropdown != null) choiceDropdown.dismiss(); if (dialog != null) dialog.dismiss(); if (worker != null) worker.shutdownNow(); super.onDestroy(); }
     @Override public void finish() {
+        if (choiceDropdown != null) choiceDropdown.dismiss();
         if (store == null || finishingAfterSave) { super.finish(); PageTransitions.closeActivity(this); return; }
         try { store.flush(stored(value -> { finishingAfterSave = true; finish(); })); }
         catch (Exception error) { storageFailure(error); }
@@ -357,13 +360,22 @@ public final class SettingsActivity extends Activity {
         // these labels are sentences ("Enter sends; hold for newline"), and a
         // 100dp single-line slot truncated them to "Enter sends; h…".
         String icon = key.equals("theme") ? "appearance" : key.equals("language") ? "language" : key.equals("chatFontSize") ? "file" : "settings";
-        settingsStyle.preference(group, icon, title, labels[current], "preference:" + key, () -> {
+        LinearLayout row = settingsStyle.preference(group, icon, title, labels[current], "preference:" + key, () -> {
+            if (!key.equals("enterMode")) {
+                if (choiceDropdown != null) choiceDropdown.dismiss();
+                choiceDropdown = new ChoiceDropdown(group.findViewWithTag("preference:" + key), title, labels, current, false, which -> {
+                    MobilePreferences.set(this, key, values[which]);
+                    if (key.equals("chatFontSize") || key.equals("processMode")) reading(); else recreate();
+                });
+                choiceDropdown.onDismiss(() -> choiceDropdown = null); return;
+            }
             dialog = new SettingsChoiceDialog(this, title, labels, current, tr("取消", "Cancel"), which -> {
                 MobilePreferences.set(this, key, values[which]);
                 if (key.equals("chatFontSize") || key.equals("processMode")) reading(); else recreate();
             });
             dialog.show();
         });
+        if (!key.equals("enterMode")) ChoiceDropdown.indicator(row, false);
     }
 
     private void providers() throws Exception {
@@ -466,7 +478,7 @@ public final class SettingsActivity extends Activity {
         showStatus(tr("正在读取电脑端 API 配置…", "Reading the API configuration from the computer…"), false);
         worker.execute(() -> {
             try {
-                JSONObject bundle = new RemoteApi(address).json("/v1/api-keys", token, null);
+                JSONObject bundle = new RemoteApi(this, address).json("/v1/api-keys", token, null);
                 JSONObject config = LocalChatConfig.parse(bundle.toString());
                 runOnUiThread(() -> {
                     computerBusy = false;
@@ -504,14 +516,19 @@ public final class SettingsActivity extends Activity {
             form.addView(text(tr("API 协议", "API protocol"), Palette.TEXT_NOTE, style.muted));
             String[] protocols = {"openai", "anthropic", "dual"}, protocolLabels = {"OpenAI", "Anthropic", "Dual"};
             int[] selectedProtocol = {Math.max(0, java.util.Arrays.asList(protocols).indexOf(original.optString("protocol", "openai")))};
-            TextView protocol = text(protocolLabels[selectedProtocol[0]] + "  ›", Palette.TEXT_ROW, style.ink); protocol.setTag("providerProtocol");
+            TextView protocol = text(protocolLabels[selectedProtocol[0]], Palette.TEXT_ROW, style.ink); protocol.setTag("providerProtocol");
             protocol.setPadding(dp(16), dp(14), dp(16), dp(14)); protocol.setMinHeight(dp(52));
             protocol.setBackground(new android.graphics.drawable.RippleDrawable(android.content.res.ColorStateList.valueOf(settingsStyle.divider),
                 settingsStyle.fieldBackground(settingsStyle.fieldBorder), settingsStyle.fieldBackground(settingsStyle.fieldBorder)));
             protocol.setFocusable(true); protocol.setContentDescription(tr("选择 API 协议", "Choose API protocol"));
-            protocol.setOnClickListener(view -> new SettingsChoiceDialog(this, tr("API 协议", "API protocol"), protocolLabels, selectedProtocol[0], tr("取消", "Cancel"), which -> {
-                selectedProtocol[0] = which; protocol.setText(protocolLabels[which] + "  ›");
-            }).show()); form.addView(protocol);
+            ChoiceDropdown.indicator(protocol, false);
+            protocol.setOnClickListener(view -> {
+                if (choiceDropdown != null) choiceDropdown.dismiss();
+                choiceDropdown = new ChoiceDropdown(protocol, tr("API 协议", "API protocol"), protocolLabels, selectedProtocol[0], false, which -> {
+                    selectedProtocol[0] = which; protocol.setText(protocolLabels[which]);
+                });
+                choiceDropdown.onDismiss(() -> choiceDropdown = null);
+            }); form.addView(protocol);
             EditText alternate = field(form, tr("Anthropic Endpoint（可选）", "Anthropic endpoint (optional)"), "providerAlternate", original.optString("anthropicBaseUrl"), false, false);
             JSONArray existingKeys = original.optJSONArray("keys");
             if (existingKeys != null && existingKeys.length() > 0) {
@@ -643,7 +660,7 @@ public final class SettingsActivity extends Activity {
             count++; String id = conversation.getString("id"), title = conversation.optString("title");
             LinearLayout card = settingsStyle.group(content, "");
             settingsStyle.info(card, title.isEmpty() ? tr("新会话", "New chat") : title, tr("本地会话 · 已归档", "Local chat · Archived"));
-            settingsStyle.action(card, tr("恢复会话", "Restore chat"), "", "archiveRestore:" + id, false, () -> {
+            settingsStyle.action(card, tr("恢复会话", "Restore conversation"), "", "archiveRestore:" + id, false, () -> {
                 try { store.archiveConversation(id, false, stored(result -> archived())); } catch (Exception error) { failure(error); }
             });
             settingsStyle.action(card, tr("永久删除", "Delete permanently"), "", "archiveDelete:" + id, true, () -> {
