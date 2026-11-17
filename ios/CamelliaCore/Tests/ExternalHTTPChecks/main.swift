@@ -137,6 +137,22 @@ do {
     checks += 1
 }
 
+let largerCard = try ExternalHTTP(request: request(), expectedContentType: "application/json", mode: .body,
+                                  bodyLimit: 24 * 1024 * 1024, configuration: configuration).run()
+check(largerCard.body.count == ExternalHTTP.maximumBodyBytes + 1,
+      "an opened media card may use its own bounded response limit without changing ordinary requests")
+StubProtocol.answer = (200, "application/json", [Data(repeating: 0x61, count: 3), Data(repeating: 0x62, count: 2)])
+do {
+    _ = try ExternalHTTP(request: request(), expectedContentType: "application/json", mode: .body,
+                         bodyLimit: 4, configuration: configuration).run()
+    fatalError("chunked body crossed its per-request limit")
+} catch ExternalHTTP.Failure.tooLarge {
+    checks += 1
+}
+let exactCard = try ExternalHTTP(request: request(), expectedContentType: "application/json", mode: .body,
+                                bodyLimit: 5, configuration: configuration).run()
+check(exactCard.body.count == 5, "a card response at its exact limit is accepted")
+
 StubProtocol.answer = (200, "text/event-stream", [Data("data: one\n\n".utf8), Data("data: two\n\n".utf8)])
 var chunks = Data()
 let stream = try ExternalHTTP(request: request(), expectedContentType: "text/event-stream",

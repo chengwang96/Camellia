@@ -298,7 +298,7 @@ public class WorkbenchRefreshTest extends InstrumentationTestCase {
                             try {
                                 return new JSONObject().put("conversations", new JSONArray().put(new JSONObject()
                                     .put("id", "stale").put("title", "Finished task").put("activity", "idle")
-                                    .put("updatedAt", System.currentTimeMillis()))).put("nextOffset", JSONObject.NULL)
+                                    .put("updatedAt", System.currentTimeMillis()).put("lastReplyAt", 0).put("replyReadAt", 0))).put("nextOffset", JSONObject.NULL)
                                     .put("workspaces", new JSONArray()).put("includeUnassigned", true);
                             } catch (Exception error) {
                                 throw new AssertionError(error);
@@ -349,7 +349,7 @@ public class WorkbenchRefreshTest extends InstrumentationTestCase {
         RemoteListCache cache = RemoteListCache.get(context);
         JSONArray running = new JSONArray().put(new JSONObject().put("id", "live-home")
             .put("title", "Live task").put("engine", "codex").put("activity", "running")
-            .put("updatedAt", System.currentTimeMillis()));
+            .put("updatedAt", System.currentTimeMillis()).put("lastReplyAt", 0).put("replyReadAt", 0));
         cache.put(credentials, running, -1, new JSONArray(), true);
         try {
             getInstrumentation().runOnMainSync(() -> {
@@ -406,7 +406,7 @@ public class WorkbenchRefreshTest extends InstrumentationTestCase {
         new CredentialStore(context).save(credentials);
         JSONArray running = new JSONArray().put(new JSONObject().put("id", "resumed-home")
             .put("title", "Background task").put("engine", "codex").put("activity", "running")
-            .put("updatedAt", System.currentTimeMillis()));
+            .put("updatedAt", System.currentTimeMillis()).put("lastReplyAt", 0).put("replyReadAt", 0));
         JSONArray idle = new JSONArray().put(new JSONObject(running.getJSONObject(0).toString()).put("activity", ""));
         var latest = new java.util.concurrent.atomic.AtomicReference<>(running);
         var starts = new java.util.concurrent.atomic.AtomicInteger();

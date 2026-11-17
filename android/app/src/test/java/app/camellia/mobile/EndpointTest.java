@@ -4,6 +4,33 @@ import org.junit.Test;
 import static org.junit.Assert.*;
 
 public class EndpointTest {
+    @Test public void visualizationDocumentsAllowOnlyConversationScopedLightAndDarkRequests() {
+        Endpoint endpoint = new Endpoint("http://100.64.0.1:43127");
+        String conversation = "12345678-1234-1234-1234-123456789abc";
+        String card = "3f2504e0-4f89-11d3-9a0c-0305e82c3301";
+        String base = "/v1/conversations/" + conversation + "/visualizations/" + card;
+        for (String theme : new String[]{"light", "dark"}) {
+            String path = base + "?theme=" + theme;
+            assertEquals(endpoint.origin() + path, endpoint.uri(path).toString());
+        }
+    }
+
+    @Test public void visualizationDocumentsRejectUnscopedPathsAndUnexpectedQueries() {
+        Endpoint endpoint = new Endpoint("http://100.64.0.1:43127");
+        String id = "12345678-1234-1234-1234-123456789abc";
+        String base = "/v1/conversations/" + id + "/visualizations/" + id;
+        for (String path : new String[]{
+                base, base + "/", base + "?theme=sepia", base + "?theme=", base + "?theme=LIGHT",
+                base + "?theme=light&theme=dark", base + "?theme=dark&token=secret",
+                base + "?theme=light#fragment", base + "?theme=light/extra",
+                "/v1/visualizations/" + id + "?theme=light",
+                "/v1/conversations/not-an-id/visualizations/" + id + "?theme=light",
+                "/v1/conversations/" + id + "/visualizations/not-a-card?theme=light",
+                "/v1/conversations/" + id + "/visualizations/../api-keys?theme=light"}) {
+            assertThrows(path, IllegalArgumentException.class, () -> endpoint.uri(path));
+        }
+    }
+
     @Test public void selectedFileQueriesKeepTheMessageAndEncodedReferenceTogether() {
         Endpoint endpoint = new Endpoint("http://100.64.0.1:43127");
         String base = "/v1/conversations/12345678-1234-1234-1234-123456789abc/artifacts?offset=0";

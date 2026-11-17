@@ -1,8 +1,9 @@
 import Foundation
+import CoreFoundation
 
 /// How much reasoning the phone asks a model for, and how it says so.
 ///
-/// Mirrors Android's model-specific ladder and shared desktop labels.
+/// Mirrors the reported desktop API metadata and shared labels.
 ///
 /// Whether a level is even meaningful depends on the model. An OpenAI-compatible
 /// endpoint takes a `reasoning_effort` field; Anthropic takes a `thinking` block
@@ -11,27 +12,40 @@ import Foundation
 /// is dropped entirely rather than sent to a model that cannot read it.
 public enum LocalChatThinking {
     private static let defaultLevels = ["low", "medium", "high"]
-    private static let xhighLevels = defaultLevels + ["xhigh"]
-    private static let maxLevels = xhighLevels + ["max"]
-    private static let ultraLevels = maxLevels + ["ultra"]
-    private static let anthropicLevels = ["off", "low", "medium", "high", "max"]
-    private static let knownLevels = Set(ultraLevels + ["off"])
+    private static let knownLevels = Set(defaultLevels + ["off", "none", "minimal", "xhigh", "max", "ultra"])
 
-    // The ordering and slug boundaries match shared/model-levels.js and Android.
-    private static let modelLevels: [(String, [String])] = [
-        ("gpt-daybreak-blue-latest", ultraLevels), ("gpt-daybreak-red-latest", ultraLevels),
-        ("gpt-6.1-sol", ultraLevels), ("gpt-6-astra", ultraLevels),
-        ("gpt-5.6-luna", maxLevels), ("gpt-5.6-sol", ultraLevels),
-        ("gpt-5.6-terra", ultraLevels), ("gpt-6-luna", maxLevels),
-        ("gpt-6-sol", ultraLevels), ("gpt-5.5", xhighLevels),
-        ("codex-auto-review", maxLevels),
-    ]
+    public struct Metadata: Equatable, Sendable {
+        public let levels: [String]
+        public let booleanOnly: Bool
+        public let onLabel: Bool
+    }
+
+    /// Same validation, order and boolean aliases as shared/model-levels.js.
+    /// An explicit empty list disables controls; missing/invalid data is unknown.
+    public static func metadata(_ source: Any?) -> Metadata? {
+        guard let object = source as? [String: Any], let values = object["values"] as? [Any],
+              values.count <= 32 else { return nil }
+        var levels: [String] = []
+        var booleanOnly = !values.isEmpty, hasTrue = false, hasHigh = false
+        for value in values {
+            let level: String
+            if let number = value as? NSNumber, CFGetTypeID(number) == CFBooleanGetTypeID() {
+                level = number.boolValue ? "high" : "none"
+                hasTrue = hasTrue || number.boolValue
+            } else if let name = value as? String, valid(name) {
+                level = name
+                booleanOnly = false
+                hasHigh = hasHigh || name == "high"
+            } else { return nil }
+            if !levels.contains(level) { levels.append(level) }
+        }
+        return Metadata(levels: levels, booleanOnly: booleanOnly, onLabel: hasTrue && !hasHigh)
+    }
+
+    private static func valid(_ value: String) -> Bool { value.matches(#"(?i)[a-z][a-z0-9_-]{0,63}"#) }
 
     public static func levels(for route: LocalChatRoute?) -> [String] {
-        guard let route else { return defaultLevels }
-        if route.wireProtocol == "anthropic" { return anthropicLevels }
-        let model = route.model.lowercased().components(separatedBy: "/").last ?? ""
-        return modelLevels.first { model == $0.0 || model.hasPrefix($0.0 + "-") }?.1 ?? defaultLevels
+        route?.thinking?.levels ?? defaultLevels
     }
 
     public static func menu(for route: LocalChatRoute?) -> [String] {
@@ -45,6 +59,13 @@ public enum LocalChatThinking {
 
     public static func label(_ value: String, chinese: Bool = true) -> String {
         display(normalize(value), chinese: chinese)
+    }
+
+    public static func label(_ value: String, route: LocalChatRoute?, chinese: Bool = true) -> String {
+        if value == "none" { return chinese ? "关闭" : "Off" }
+        if value == "high", route?.thinking?.onLabel == true { return chinese ? "开启" : "On" }
+        if let route, levels(for: route).contains(value) { return display(value, chinese: chinese) }
+        return label(value, chinese: chinese)
     }
 
     /// Maps a provider-reported level name onto the shared wording.
@@ -85,13 +106,15 @@ public enum LocalChatThinking {
     /// Whether the level can be expressed to this route at all.
     public static func supported(_ route: LocalChatRoute?) -> Bool {
         guard let route else { return false }
+        if let thinking = route.thinking { return !thinking.levels.isEmpty }
         return route.wireProtocol == "openai" || adaptive(route) || budget(route)
     }
 
     /// The level actually sent — `auto` for anything the route cannot express.
     public static func effective(_ route: LocalChatRoute, _ value: String) -> String {
         guard supported(route) else { return "auto" }
-        let level = normalize(value)
+        let trimmed = ComposerText.androidTrim(value)
+        let level = levels(for: route).contains(trimmed) ? trimmed : normalize(value)
         return level == "auto" || levels(for: route).contains(level) ? level : "auto"
     }
 
@@ -99,11 +122,28 @@ public enum LocalChatThinking {
     public static func apply(_ route: LocalChatRoute, _ value: String, to body: inout [String: Any]) {
         let level = effective(route, value)
         if level == "auto" { return }
-        if level == "off" {
-            body["thinking"] = ["type": "disabled"]
-        } else if route.wireProtocol == "openai" {
+        let off = level == "off" || level == "none"
+        let host = URLComponents(string: route.baseURL)?.host ?? ""
+        if route.thinking?.booleanOnly == true {
+            body["thinking"] = ["type": off ? "disabled" : "enabled"]
+            if route.wireProtocol == "openai", route.providerType == "ollama" || host == "ollama.com" {
+                body["reasoning_effort"] = level
+            }
+            return
+        }
+        if route.wireProtocol == "openai" {
             body["reasoning_effort"] = level
-        } else if adaptive(route) {
+            let deepseek = route.providerType == "deepseek" || host == "api.deepseek.com"
+                || (["commandcode", "opencode", "opencode-go"].contains(route.providerType)
+                    || host == "api.commandcode.ai" || host == "opencode.ai")
+                && route.model.lowercased().matches(#"(?:.*/)?deepseek-.*"#)
+            if deepseek {
+                body["thinking"] = ["type": off ? "disabled" : "enabled"]
+                if off { body.removeValue(forKey: "reasoning_effort") }
+            }
+        } else if off {
+            body["thinking"] = ["type": "disabled"]
+        } else if adaptive(route) || route.thinking != nil && !budget(route) {
             body["thinking"] = ["type": "adaptive"]
             body["output_config"] = ["effort": level]
             body["max_tokens"] = 16384

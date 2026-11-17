@@ -25,4 +25,14 @@ function forkTasks(tasks, boundary) {
     .map(task => ({ ...structuredClone(task), canReply: false, canStop: false, approvals: [], status:
       ['starting', 'running', 'waiting'].includes(task.status) ? 'unavailable' : task.status }));
 }
-module.exports = { mergeTask, forkTasks };
+// Active work and pending approvals remain owned by the live native session.
+// Completed display records have the same bound as shared conversation metadata.
+const COMPLETED_TASK_LIMIT = 128;
+function pruneTasks(tasks, limit = COMPLETED_TASK_LIMIT) {
+  const terminal = [...tasks.values()].filter(task =>
+    ['completed', 'failed', 'stopped', 'unavailable'].includes(task.status) && !task.approvals?.length);
+  const removed = terminal.slice(0, Math.max(0, terminal.length - limit));
+  for (const task of removed) tasks.delete(task.id);
+  return removed;
+}
+module.exports = { mergeTask, forkTasks, pruneTasks, COMPLETED_TASK_LIMIT };

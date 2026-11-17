@@ -23,13 +23,20 @@ final class LocalChatConfig {
     static final class Route {
         final String id, label, model, protocol, baseUrl, key;
         final List<String> keys;
+        final String providerType;
+        final LocalChatThinking.Metadata thinking;
         Route(String id, String label, String model, String protocol, String baseUrl, String key) {
             this(id, label, model, protocol, baseUrl, java.util.Collections.singletonList(key));
         }
         Route(String id, String label, String model, String protocol, String baseUrl, List<String> keys) {
+            this(id, label, model, protocol, baseUrl, keys, null, "");
+        }
+        Route(String id, String label, String model, String protocol, String baseUrl, List<String> keys,
+                LocalChatThinking.Metadata thinking, String providerType) {
             if (keys.isEmpty()) throw new IllegalArgumentException("No enabled API keys");
             this.id = id; this.label = label; this.model = model; this.protocol = protocol; this.baseUrl = baseUrl;
             this.keys = java.util.Collections.unmodifiableList(new ArrayList<>(keys)); this.key = keys.get(0);
+            this.thinking = thinking; this.providerType = providerType;
         }
         String displayName() { int split = label.lastIndexOf(" · "); return split < 0 ? model : label.substring(split + 3); }
         String providerName() { int split = label.lastIndexOf(" · "); return split < 0 ? label : label.substring(0, split); }
@@ -96,7 +103,8 @@ final class LocalChatConfig {
                     throw new IllegalArgumentException("不支持此模型协议 / Unsupported model protocol");
                 if (provider.optBoolean("enabled", true) && !enabledKeys.isEmpty()) result.add(new Route(
                     providerId + "/" + id, provider.optString("name", providerId) + " · " + id, upstream, wire,
-                    wire.equals("anthropic") && !anthropic.isEmpty() ? anthropic : base, enabledKeys));
+                    wire.equals("anthropic") && !anthropic.isEmpty() ? anthropic : base, enabledKeys,
+                    LocalChatThinking.metadata(model.optJSONObject("thinking")), provider.optString("type")));
             }
         }
         return result;

@@ -41,16 +41,33 @@ the full-width layout. The width is capped by the current chat column.
 ## Mobile access
 
 Remote snapshots expose completed card metadata in `message.visualizations`.
-Android renders a native summary row and opens the card in one full-screen
-WebView instead of embedding a WebView in every transcript row. The document is
+Android and iOS render native summary rows and open a card in one full-screen
+WebView/WKWebView instead of embedding browsers in transcript rows. The document is
 fetched from the authenticated, conversation-scoped endpoint
 `GET /v1/conversations/:id/visualizations/:cardId?theme=light|dark`.
+Both native endpoint allowlists admit this exact conversation/card path and
+only the two supported theme values; summary metadata alone does not exercise
+the document request path.
 
 The server wraps the fragment with a restrictive CSP that denies network,
 frames, forms and navigation while allowing inline styles, scripts and data
 images. Android additionally disables file/content access, DOM storage,
-JavaScript windows, network loads and all external URL navigation. Card state is
-not persisted on the phone; requests fetch the current desktop revision.
+JavaScript windows, network loads and all external URL navigation. iOS uses a
+nonpersistent WebKit data store, requires a gesture for media playback and blocks
+navigation away from the in-memory document. Authenticated requests use the native
+client; credentials never enter either browser. Responses are bounded to 24 MiB,
+including embedded media and the JSON/document wrapper.
+
+Closing an Android card stops loading, pauses its browser, disables JavaScript,
+removes callbacks, detaches the browser and explicitly calls `WebView.destroy()`.
+Cleanup is idempotent and also covers Back, page replacement, request failure and
+Activity destruction. A disposed dialog ignores late loads and cannot be reopened.
+iOS teardown stops loading, suspends media, removes delegates and scripts, replaces
+the document with an empty page and releases the WKWebView through SwiftUI's
+dismantle hook; WebKit has no equivalent of `destroy()`. Both clients close the
+viewer and cancel its document request when the app becomes fully backgrounded.
+Reopening fetches the current desktop revision and state snapshot; mobile control
+changes are not written back to the desktop.
 
 An existing card can be corrected with `action:update`, the original `card_id`,
 and either one unique `old_str`/`new_str` patch or a replacement fragment. The
@@ -273,3 +290,10 @@ an update without replacing the card.
   retrieval and deletion cleanup.
 - A real Chromium iframe smoke checks rendering, automatic height, persistent
   state, data access and structured actions.
+- Android `VisualizationDialogTest` covers native-only summary rows, actual card
+  interaction, Close/Back, page/background cleanup, late delivery and collection
+  after repeated open/close cycles. It requires a disposable emulator.
+- iOS protocol checks cover metadata parsing, revision deduplication, tool-result
+  inheritance, scoped endpoint paths and history weight. External HTTP checks
+  cover per-request response limits. WebKit rendering and teardown require Xcode
+  and an iOS simulator/device; Windows source checks do not establish runtime parity.

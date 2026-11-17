@@ -9,6 +9,8 @@ import android.graphics.drawable.ColorDrawable;
 import android.graphics.drawable.GradientDrawable;
 import android.graphics.drawable.RippleDrawable;
 import android.os.Build;
+import android.os.Handler;
+import android.os.Looper;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
@@ -28,7 +30,7 @@ import java.io.ByteArrayInputStream;
 /** One full-screen, network-isolated WebView for a mobile visualization card. */
 final class VisualizationDialog extends Dialog {
     private final Palette palette;
-    private final WebView webView;
+    private WebView webView;
     private final ProgressBar loading;
     private final boolean chinese;
 
@@ -100,7 +102,9 @@ final class VisualizationDialog extends Dialog {
                 return new WebResourceResponse("text/plain", "utf-8", new ByteArrayInputStream(new byte[0]));
             }
 
-            @Override public void onPageFinished(WebView view, String url) { loading.setVisibility(View.GONE); }
+            @Override public void onPageFinished(WebView view, String url) {
+                if (view == webView) loading.setVisibility(View.GONE);
+            }
         });
         shell.addView(webView, new FrameLayout.LayoutParams(-1, -1));
 
@@ -124,15 +128,47 @@ final class VisualizationDialog extends Dialog {
     }
 
     void load(String html) {
+        if (webView == null) return;
         loading.setVisibility(View.VISIBLE);
         webView.stopLoading();
         webView.loadDataWithBaseURL(null, html, "text/html", "utf-8", null);
     }
 
     @Override public void show() {
+        if (webView == null) return;
         super.show();
         Window window = getWindow();
         if (window != null) window.setLayout(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT);
+    }
+
+    @Override public void dismiss() {
+        // Dialog.dismiss() may be called by a cancellation worker; WebView teardown may not.
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            new Handler(Looper.getMainLooper()).post(this::dismiss);
+            return;
+        }
+        releaseWebView();
+        super.dismiss();
+    }
+
+    @Override protected void onStop() {
+        releaseWebView();
+        super.onStop();
+    }
+
+    private void releaseWebView() {
+        WebView view = webView;
+        if (view == null) return;
+        // Clear ownership first: cancellation and late loads must not revive a closed card.
+        webView = null;
+        view.stopLoading();
+        view.onPause();
+        view.getSettings().setJavaScriptEnabled(false);
+        view.setWebChromeClient(null);
+        view.setWebViewClient(null);
+        if (view.getParent() instanceof ViewGroup) ((ViewGroup) view.getParent()).removeView(view);
+        view.removeAllViews();
+        view.destroy();
     }
 
     private int dp(int value) {

@@ -272,20 +272,25 @@ async function main() {
   assert.equal(await wc.executeJavaScript('Math.round(document.querySelector(".app").getBoundingClientRect().top)'), 40);
   // Renderer dialogs sit above the page but below the native caption. Their
   // backdrop must also dim the Windows buttons or the caption stays a bright strip.
+  // A side panel is part of the page and must leave the native caption unmasked.
   const dimmedCaption = nativeTheme.shouldUseDarkColors ? '#0a0a0b' : '#c2c2c2';
   const undimmedCaption = nativeTheme.shouldUseDarkColors ? '#151517' : '#ffffff';
   await wc.executeJavaScript('document.querySelector("#permMask").classList.add("visible")');
   await wait(() => captionOverlays.get(home.id)?.color === dimmedCaption, 'permission caption dim');
-  await wc.executeJavaScript('document.querySelector("#reviewDialog").showModal()');
-  await wait(() => captionOverlays.get(home.id)?.color === dimmedCaption, 'review caption dim');
-  await wc.executeJavaScript('document.querySelector("#permMask").classList.remove("visible")');
-  await new Promise(resolve => setTimeout(resolve, 20));
+  // This frame fixture has no conversation to review. Open the actual panel
+  // without invoking review discovery, consent or a reviewer backend.
+  await wc.executeJavaScript('reviewPanel.setOpen(true)');
+  await wait(() => wc.executeJavaScript('document.querySelectorAll(".review-panel.is-open").length === 1'),
+    'review side panel open');
   assert.equal(captionOverlays.get(home.id)?.color, dimmedCaption,
-    'closing one overlay must not restore the caption while another remains open');
-  checkNativeCaption(await capture(wc, 'chat-review-open'), 'review dialog');
-  await wc.executeJavaScript('document.querySelector("#reviewDialog").close()');
-  await wait(() => captionOverlays.get(home.id)?.color === undimmedCaption, 'review caption restore');
-  checkNativeCaption(await capture(wc, 'chat-review-closed'), 'review closed');
+    'opening a side panel must preserve an existing permission overlay');
+  await wc.executeJavaScript('document.querySelector("#permMask").classList.remove("visible")');
+  await wait(() => captionOverlays.get(home.id)?.color === undimmedCaption,
+    'side panel alone must not dim the native caption');
+  checkNativeCaption(await capture(wc, 'chat-review-open'), 'review panel');
+  await wc.executeJavaScript('document.querySelector("#reviewClose").click()');
+  await wait(() => captionOverlays.get(home.id)?.color === undimmedCaption, 'review panel close');
+  checkNativeCaption(await capture(wc, 'chat-review-closed'), 'review panel closed');
   const fits = await wc.executeJavaScript('document.querySelector("#inputCard").getBoundingClientRect().bottom <= innerHeight');
   assert.ok(fits);
   home.maximize();

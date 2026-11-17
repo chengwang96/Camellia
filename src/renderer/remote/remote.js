@@ -662,10 +662,12 @@ element('saveDeviceName')?.addEventListener('click', () => run(async () => {
   const sync = result.tailscaleSync || {};
   const embeddedSync = result.embeddedNetworkSync || {};
   let suffix = translate('deviceNameSyncOffline');
-  if (sync.synced && embeddedSync.synced) suffix = translate('deviceNameSynced');
-  else if (sync.synced) suffix = translate('deviceNameLocalSynced');
+  // The management API result determines whether the console name was synced,
+  // independently of whether the embedded helper could update its hostname.
+  if (sync.synced) suffix = translate('deviceNameSynced');
   else if (sync.reason === 'invalid-name') suffix = translate('deviceNameSyncSkipped');
   else if (sync.reason === 'error' && sync.error) suffix = translate('deviceNameSyncFailed') + sync.error;
+  else if (embeddedSync.synced) suffix = translate('deviceNameLocalSynced');
   const message = translate('deviceNameSaved') + result.computerName + ' · ' + suffix;
   element('deviceNameStatus').textContent = message;
 }));

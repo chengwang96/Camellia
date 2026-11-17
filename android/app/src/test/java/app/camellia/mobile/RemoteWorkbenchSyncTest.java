@@ -17,7 +17,7 @@ public class RemoteWorkbenchSyncTest {
     }
     private static JSONObject page(String id, String activity) throws Exception {
         return new JSONObject().put("conversations", new JSONArray().put(new JSONObject()
-            .put("id", id).put("activity", activity).put("updatedAt", 1)));
+            .put("id", id).put("activity", activity).put("updatedAt", 1).put("lastReplyAt", 0).put("replyReadAt", 0)));
     }
     private static class Api extends RemoteApi {
         final CountDownLatch opened = new CountDownLatch(1), closed = new CountDownLatch(1);
@@ -156,5 +156,42 @@ public class RemoteWorkbenchSyncTest {
             assertEquals(1, reads.get()); assertEquals(2, result.get().getJSONArray("conversations").length());
             assertTrue(result.get().toString().contains("old-running")); assertFalse(result.get().toString().contains("PRIVATE"));
         } finally { close.countDown(); }
+    }
+
+    @Test public void summaryWithoutReplyMarkersUsesSessionStreamAndPreservesUnreadAndReadUpdates() throws Exception {
+        JSONObject computer = computer(2), oldSummary = page("recent", "idle"), listed = page("recent", "idle");
+        oldSummary.getJSONArray("conversations").getJSONObject(0).remove("lastReplyAt");
+        oldSummary.getJSONArray("conversations").getJSONObject(0).remove("replyReadAt");
+        listed.getJSONArray("conversations").getJSONObject(0).put("lastReplyAt", 100).put("replyReadAt", 0).put("filePreview", "PRIVATE");
+        AtomicReference<RemoteApi.SnapshotListener> sessionListener = new AtomicReference<>();
+        AtomicReference<JSONObject> result = new AtomicReference<>();
+        AtomicInteger summaryStarts = new AtomicInteger(), sessionStarts = new AtomicInteger();
+        CountDownLatch delivered = new CountDownLatch(1);
+        try (RemoteWorkbenchSync sync = new RemoteWorkbenchSync(address -> new Api(oldSummary) {
+            @Override void workbenchEvents(String token, SnapshotListener listener, SseReader.HeartbeatListener heartbeat) throws IOException {
+                summaryStarts.incrementAndGet(); super.workbenchEvents(token, listener, heartbeat);
+            }
+            @Override void listEvents(String token, SnapshotListener listener, SseReader.HeartbeatListener heartbeat) throws IOException {
+                sessionStarts.incrementAndGet(); sessionListener.set(listener);
+                try { listener.onSnapshot(new JSONObject().put("conversationList", listed)); closed.await(); }
+                catch (InterruptedException error) { Thread.currentThread().interrupt(); }
+                catch (org.json.JSONException error) { throw new IOException(error); }
+            }
+            @Override public JSONObject json(String path, String token, JSONObject payload) { throw new AssertionError("A full list snapshot needs no extra read"); }
+        })) {
+            sync.start(List.of(computer), update -> { if (update.page != null) { result.set(update.page); delivered.countDown(); } });
+            assertTrue(delivered.await(2, TimeUnit.SECONDS));
+            assertEquals("Old summaries must use the same data as Sessions", 1, sessionStarts.get());
+            assertEquals(1, summaryStarts.get());
+            assertEquals(100, result.get().getJSONArray("conversations").getJSONObject(0).getLong("lastReplyAt"));
+            assertEquals(0, result.get().getJSONArray("conversations").getJSONObject(0).getLong("replyReadAt"));
+            assertFalse(result.get().toString().contains("PRIVATE"));
+            listed.getJSONArray("conversations").getJSONObject(0).put("replyReadAt", 100);
+            sessionListener.get().onSnapshot(new JSONObject().put("conversationList", listed));
+            assertEquals(100, result.get().getJSONArray("conversations").getJSONObject(0).getLong("replyReadAt"));
+            listed.getJSONArray("conversations").getJSONObject(0).put("lastReplyAt", 101);
+            sessionListener.get().onSnapshot(new JSONObject().put("conversationList", listed));
+            assertEquals(101, result.get().getJSONArray("conversations").getJSONObject(0).getLong("lastReplyAt"));
+        }
     }
 }

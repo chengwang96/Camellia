@@ -565,6 +565,9 @@ public final class SettingsActivity extends Activity {
                     provider.put("name", title).put("type", original.optString("type", "custom"))
                         .put("baseUrl", LocalChatConfig.endpoint(endpoint.getText().toString())).put("protocol", protocols[selectedProtocol[0]]);
                     String extra = alternate.getText().toString().trim(); provider.put("anthropicBaseUrl", extra.isEmpty() ? "" : LocalChatConfig.endpoint(extra));
+                    boolean endpointChanged = !provider.optString("baseUrl").equals(original.optString("baseUrl"))
+                        || !provider.optString("anthropicBaseUrl").equals(original.optString("anthropicBaseUrl"))
+                        || !provider.optString("protocol").equals(original.optString("protocol", "openai"));
                     String secret = keys.getText().toString().trim();
                     if (!secret.isEmpty()) {
                         JSONArray nextKeys = new JSONArray();
@@ -579,6 +582,7 @@ public final class SettingsActivity extends Activity {
                         JSONObject model = new JSONObject();
                         if (models != null) for (int modelIndex = 0; modelIndex < models.length(); modelIndex++)
                             if (models.getJSONObject(modelIndex).optString("id").equals(id)) model = new JSONObject(models.getJSONObject(modelIndex).toString());
+                        if (endpointChanged || !upstream.equals(model.optString("upstream"))) model.remove("thinking");
                         model.put("id", id).put("upstream", upstream); if (!model.has("protocol")) model.put("protocol", "auto"); nextModels.put(model);
                     }
                     if (nextModels.length() == 0) throw new IllegalArgumentException(tr("至少填写一个模型 ID", "Enter at least one model ID"));

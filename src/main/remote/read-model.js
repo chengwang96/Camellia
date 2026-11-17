@@ -266,8 +266,8 @@ class RemoteReadModel {
       if (!running && recent.length >= 10) continue;
       const summary = this.summary(conversation, meta);
       // Home never needs transcripts, file previews, task commands or stream counters.
-      const { id, title, engine, model, modelName, workspaceName, updatedAt } = summary;
-      (running ? active : recent).push({ id, title, engine, model, modelName, workspaceName, updatedAt, activity, backgroundTaskCount });
+      const { id, title, engine, model, modelName, workspaceName, updatedAt, lastReplyAt, replyReadAt } = summary;
+      (running ? active : recent).push({ id, title, engine, model, modelName, workspaceName, updatedAt, lastReplyAt, replyReadAt, activity, backgroundTaskCount });
     }
     const conversations = [...active, ...recent];
     const listVersion = createHash('sha256').update(JSON.stringify(conversations)).digest('hex');

@@ -47,6 +47,9 @@ class KimiSubagents {
     this.timer.unref?.();
   }
   stop() { clearInterval(this.timer); this.timer = null; }
+  forget(id) {
+    this.files.delete(id); this.agentTurns.delete(id); this.finished.delete(id);
+  }
   poll() {
     if (this.polling) return this.polling;
     this.polling = this.read().finally(() => { this.polling = null; });

@@ -98,26 +98,55 @@ class ConversationHistory {
     if (text.length >= HEADER) throw new Error('Conversation index header is too large');
     const buffer = Buffer.alloc(HEADER); text.copy(buffer); writeAt(fd, buffer, 0);
   }
+  readIndex(id) {
+    const index = this.index(id);
+    this.checkIndex(index);
+    const fd = openSync(index, 'r');
+    try {
+      const buffer = readAt(fd, HEADER, 0); this.metrics.indexBytes += HEADER;
+      const { checksum: expected, ...value } = JSON.parse(buffer.subarray(0, buffer.indexOf(0)).toString('utf8'));
+      if (expected !== digest(value)) throw new Error('Invalid index header checksum');
+      const info = fs.fstatSync(fd);
+      if (info.size !== HEADER + value.count * RECORD) throw new Error('Invalid index size');
+      if (value.version !== VERSION || value.id !== id || !Number.isSafeInteger(value.count) || value.count < 0
+        || !/^[a-f0-9-]{36}$/.test(value.generation)) throw new Error('Invalid index header');
+      return { ...value, index, indexStamp: signature(info) };
+    } finally { fs.closeSync(fd); }
+  }
+  pruneToolProjections(value, previousGeneration) {
+    let dir;
+    try {
+      // A committed index invalidates prior readers before their next row.
+      // Unknown recent generations may belong to an in-progress writer.
+      this.checkIndex(value.index);
+      if (signature(stat(value.index)) !== value.indexStamp) return;
+      dir = fs.opendirSync(this.indexDir);
+      for (let entry; (entry = dir.readSync());) {
+        const prefix = value.id + '.idx.';
+        if (!entry.name.startsWith(prefix)) continue;
+        const match = /^([a-f0-9-]{36})\.(\d+)\.tool$/.exec(entry.name.slice(prefix.length));
+        if (!match || match[1] === value.generation) continue;
+        const file = path.join(this.indexDir, entry.name), info = fs.lstatSync(file);
+        if (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1) continue;
+        if (match[1] !== previousGeneration && info.mtimeMs > Date.now() - 86400000) continue;
+        if (signature(stat(value.index)) !== value.indexStamp) break;
+        fs.unlinkSync(file);
+      }
+    } catch (error) { if (error.code !== 'ENOENT') this.report(error); }
+    finally { dir?.closeSync(); }
+  }
   ensure(id) {
     const source = stat(this.file(id)), stamp = signature(source);
     const cached = this.get(id + ':meta');
     if (cached?.source === stamp && (!cached.count || signature(stat(cached.index)) === cached.indexStamp)) return cached;
     if (cached) this.forget(id);
     if (!source?.size) return this.put(id + ':meta', { ...this.empty(id, source), index: this.index(id) }, HEADER);
-    const index = this.index(id);
     try {
-      this.checkIndex(index);
-      const fd = openSync(index, 'r');
-      let value, indexStamp;
-      try { const buffer = readAt(fd, HEADER, 0); this.metrics.indexBytes += HEADER;
-        const parsed = JSON.parse(buffer.subarray(0, buffer.indexOf(0)).toString('utf8'));
-        const { checksum: expected, ...saved } = parsed; value = saved;
-        if (expected !== digest(saved)) throw new Error('Invalid index header checksum');
-        const info = fs.fstatSync(fd); indexStamp = signature(info);
-        if (info.size !== HEADER + value.count * RECORD) throw new Error('Invalid index size');
-      } finally { fs.closeSync(fd); }
-      if (value.version === VERSION && value.id === id && value.source === stamp && Number.isSafeInteger(value.count) && value.count >= 0)
-        return this.put(id + ':meta', { ...value, index, indexStamp }, HEADER);
+      const value = this.readIndex(id);
+      if (value.source === stamp) {
+        this.pruneToolProjections(value);
+        return this.put(id + ':meta', value, HEADER);
+      }
     } catch (error) { if (!['ENOENT'].includes(error.code)) this.report(error); }
     return this.rebuild(id);
   }
@@ -218,6 +247,8 @@ class ConversationHistory {
     writeAt(fd, buffer, HEADER + value.count++ * RECORD);
   }
   rebuild(id, temporary = false) {
+    let previousGeneration;
+    try { previousGeneration = this.readIndex(id).generation; } catch {}
     this.forget(id); this.metrics.rebuilds++;
     const target = temporary ? path.join(os.tmpdir(), 'camellia-history-index-' + randomUUID()) : this.index(id);
     const pending = target + '.' + randomUUID() + '.tmp';
@@ -233,7 +264,9 @@ class ConversationHistory {
       const old = this.tempById.get(id);
       if (old) { try { fs.unlinkSync(old); } catch {} this.temporary.delete(old); this.tempById.delete(id); }
       if (temporary) { this.temporary.add(target); this.tempById.set(id, target); }
-      return this.put(id + ':meta', { ...value, index: target, indexStamp: signature(stat(target)) }, HEADER);
+      const committed = { ...value, index: target, indexStamp: signature(stat(target)) };
+      this.pruneToolProjections(committed, previousGeneration);
+      return this.put(id + ':meta', committed, HEADER);
     } catch (error) {
       if (fd !== undefined) fs.closeSync(fd);
       try { fs.unlinkSync(pending); } catch {}
@@ -257,7 +290,7 @@ class ConversationHistory {
       if (!stat(value.index)) { this.rebuild(id); return; }
       this.checkIndex(value.index);
       const fd = openSync(value.index, 'r+');
-      const previousCount = value.count;
+      const previousCount = value.count, previousGeneration = value.generation;
       let revised = false;
       try {
         let offset = before?.size || 0;
@@ -275,6 +308,7 @@ class ConversationHistory {
       const changedBlock = Math.floor(Math.min(previousCount, value.count - 1) / 512);
       for (const key of this.cache.keys()) if (key.startsWith(id + ':index:') && Number(key.split(':').at(-1)) >= changedBlock) this.drop(key);
       this.put(id + ':meta', value, HEADER);
+      if (revised) this.pruneToolProjections(value, previousGeneration);
     } catch (error) { this.forget(id); this.report(error); }
   }
   record(value, i, rebuilt = false) {

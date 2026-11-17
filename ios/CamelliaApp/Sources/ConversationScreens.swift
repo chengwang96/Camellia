@@ -1109,7 +1109,7 @@ struct ConversationDetailView: View {
                                             artifactSelection = ArtifactSelection(seq: row.id, reference: reference)
                                             showArtifacts = true
                                         },
-                                        images: model.inlineImageLoader(seq: row.id))
+                                        images: model.inlineImageLoader(seq: row.id), chinese: model.usesChinese)
                                 .id(row.id)
                             if row.message.role == .user {
                                 let tasks = model.transcript.subagents.filter { $0.userSeq == row.id }
@@ -1533,6 +1533,7 @@ private struct MessageView: View {
     let onEdit: () -> Void
     let onOpenArtifacts: (String) -> Void
     var images: InlineImageLoader? = nil
+    var chinese = true
 
     var body: some View {
         VStack(alignment: row.message.role == .user ? .trailing : .leading, spacing: 6) {
@@ -1580,6 +1581,10 @@ private struct MessageView: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(.top, 8)
                 }
+            }
+            if row.message.role != .user, !row.visualizations.isEmpty {
+                RemoteVisualizationCards(cards: row.visualizations, chinese: chinese, loader: images)
+                    .padding(.top, 8)
             }
             if !row.message.text.isEmpty || row.message.turnDetails?.hasUsage == true {
                 RemoteMessageFooter(text: row.message.text, at: row.message.at,

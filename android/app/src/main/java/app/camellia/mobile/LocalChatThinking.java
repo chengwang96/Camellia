@@ -1,46 +1,47 @@
 package app.camellia.mobile;
 
 import org.json.JSONObject;
+import org.json.JSONArray;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Locale;
 
 final class LocalChatThinking {
-    // The desktop reports protocol level names (off/low/medium/high/xhigh/max/
-    // ultra). The phone mirrors the same ladder so one label never means two
-    // different things: both composers and both model menus use 关闭/低/中/高/
-    // 极高/最高/Ultra (Off/Low/Medium/High/Extra high/Max/Ultra).
-    //
-    // Not every model exposes every level. Anthropic routes follow Claude Code's
-    // own effort flag (off..max, no xhigh/ultra). OpenAI routes follow the Codex
-    // catalog, where only the newest models add max and ultra and GPT-5.5 stops
-    // at xhigh; unknown models keep the conservative three-level default. This
-    // mirrors levelsFor() in shared/model-levels.js.
+    // Match shared/model-levels.js: reported metadata wins, including an empty
+    // list. Only missing/invalid metadata falls back to generic API efforts.
     private static final String[] DEFAULT_LEVELS = { "low", "medium", "high" };
-    private static final String[] XHIGH_LEVELS = { "low", "medium", "high", "xhigh" };
-    private static final String[] MAX_LEVELS = { "low", "medium", "high", "xhigh", "max" };
-    private static final String[] ULTRA_LEVELS = { "low", "medium", "high", "xhigh", "max", "ultra" };
-    private static final String[] CLAUDE_LEVELS = { "off", "low", "medium", "high", "max" };
-    // Longest slugs first so a prefix such as gpt-6-sol never shadows a longer
-    // one such as gpt-6.1-sol; MODEL_SLUGS[i] pairs with MODEL_LADDERS[i].
-    private static final String[] MODEL_SLUGS = {
-        "gpt-daybreak-blue-latest", "gpt-daybreak-red-latest", "gpt-6.1-sol", "gpt-6-astra",
-        "gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-6-luna", "gpt-6-sol", "gpt-5.5", "codex-auto-review",
-    };
-    private static final String[][] MODEL_LADDERS = {
-        ULTRA_LEVELS, ULTRA_LEVELS, ULTRA_LEVELS, ULTRA_LEVELS,
-        MAX_LEVELS, ULTRA_LEVELS, ULTRA_LEVELS, MAX_LEVELS, ULTRA_LEVELS, XHIGH_LEVELS, MAX_LEVELS,
-    };
-    private static final String[] KNOWN_LEVELS = { "off", "low", "medium", "high", "xhigh", "max", "ultra" };
+    private static final String[] KNOWN_LEVELS = { "off", "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra" };
     static final String AUTO = "auto";
 
+    static final class Metadata {
+        final List<String> levels;
+        final boolean booleanOnly, onLabel;
+        Metadata(List<String> levels, boolean booleanOnly, boolean onLabel) {
+            this.levels = java.util.Collections.unmodifiableList(new ArrayList<>(levels));
+            this.booleanOnly = booleanOnly; this.onLabel = onLabel;
+        }
+    }
+
+    static Metadata metadata(JSONObject thinking) {
+        JSONArray values = thinking == null ? null : thinking.optJSONArray("values");
+        if (values == null || values.length() > 32) return null;
+        List<String> levels = new ArrayList<>();
+        boolean booleanOnly = values.length() > 0, hasTrue = false, hasHigh = false;
+        for (int index = 0; index < values.length(); index++) {
+            Object value = values.opt(index);
+            if (!(value instanceof Boolean) && !(value instanceof String && valid((String) value))) return null;
+            booleanOnly &= value instanceof Boolean;
+            hasTrue |= Boolean.TRUE.equals(value); hasHigh |= "high".equals(value);
+            String level = value instanceof Boolean ? ((Boolean) value ? "high" : "none") : (String) value;
+            if (!levels.contains(level)) levels.add(level);
+        }
+        return new Metadata(levels, booleanOnly, hasTrue && !hasHigh);
+    }
+
+    private static boolean valid(String value) { return value.matches("(?i)[a-z][a-z0-9_-]{0,63}"); }
+
     static String[] levels(LocalChatConfig.Route route) {
-        if (route == null) return DEFAULT_LEVELS;
-        if (route.protocol.equals("anthropic")) return CLAUDE_LEVELS;
-        String id = route.model.toLowerCase(Locale.ROOT);
-        int slash = id.lastIndexOf('/');
-        String segment = slash < 0 ? id : id.substring(slash + 1);
-        for (int index = 0; index < MODEL_SLUGS.length; index++)
-            if (segment.equals(MODEL_SLUGS[index]) || segment.startsWith(MODEL_SLUGS[index] + "-")) return MODEL_LADDERS[index];
-        return DEFAULT_LEVELS;
+        return route != null && route.thinking != null ? route.thinking.levels.toArray(new String[0]) : DEFAULT_LEVELS.clone();
     }
 
     static String[] menu(LocalChatConfig.Route route) {
@@ -67,6 +68,14 @@ final class LocalChatThinking {
 
     static String label(String value, boolean chinese) {
         return display(normalize(value), chinese);
+    }
+
+    static String label(String value, LocalChatConfig.Route route, boolean chinese) {
+        if (value.equals("none")) return chinese ? "关闭" : "Off";
+        if (value.equals("high") && route != null && route.thinking != null && route.thinking.onLabel)
+            return chinese ? "开启" : "On";
+        if (route != null && accepts(route, value)) return display(value, chinese);
+        return label(value, chinese);
     }
 
     static String display(String value, boolean chinese) {
@@ -101,21 +110,40 @@ final class LocalChatThinking {
     }
 
     static boolean supported(LocalChatConfig.Route route) {
-        return route != null && (route.protocol.equals("openai") || adaptive(route) || budget(route));
+        return route != null && (route.thinking != null ? !route.thinking.levels.isEmpty()
+            : route.protocol.equals("openai") || adaptive(route) || budget(route));
     }
 
     static String effective(LocalChatConfig.Route route, String value) {
         if (!supported(route)) return AUTO;
-        String level = normalize(value);
+        String trimmed = value == null ? "" : value.trim();
+        String level = accepts(route, trimmed) ? trimmed : normalize(value);
         return level.equals(AUTO) || accepts(route, level) ? level : AUTO;
     }
 
     static void apply(LocalChatConfig.Route route, String value, JSONObject body) throws Exception {
         String level = effective(route, value);
         if (level.equals(AUTO)) return;
-        if (level.equals("off")) { body.put("thinking", new JSONObject().put("type", "disabled")); return; }
-        if (route.protocol.equals("openai")) body.put("reasoning_effort", level);
-        else if (adaptive(route)) {
+        boolean off = level.equals("off") || level.equals("none");
+        String host = java.net.URI.create(route.baseUrl).getHost();
+        if (route.thinking != null && route.thinking.booleanOnly) {
+            body.put("thinking", new JSONObject().put("type", off ? "disabled" : "enabled"));
+            if (route.protocol.equals("openai") && (route.providerType.equals("ollama") || "ollama.com".equals(host)))
+                body.put("reasoning_effort", level);
+            return;
+        }
+        if (route.protocol.equals("openai")) {
+            body.put("reasoning_effort", level);
+            boolean deepseek = route.providerType.equals("deepseek") || "api.deepseek.com".equals(host)
+                || (java.util.Arrays.asList("commandcode", "opencode", "opencode-go").contains(route.providerType)
+                    || "api.commandcode.ai".equals(host) || "opencode.ai".equals(host))
+                && route.model.toLowerCase(Locale.ROOT).matches("(?:.*/)?deepseek-.*");
+            if (deepseek) {
+                body.put("thinking", new JSONObject().put("type", off ? "disabled" : "enabled"));
+                if (off) body.remove("reasoning_effort");
+            }
+        } else if (off) body.put("thinking", new JSONObject().put("type", "disabled"));
+        else if (adaptive(route) || route.thinking != null && !budget(route)) {
             body.put("thinking", new JSONObject().put("type", "adaptive"));
             body.put("output_config", new JSONObject().put("effort", level));
             body.put("max_tokens", 16384);

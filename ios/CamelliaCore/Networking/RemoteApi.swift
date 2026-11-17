@@ -266,7 +266,8 @@ public final class RemoteApi {
 
     /// Reads a whole response body.
     public func read(_ path: String, method: String? = nil, payload: [String: Any]? = nil,
-                     expectedContentType: String = "application/json") throws -> Data {
+                     expectedContentType: String = "application/json",
+                     maximumBytes: Int = RemoteApi.maximumBodyBytes) throws -> Data {
         let ticket = requestCancellation.ticket()
         let verb = method ?? (payload == nil ? "GET" : "POST")
         let target = try endpoint.url(path)
@@ -276,7 +277,7 @@ public final class RemoteApi {
             let request = try externalRequest(path, method: verb, payload: payload == nil ? nil : Data(encoded.utf8),
                                               accept: expectedContentType)
             let external = ExternalHTTP(request: request, expectedContentType: expectedContentType,
-                                        mode: .body)
+                                        mode: .body, bodyLimit: maximumBytes)
             guard requestCancellation.install({ external.cancel() }, ticket: ticket) else {
                 throw CancellationError()
             }
@@ -307,12 +308,12 @@ public final class RemoteApi {
         try response.execute()
 
         let status = response.statusCode()
-        let body = try response.readAll(limit: status == 200 ? Self.maximumBodyBytes + 1
+        let body = try response.readAll(limit: status == 200 ? maximumBytes + 1
                                                          : Self.maximumErrorBytes + 1)
         guard status == 200 else {
             throw Failure(status: status, detail: RemoteApi.detail(from: body))
         }
-        guard body.count <= Self.maximumBodyBytes else { throw RemoteApiError.tooLarge }
+        guard body.count <= maximumBytes else { throw RemoteApiError.tooLarge }
         guard response.contentType().lowercased().hasPrefix(expectedContentType) else {
             throw RemoteApiError.unexpectedContentType
         }

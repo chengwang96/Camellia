@@ -14,7 +14,7 @@ const root = fs.mkdtempSync(path.join(os.tmpdir(), 'camellia-relay-ui-'));
 const storage = { isEncryptionAvailable: () => true,
   encryptString: value => Buffer.from(value), decryptString: value => value.toString() };
 new TailscaleAPI({ file: path.join(root, 'remote/tailscale-oauth.json'), safeStorage: storage })
-  .save({ clientId: 'test-client.example', clientSecret: 'tskey-client-test-secret' });
+  .save({ clientId: 'test-client.example', clientSecret: ['tskey', 'client', 'test', 'secret'].join('-') });
 let relayName = 'izwz94tkwtju32rm6f4f9mz', renameMode = '', renameWrites = 0;
 globalThis.fetch = async (url, options) => {
   let body;

@@ -104,7 +104,7 @@ def exercise_design(browser, theme, language, width, height):
     assert footer['y'] + footer['height'] <= panel['y'] + panel['height']
     if width >= 1200:
         assert chat['x'] + chat['width'] <= panel['x'] - 12, (chat, panel)
-        assert page.locator('#chatScroll').evaluate('(node)=>getComputedStyle(node).marginRight') == '496px'
+        assert page.locator('#chatScroll').evaluate('(node)=>getComputedStyle(node).marginRight') == '472px'
     else:
         assert page.locator('#chatScroll').evaluate('(node)=>getComputedStyle(node).marginRight') == '0px'
     assert page.locator('#workPanelBody').evaluate('(node)=>node.scrollWidth<=node.clientWidth')
@@ -359,7 +359,7 @@ with sync_playwright() as p:
         if not page.locator('#workPanel').is_visible():
             page.locator('#workPanelToggle').click()
         expect(page.locator('#workPanel')).to_be_visible()
-        assert page.locator('#workPanel').evaluate('(node)=>getComputedStyle(node).width') == '480px'
+        assert page.locator('#workPanel').evaluate('(node)=>getComputedStyle(node).width') == '456px'
         assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
         output = repo / 'dist/ui-preview'
         output.mkdir(parents=True, exist_ok=True)

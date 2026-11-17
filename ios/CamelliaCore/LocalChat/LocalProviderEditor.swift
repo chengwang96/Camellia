@@ -66,13 +66,21 @@ public enum LocalProviderEditor {
         }
 
         let oldModels = try dictionaries(existing["models"] ?? [Any]())
+        let endpointChanged = string(provider["baseUrl"]) != string(existing["baseUrl"])
+            || string(provider["anthropicBaseUrl"]) != string(existing["anthropicBaseUrl"])
+            || string(provider["protocol"]) != (existing["protocol"] as? String ?? "openai")
         provider["models"] = try dictionaries(draftModels).map { candidate -> [String: Any] in
             let id = ComposerText.androidTrim(string(candidate["id"]))
             var model = oldModels.first(where: { string($0["id"]) == id }) ?? [:]
+            let previousUpstream = string(model["upstream"])
+            let previousProtocol = model["protocol"] as? String ?? "auto"
             model["id"] = id
             model["upstream"] = ComposerText.androidTrim(string(candidate["upstream"]))
             let wire = string(candidate["protocol"])
             model["protocol"] = wire.isEmpty ? "auto" : wire
+            if endpointChanged || string(model["upstream"]) != previousUpstream || string(model["protocol"]) != previousProtocol {
+                model.removeValue(forKey: "thinking")
+            }
             return model
         }
 

@@ -27,6 +27,7 @@ final class ExternalHTTP: NSObject, URLSessionDataDelegate, URLSessionTaskDelega
     private let request: URLRequest
     private let expectedContentType: String
     private let expectedLength: Int64?
+    private let bodyLimit: Int
     private let mode: Mode
     private let configuration: URLSessionConfiguration
     private let condition = NSCondition()
@@ -41,10 +42,12 @@ final class ExternalHTTP: NSObject, URLSessionDataDelegate, URLSessionTaskDelega
 
     init(request: URLRequest, expectedContentType: String, mode: Mode,
          expectedLength: Int64? = nil,
+         bodyLimit: Int = ExternalHTTP.maximumBodyBytes,
          configuration: URLSessionConfiguration = ExternalHTTP.configuration()) {
         self.request = request
         self.expectedContentType = expectedContentType
         self.expectedLength = expectedLength
+        self.bodyLimit = max(0, bodyLimit)
         self.mode = mode
         self.configuration = configuration
     }
@@ -152,7 +155,7 @@ final class ExternalHTTP: NSObject, URLSessionDataDelegate, URLSessionTaskDelega
                 return
             }
         } else if case .body = mode {
-            if body.count > Self.maximumBodyBytes - data.count {
+            if body.count > bodyLimit - data.count {
                 receivedError = Failure.tooLarge
                 finished = true
                 condition.broadcast()

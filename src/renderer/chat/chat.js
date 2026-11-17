@@ -2390,6 +2390,9 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     const discardPreviousReply = () => {
       for (const node of previousReply.keys()) node.remove();
       previousReply.clear();
+      // Pending edits keep replies connected for rollback. Once removal is
+      // permanent, the usage index must not keep their DOM trees alive.
+      for (const [seq, turn] of requestTurns) if (!turn?.isConnected) requestTurns.delete(seq);
     };
     // From here on the message belongs to the conversation, not to the editor.
     // Compaction can hold the request for a while, so the pending row carries
@@ -5098,7 +5101,8 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     onOpen: () => workPanel.setOpen(false),
     openConversation: id => void openHistorySession(id),
   });
-  reviewPanel = window.createReviewPanel({ context, getEngine: () => loadedEngine || harnessId, setStatus });
+  reviewPanel = window.createReviewPanel({ context, getEngine: () => loadedEngine || harnessId, setStatus,
+    onOpen: () => { workPanel.setOpen(false); contextPanel?.setOpen(false); } });
   $('ctxRing').addEventListener('click', () => contextPanel?.setOpen(!contextPanel.isOpen()));
   // A side panel reserves room beside the chat only while the remaining
   // column still fits inline media at its fixed size. When the window narrows
@@ -5111,16 +5115,17 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
   });
   const INLINE_MEDIA_WIDTH = 560; // Keep in sync with --inline-media-width
   const CHAT_GUTTER = 48;         // chat-scroll left and right padding
-  const SIDE_PANEL_RESERVE = 496; // Keep in sync with --side-panel-width + 16px
+  const SIDE_PANEL_RESERVE = 472; // Keep in sync with --side-panel-width + 16px
   let sidePanelFitKind = null, sidePanelFits = false;
   function updatePanelReservation() {
     const open = mainElement.classList.contains('has-context-panel') ? 'context'
-      : mainElement.classList.contains('has-work-panel') ? 'work' : null;
+      : mainElement.classList.contains('has-work-panel') ? 'work'
+        : mainElement.classList.contains('has-review-panel') ? 'review' : null;
     const fits = Boolean(open)
       && mainElement.clientWidth - SIDE_PANEL_RESERVE - CHAT_GUTTER >= INLINE_MEDIA_WIDTH;
     mainElement.classList.toggle('panel-fits', fits);
     if (open && open === sidePanelFitKind && sidePanelFits && !fits) {
-      (open === 'context' ? contextPanel : workPanel).setOpen(false);
+      (open === 'context' ? contextPanel : open === 'review' ? reviewPanel : workPanel).setOpen(false);
     }
     sidePanelFitKind = open;
     sidePanelFits = fits;
@@ -5625,6 +5630,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     turnEl = null; blocks = {}; pendingTools = {}; todoItems = null; todoPanelEl = null;
     if (live.engine) turnEngine = live.engine;
     followRunOutput = true;
+    requestTurns.clear();
     chat.innerHTML = '';
     if (!await renderHistoryMessages(live.messages, live.historyPage, { recoverFailure, requestUsage })) return false;
     addUser(live.displayText ?? live.prompt, live.attachments || [], { seq: live.userSeq, at: live.startedAt });

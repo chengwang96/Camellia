@@ -545,9 +545,13 @@ public class LocalChatTest extends InstrumentationTestCase {
         try (MockApi api = new MockApi(200, "text/event-stream", "data: {\"choices\":[{\"delta\":{\"content\":\"Configured reply\"}}]}\n\ndata: [DONE]\n\n")) {
             JSONObject exported = bundle(api.url(), "openai");
             JSONArray models = exported.getJSONObject("config").getJSONArray("providers").getJSONObject(0).getJSONArray("models");
-            models.getJSONObject(0).put("id", "kimi-k3");
-            models.put(new JSONObject().put("id", "deepseek-v4-pro").put("upstream", "another-model"));
+            models.getJSONObject(0).put("id", "kimi-k3").put("thinking", new JSONObject()
+                .put("values", new JSONArray().put("low").put("high").put("max")).put("default", "max"));
+            models.put(new JSONObject().put("id", "deepseek-v4-pro").put("upstream", "another-model")
+                .put("thinking", new JSONObject().put("values", new JSONArray().put("high"))));
             models.put(new JSONObject().put("id", "claude-sonnet-4.6").put("upstream", "claude-sonnet-4-6").put("protocol", "anthropic"));
+            models.put(new JSONObject().put("id", "fixed-model").put("upstream", "fixed-model")
+                .put("thinking", new JSONObject().put("values", new JSONArray())));
             LocalChatFixture store = new LocalChatFixture(getInstrumentation().getTargetContext()); store.importConfig(LocalChatConfig.parse(exported.toString()));
             Activity activity = LocalChatFixture.start(getInstrumentation(), new Intent(getInstrumentation().getTargetContext(), LocalChatActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
             try {
@@ -564,6 +568,15 @@ public class LocalChatTest extends InstrumentationTestCase {
                 });
                 screenshot(activity, "model-picker");
                 ui(() -> picker(activity).findViewWithTag("thinkingSettings").performClick());
+                ui(() -> {
+                    assertNull(picker(activity).findViewWithTag("thinkingOption:medium"));
+                    assertNotNull(picker(activity).findViewWithTag("thinkingOption:max"));
+                    picker(activity).findViewWithTag("thinkingOption:max").performClick();
+                });
+                assertEquals("max", new LocalChatFixture(getInstrumentation().getTargetContext()).conversation(id).getString("thinking"));
+                ui(() -> activity.getWindow().getDecorView().findViewWithTag("localModel").performClick());
+                ui(() -> picker(activity).findViewWithTag("thinkingSettings").performClick());
+                ui(() -> assertTrue(picker(activity).findViewWithTag("thinkingOption:max").isSelected()));
                 screenshot(activity, "thinking-picker");
                 ui(() -> picker(activity).findViewWithTag("thinkingOption:high").performClick());
                 assertEquals("high", new LocalChatFixture(getInstrumentation().getTargetContext()).conversation(id).getString("thinking"));
@@ -590,8 +603,21 @@ public class LocalChatTest extends InstrumentationTestCase {
                 assertEquals("test-provider/deepseek-v4-pro", changed.getString("routeId")); assertEquals("high", changed.getString("thinking"));
                 ui(() -> activity.getWindow().getDecorView().findViewWithTag("localModel").performClick());
                 ui(() -> picker(activity).findViewWithTag("thinkingSettings").performClick());
+                ui(() -> {
+                    assertNull(picker(activity).findViewWithTag("thinkingOption:medium"));
+                    assertNull(picker(activity).findViewWithTag("thinkingOption:max"));
+                });
                 ui(() -> picker(activity).findViewWithTag("thinkingBack").performClick());
                 assertNotNull(picker(activity).findViewWithTag("modelOption:test-provider/kimi-k3"));
+                ui(() -> picker(activity).findViewWithTag("modelOption:test-provider/fixed-model").performClick());
+                assertEquals("auto", new LocalChatFixture(getInstrumentation().getTargetContext()).conversation(id).getString("thinking"));
+                ui(() -> activity.getWindow().getDecorView().findViewWithTag("localModel").performClick());
+                ui(() -> picker(activity).findViewWithTag("thinkingSettings").performClick());
+                ui(() -> {
+                    assertNotNull(picker(activity).findViewWithTag("thinkingOption:auto"));
+                    assertNull(picker(activity).findViewWithTag("thinkingOption:high"));
+                });
+                getInstrumentation().sendKeyDownUpSync(android.view.KeyEvent.KEYCODE_BACK);
                 getInstrumentation().sendKeyDownUpSync(android.view.KeyEvent.KEYCODE_BACK);
                 assertNotNull(activity.getWindow().getDecorView().findViewWithTag("localComposer"));
             } finally { finishActivity(activity); }
@@ -667,8 +693,9 @@ public class LocalChatTest extends InstrumentationTestCase {
                     View root;
                     try { var field = LocalChatActivity.class.getDeclaredField("root"); field.setAccessible(true); root = (View) field.get(activity); }
                     catch (Exception error) { throw new AssertionError(error); }
-                    assertTrue(root.getPaddingLeft() >= Math.round(18 * activity.getResources().getDisplayMetrics().density));
-                    assertTrue(root.getPaddingRight() >= Math.round(18 * activity.getResources().getDisplayMetrics().density));
+                    int gutter = Math.round(ChatStyle.PAGE_SIDE_DP * activity.getResources().getDisplayMetrics().density);
+                    assertTrue("The local page must retain its shared left gutter", root.getPaddingLeft() >= gutter);
+                    assertTrue("The local page must retain its shared right gutter", root.getPaddingRight() >= gutter);
                 });
                 // With no model configured the page must say so and offer the way
                 // to fix it — and must still render the list, because "New

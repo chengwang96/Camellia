@@ -663,7 +663,7 @@ public final class LocalChatActivity extends Activity {
             boolean attachable = idle && !loadingImages;
             attachButton.setEnabled(attachable); attachButton.setAlpha(attachable ? 1f : .45f);
             String thinking = LocalChatThinking.effective(route, store.conversation(conversationId).optString("thinking", "auto"));
-            chatComposer.model(route == null ? tr("选择模型", "Select model") : route.displayName(), LocalChatThinking.label(thinking, chinese), idle);
+            chatComposer.model(route == null ? tr("选择模型", "Select model") : route.displayName(), LocalChatThinking.label(thinking, route, chinese), idle);
             chatComposer.editing(editingMessageIndex >= 0, idle);
             send.setEnabled(runningId == null && !sendPending && !store.busy() && route != null && !loadingImages
                 && (!composer.getText().toString().trim().isEmpty() || !selectedImages.isEmpty() || !selectedDocuments.isEmpty()));
@@ -847,7 +847,9 @@ public final class LocalChatActivity extends Activity {
         if (runningId != null || conversationId == null) return;
         JSONObject conversation = store.conversation(conversationId);
         try {
-            store.patchConversation(conversationId, new JSONObject().put("routeId", routeId).put("thinking", LocalChatThinking.normalize(thinking)), stored(result -> updateControls()));
+            LocalChatConfig.Route target = null;
+            for (LocalChatConfig.Route route : LocalChatConfig.routes(store.config())) if (route.id.equals(routeId)) { target = route; break; }
+            store.patchConversation(conversationId, new JSONObject().put("routeId", routeId).put("thinking", LocalChatThinking.effective(target, thinking)), stored(result -> updateControls()));
             updateControls();
         } catch (Exception error) { failure(error); }
     }

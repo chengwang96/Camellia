@@ -1,7 +1,8 @@
 'use strict';
 
-const { mergeTask } = require('../shared/subagents');
+const { mergeTask, pruneTasks, COMPLETED_TASK_LIMIT } = require('../shared/subagents');
 const ACTIVE = new Set(['starting', 'running', 'waiting']);
+const ID = /^[a-zA-Z0-9_./:-]{1,200}$/;
 const text = value => typeof value === 'string' ? value : Array.isArray(value)
   ? value.map(part => part.text || part.content?.text || '').filter(Boolean).join('\n') : '';
 const object = value => {
@@ -17,20 +18,41 @@ const status = value => ({ pending: 'starting', pendingInit: 'starting', in_prog
 // Native tool calls and native lifecycle events share one stable display identity.
 // A background launch receipt is never evidence that the child has finished.
 class NativeSubagents {
-  constructor(engine, emit) {
+  constructor(engine, emit, { onEvict = () => {} } = {}) {
     this.engine = engine; this.emit = emit; this.children = new Map();
     this.calls = new Map(); this.aliases = new Map(); this.identities = new Map();
-    this.epoch = 0;
+    this.epoch = 0; this.retired = new Map(); this.onEvict = onEvict;
   }
   begin() { this.epoch++; this.calls.clear(); }
   resolve(id) { return this.aliases.get(id) || id; }
   nativeId(id) { return this.identities.get(this.resolve(id)) || id; }
+  retire(id, task) {
+    this.retired.delete(id); this.retired.set(id, { turnId: task.turnId });
+    while (this.retired.size > 512) this.retired.delete(this.retired.keys().next().value);
+  }
+  prune() {
+    for (const task of pruneTasks(this.children)) {
+      this.retire(task.id, task);
+      const aliases = [];
+      for (const [alias, id] of this.aliases) if (id === task.id) {
+        aliases.push(alias); this.retire(alias, task); this.aliases.delete(alias);
+      }
+      this.identities.delete(task.id);
+      this.onEvict(task.id, aliases);
+    }
+    for (const [id, call] of this.calls) if (call.ids.length && !call.ids.some(child => this.children.has(child))) this.calls.delete(id);
+    const terminalCalls = [...this.calls].filter(([, call]) => call.ids.length
+      && call.ids.every(id => this.children.has(id) && !ACTIVE.has(this.children.get(id).status)));
+    for (const [id] of terminalCalls.slice(0, -COMPLETED_TASK_LIMIT)) this.calls.delete(id);
+  }
   bind(nativeId, id) {
-    if (typeof nativeId !== 'string' || !nativeId) return;
+    if (typeof nativeId !== 'string' || !ID.test(nativeId)) return;
     id = this.resolve(id);
+    if (typeof id !== 'string' || !ID.test(id)) return;
     const oldId = this.aliases.get(nativeId) || nativeId;
     const old = oldId !== id && this.children.get(oldId);
     this.aliases.set(nativeId, id); this.identities.set(id, nativeId);
+    this.retired.delete(nativeId);
     if (old) {
       const current = this.children.get(id);
       this.children.delete(oldId); this.identities.delete(oldId);
@@ -44,6 +66,13 @@ class NativeSubagents {
       }, { engine: this.engine });
       if (task) { this.children.set(id, task); this.emit(task, [oldId]); }
     }
+    // A resumed task may receive several native aliases. Keep a small recent
+    // window rather than accumulating identities for every past attempt.
+    const aliases = [...this.aliases].filter(([, target]) => target === id);
+    for (const [alias] of aliases.slice(0, -8)) {
+      this.aliases.delete(alias);
+      this.retire(alias, this.children.get(id) || {});
+    }
   }
   update(id, update) {
     id = this.resolve(id);
@@ -52,10 +81,16 @@ class NativeSubagents {
       ...(update.parentId ? { parentId: this.resolve(update.parentId) } : {}) }, { engine: this.engine });
     if (!task) return;
     if (!ACTIVE.has(task.status)) { task.canStop = false; task.approvals = []; }
-    if (previous && JSON.stringify({ ...previous, updatedAt: 0 }) === JSON.stringify({ ...task, updatedAt: 0 })) return task;
-    this.children.set(id, task); this.emit(task); return task;
+    if (previous && JSON.stringify({ ...previous, updatedAt: 0 }) === JSON.stringify({ ...task, updatedAt: 0 })) {
+      this.prune(); return task;
+    }
+    this.children.delete(id); this.children.set(id, task);
+    this.emit(task); this.prune(); return task;
   }
   native(nativeId, update) {
+    if (typeof nativeId !== 'string' || !ID.test(nativeId)) return;
+    const retired = this.retired.get(nativeId);
+    if (retired && (!ACTIVE.has(update.status) || !update.turnId || update.turnId === retired.turnId)) return;
     const call = update.toolCallId && this.calls.get(update.toolCallId);
     const id = (Number.isSafeInteger(update.slot) && call?.ids[update.slot])
       || (call?.ids.length === 1 ? call.ids[0] : this.aliases.get(nativeId) || nativeId);
@@ -94,6 +129,8 @@ class NativeSubagents {
       call = { ids: [], args, swarm, background: batch || args.run_in_background === true || (this.engine === 'grok' && args.run_in_background !== false) };
       this.calls.set(tool.id, call);
       for (const [index, entry] of entries.entries()) {
+        // An explicit native resume is allowed to reopen an evicted task.
+        if (entry.nativeId) this.retired.delete(entry.nativeId);
         const id = entry.nativeId ? this.resolve(entry.nativeId) : 'tool:' + this.epoch + ':' + tool.id + (swarm || batch ? ':' + index : '');
         call.ids.push(id); this.bind(entry.nativeId, id);
         this.update(id, { title: entry.title, goal: entry.prompt, status: tool.status === 'pending' ? 'starting' : 'running',
@@ -135,7 +172,7 @@ class NativeSubagents {
     return true;
   }
   disconnect() {
-    for (const [id, task] of this.children) this.update(id, { canReply: false, canStop: false, approvals: [],
+    for (const [id, task] of [...this.children]) if (this.children.has(id)) this.update(id, { canReply: false, canStop: false, approvals: [],
       ...(ACTIVE.has(task.status) ? { status: 'unavailable' } : {}) });
   }
 }

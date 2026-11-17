@@ -95,6 +95,64 @@ test('tool projection never shortens user requests or assistant prose', () => {
   assert.equal(projectRow(plain, { path: 'history.jsonl' }), plain);
 });
 
+test('revisions reclaim superseded tool previews while preserving authoritative tool output', t => {
+  const root = fixture(t), store = new ConversationHistory(root);
+  t.after(() => store.close());
+  let seq = 1, userSeq = 1;
+  store.append('sample', { seq, role: 'user', text: 'Original request' });
+  const previews = () => fs.readdirSync(store.indexDir).filter(name => name.endsWith('.tool'));
+  for (let i = 0; i < 6; i++) {
+    store.append('sample', { seq: ++seq, role: 'tool', text: JSON.stringify({ type: 'gui:tool',
+      id: 'tool-' + i, output: 'ORIGINAL-' + i + 'x'.repeat(200000), status: 'completed' }) });
+    const row = store.rows('sample').find(row => row.role === 'tool');
+    const reference = JSON.parse(row.text).fullOutput;
+    const bytes = fs.readFileSync(reference.path).subarray(reference.offset, reference.offset + reference.length);
+    assert.match(JSON.parse(bytes.toString('utf8')).text, new RegExp('ORIGINAL-' + i));
+    assert.equal(previews().length, 1);
+    store.append('sample', { seq: ++seq, role: 'revision', replacesSeq: userSeq, text: 'Revised ' + i });
+    userSeq = seq;
+    assert.equal(store.rows('sample').filter(row => row.role === 'tool').length, 0);
+    assert.equal(previews().length, 0);
+  }
+  const saved = fs.readFileSync(path.join(root, 'sample.jsonl'), 'utf8').trim().split('\n').map(line => JSON.parse(line));
+  assert.equal(saved.filter(row => row.role === 'tool').length, 6);
+});
+
+test('rebuilt indexes retire the previous preview generation and old readers detect revisions', t => {
+  const root = fixture(t), store = new ConversationHistory(root);
+  t.after(() => store.close());
+  store.append('sample', { seq: 1, role: 'user', text: 'First request' });
+  store.append('sample', { seq: 2, role: 'tool', text: JSON.stringify({ type: 'gui:tool', output: 'x'.repeat(200000), status: 'completed' }) });
+  const expected = store.rows('sample')[1], oldGeneration = store.ensure('sample').generation;
+  store.rebuild('sample');
+  const names = fs.readdirSync(store.indexDir).filter(name => name.endsWith('.tool'));
+  assert.equal(names.length, 1);
+  assert.ok(names.every(name => !name.includes(oldGeneration)));
+  assert.deepEqual(store.rows('sample')[1], expected);
+  const reader = store.iterate('sample', { snapshot: true });
+  reader.next();
+  store.append('sample', { seq: 3, role: 'revision', replacesSeq: 1, text: 'Revised request' });
+  assert.throws(() => reader.next(), /changed while reading/);
+  assert.equal(fs.readdirSync(store.indexDir).filter(name => name.endsWith('.tool')).length, 0);
+});
+
+test('opening a valid index sweeps aged obsolete projections without touching recent concurrent generations or other files', t => {
+  const root = fixture(t), store = new ConversationHistory(root);
+  t.after(() => store.close());
+  store.append('sample', { seq: 1, role: 'user', text: 'Keep this request' });
+  const generation = '11111111-1111-1111-1111-111111111111';
+  const obsolete = path.join(store.indexDir, 'sample.idx.' + generation + '.1.tool');
+  const pending = path.join(store.indexDir, 'sample.idx.' + generation + '.2.tool');
+  const other = path.join(store.indexDir, 'other.idx.' + generation + '.1.tool');
+  for (const file of [obsolete, pending, other]) fs.writeFileSync(file, '{}');
+  const old = new Date(Date.now() - 2 * 86400000); fs.utimesSync(obsolete, old, old);
+  store.forget('sample');
+  store.ensure('sample');
+  assert.equal(fs.existsSync(obsolete), false);
+  assert.equal(fs.existsSync(pending), true);
+  assert.equal(fs.existsSync(other), true);
+});
+
 test('shared replay descriptors close on early return and reject a source changed mid-iteration', t => {
   const root = fixture(t), file = path.join(root, 'sample.jsonl');
   fs.writeFileSync(file, [1, 2].map(seq => JSON.stringify({ seq, role: 'user', text: 'message' }) + '\n').join(''));

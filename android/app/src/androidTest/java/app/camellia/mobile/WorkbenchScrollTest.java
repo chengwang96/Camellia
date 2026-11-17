@@ -31,7 +31,7 @@ public class WorkbenchScrollTest extends InstrumentationTestCase {
         long at = System.currentTimeMillis() - 90_000;
         for (int index = 0; index < 35; index++) rows.put(new JSONObject()
             .put("id", "scroll-" + index).put("title", "Work " + index)
-            .put("engine", "codex").put("activity", "running").put("updatedAt", at));
+            .put("engine", "codex").put("activity", "running").put("updatedAt", at).put("lastReplyAt", 0).put("replyReadAt", 0));
         RemoteListCache.workbench(context).remove(credentials);
         RemoteListCache.get(context).put(credentials, rows, -1, new JSONArray(), true);
         activity = (MainActivity) getInstrumentation().startActivitySync(new Intent(context, MainActivity.class)

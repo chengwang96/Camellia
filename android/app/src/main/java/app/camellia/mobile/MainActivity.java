@@ -461,6 +461,7 @@ public final class MainActivity extends Activity {
     }
 
     @Override protected void onStop() {
+        closeVisualization();
         if (connectionTest != null) { connectionTest.close(); connectionTest = null; }
         persistDraft();
         if (listCache != null) listCache.flush();
@@ -939,11 +940,23 @@ public final class MainActivity extends Activity {
             if (homeSync.state(computer) == RemoteWorkbenchSync.State.UNAUTHORIZED) continue;
             JSONObject page = homeCachedPage(computer);
             JSONArray entries = page == null ? null : page.optJSONArray("conversations");
+            JSONObject listed = listCache == null ? null : listCache.get(computer);
+            JSONArray listedRows = listed == null ? null : listed.optJSONArray("conversations");
+            java.util.Map<String, JSONObject> replyRows = new java.util.HashMap<>();
+            for (int i = 0; listedRows != null && i < listedRows.length(); i++) {
+                JSONObject row = listedRows.optJSONObject(i);
+                if (row != null) replyRows.put(row.optString("id"), row);
+            }
             for (int i = 0; entries != null && i < entries.length(); i++) {
                 JSONObject row = entries.optJSONObject(i);
                 if (row == null || row.optString("id").isEmpty()) continue;
                 try {
-                    merged.add(new JSONObject(row.toString()).put("homeAddress", computer.optString("address"))
+                    JSONObject summary = new JSONObject(row.toString());
+                    // The Sessions page may know a newer reply or read receipt than Home's summary cache.
+                    JSONObject reply = replyRows.get(row.optString("id"));
+                    for (String key : new String[] { "lastReplyAt", "replyReadAt" })
+                        if (reply != null && reply.has(key)) summary.put(key, Math.max(summary.optLong(key), reply.optLong(key)));
+                    merged.add(summary.put("homeAddress", computer.optString("address"))
                         .put("homeComputerName", computerName(computer))
                         .put("homeFresh", homeSync.state(computer) == RemoteWorkbenchSync.State.LIVE));
                 } catch (Exception ignored) { }
@@ -1043,15 +1056,17 @@ public final class MainActivity extends Activity {
 
     private WorkbenchList.Item homeConversationItem(JSONObject conversation, boolean active, String tag, String statusTag) {
         Palette palette = Palette.of(this);
+        boolean unread = replies().unread(conversationComputer(conversation), conversation);
         String state = conversation.optString("activity");
         int statusColor = state.equals("running") ? palette.success
             : state.equals("permission") || state.equals("question") ? palette.warning
-            : RemoteWorkStatus.backgroundCount(conversation) > 0 ? palette.accent : palette.muted;
+            : RemoteWorkStatus.backgroundCount(conversation) > 0 || unread ? palette.accent : palette.muted;
         String indicator = active ? activity(conversation) : "";
         if (active && !conversation.optBoolean("homeFresh")) {
             indicator = cachedHomeActivity(conversation);
             statusColor = palette.muted;
         }
+        indicator = withReplyIndicator(indicator, unread);
         String engine = conversationEngine(conversation), title = conversation.optString("title");
         String meta = conversation.optString("homeComputerName") + " · " + conversationMeta(conversation), time = conversationTime(conversation);
         // Ignore stream counters, previews and other metadata that this page does not display.
@@ -2371,7 +2386,7 @@ public final class MainActivity extends Activity {
         // the one sign the desktop is busy while the row would otherwise read
         // as idle. A live reply keeps the column, as it does on the desktop.
         String indicator = working || RemoteWorkStatus.backgroundCount(conversation) > 0 ? activity(conversation) : "";
-        if (unread) indicator += (indicator.isEmpty() ? "" : " · ") + tr("新消息", "New reply");
+        indicator = withReplyIndicator(indicator, unread);
         if (conversation.optBoolean("pinned")) indicator += (indicator.isEmpty() ? "" : " · ") + tr("已置顶", "Pinned");
         if (archived) indicator = tr("已归档", "Archived");
         Palette statusPalette = Palette.of(this);
@@ -2667,6 +2682,10 @@ public final class MainActivity extends Activity {
     private RemoteReplyState replies() {
         if (replyState == null) replyState = new RemoteReplyState(getSharedPreferences("remote-replies", MODE_PRIVATE));
         return replyState;
+    }
+
+    private String withReplyIndicator(String indicator, boolean unread) {
+        return unread ? indicator + (indicator.isEmpty() ? "" : " · ") + tr("新消息", "New reply") : indicator;
     }
 
     private void loadList(boolean append) {
@@ -4149,7 +4168,7 @@ public final class MainActivity extends Activity {
         int ticket = generation;
         boolean dark = (getResources().getConfiguration().uiMode & android.content.res.Configuration.UI_MODE_NIGHT_MASK)
             == android.content.res.Configuration.UI_MODE_NIGHT_YES;
-        if (visualizationDialog != null) { visualizationDialog.dismiss(); visualizationDialog = null; }
+        closeVisualization();
         VisualizationDialog dialog = new VisualizationDialog(this, title, chinese);
         RemoteApi client = new RemoteApi(this, address);
         dialog.setOnDismissListener(ignored -> {
@@ -4186,6 +4205,12 @@ public final class MainActivity extends Activity {
         });
     }
 
+    private void closeVisualization() {
+        VisualizationDialog dialog = visualizationDialog;
+        visualizationDialog = null;
+        if (dialog != null) dialog.dismiss();
+    }
+
     private void disposeMessageViews() {
         for (ReplyMessage binding : replyMessages.values()) binding.body.dispose();
         replyMessages.clear(); renderedMessages.clear(); renderedText.clear(); pendingMessageViews.clear();
@@ -4209,7 +4234,7 @@ public final class MainActivity extends Activity {
         workAutomationSection = null;
         queueSheetPanel = null;
         if (remoteApprovalDialog != null) { remoteApprovalDialog.dismiss(); remoteApprovalDialog = null; }
-        if (visualizationDialog != null) { visualizationDialog.dismiss(); visualizationDialog = null; }
+        closeVisualization();
         remoteApprovalKey = ""; locationConsent.cancel();
         messages = null; older = null; remoteEmptyState = null;
         archivedBar = null;

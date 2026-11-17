@@ -201,6 +201,8 @@ for path in [
     "/v1/conversations/\(uuid)/artifacts/\(hash64)",
     "/v1/conversations/\(uuid)/attachments/42/0",
     "/v1/conversations/\(uuid)/attachments/999999999999/19",
+    "/v1/conversations/\(uuid)/visualizations/\(uuid)?theme=light",
+    "/v1/conversations/\(uuid)/visualizations/\(uuid)?theme=dark",
     "/v1/conversations/\(uuid)?before=42",
 ] {
     check(endpoint.isAllowed(path: path), "allow \(path)")
@@ -223,6 +225,9 @@ for path in [
     "/v1/conversations/\(uuid)/attachments/0/0",       // sequence starts at one
     "/v1/conversations/\(uuid)/attachments/42/20",     // at most twenty attachments
     "/v1/conversations/\(uuid)/attachments/42/0?x=1",
+    "/v1/conversations/\(uuid)/visualizations/not-a-card?theme=light",
+    "/v1/conversations/\(uuid)/visualizations/\(uuid)?theme=sepia",
+    "/v1/conversations/\(uuid)/visualizations/\(uuid)?theme=light&x=1",
     "/v1/conversations?offset=1234567890123",          // offset is at most 12 digits
     "/v1/conversations?after=1",                       // only offset and before
     "/v1/conversations/\(uuid)/artifacts?x=1",
@@ -984,6 +989,51 @@ do {
     checkEqual(transcript.messages.map(\.id), [1, 3], "a tool row is not a separate message bubble")
     checkEqual(transcript.messages.last?.process.count ?? 0, 1, "the assistant inherits the tool step")
     checkEqual(transcript.messages.last?.process.first?.title ?? "", "web_search", "the inherited step is the tool's")
+}
+
+do {
+    let old: [String: Any] = ["cardId": uuid, "title": "Old", "summary": "Compare options", "revision": 1]
+    var revised = old
+    revised["title"] = "Latest"
+    revised["revision"] = 3
+    revised["mode"] = "wide"
+    let second: [String: Any] = ["cardId": "3f2504e0-4f89-11d3-9a0c-0305e82c3302", "title": "Second"]
+    let rows: [[String: Any]] = [
+        ["seq": 1, "role": "user", "text": "Compare"],
+        ["seq": 2, "role": "tool", "visualizations": [old, revised, old]],
+        ["seq": 3, "role": "note", "text": "Notice"],
+        ["seq": 4, "role": "assistant", "text": "Done"],
+        ["seq": 5, "role": "assistant", "text": "More"],
+        ["seq": 6, "role": "tool", "visualizations": [revised]],
+        ["seq": 7, "role": "assistant", "text": "Own cards", "visualizations": [second]],
+        ["seq": 8, "role": "tool", "visualizations": [old]],
+        ["seq": 9, "role": "user", "text": "New turn"],
+        ["seq": 10, "role": "assistant", "text": "No old cards"],
+    ]
+    let transcript = RemoteTranscript()
+    _ = transcript.apply(RemoteSnapshot(JSONObject(dictionary: ["instanceId": "cards", "cursor": 1, "messages": rows])))
+    let cards = transcript.messages.first(where: { $0.id == 4 })?.visualizations ?? []
+    checkEqual(cards.count, 1, "a finished reply inherits one latest card from tool metadata")
+    checkEqual(cards.first?.title, "Latest", "older card revisions do not replace the newest title")
+    checkEqual(cards.first?.revision, 3, "latest card revision survives transcript projection")
+    checkEqual(cards.first?.wide, true, "wide-card metadata survives transcript projection")
+    checkEqual(transcript.messages.first(where: { $0.id == 3 })?.visualizations.count, 0, "notes do not consume pending cards")
+    checkEqual(transcript.messages.first(where: { $0.id == 5 })?.visualizations.count, 0, "cards are consumed only once")
+    checkEqual(transcript.messages.first(where: { $0.id == 7 })?.visualizations.first?.title, "Second",
+               "explicit assistant cards override inherited cards")
+    checkEqual(transcript.messages.last?.visualizations.count, 0, "a new user turn discards pending cards")
+    check(RemoteVisualization(JSONObject(dictionary: ["cardId": "../outside"])) == nil, "invalid card ids are ignored")
+    check(RemoteVisualization(JSONObject(dictionary: ["cardId": uuid.uppercased()])) == nil, "card ids keep the lowercase endpoint grammar")
+    let card = cards[0]
+    checkEqual(card.path(conversationId: uuid, dark: true),
+               "/v1/conversations/\(uuid)/visualizations/\(uuid)?theme=dark", "cards use the authenticated scoped endpoint")
+    let plain = RemoteMessage(seq: 1, role: .assistant, text: "Reply", at: 0)
+    let withCard = RemoteMessage(seq: 1, role: .assistant, text: "Reply", at: 0, visualizations: cards)
+    check(RemoteHistoryPage.weight(withCard) > RemoteHistoryPage.weight(plain), "card metadata counts against the history memory budget")
+    let bounded = RemoteVisualization(JSONObject(dictionary: ["cardId": uuid, "title": String(repeating: "x", count: 500),
+                                                            "summary": String(repeating: "y", count: 2000)]))!
+    checkEqual(bounded.title.count, 120, "card titles stay bounded in the native list")
+    checkEqual(bounded.summary.count, 500, "card summaries stay bounded in the native list")
 }
 
 do {
@@ -3062,7 +3112,7 @@ do {
                 "keys": [["id": "k1", "key": "old-key", "enabled": true,
                           "futureKey": "kept"] as [String: Any]],
                 "models": [["id": "m1", "upstream": "old-model", "protocol": "auto",
-                            "futureModel": true] as [String: Any]],
+                            "futureModel": true, "thinking": ["values": ["low", "high", "max"]]] as [String: Any]],
             ] as [String: Any],
             [
                 "id": "p2", "name": "Untouched", "baseUrl": "https://two.example.com",
@@ -3096,6 +3146,13 @@ do {
     checkEqual(key["futureKey"] as? String, "kept", "unknown key fields survive")
     let model = (provider["models"] as! [[String: Any]])[0]
     checkEqual(model["upstream"] as? String, "new-model", "upstream model ids are trimmed")
+    check(model["thinking"] == nil, "changing the endpoint or upstream invalidates synced thinking metadata")
+    var renamedDraft = (original["providers"] as! [[String: Any]])[0]
+    renamedDraft["name"] = "Renamed"
+    let renamed = try LocalProviderEditor.upsert(renamedDraft, in: original)
+    let renamedProvider = (renamed["providers"] as! [[String: Any]])[0]
+    let renamedModel = (renamedProvider["models"] as! [[String: Any]])[0]
+    check(renamedModel["thinking"] != nil, "renaming a provider preserves its synced thinking controls")
     var unusualDraft = draft
     unusualDraft["name"] = "\u{00A0}Provider\u{00A0}"
     unusualDraft["keys"] = [["id": "k1", "key": "\u{00A0}secret\u{00A0}"]] as [[String: Any]]
@@ -3244,9 +3301,11 @@ do {
     let openai = LocalChatRoute(id: "a", label: "P · m", model: "gpt-4o",
                                 wireProtocol: "openai", baseURL: "https://api.example.com", keys: ["sk-a"])
     let adaptive = LocalChatRoute(id: "b", label: "P · m", model: "claude-opus-4-6",
-                                  wireProtocol: "anthropic", baseURL: "https://api.example.com", keys: ["sk-a"])
+                                  wireProtocol: "anthropic", baseURL: "https://api.example.com", keys: ["sk-a"],
+                                  thinking: LocalChatThinking.metadata(["values": ["off", "low", "medium", "high", "max"]]))
     let budget = LocalChatRoute(id: "c", label: "P · m", model: "claude-3-7-sonnet-20250219",
-                                wireProtocol: "anthropic", baseURL: "https://api.example.com", keys: ["sk-a"])
+                                wireProtocol: "anthropic", baseURL: "https://api.example.com", keys: ["sk-a"],
+                                thinking: LocalChatThinking.metadata(["values": ["off", "low", "medium", "high", "max"]]))
     let old = LocalChatRoute(id: "d", label: "P · m", model: "claude-3-5-sonnet-20241022",
                              wireProtocol: "anthropic", baseURL: "https://api.example.com", keys: ["sk-a"])
 
@@ -3266,24 +3325,19 @@ do {
     checkEqual(LocalChatThinking.effective(old, "high"), "auto", "so the level is dropped rather than sent")
 
     let ordinary = ["low", "medium", "high"]
-    let extended = ordinary + ["xhigh"]
-    let maximum = extended + ["max"]
-    let ultra = maximum + ["ultra"]
     checkEqual(LocalChatThinking.levels(for: nil), ordinary, "no model uses the conservative default ladder")
     checkEqual(LocalChatThinking.levels(for: openai), ordinary, "an unknown model keeps the default ladder")
     checkEqual(LocalChatThinking.menu(for: openai), ["auto"] + ordinary, "the local menu prepends the default option")
-    for (id, expected) in [("gpt-daybreak-blue-latest", ultra), ("gpt-daybreak-red-latest", ultra),
-                           ("gpt-6.1-sol", ultra), ("gpt-6-astra", ultra), ("gpt-5.6-luna", maximum),
-                           ("gpt-5.6-sol", ultra), ("gpt-5.6-terra", ultra), ("gpt-6-luna", maximum),
-                           ("gpt-6-sol", ultra), ("gpt-5.5", extended), ("codex-auto-review", maximum)] {
+    for id in ["gpt-daybreak-blue-latest", "gpt-daybreak-red-latest", "gpt-6.1-sol", "gpt-6-astra",
+               "gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-6-luna", "gpt-6-sol", "gpt-5.5", "codex-auto-review"] {
         for variant in [id, "provider/" + id.uppercased() + "-20261011"] {
             let route = LocalChatRoute(id: variant, label: variant, model: variant,
                                       wireProtocol: "openai", baseURL: "https://invalid.example", keys: ["k"])
-            checkEqual(LocalChatThinking.levels(for: route), expected, "Android ladder for \(variant)")
-            checkEqual(LocalChatThinking.effective(route, expected.last!), expected.last!, "highest supported level for \(variant)")
+            checkEqual(LocalChatThinking.levels(for: route), ordinary, "model names do not invent levels for \(variant)")
+            checkEqual(LocalChatThinking.effective(route, "ultra"), "auto", "unreported levels fall back for \(variant)")
             var request: [String: Any] = [:]
-            LocalChatThinking.apply(route, expected.last!, to: &request)
-            checkEqual(request["reasoning_effort"] as? String, expected.last!, "wire level is not collapsed for \(variant)")
+            LocalChatThinking.apply(route, "high", to: &request)
+            checkEqual(request["reasoning_effort"] as? String, "high", "the generic API effort works for \(variant)")
         }
     }
     let similar = LocalChatRoute(id: "near", label: "Near", model: "gpt-6-solar",
@@ -3331,6 +3385,65 @@ do {
     body = [:]
     LocalChatThinking.apply(openai, "auto", to: &body)
     check(body.isEmpty, "and auto is the same as saying nothing")
+}
+
+// MARK: - Local chat: desktop thinking metadata sync
+
+do {
+    func config(_ metadata: Any) -> [String: Any] {
+        ["providers": [["id": "desktop", "protocol": "openai", "baseUrl": "https://example.com/v1",
+                        "keys": [["key": "test-only"]],
+                        "models": [["id": "alias", "upstream": "deepseek-v4.1-flash:1017", "thinking": metadata]]]]]
+    }
+    func imported(_ metadata: Any) throws -> LocalChatRoute {
+        let saved = try LocalChatConfiguration.parse(LocalChatConfiguration.export(config(metadata)))
+        return try LocalChatConfiguration.routes(saved)[0]
+    }
+    let route = try imported(["values": ["none", "low", "high", "max", "max"], "default": "high"])
+    checkEqual(LocalChatThinking.menu(for: route), ["auto", "none", "low", "high", "max"],
+               "synced metadata determines the menu, even for aliased and tagged models")
+    checkEqual(LocalChatThinking.effective(route, "max"), "max", "reported max survives")
+    checkEqual(LocalChatThinking.effective(route, "medium"), "auto", "an unreported level falls back")
+    checkEqual(LocalChatThinking.label("none", route: route), "关闭", "local off matches desktop API wording")
+    var body: [String: Any] = [:]
+    LocalChatThinking.apply(route, "max", to: &body)
+    checkEqual(body["reasoning_effort"] as? String, "max", "synced max is sent unchanged")
+    body = [:]; LocalChatThinking.apply(route, "auto", to: &body)
+    check(body.isEmpty, "Default omits parameters even when metadata reports a default")
+    body = [:]; LocalChatThinking.apply(route, "medium", to: &body)
+    check(body.isEmpty, "unsupported persisted levels do not reach the API")
+
+    let fixed = try imported(["values": [String]()])
+    checkEqual(LocalChatThinking.menu(for: fixed), ["auto"], "an explicit empty list only offers Default")
+    check(!LocalChatThinking.supported(fixed), "a fixed model has no thinking control")
+    let invalidMetadata: [Any] = [NSNull(), ["values": [1]], ["values": [" low "]], ["values": [""]],
+                                  ["values": ["low", NSNull()]], ["values": Array(repeating: "high", count: 33)]]
+    for invalid in invalidMetadata {
+        checkEqual(LocalChatThinking.levels(for: try imported(invalid)), ["low", "medium", "high"],
+                   "invalid metadata falls back just like shared/model-levels.js")
+    }
+    let toggle = try imported(["values": [false, true], "default": true])
+    checkEqual(LocalChatThinking.menu(for: toggle), ["auto", "none", "high"], "boolean controls match desktop aliases")
+    checkEqual(LocalChatThinking.label("high", route: toggle, chinese: false), "On", "boolean high means On")
+    for level in ["none", "high"] {
+        body = [:]; LocalChatThinking.apply(toggle, level, to: &body)
+        checkEqual((body["thinking"] as? [String: Any])?["type"] as? String,
+                   level == "none" ? "disabled" : "enabled", "boolean thinking is applied")
+        check(body["reasoning_effort"] == nil, "boolean controls do not invent named efforts")
+    }
+    let custom = try imported(["values": ["minimal", "Turbo", "ultra"]])
+    checkEqual(LocalChatThinking.effective(custom, "Turbo"), "Turbo", "custom provider values retain their case")
+    checkEqual(LocalChatThinking.label("Turbo", route: custom), "Turbo", "reported custom values keep their label")
+    let refreshed = try imported(["values": ["low"]])
+    checkEqual(LocalChatThinking.effective(refreshed, "high"), "auto", "resync removes stale unsupported selections")
+    let deepseek = LocalChatRoute(id: route.id, label: route.label, model: route.model, wireProtocol: "openai",
+                                  baseURL: route.baseURL, keys: route.keys, thinking: route.thinking, providerType: "deepseek")
+    body = [:]; LocalChatThinking.apply(deepseek, "none", to: &body)
+    checkEqual((body["thinking"] as? [String: Any])?["type"] as? String, "disabled", "DeepSeek uses its thinking switch")
+    check(body["reasoning_effort"] == nil, "DeepSeek off does not send an unsupported effort")
+    body = [:]; LocalChatThinking.apply(deepseek, "max", to: &body)
+    checkEqual(body["reasoning_effort"] as? String, "max", "DeepSeek preserves the reported effort")
+    checkEqual((body["thinking"] as? [String: Any])?["type"] as? String, "enabled", "DeepSeek named effort enables thinking")
 }
 
 // MARK: - Local chat: HTTP errors

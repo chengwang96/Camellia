@@ -48,7 +48,7 @@ class AcpSession extends StreamingSession {
       if (['completed', 'failed', 'stopped', 'unavailable'].includes(task.status))
         for (const [id, request] of this.permissions) if (request.subagentId === task.id) this.permissions.delete(id);
       this.emit({ type: 'gui:subagent', task, ...(replacesIds ? { replacesIds } : {}) });
-    });
+    }, { onEvict: (id, aliases) => this.forgetChild(id, aliases) });
     this.children = this.subagents.children;
     if (spec.modeEngine === 'kimi' && spec.env?.KIMI_CODE_HOME)
       this.childHistory = new (require('./kimi-subagents').KimiSubagents)(this, spec.env.KIMI_CODE_HOME);
@@ -196,6 +196,9 @@ class AcpSession extends StreamingSession {
     return result.conversationId;
   }
 
+  forgetChild(id, aliases = []) {
+    for (const key of new Set([id, ...aliases])) this.childHistory?.forget(key);
+  }
   sendUserMessage(prompt, attachments = []) {
     if (this.running || this.dead) return false;
     this.subagents.begin();

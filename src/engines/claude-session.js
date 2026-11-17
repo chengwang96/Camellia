@@ -51,7 +51,11 @@ class ClaudeSession {
         for (const [id, request] of this.permissions) if (request.subagentId === task.id) this.permissions.delete(id);
       for (const [key, id] of this.childTools || []) if (replacesIds?.includes(id)) this.childTools.set(key, task.id);
       this.sendChannel({ type: 'gui:subagent', task, ...(replacesIds ? { replacesIds } : {}) });
-    });
+    }, { onEvict: id => {
+      for (const [callId, childId] of this.childTools || []) if (childId === id) {
+        this.childTools.delete(callId); this.agentCalls?.delete(callId);
+      }
+    } });
     this.children = this.subagents.children;
     this.childTools = new Map();
     this.agentCalls = new Map();
@@ -107,7 +111,7 @@ class ClaudeSession {
       this.clearBackgroundTasks();
       const stderr = this.stderrDecoder.end().trimEnd();
       if (stderr) this.log(`[claude stderr] ${stderr}`);
-      for (const [id, task] of this.children) this.childUpdate(id, { canReply: false, canStop: false, approvals: [],
+      for (const [id, task] of [...this.children]) if (this.children.has(id)) this.childUpdate(id, { canReply: false, canStop: false, approvals: [],
         ...(['starting', 'running', 'waiting'].includes(task.status) ? { status: 'unavailable' } : {}) });
       if (this.running) this.complete({ type: 'result', is_error: true,
         subtype: code === null ? 'stopped' : 'exit_' + code,

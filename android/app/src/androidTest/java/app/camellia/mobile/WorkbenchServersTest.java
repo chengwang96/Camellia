@@ -15,11 +15,17 @@ public class WorkbenchServersTest extends InstrumentationTestCase {
     private MainActivity activity;
     private ComputerStore store;
     private RemoteListCache cache;
+    private RemoteReplyState replies;
     private JSONObject hp, other;
+    private String originalLanguage, originalTheme;
 
     @Override protected void setUp() throws Exception {
         super.setUp();
         var context = getInstrumentation().getTargetContext();
+        originalLanguage = MobilePreferences.get(context, "language"); originalTheme = MobilePreferences.get(context, "theme");
+        var arguments = ((android.test.InstrumentationTestRunner) getInstrumentation()).getArguments();
+        if (arguments.containsKey("language")) MobilePreferences.set(context, "language", arguments.getString("language"));
+        if (arguments.containsKey("theme")) MobilePreferences.set(context, "theme", arguments.getString("theme"));
         EmbeddedNetwork.initialize(context); EmbeddedNetwork.setEnabled(false);
         new CredentialStore(context).clear();
         store = new ComputerStore(new CredentialStore(context)); cache = RemoteListCache.workbench(context);
@@ -27,6 +33,10 @@ public class WorkbenchServersTest extends InstrumentationTestCase {
         for (JSONObject computer : List.of(hp, other)) { cache.remove(computer); RemoteListCache.get(context).remove(computer); }
         // Starting with no pairings prevents real network work in this fixture.
         activity = (MainActivity) getInstrumentation().startActivitySync(new Intent(context, MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+        var preferences = context.getSharedPreferences("workbench-replies-test", 0);
+        preferences.edit().clear().commit();
+        replies = new RemoteReplyState(preferences);
+        main(() -> field("replyState", replies));
         store.save(other); store.save(hp);
     }
     @Override protected void tearDown() throws Exception {
@@ -34,6 +44,9 @@ public class WorkbenchServersTest extends InstrumentationTestCase {
         getInstrumentation().waitForIdleSync();
         for (JSONObject computer : List.of(hp, other)) { cache.remove(computer); RemoteListCache.get(getInstrumentation().getTargetContext()).remove(computer); }
         new CredentialStore(getInstrumentation().getTargetContext()).clear();
+        getInstrumentation().getTargetContext().getSharedPreferences("workbench-replies-test", 0).edit().clear().commit();
+        MobilePreferences.set(getInstrumentation().getTargetContext(), "language", originalLanguage);
+        MobilePreferences.set(getInstrumentation().getTargetContext(), "theme", originalTheme);
         super.tearDown();
     }
     private JSONObject computer(String address, String name) throws Exception {
@@ -41,7 +54,7 @@ public class WorkbenchServersTest extends InstrumentationTestCase {
     }
     private JSONObject row(String id, String title, String state, long at) throws Exception {
         return new JSONObject().put("id", id).put("title", title).put("activity", state).put("engine", "codex")
-            .put("modelName", "GPT-6.1-Sol").put("updatedAt", at);
+            .put("modelName", "GPT-6.1-Sol").put("updatedAt", at).put("lastReplyAt", 0).put("replyReadAt", 0);
     }
     private void seed(JSONObject computer, JSONObject... rows) {
         JSONArray values = new JSONArray(); for (JSONObject row : rows) values.put(row);
@@ -54,7 +67,9 @@ public class WorkbenchServersTest extends InstrumentationTestCase {
     private View view(String tag) { return activity.getWindow().getDecorView().findViewWithTag(tag); }
     private interface Action { void run() throws Exception; }
     private void main(Action action) {
-        getInstrumentation().runOnMainSync(() -> { try { action.run(); } catch (Exception error) { throw new AssertionError(error); } });
+        Throwable[] failure = { null };
+        getInstrumentation().runOnMainSync(() -> { try { action.run(); } catch (Throwable error) { failure[0] = error; } });
+        if (failure[0] != null) throw new AssertionError(failure[0]);
     }
     private Object field(String name) throws Exception { var field = MainActivity.class.getDeclaredField(name); field.setAccessible(true); return field.get(activity); }
     private void field(String name, Object value) throws Exception { var field = MainActivity.class.getDeclaredField(name); field.setAccessible(true); field.set(activity, value); }
@@ -106,6 +121,183 @@ public class WorkbenchServersTest extends InstrumentationTestCase {
             assertEquals("home", field("screen"));
             assertNotNull(view(tag("homeRecent:", hp, "hp-old"))); assertNotNull(view(tag("homeRecent:", other, "server-old")));
         });
+    }
+
+    public void testRecentUnreadRepliesUseTheirSourceComputerAndRefreshAfterReading() throws Exception {
+        long now = System.currentTimeMillis();
+        JSONObject hpReply = row("same-id", "Read on HP", "idle", now).put("lastReplyAt", now).put("replyReadAt", 0);
+        JSONObject otherReply = row("same-id", "Unread on another server", "idle", now - 1000).put("lastReplyAt", now).put("replyReadAt", 0);
+        replies.markRead(hp, hpReply);
+        seed(hp, hpReply); seed(other, otherReply); home();
+        View[] unchanged = new View[1];
+        main(() -> {
+            unchanged[0] = view(tag("homeRecent:", hp, "same-id"));
+            assertNull("Reading HP must clear its cached unread mark", view(tag("homeRecentStatus:", hp, "same-id")));
+            assertNewReply(other, "same-id");
+            assertEquals(hp.optString("address"), ((JSONObject) field("credentials")).optString("address"));
+            replies.markRead(other, otherReply);
+            invoke("updateHomeConversations");
+            assertNull("Local reads must override an older server receipt", view(tag("homeRecentStatus:", other, "same-id")));
+            assertSame("Unchanged cards should stay attached", unchanged[0], view(tag("homeRecent:", hp, "same-id")));
+            assertFalse(view(tag("homeRecent:", other, "same-id")).getContentDescription().toString().matches(".*(新消息|New reply).*"));
+        });
+        seed(other, new JSONObject(otherReply.toString()).put("lastReplyAt", now + 1));
+        main(() -> {
+            invoke("updateHomeConversations");
+            assertNewReply(other, "same-id");
+        });
+        getInstrumentation().waitForIdleSync();
+        main(() -> {
+            View row = view(tag("homeRecent:", other, "same-id"));
+            TextView status = (TextView) view(tag("homeRecentStatus:", other, "same-id"));
+            TextView title = row.findViewWithTag("conversationRowTitle");
+            assertTrue("The title must retain space beside the unread pill", title.getWidth() > 0);
+            assertTrue("Unread pill must not overlap the title", title.getRight() <= status.getLeft());
+            assertNotNull(status.getLayout());
+            assertEquals("The short unread label must fit without clipping", 0, status.getLayout().getEllipsisCount(0));
+        });
+        capture("recent-unread-source-scoped");
+    }
+
+    public void testRecentDoesNotMarkServerReadRepliesOrUserOnlyUpdates() throws Exception {
+        long now = System.currentTimeMillis();
+        seed(hp, row("server-read", "Already read", "idle", now).put("lastReplyAt", now).put("replyReadAt", now),
+            row("user-only", "User-only update", "idle", now - 1).put("lastReplyAt", 0).put("replyReadAt", 0),
+            row("legacy", "Older desktop", "idle", now - 2));
+        home();
+        main(() -> {
+            for (String id : List.of("server-read", "user-only", "legacy")) {
+                assertNotNull(view(tag("homeRecent:", hp, id)));
+                assertNull(view(tag("homeRecentStatus:", hp, id)));
+            }
+        });
+        seed(hp, row("server-read", "Already read", "idle", now).put("lastReplyAt", now + 1).put("replyReadAt", now));
+        main(() -> { invoke("updateHomeConversations"); assertNewReply(hp, "server-read"); });
+        seed(hp, row("server-read", "Already read", "idle", now).put("lastReplyAt", now + 1).put("replyReadAt", now + 1));
+        main(() -> {
+            invoke("updateHomeConversations");
+            assertNull("A server read receipt alone must remove the pill", view(tag("homeRecentStatus:", hp, "server-read")));
+        });
+    }
+
+    public void testRecentUnreadClearsAfterOpeningAndDisplayingTheReply() throws Exception {
+        long now = System.currentTimeMillis();
+        JSONObject reply = row("open-unread", "Open new reply", "idle", now).put("lastReplyAt", now).put("replyReadAt", 0);
+        seed(other, reply); home();
+        main(() -> {
+            assertNewReply(other, "open-unread");
+            view(tag("homeRecent:", other, "open-unread")).performClick();
+            assertEquals("detail", field("screen"));
+            assertTrue("Opening alone must not mark a reply that has not loaded", replies.unread(other, reply));
+            JSONObject snapshot = new JSONObject().put("instanceId", "unread-test").put("cursor", 1)
+                .put("conversation", reply).put("messages", new JSONArray().put(new JSONObject()
+                    .put("role", "assistant").put("text", "New reply content").put("seq", 1).put("at", now)));
+            field("foreground", true);
+            var apply = MainActivity.class.getDeclaredMethod("applySnapshot", JSONObject.class);
+            apply.setAccessible(true); apply.invoke(activity, snapshot);
+            assertFalse("A displayed reply must be acknowledged locally", replies.unread(other, reply));
+            field("foreground", false);
+            activity.onBackPressed();
+            assertEquals("home", field("screen"));
+            assertNotNull(view(tag("homeRecent:", other, "open-unread")));
+            assertNull("Returning Home must clear the unread badge even with an older cached receipt",
+                view(tag("homeRecentStatus:", other, "open-unread")));
+        });
+    }
+
+    private void assertNewReply(JSONObject computer, String id) {
+        TextView status = (TextView) view(tag("homeRecentStatus:", computer, id));
+        assertNotNull("Unread recent replies need a status pill", status);
+        assertTrue(status.getText().toString().matches("新消息|New reply"));
+        assertEquals(Palette.of(activity).accent, status.getCurrentTextColor());
+        assertTrue(view(tag("homeRecent:", computer, id)).getContentDescription().toString().contains(status.getText()));
+    }
+
+    public void testRecentMatchesSessionsEvenWhenHomeSummaryHasNoReplyMarkers() throws Exception {
+        long now = System.currentTimeMillis();
+        JSONObject summary = row("wm", "WM scope prune sims", "idle", now);
+        summary.remove("lastReplyAt"); summary.remove("replyReadAt");
+        seed(hp, summary); seed(other, summary);
+        JSONObject listed = new JSONObject(summary.toString()).put("lastReplyAt", now).put("replyReadAt", 0);
+        var sessions = RemoteListCache.get(getInstrumentation().getTargetContext());
+        sessions.put(hp, new JSONArray().put(listed), -1, new JSONArray(), true);
+        main(() -> {
+            field("credentials", hp); field("foreground", false); invoke("listScreen");
+            @SuppressWarnings("unchecked") java.util.Map<String, JSONObject> rows = (java.util.Map<String, JSONObject>) field("conversations");
+            rows.clear(); rows.put("wm", listed); field("listLoaded", true); invoke("renderConversations");
+            TextView sessionStatus = (TextView) view("conversationStatus:wm");
+            assertNotNull(sessionStatus);
+            String label = sessionStatus.getText().toString();
+            invoke("homeScreen");
+            assertNewReply(hp, "wm");
+            assertEquals("Home and Sessions must use the same unread label", label,
+                ((TextView) view(tag("homeRecentStatus:", hp, "wm"))).getText().toString());
+            assertNull("A matching id on another computer must not inherit HP's reply state", view(tag("homeRecentStatus:", other, "wm")));
+        });
+        getInstrumentation().waitForIdleSync(); capture("recent-matches-sessions-old-summary");
+        listed.put("replyReadAt", now);
+        sessions.put(hp, new JSONArray().put(listed), -1, new JSONArray(), true);
+        main(() -> { invoke("updateHomeConversations"); assertNull(view(tag("homeRecentStatus:", hp, "wm"))); });
+        listed.put("lastReplyAt", now + 1);
+        sessions.put(hp, new JSONArray().put(listed), -1, new JSONArray(), true);
+        main(() -> { invoke("updateHomeConversations"); assertNewReply(hp, "wm"); });
+        // A later Home read receipt must also win over an older Sessions cache.
+        seed(hp, new JSONObject(listed.toString()).put("lastReplyAt", now + 2).put("replyReadAt", now + 2));
+        main(() -> { invoke("updateHomeConversations"); assertNull(view(tag("homeRecentStatus:", hp, "wm"))); });
+    }
+
+    public void testOldHomeEndpointGetsUnreadStateFromTheSessionStream() throws Exception {
+        long now = System.currentTimeMillis();
+        JSONObject summary = row("old-server", "Old desktop new reply", "idle", now);
+        summary.remove("lastReplyAt"); summary.remove("replyReadAt");
+        JSONObject listed = new JSONObject(summary.toString()).put("lastReplyAt", now).put("replyReadAt", 0);
+        seed(hp, summary); home();
+        CountDownLatch subscribed = new CountDownLatch(1), closed = new CountDownLatch(1);
+        RemoteApi.SnapshotListener[] listListener = new RemoteApi.SnapshotListener[1];
+        main(() -> {
+            field("homeClientFactory", (Function<String, RemoteApi>) address -> new RemoteApi(address) {
+                @Override void workbenchEvents(String token, SnapshotListener listener, SseReader.HeartbeatListener heartbeat) throws java.io.IOException {
+                    try { listener.onSnapshot(new JSONObject().put("workbench", new JSONObject().put("conversations", new JSONArray().put(summary)))); }
+                    catch (org.json.JSONException error) { throw new java.io.IOException(error); }
+                }
+                @Override void listEvents(String token, SnapshotListener listener, SseReader.HeartbeatListener heartbeat) throws java.io.IOException {
+                    boolean target = address.equals(hp.optString("address"));
+                    if (target) listListener[0] = listener;
+                    try {
+                        listener.onSnapshot(new JSONObject().put("conversationList", new JSONObject().put("conversations", new JSONArray().put(listed))));
+                        if (target) subscribed.countDown();
+                        closed.await();
+                    } catch (InterruptedException error) { Thread.currentThread().interrupt(); }
+                    catch (org.json.JSONException error) { throw new java.io.IOException(error); }
+                }
+                @Override public JSONObject json(String path, String token, JSONObject payload) { throw new AssertionError("Home must not load transcripts"); }
+                @Override public void cancel() { /* The fixture releases the list stream below. */ }
+            });
+            field("foreground", true); invoke("refreshHomeConversations");
+        });
+        try {
+            assertTrue("An old Home endpoint must subscribe to the Sessions data", subscribed.await(5, TimeUnit.SECONDS));
+            awaitRecentUnread(hp, "old-server", true);
+            main(() -> assertNewReply(hp, "old-server"));
+            listed.put("replyReadAt", now);
+            listListener[0].onSnapshot(new JSONObject().put("conversationList", new JSONObject().put("conversations", new JSONArray().put(listed))));
+            awaitRecentUnread(hp, "old-server", false);
+            main(() -> assertNull(view(tag("homeRecentStatus:", hp, "old-server"))));
+            listed.put("lastReplyAt", now + 1);
+            listListener[0].onSnapshot(new JSONObject().put("conversationList", new JSONObject().put("conversations", new JSONArray().put(listed))));
+            awaitRecentUnread(hp, "old-server", true);
+            main(() -> assertNewReply(hp, "old-server"));
+        } finally { main(() -> invoke("settingsScreen")); closed.countDown(); }
+    }
+
+    private void awaitRecentUnread(JSONObject computer, String id, boolean expected) {
+        for (int attempt = 0; attempt < 120; attempt++) {
+            boolean[] shown = { false };
+            main(() -> shown[0] = view(tag("homeRecentStatus:", computer, id)) != null);
+            if (shown[0] == expected) return;
+            android.os.SystemClock.sleep(25);
+        }
+        fail("Recent unread state did not become " + expected + " for " + id);
     }
 
     public void testSlowHostKeepsItsCacheWhileFastHostUpdatesWithoutChangingSelection() throws Exception {
@@ -181,6 +373,7 @@ public class WorkbenchServersTest extends InstrumentationTestCase {
         seed(hp, row("slow", "Slow server task", "running", now - 2000));
         seed(other, row("fast", "Fast server task", "running", now));
         seed(offline, row("offline", "Offline cached task", "running", now - 3000));
+        home();
         CountDownLatch fastOpened = new CountDownLatch(1), slowOpened = new CountDownLatch(1);
         CountDownLatch fastClosed = new CountDownLatch(1), slowClosed = new CountDownLatch(1);
         main(() -> {

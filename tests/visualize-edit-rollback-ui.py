@@ -9,7 +9,8 @@ bridge = r'''(() => {
     workspaceId:null,messages:[{role:'user',seq:1,text:'Earlier request',at:1},
       {role:'assistant',seq:2,engine:'codex',text:'Earlier answer',at:2},
       {role:'user',seq:3,text:'Previous request',at:3},
-      {role:'assistant',seq:4,engine:'codex',text:'Previous answer',at:4}]};
+      {role:'assistant',seq:4,engine:'codex',text:'Previous answer',at:4,userSeq:3,
+        requestUsage:{main:{input_tokens:10,output_tokens:1}}}]};
   const settings={model:'fixture-model',permissionMode:'default',connection:'api'};
   window.cardDisposals=0;window.cardSaves=[];window.editPending=false;
   window.dshDesktop={sharedConversations:true,
@@ -54,6 +55,7 @@ with sync_playwright() as p:
             page.wait_for_function('uiReady')
             page.locator('[data-sid="edit-card-fixture"]').click()
             expect(page.locator('#chat')).to_contain_text('Previous answer')
+            assert page.evaluate('requestTurns.size') == 1
             page.evaluate('''() => {
               document.querySelectorAll('.turn').item(1).style.setProperty('display','block','important');
               addVisualizeResult({ok:true,visualize:{cardId:'edit-card',title:'Edit card',revision:1}},
@@ -87,6 +89,7 @@ with sync_playwright() as p:
             elif outcome == 'accepted':
                 page.evaluate("acceptEdit({ok:true,runId:9,userSeq:5})")
                 page.wait_for_function('cardDisposals===1')
+                assert page.evaluate('requestTurns.size') == 0
             else:
                 if outcome == 'transport-error':
                     page.evaluate("rejectEdit(new Error('Transport failed'))")
@@ -101,6 +104,7 @@ with sync_playwright() as p:
                 assert page.locator('.turn').last.evaluate(
                     "node => [node.style.getPropertyValue('display'),node.style.getPropertyPriority('display')]") == ['block', 'important']
                 assert page.evaluate('cardDisposals') == 0, outcome
+                assert page.evaluate('requestTurns.size') == 1, outcome
                 assert frame.locator('#control').evaluate('window.cardInstance') == 'original', outcome
                 frame.locator('#control').evaluate('camelliaVisualize.state.set({value:2})')
                 page.wait_for_function("document.querySelector('.visualize-block').getVisualizeState().value===2")

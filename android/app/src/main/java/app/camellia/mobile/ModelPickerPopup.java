@@ -185,7 +185,7 @@ final class ModelPickerPopup {
             empty.setPadding(dp(16), dp(12), dp(16), dp(16)); body.addView(empty);
         }
         divider(body);
-        body.addView(row(tr("思考等级", "Thinking level"), LocalChatThinking.label(level, chinese), "right", false, "thinkingSettings", this::thinking));
+        body.addView(row(tr("思考等级", "Thinking level"), LocalChatThinking.label(level, selected, chinese), "right", false, "thinkingSettings", this::thinking));
         divider(body);
         body.addView(row(tr("管理 API 配置", "API configuration"), "", "right", false, "pickerImport", () -> { dismiss(); listener.onImport(); }));
         modelWidth = PopupSurface.modelMenuWidth(context, visibleFrame, body, dp(12) * 2);
@@ -203,11 +203,11 @@ final class ModelPickerPopup {
         boolean supported = LocalChatThinking.supported(selected);
         for (String option : LocalChatThinking.menu(selected)) {
             String description = option.equals("auto") ? tr("遵循模型默认，不额外设置参数", "Use the model’s default settings")
-                : option.equals("off") ? tr("不进行额外思考", "No extra reasoning")
+                : option.equals("off") || option.equals("none") ? tr("不进行额外思考", "No extra reasoning")
                 : option.equals("low") ? tr("更快、更省，适合简单任务", "Faster and cheaper for simple tasks")
                 : option.equals("medium") ? tr("平衡思考深度与响应速度", "Balance reasoning and response speed")
                 : tr("投入更多思考，可能增加耗时与费用", "More reasoning; may take longer and cost more");
-            View choice = row(LocalChatThinking.label(option, chinese), description, null, option.equals(level), "thinkingOption:" + option,
+            View choice = row(LocalChatThinking.label(option, selected, chinese), description, null, option.equals(level), "thinkingOption:" + option,
                 () -> { dismiss(); listener.onThinking(option); });
             if (!supported && !option.equals("auto")) { choice.setEnabled(false); choice.setAlpha(.4f); }
             body.addView(choice);

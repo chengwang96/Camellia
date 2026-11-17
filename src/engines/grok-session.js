@@ -92,6 +92,12 @@ class GrokSession extends AcpSession {
     return super.emit(event);
   }
 
+  forgetChild(id, aliases) {
+    super.forgetChild(id, aliases);
+    for (const [sessionId, childId] of this.childSessions || []) if (childId === id) this.childSessions.delete(sessionId);
+    this.childText?.delete(id);
+  }
+
   receive(message) {
     if (this.dead) return;
     const params = message.params, update = params?.update;

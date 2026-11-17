@@ -505,6 +505,7 @@ public struct RemoteMessage: Sendable, Identifiable, Hashable {
     public let process: [RemoteProcessEntry]
     public let turnDetails: TurnDetails?
     public let attachedFiles: [RemoteAttachmentFile]
+    public let visualizations: [RemoteVisualization]
 
     public init(_ json: JSONObject) {
         seq = json.long("seq")
@@ -515,10 +516,12 @@ public struct RemoteMessage: Sendable, Identifiable, Hashable {
         process = json.objects("process").map(RemoteProcessEntry.init)
         turnDetails = json.object("turnDetails").map(TurnDetails.init)
         attachedFiles = json.objects("attachedFiles").map(RemoteAttachmentFile.init)
+        visualizations = RemoteVisualization.latest(json.objects("visualizations").compactMap(RemoteVisualization.init))
     }
 
     public init(seq: Int64, role: MessageRole, text: String, at: Int64, process: [RemoteProcessEntry] = [],
-                truncated: Bool = false, turnDetails: TurnDetails? = nil, attachedFiles: [RemoteAttachmentFile] = []) {
+                truncated: Bool = false, turnDetails: TurnDetails? = nil, attachedFiles: [RemoteAttachmentFile] = [],
+                visualizations: [RemoteVisualization] = []) {
         self.seq = seq
         self.role = role
         self.text = text
@@ -526,6 +529,7 @@ public struct RemoteMessage: Sendable, Identifiable, Hashable {
         self.process = process
         self.turnDetails = turnDetails
         self.attachedFiles = attachedFiles
+        self.visualizations = visualizations
         textTruncated = truncated
     }
 

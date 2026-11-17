@@ -63,7 +63,7 @@ public struct RemoteHistoryPage: Sendable {
     private var atLimit: Bool { rows.count >= Self.maximumRows || bytes >= Self.maximumBytes }
 
     static func weight(_ row: RemoteMessage) -> Int {
-        48 + row.text.utf16.count + row.process.reduce(0) {
+        48 + row.text.utf16.count + row.visualizations.reduce(0) { $0 + $1.weight } + row.process.reduce(0) {
             $0 + 32 + $1.text.utf16.count + $1.input.utf16.count
         }
     }

@@ -132,6 +132,7 @@ public struct Endpoint: Equatable, Hashable, Sendable {
     /// through `/commands`.
     private static let remotePath: NSRegularExpression = {
         let pattern = "^/v1/(?:commands/[a-f0-9-]{36}|conversations/[a-f0-9-]{36}/events\\?incremental=1"
+            + "|conversations/[a-f0-9-]{36}/visualizations/[a-f0-9-]{36}\\?theme=(?:light|dark)"
             + "|conversations/[a-f0-9-]{36}/artifacts\\?offset=[0-9]{1,12}&seq=[1-9][0-9]{0,11}&reference=(?:[A-Za-z0-9._*+-]|%[a-fA-F0-9]{2})+"
             + "|conversations/[a-f0-9-]{36}/attachments/[1-9][0-9]{0,11}/(?:[0-9]|1[0-9])"
             + "|conversations\\?offset=[0-9]{1,12}&limit=(?:[1-9][0-9]{0,2}|1000)&query=(?:[A-Za-z0-9._*+-]|%[a-fA-F0-9]{2})*"

@@ -7,6 +7,13 @@ public struct RenderedMessage: Sendable, Identifiable, Hashable {
     /// Process steps shown with this message, which may be its own or ones
     /// inherited from the turns since the last user message.
     public let process: [RemoteProcessEntry]
+    public let visualizations: [RemoteVisualization]
+
+    public init(message: RemoteMessage, process: [RemoteProcessEntry], visualizations: [RemoteVisualization]? = nil) {
+        self.message = message
+        self.process = process
+        self.visualizations = visualizations ?? message.visualizations
+    }
 
     public var id: Int64 { message.seq }
 
@@ -339,19 +346,25 @@ public final class RemoteTranscript {
     private func renderedHistory() -> (rows: [RenderedMessage], pending: [RemoteProcessEntry]) {
         var result: [RenderedMessage] = []
         var pending: [RemoteProcessEntry] = []
+        var pendingCards: [RemoteVisualization] = []
 
         for seq in history.keys.sorted() {
             guard let message = history[seq] else { continue }
             switch message.role {
             case .user:
                 pending = []
+                pendingCards = []
                 result.append(RenderedMessage(message: message, process: message.process))
             case .tool:
                 pending.append(contentsOf: message.process)
+                pendingCards.append(contentsOf: message.visualizations)
             case .assistant:
                 let process = message.process.isEmpty ? pending : message.process
-                result.append(RenderedMessage(message: message, process: process))
+                let cards = message.visualizations.isEmpty ? pendingCards : message.visualizations
+                result.append(RenderedMessage(message: message, process: process,
+                                              visualizations: RemoteVisualization.latest(cards)))
                 pending = []
+                pendingCards = []
             case .note:
                 result.append(RenderedMessage(message: message, process: message.process))
             }

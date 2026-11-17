@@ -14,7 +14,7 @@ bridge = """(() => {
     window.tailscaleCalls.push({ action, payload });
     if (action === 'tailscale-open-credentials') return { ok: true, result: { opened: true } };
     if (action === 'tailscale-save') {
-      if (payload.clientSecret === 'tskey-client-bad') return { ok: true, result: { saved: false, state: 'invalid', changedAcl: false } };
+      if (payload.clientSecret === 'mock-invalid-client-secret') return { ok: true, result: { saved: false, state: 'invalid', changedAcl: false } };
       state.tailscale = { configured: true, clientId: payload.clientId, state: 'connected', changedAcl: false,
         tailnet: { name: 'example.ts.net', deviceCount: 4, onlineCount: 3, taggedCount: 2 },
         devices: [{ id: 'relay', name: 'Aliyun Shenzhen', hostname: 'relay', os: 'linux', online: true, addresses: ['100.77.253.81'], tags: [], relayGranted: true },
@@ -67,11 +67,11 @@ with sync_playwright() as playwright:
         page.wait_for_timeout(100)
         assert page.evaluate("window.tailscaleCalls.some(call => call.action === 'tailscale-open-credentials')")
         page.locator('#mobile-tailscaleClientId').fill('client-id.example')
-        page.locator('#mobile-tailscaleClientSecret').fill('tskey-client-bad')
+        page.locator('#mobile-tailscaleClientSecret').fill('mock-invalid-client-secret')
         page.locator('#mobile-tailscaleSave').click()
         expect(page.locator('#mobile-tailscaleFeedback')).to_contain_text('Invalid credentials')
         assert page.locator('#mobile-tailscaleClientSecret').input_value() == ''
-        page.locator('#mobile-tailscaleClientSecret').fill('tskey-client-good-secret')
+        page.locator('#mobile-tailscaleClientSecret').fill('mock-oauth-client-secret')
         page.locator('#mobile-tailscaleSave').click()
         expect(page.locator('#mobile-tailscaleStatus')).to_have_text('Connected')
         expect(page.locator('#mobile-tailscaleDetails')).to_contain_text('Peer Relay access is present')
@@ -115,7 +115,7 @@ with sync_playwright() as playwright:
         page.wait_for_timeout(5200)
         expect(page.locator('#mobile-relayDevice')).to_have_value('relay')
         assert page.evaluate("document.querySelector('#mobile-relayDevice').dataset.signature.length > 0")
-        assert page.evaluate("window.tailscaleCalls.find(call => call.action === 'tailscale-save' && call.payload.clientSecret === 'tskey-client-good-secret')")
+        assert page.evaluate("window.tailscaleCalls.find(call => call.action === 'tailscale-save' && call.payload.clientSecret === 'mock-oauth-client-secret')")
         assert page.evaluate("window.tailscaleCalls.some(call => call.action === 'tailscale-apply-peer-relay' && call.payload.deviceId === 'relay' && call.payload.enabled === true)")
         page.locator('#mobile-relayRename').click()
         expect(page.locator('dialog.device-rename')).to_have_count(0)

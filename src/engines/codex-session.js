@@ -7,6 +7,7 @@ const { validSessionId } = require('./claude-history');
 const { CodexTitles } = require('./codex-title');
 const { announcesPendingWork } = require('../shared/pending-work');
 const { ACTIVE } = require('./native-subagents');
+const { pruneTasks } = require('../shared/subagents');
 const TERMINAL_CHILD_STATES = new Set(['completed', 'failed', 'stopped']);
 
 const PERMISSIONS = {
@@ -41,7 +42,7 @@ class CodexSession extends StreamingSession {
         onClose: error => {
           this.titles?.close(error);
           this.dead = true; clearTimeout(this.childTimer);
-          for (const [id, task] of this.children) this.childUpdate(id, { canReply: false, canStop: false, approvals: [],
+          for (const [id, task] of [...this.children]) if (this.children.has(id)) this.childUpdate(id, { canReply: false, canStop: false, approvals: [],
             ...(['starting', 'running', 'waiting'].includes(task.status) ? { status: 'unavailable' } : {}) });
           this.finish({ subtype: this.cancelled ? 'stopped' : 'error', is_error: !this.cancelled, result: error.message });
         },
@@ -474,8 +475,8 @@ class CodexSession extends StreamingSession {
     const titleClosed = this.titles?.close(new Error('Codex session stopped'));
     this.dead = true;
     clearTimeout(this.childTimer);
-    for (const id of this.children.keys()) this.childUpdate(id, { canReply: false, canStop: false,
-      ...(['starting', 'running', 'waiting'].includes(this.children.get(id).status) ? { status: 'unavailable' } : {}) });
+    for (const [id, task] of [...this.children]) if (this.children.has(id)) this.childUpdate(id, { canReply: false, canStop: false,
+      ...(['starting', 'running', 'waiting'].includes(task.status) ? { status: 'unavailable' } : {}) });
     this.finish({ subtype: this.cancelled ? 'stopped' : 'error', is_error: !this.cancelled, result: 'Codex process stopped' });
     return Promise.all([this.client?.shutdown(), titleClosed]);
   }
@@ -495,9 +496,12 @@ class CodexSession extends StreamingSession {
     if (TERMINAL_CHILD_STATES.has(child.status))
       for (const [requestId, request] of this.permissions) if (request.params.threadId === id) this.permissions.delete(requestId);
     if (previous && JSON.stringify({ ...previous, updatedAt: 0 }) === JSON.stringify({ ...child, updatedAt: 0 })) return;
-    this.children.set(id, child);
+    this.children.delete(id); this.children.set(id, child);
     if (update.status && update.status !== previous?.status) this.childReads.add(id);
     this.emit({ type: 'gui:subagent', task: child });
+    for (const task of pruneTasks(this.children)) {
+      this.childReads.delete(task.id); this.retiredChildTurns.delete(task.id);
+    }
     if (!this.childTimer && !this.childPolling && !this.dead) { this.childTimer = setTimeout(() => this.pollChildren(), 2000); this.childTimer.unref?.(); }
   }
   childApproval(id, event) {
@@ -509,12 +513,13 @@ class CodexSession extends StreamingSession {
     this.childTimer = null;
     if (this.dead || this.childPolling) return;
     this.childPolling = true;
-    for (const child of this.children.values()) {
+    for (const child of [...this.children.values()]) {
       if (!['starting', 'running', 'waiting'].includes(child.status) && !this.childReads.has(child.id)) continue;
       this.childReads.delete(child.id);
       try {
         const { thread } = await this.client.request('thread/read', { threadId: child.id, includeTurns: true }, 8000);
-        if (this.dead || !this.children.has(child.id)) break;
+        if (this.dead) break;
+        if (!this.children.has(child.id)) continue;
         if (this.children.get(child.id) !== child) { this.childReads.add(child.id); continue; }
         const turn = thread.turns?.at(-1), items = turn?.items || [];
         if (turn?.id && this.retiredChildTurns.get(child.id)?.has(turn.id)) { this.childReads.add(child.id); continue; }

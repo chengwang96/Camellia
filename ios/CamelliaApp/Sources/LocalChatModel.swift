@@ -584,7 +584,7 @@ final class LocalChatModel: ObservableObject {
     }
 
     var thinking: String {
-        LocalChatThinking.normalize(conversation(openId)["thinking"] as? String ?? "auto")
+        selectedRoute().map { LocalChatThinking.effective($0, conversation(openId)["thinking"] as? String ?? "auto") } ?? "auto"
     }
 
     var webTools: Bool { conversation(openId)["webTools"] as? Bool ?? false }
@@ -607,9 +607,11 @@ final class LocalChatModel: ObservableObject {
         Task {
             do {
                 try await withStorage { store in
+                    let route = try LocalChatConfiguration.routes(store.config()).first { $0.id == routeId }
+                    let level = route.map { LocalChatThinking.effective($0, thinking) } ?? "auto"
                     try store.update(id) { conversation in
                         conversation["routeId"] = routeId
-                        conversation["thinking"] = LocalChatThinking.normalize(thinking)
+                        conversation["thinking"] = level
                     }
                 }
                 objectWillChange.send()

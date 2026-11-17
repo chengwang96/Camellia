@@ -312,6 +312,48 @@ navigation while pending, and verifies restored card state updates and final GC.
 These targeted fixes and regression tests are not a proof that every engine or
 renderer is free of memory leaks; that requires a long-running heap/process soak.
 
+## Bounded live caches
+
+Accepted edit/resend removes disconnected reply entries from the renderer's
+request-usage index. Pending edits retain the original connected reply so that
+rejection, cancellation and transport errors can restore its card state.
+Rebuilding a live view also clears the index before replaying its history.
+
+Native sessions keep at most 128 terminal subtask records, plus live work and
+pending approvals. Eviction also removes obsolete native identities, call
+receipts, child read queues and streamed-result buffers. Recent identity
+tombstones reject late snapshots of an evicted terminal turn; explicit native
+resume or a new turn can reopen a task. Full native/shared history is retained
+independently of this display cache.
+
+Tool preview generations are disposable. After a revision or successful index
+replacement, the previous generation's regular private `.tool` files are
+removed. Opening a valid index also sweeps unknown obsolete generations older
+than one day; recent unknown generations are left for concurrent writers.
+Current-generation previews, linked files and authoritative JSONL/tool output
+are preserved. A changed index stops the sweep.
+
+Gemini thought signatures use a lazily opened SQLite store beside the previous
+`*.gemini-tools.jsonl` path, with the suffix `.sqlite`. Only requested signatures
+enter the hot cache, which is charged conservatively against a 2 MiB budget;
+SQLite's page cache has a separate 1 MiB budget. The durable database normally
+has a 128 MiB page limit. Repeated updates replace a record instead of appending
+another journal entry. At capacity, a tool response fails explicitly rather than
+forgetting required signatures, retrying another credential or growing without
+limit. SQLite's temporary rollback journal can require additional disk space.
+
+Legacy journals are imported in bounded chunks and a transaction. The source is
+retired only after a successful commit; failed imports preserve it. A legacy
+database larger than the new budget remains readable, with growth limited to
+its existing page count. Saved signatures are not expired by age, because old
+conversations may still need them to resume. This change does not run a cleanup
+against a live profile or restart the current application automatically.
+
+Regression coverage includes `tests/resource-retention.test.js`,
+`tests/gemini-tool-state.test.js`, `tests/tool-history.test.js`, and
+`python tests/edited-turn-retention-ui.py`. The Gemini tests also import a
+journal over 32 MiB in a subprocess with a 48 MiB JavaScript heap limit.
+
 ## Local verification (2026-09-30)
 
 - A no-follow audit found 32 files, 1,928 links and approximately 0.9 MiB in

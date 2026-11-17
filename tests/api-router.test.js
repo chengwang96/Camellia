@@ -1457,6 +1457,27 @@ test('failed config persistence cannot change the live router', async t => {
   assert.equal(loadConfig(f.file).providers[0].name, 'original');
 });
 
+for (const mode of ['json', 'stream', 'started-stream']) test('Gemini signature capacity failures preserve credentials and are not retried: ' + mode, async t => {
+  const { GeminiToolState } = require('../src/api/gemini-tool-state');
+  t.mock.method(GeminiToolState.prototype, 'remember', () => {
+    throw Object.assign(new Error('Gemini tool history storage is full; existing signatures are preserved.'), { code: 'GEMINI_TOOL_STATE_FULL' });
+  });
+  const call = { id: 'google-tool', type: 'function', function: { name: 'read', arguments: '{}' },
+    extra_content: { google: { thought_signature: 'opaque-signature' } } };
+  const f = await fixture(t, (r, res) => {
+    if (mode === 'json') reply(res, 200, { ...completion(r.body.model), choices: [{ message: { role: 'assistant', tool_calls: [call] }, finish_reason: 'tool_calls' }] });
+    else stream(res, [
+      ...(mode === 'started-stream' ? [{ choices: [{ index: 0, delta: { role: 'assistant', content: 'Reading' } }] }] : []),
+      { choices: [{ index: 0, delta: { role: 'assistant', tool_calls: [{ index: 0, ...call }] } }] }, '[DONE]',
+    ]);
+  }, url => [{ ...provider('google', url, ['first', 'second'], [mapping('gemini-test', 'gemini-upstream')]), type: 'gemini' }]);
+  const response = await f.post({ model: 'gemini-test', messages: [{ role: 'user', content: 'Read' }], stream: mode !== 'json' });
+  assert.equal(response.status, mode === 'started-stream' ? 200 : 507);
+  assert.match(await response.text(), /Gemini tool history storage is full/);
+  assert.equal(f.requests.length, 1);
+  assert.ok(!f.router.getState().usage['google-key-0']?.models?.['gemini-test']?.until);
+});
+
 test('Gemini tool signatures round-trip through streamed Anthropic conversion and same-model key failover', async t => {
   const f = await fixture(t, (r, res) => {
     if (r.headers.authorization === 'Bearer exhausted') return reply(res, 429, { error: 'quota exhausted' });

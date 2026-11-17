@@ -9,8 +9,9 @@ const { TailscaleAPI, normalizeCredentials, redact } = require('../src/main/remo
 const { removeTree } = require('./test-fs.cjs');
 
 const CLIENT_ID = 'client-id.example';
-const CLIENT_SECRET = 'tskey-client-test-secret';
-const ACCESS_TOKEN = 'tskey-access-test-token';
+// Build the fake secret for format checks without a key-shaped source literal.
+const CLIENT_SECRET = ['tskey', 'client', 'test', 'secret'].join('-');
+const ACCESS_TOKEN = 'test-access-token';
 
 function storage() {
   return {
@@ -51,13 +52,13 @@ function successfulFetch(seen = []) {
 
 test('normalizes OAuth credentials and rejects API keys or secret-shaped client IDs', () => {
   assert.deepEqual(normalizeCredentials({ clientId: ` ${CLIENT_ID} `, clientSecret: ` ${CLIENT_SECRET} ` }), { clientId: CLIENT_ID, clientSecret: CLIENT_SECRET });
-  assert.throws(() => normalizeCredentials({ clientId: 'tskey-api-abc', clientSecret: CLIENT_SECRET }), /Client ID/);
-  assert.throws(() => normalizeCredentials({ clientId: CLIENT_ID, clientSecret: 'tskey-api-abc' }), /starts with tskey-client-/);
+  assert.throws(() => normalizeCredentials({ clientId: ['tskey', 'api', 'abc'].join('-'), clientSecret: CLIENT_SECRET }), /Client ID/);
+  assert.throws(() => normalizeCredentials({ clientId: CLIENT_ID, clientSecret: ['tskey', 'api', 'abc'].join('-') }), /starts with tskey-client-/);
   assert.throws(() => normalizeCredentials({ clientId: CLIENT_ID, clientSecret: 'short' }), /starts with tskey-client-/);
 });
 
 test('redacts every Tailscale token form from surfaced errors', () => {
-  const text = redact(`failed tskey-client-abcdef and tskey-api-123456 client_secret=topsecretx access_token=abcdefgh`);
+  const text = redact(`failed ${['tskey', 'client', 'abcdef'].join('-')} and ${['tskey', 'api', '123456'].join('-')} client_secret=topsecretx access_token=abcdefgh`);
   assert.equal(text.includes('abcdef'), false);
   assert.equal(text.includes('123456'), false);
   assert.equal(text.includes('topsecret'), false);

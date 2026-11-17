@@ -1,8 +1,8 @@
 'use strict';
 
-window.createReviewPanel = ({ context, getEngine, setStatus }) => {
+window.createReviewPanel = ({ context, getEngine, setStatus, onOpen }) => {
   const toggle = document.getElementById('reviewToggle');
-  const dialog = document.getElementById('reviewDialog');
+  const panel = document.getElementById('reviewPanel');
   const form = document.getElementById('reviewForm');
   const engineSelect = document.getElementById('reviewEngine');
   const modelSelect = document.getElementById('reviewModel');
@@ -19,7 +19,8 @@ window.createReviewPanel = ({ context, getEngine, setStatus }) => {
   const cancelButton = document.getElementById('reviewCancel');
   const overrideButton = document.getElementById('reviewOverrideGate');
   const closeButton = document.getElementById('reviewClose');
-  if (!toggle || !dialog || !form || !engineSelect || !modelSelect || !modeSelect || !maxTokensInput || !agentConsent || !gateToggle || !turnGateToggle || !sameEngineToggle
+  const main = panel?.closest('.main');
+  if (!toggle || !panel || !form || !engineSelect || !modelSelect || !modeSelect || !maxTokensInput || !agentConsent || !gateToggle || !turnGateToggle || !sameEngineToggle
       || !status || !startButton || !overrideButton) return null;
   const t = value => window.CamelliaI18n?.t(value) || value;
   const shortcutBindings = window.CamelliaShortcuts?.watchBindings(window.dshDesktop);
@@ -27,6 +28,23 @@ window.createReviewPanel = ({ context, getEngine, setStatus }) => {
   let review = null;
   let pollTimer = null;
   let contextTicket = 0;
+
+  const panelIsOpen = () => window.CamelliaPanelMotion?.isOpen(panel)
+    ?? (!panel.hidden && !panel.classList.contains('is-closing'));
+  function setOpen(open) {
+    if (open) {
+      main?.classList.add('has-review-panel');
+      if (window.CamelliaPanelMotion) window.CamelliaPanelMotion.open(panel); else panel.hidden = false;
+      onOpen?.();
+      window.dispatchEvent(new CustomEvent('camellia:panel-open', { detail: { name: 'review' } }));
+    } else {
+      main?.classList.remove('has-review-panel');
+      if (window.CamelliaPanelMotion) window.CamelliaPanelMotion.close(panel); else panel.hidden = true;
+    }
+    toggle.setAttribute('aria-expanded', String(open));
+    panel.setAttribute('aria-hidden', String(!open));
+    panel.inert = !open;
+  }
 
   function stopPolling() { clearInterval(pollTimer); pollTimer = null; }
   function setStatusText(value) { status.textContent = value ? t(value) : ''; }
@@ -262,6 +280,7 @@ window.createReviewPanel = ({ context, getEngine, setStatus }) => {
   }
   async function open() {
     if (!context.sessionId) { setStatus(t('Open a conversation first.')); return; }
+    setOpen(true);
     review = null;
     status.textContent = t('Loading review options…');
     clearReport();
@@ -280,12 +299,10 @@ window.createReviewPanel = ({ context, getEngine, setStatus }) => {
         engine: getEngine(), action: 'review-consent-pending', payload: { sessionId: context.sessionId },
       });
       if (pending?.consent) renderConsent(pending.consent);
-      if (!dialog.open) dialog.showModal();
       status.textContent = '';
     } catch (error) {
       setBusy(false);
       status.textContent = error.message;
-      if (!dialog.open) dialog.showModal();
     }
   }
   async function refreshContext() {
@@ -300,7 +317,7 @@ window.createReviewPanel = ({ context, getEngine, setStatus }) => {
         engine: getEngine(), action: 'review-consent-pending', payload: { sessionId },
       });
       if (ticket !== contextTicket || sessionId !== context.sessionId) return;
-      if (pending?.consent) renderConsent(pending.consent);
+      if (pending?.consent) renderConsent(pending.consent); else removeConsent();
       const unavailable = result?.reviewable ? '' : t(result?.reason || 'No reviewable changes');
       toggle.title = unavailable || t('Review this change with another engine');
       toggle.setAttribute('aria-label', unavailable || t('Cross-engine review'));
@@ -364,7 +381,7 @@ window.createReviewPanel = ({ context, getEngine, setStatus }) => {
     stopPolling();
     review = null;
     removeConsent();
-    if (dialog.open) dialog.close();
+    setOpen(false);
     clearReport();
     setStatusText('');
     setBusy(false);
@@ -372,7 +389,7 @@ window.createReviewPanel = ({ context, getEngine, setStatus }) => {
   function receive(value) {
     if (!value || value.parentConversationId !== context.sessionId) return;
     render(value);
-    if (dialog.open && ['running', 'queued'].includes(value.status)) poll();
+    if (panelIsOpen() && ['running', 'queued'].includes(value.status)) poll();
     else stopPolling();
   }
   function receiveConsent(value) {
@@ -389,9 +406,18 @@ window.createReviewPanel = ({ context, getEngine, setStatus }) => {
   form.onsubmit = start;
   cancelButton.onclick = cancel;
   overrideButton.onclick = overrideGate;
-  toggle.onclick = open;
-  closeButton.onclick = () => dialog.close();
-  dialog.addEventListener('close', stopPolling);
+  toggle.onclick = () => panelIsOpen() ? setOpen(false) : void open();
+  closeButton.onclick = () => { setOpen(false); toggle.focus(); };
+  panel.onkeydown = event => {
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      setOpen(false);
+      toggle.focus();
+    }
+  };
+  window.addEventListener('camellia:panel-open', event => {
+    if (event.detail?.name !== 'review' && panelIsOpen()) setOpen(false);
+  });
   window.addEventListener('camellia:open-review', () => void open());
   document.addEventListener('keydown', event => {
     if (!shortcutBindings?.matches(event, 'review')) return;
@@ -400,5 +426,5 @@ window.createReviewPanel = ({ context, getEngine, setStatus }) => {
   });
   window.addEventListener('camellia:language', () => { render(review); void refreshContext(); });
   setTimeout(refreshContext, 0);
-  return { reset, open, render, receive, receiveConsent, refreshContext };
+  return { reset, open, setOpen, isOpen: panelIsOpen, render, receive, receiveConsent, refreshContext };
 };

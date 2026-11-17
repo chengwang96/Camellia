@@ -84,3 +84,22 @@ test('workbench streams publish lightweight snapshots, observe scope changes and
   assert.equal((await h.request('/v1/workbench')).status, 401);
   await stream.cancel();
 });
+
+test('workbench carries reply timestamps and changes version when a reply arrives or is read', async context => {
+  const h = await fixture(context);
+  const conversation = h.manager.create('codex', 'visible', 'Recent reply');
+  const initial = h.reader.workbench(h.device);
+  const initialRow = initial.conversations.find(row => row.id === conversation.id);
+  assert.equal(initialRow.lastReplyAt, 0);
+  assert.equal(initialRow.replyReadAt, 0);
+
+  conversation.lastReplyAt = 1000;
+  const unread = h.reader.workbench(h.device);
+  assert.equal(unread.conversations.find(row => row.id === conversation.id).lastReplyAt, 1000);
+  assert.notEqual(unread.listVersion, initial.listVersion);
+
+  conversation.replyReadAt = 1000;
+  const read = await (await h.request('/v1/workbench')).json();
+  assert.equal(read.conversations.find(row => row.id === conversation.id).replyReadAt, 1000);
+  assert.notEqual(read.listVersion, unread.listVersion);
+});

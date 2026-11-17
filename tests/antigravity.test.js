@@ -42,15 +42,18 @@ test('Gemini discovery, key validation and legacy Ollama migration preserve thei
 });
 
 test('Gemini thought signatures survive streamed tools, discarded extension fields and application restarts', t => {
-  const h = createHarness(); t.after(() => h.cleanup());
+  const h = createHarness(), stores = [];
+  t.after(() => { for (const state of stores) state.close(); h.cleanup(); });
   const file = path.join(h.folder('state'), 'tool-signatures.jsonl');
   const state = new GeminiToolState(file);
+  stores.push(state);
   const receive = state.response('gemini-test');
   const first = { choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: 'reused-upstream-id', type: 'function', function: { name: 'read', arguments: '' } }] } }] };
   receive(first);
   const id = first.choices[0].delta.tool_calls[0].id;
   receive({ choices: [{ index: 0, delta: { tool_calls: [{ index: 0, extra_content: { google: { thought_signature: 'opaque-fixture-signature' } } }] } }] });
   const restored = new GeminiToolState(file);
+  stores.push(restored);
   const history = { messages: [{ role: 'assistant', tool_calls: [{ id, type: 'function', function: { name: 'read', arguments: '{}' } }] }], thinking: { type: 'enabled' }, reasoning_effort: 'max' };
   restored.restore(history, 'gemini-test');
   assert.equal(history.messages[0].tool_calls[0].extra_content.google.thought_signature, 'opaque-fixture-signature');

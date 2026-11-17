@@ -484,7 +484,8 @@ function startApiRouter({ configPath, log = () => {}, onState = () => {}, onCont
               json(downstream, status, result);
               committed = true;
               finish({ ok: true });
-            } catch { finish({ status: 502, kind: 'upstream' }); }
+            } catch (error) { finish({ status: error.code === 'GEMINI_TOOL_STATE_FULL' ? 507 : 502,
+              kind: error.code === 'GEMINI_TOOL_STATE_FULL' ? null : 'upstream', detail: error.message }); }
           });
           return;
         }
@@ -505,14 +506,14 @@ function startApiRouter({ configPath, log = () => {}, onState = () => {}, onCont
         const writeConverted = bufferedTools ? data => bufferedTools.feed(data) : writeStream;
         converter = clientProtocol === 'responses' ? new ResponsesStream(source, body.model, responseTools, writeConverted)
           : new StreamConverter(source, clientProtocol, body.model, writeConverted);
-        function streamError(kind, detail = '') {
+        function streamError(kind, detail = '', status = 502) {
           if (settled) return;
           if (committed && !downstream.destroyed) {
             const diagnostic = safeDetail(detail, cfg.providers.flatMap(provider => provider.keys.map(key => key.key)));
             const message = "The upstream stream was interrupted. Retry the request; started responses are not replayed automatically." + (diagnostic ? ` ${diagnostic}` : '');
             endStreamError(message);
           }
-          finish({ status: 502, kind, detail });
+          finish({ status, kind, detail });
           response.destroy();
         }
         const parser = new SSEParser((obj, event) => {
@@ -534,7 +535,10 @@ function startApiRouter({ configPath, log = () => {}, onState = () => {}, onCont
           // Preserve native SSE event names, including tool and thinking deltas.
           converter.push(obj, event || (typeof obj === 'object' ? obj.type || '' : ''));
         }, { log: message => log(message) });
-        response.on('data', chunk => { try { parser.feed(chunk); } catch (error) { streamError(error.code === 'invalid_tool_call' ? 'protocol' : 'upstream', error.message); } });
+        response.on('data', chunk => { try { parser.feed(chunk); } catch (error) {
+          streamError(error.code === 'GEMINI_TOOL_STATE_FULL' ? null : error.code === 'invalid_tool_call' ? 'protocol' : 'upstream',
+            error.message, error.code === 'GEMINI_TOOL_STATE_FULL' ? 507 : 502);
+        } });
         response.on('error', () => streamError('network'));
         response.on('end', () => {
           if (settled) return;
@@ -545,7 +549,8 @@ function startApiRouter({ configPath, log = () => {}, onState = () => {}, onCont
             converter.end();
             downstream.end();
             finish({ ok: true });
-          } catch (error) { streamError(error.code === 'invalid_tool_call' ? 'protocol' : 'upstream', error.message); }
+          } catch (error) { streamError(error.code === 'GEMINI_TOOL_STATE_FULL' ? null : error.code === 'invalid_tool_call' ? 'protocol' : 'upstream',
+            error.message, error.code === 'GEMINI_TOOL_STATE_FULL' ? 507 : 502); }
         });
       });
       upstreams.add(upstream);
@@ -655,6 +660,7 @@ function startApiRouter({ configPath, log = () => {}, onState = () => {}, onCont
       if (!result.kind) {
         const usage = usageFor(route);
         if (usage && !pathname.endsWith('/count_tokens')) { recordUsage(usage, model, result.tokens, 'failures'); changed(); }
+        if (result.committed) return;
         return apiError(res, result.status, safeDetail(result.detail, secrets) || "The provider rejected the request", protocol, 'upstream_request_error');
       }
       attempts.push(`${route.provider.name}: ${reasonText[result.kind]}`);
@@ -751,6 +757,7 @@ function startApiRouter({ configPath, log = () => {}, onState = () => {}, onCont
     for (const upstream of upstreams) upstream.destroy();
     for (const socket of sockets) socket.destroy();
     await new Promise(resolve => server.close(resolve));
+    geminiTools.close();
   }
   function createScope(options) {
     refreshDisk();

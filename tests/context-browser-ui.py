@@ -247,10 +247,10 @@ with sync_playwright() as p:
     assert page.locator('#chatScroll').evaluate('(node)=>getComputedStyle(node).marginRight') == '0px'
     page.locator('#contextToggle').click()
     expect(page.locator('#contextPanel')).to_be_visible()
-    page.wait_for_function("getComputedStyle(document.querySelector('#chatScroll')).marginRight === '496px'")
+    page.wait_for_function("getComputedStyle(document.querySelector('#chatScroll')).marginRight === '472px'")
     panel_box = page.locator('#contextPanel').bounding_box()
     chat_box = page.locator('#chat').bounding_box()
-    assert page.locator('#contextPanel').evaluate('(node)=>getComputedStyle(node).width') == '480px'
+    assert page.locator('#contextPanel').evaluate('(node)=>getComputedStyle(node).width') == '456px'
     assert chat_box['x'] + chat_box['width'] <= panel_box['x'] - 12, (chat_box, panel_box)
     assert '0.22s' in page.locator('#contextPanel').evaluate('(node)=>getComputedStyle(node).transitionDuration')
     expect(page.locator('#contextPanelBody')).to_contain_text('Composition')
@@ -298,6 +298,8 @@ with sync_playwright() as p:
     expect(page.locator('#contextPanelBody')).to_contain_text('Recoverable blocks')
     en_body = page.locator('#contextPanelBody').inner_text()
     assert not re.search(r'[\u4e00-\u9fff]', en_body), en_body
+    page.wait_for_timeout(300)
+    context_box = page.locator('#contextPanel').bounding_box()
     # Switching conversations while the panel is open reloads the body for the
     # incoming session instead of leaving the previous request or an empty body.
     page.locator('[data-sid="context-second"]').click()
@@ -326,22 +328,25 @@ with sync_playwright() as p:
     expect(page.locator('.review-consent-card')).to_contain_text('cross-engine review')
     page.locator('.review-consent-card button.btn-primary').click()
     expect(page.locator('.review-consent-card')).to_have_count(0)
+    page.locator('#workPanelToggle').click()
+    expect(page.locator('#workPanel')).to_be_visible()
     page.locator('#reviewToggle').click()
-    expect(page.locator('#reviewDialog')).to_be_visible()
-    assert page.evaluate(
-        "getComputedStyle(document.querySelector('#reviewDialog'), '::backdrop').backdropFilter") == 'none'
-    page.wait_for_timeout(200)
-    app_opacity = float(page.evaluate("getComputedStyle(document.querySelector('.app')).opacity"))
-    assert 0.4 <= app_opacity <= 0.6, app_opacity
-    box = page.locator('#reviewDialog').bounding_box()
+    expect(page.locator('#reviewPanel')).to_be_visible()
+    expect(page.locator('#workPanel')).to_be_hidden()
+    page.wait_for_timeout(300)
+    box = page.locator('#reviewPanel').bounding_box()
     viewport = page.viewport_size
     assert box is not None and viewport is not None
-    assert abs((box['x'] + box['width'] / 2) - viewport['width'] / 2) <= 1, box
-    assert abs((box['y'] + box['height'] / 2) - viewport['height'] / 2) <= 1, box
+    assert context_box is not None
+    assert abs(box['x'] - context_box['x']) <= 1, (box, context_box)
+    assert abs(box['y'] - context_box['y']) <= 1, (box, context_box)
+    assert abs(box['width'] - context_box['width']) <= 1, (box, context_box)
     expect(page.locator('#reviewEngine option')).to_have_count(1)
     expect(page.locator('#reviewAdvanced')).not_to_have_attribute('open', '')
     page.locator('#reviewAdvanced > summary').click()
     expect(page.locator('#reviewAdvanced')).to_have_attribute('open', '')
+    assert page.locator('#reviewPanelBody').evaluate('(node)=>node.scrollWidth<=node.clientWidth')
+    assert page.locator('.review-fields').first.evaluate('(node)=>node.scrollWidth<=node.clientWidth')
     expect(page.locator('#reviewAgentConsent')).not_to_be_checked()
     page.locator('#reviewAgentConsent').check()
     expect(page.locator('#reviewAgentConsent')).to_be_checked()
@@ -352,15 +357,16 @@ with sync_playwright() as p:
     expect(page.locator('#reviewStatus')).to_contain_text('Review completed')
     expect(page.locator('.review-report')).to_contain_text('A retry can duplicate work.')
     expect(page.locator('.review-finding')).to_contain_text('src/app.js:12')
-    page.screenshot(path=str(preview / 'review-dialog.png'), animations='disabled')
+    page.screenshot(path=str(preview / 'review-panel.png'), animations='disabled')
     page.locator('#reviewClose').click()
-    expect(page.locator('#reviewDialog')).to_be_hidden()
+    expect(page.locator('#reviewPanel')).to_be_hidden()
     page.keyboard.press('Control+Shift+R')
-    expect(page.locator('#reviewDialog')).to_be_visible()
+    expect(page.locator('#reviewPanel')).to_be_visible()
     page.locator('#reviewClose').click()
     page.locator('[data-sid="context-many"]').click()
     expect(page.locator('#chat')).to_contain_text('Many context items ready.')
     page.locator('#contextToggle').click()
+    expect(page.locator('#reviewPanel')).to_be_hidden()
     page.wait_for_function(
         "document.querySelectorAll('.ctx-node').length === 12"
         " && document.querySelectorAll('.ctx-node:not([hidden])').length === 5")

@@ -1306,7 +1306,7 @@ struct LocalChatComposer: View {
         let name = model.selectedRoute()?.displayName
             ?? (locale.identifier.lowercased().hasPrefix("zh") ? "选择模型" : "Select model")
         return ModelLabel.compact(name) + " · "
-            + LocalChatThinking.label(displayThinking,
+            + LocalChatThinking.label(displayThinking, route: model.selectedRoute(),
                                       chinese: locale.identifier.lowercased().hasPrefix("zh"))
     }
 }
@@ -1644,7 +1644,7 @@ private struct LocalChatModelPicker: View {
                 divider
                 PopupChoiceRow(
                     title: "思考等级",
-                    subtitle: LocalChatThinking.label(displayThinking, chinese: chinese),
+                    subtitle: LocalChatThinking.label(displayThinking, route: model.selectedRoute(), chinese: chinese),
                     icon: "chevron.right") {
                         withAnimation(.easeOut(duration: 0.18)) { showingThinking = true }
                     }
@@ -1668,7 +1668,7 @@ private struct LocalChatModelPicker: View {
                 divider
                 ForEach(thinkingOptions, id: \.self) { level in
                     PopupChoiceRow(
-                        title: LocalChatThinking.label(level, chinese: chinese),
+                        title: LocalChatThinking.label(level, route: model.selectedRoute(), chinese: chinese),
                         subtitle: description(for: level),
                         selected: displayThinking == level,
                         enabled: level == "auto" || LocalChatThinking.supported(model.selectedRoute())) {

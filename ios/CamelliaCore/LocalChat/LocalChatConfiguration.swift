@@ -19,14 +19,19 @@ public struct LocalChatRoute: Equatable, Sendable {
     public let wireProtocol: String
     public let baseURL: String
     public let keys: [String]
+    public let thinking: LocalChatThinking.Metadata?
+    public let providerType: String
 
-    public init(id: String, label: String, model: String, wireProtocol: String, baseURL: String, keys: [String]) {
+    public init(id: String, label: String, model: String, wireProtocol: String, baseURL: String, keys: [String],
+                thinking: LocalChatThinking.Metadata? = nil, providerType: String = "") {
         self.id = id
         self.label = label
         self.model = model
         self.wireProtocol = wireProtocol
         self.baseURL = baseURL
         self.keys = keys
+        self.thinking = thinking
+        self.providerType = providerType
     }
 
     /// The first key. Android exposes `key` beside `keys`; the rotation loop
@@ -206,7 +211,9 @@ public enum LocalChatConfiguration {
                         model: upstream,
                         wireProtocol: wire,
                         baseURL: wire == "anthropic" && !anthropicBase.isEmpty ? anthropicBase : base,
-                        keys: enabledKeys))
+                        keys: enabledKeys,
+                        thinking: LocalChatThinking.metadata(model["thinking"]),
+                        providerType: (provider["type"] as? String) ?? ""))
                 }
             }
         }

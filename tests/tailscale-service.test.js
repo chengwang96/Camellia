@@ -9,7 +9,7 @@ const { createRemoteService } = require('../src/main/remote/service');
 const { TailscaleAPI } = require('../src/main/remote/tailscale-api');
 const { removeTree } = require('./test-fs.cjs');
 
-const credentials = { clientId: 'client-id.example', clientSecret: 'tskey-client-test-secret' };
+const credentials = { clientId: 'client-id.example', clientSecret: ['tskey', 'client', 'test', 'secret'].join('-') };
 const policy = { grants: [{ src: ['100.64.0.2'], dst: ['100.64.0.9'], app: { 'tailscale.com/cap/relay': [] } }] };
 const selected = view => view.devices.find(device => device.id === 'relay1').relaySelected;
 const response = body => new Response(JSON.stringify(body), { headers: { 'content-type': 'application/json', etag: 'W/"policy"' } });

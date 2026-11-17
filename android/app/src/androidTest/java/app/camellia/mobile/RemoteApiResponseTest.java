@@ -51,17 +51,17 @@ public class RemoteApiResponseTest extends InstrumentationTestCase {
         } finally { EmbeddedNetwork.setEnabled(old); }
     }
 
-    private RemoteApi client(Server server) throws Exception {
+    static RemoteApi client(Server server) throws Exception {
         RemoteApi client = new RemoteApi("http://100.80.1.2:" + server.socket.getLocalPort());
         // This private fixture alone uses loopback; the production Endpoint validator remains unchanged.
         var endpoint = RemoteApi.class.getDeclaredField("endpoint"); endpoint.setAccessible(true);
         var origin = Endpoint.class.getDeclaredField("origin"); origin.setAccessible(true);
         origin.set(endpoint.get(client), "http://127.0.0.1:" + server.socket.getLocalPort()); return client;
     }
-    private static final class Server implements AutoCloseable {
+    static final class Server implements AutoCloseable {
         final ServerSocket socket = new ServerSocket(0, 1, InetAddress.getByName("127.0.0.1"));
         final ExecutorService worker = Executors.newSingleThreadExecutor(); final Future<?> served;
-        volatile String requestLine;
+        volatile String requestLine, authorization;
         Server(byte[] body) throws IOException { this(body, "application/json"); }
         Server(byte[] body, String contentType) throws IOException {
             served = worker.submit(() -> {
@@ -69,7 +69,9 @@ public class RemoteApiResponseTest extends InstrumentationTestCase {
                     peer.setSoTimeout(5000);
                     BufferedReader input = new BufferedReader(new InputStreamReader(peer.getInputStream(), StandardCharsets.US_ASCII));
                     requestLine = input.readLine();
-                    String line; while ((line = input.readLine()) != null && !line.isEmpty()) { }
+                    String line; while ((line = input.readLine()) != null && !line.isEmpty()) {
+                        if (line.startsWith("Authorization: ")) authorization = line.substring("Authorization: ".length());
+                    }
                     OutputStream output = peer.getOutputStream();
                     output.write(("HTTP/1.1 200 OK\r\nContent-Type: " + contentType + "\r\nContent-Length: " + body.length + "\r\nConnection: close\r\n\r\n").getBytes(StandardCharsets.US_ASCII));
                     output.write(body); output.flush();

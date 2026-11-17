@@ -9,6 +9,7 @@ function windowsExecutionInstructions(platform = process.platform) {
     + 'Never use cmd /c start or .bat files to detach helpers (bad quoting opens Windows dialogs). '
     + 'Write JSON with absolute file (.exe), cwd, logFile paths, args as a string array, optional env string map. '
     + 'Run node ' + JSON.stringify(launcher) + ' <absolute-spec.json> with separate arguments; it launches hidden without a shell and logs both streams. '
+    + 'On Windows it keeps a hidden worker for console inheritance so emulator/QEMU/netsimd descendants do not open a terminal; the returned PID is the target process. '
     + 'Fix errors before retrying; no start/Start-Process fallback. After a PID, check the log or service readiness.\n\n';
 }
 

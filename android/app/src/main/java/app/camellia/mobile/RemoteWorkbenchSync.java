@@ -17,6 +17,9 @@ import java.util.function.Function;
 /** Each paired host owns its stream, deadline and retry lane; none use the chat executors. */
 final class RemoteWorkbenchSync implements AutoCloseable {
     enum State { CONNECTING, LIVE, STALE, UNAUTHORIZED }
+    private static final class MissingReplyState extends IOException {
+        MissingReplyState() { super("Workbench summary has no reply markers"); }
+    }
     static final class Update {
         final JSONObject computer, page;
         final State state;
@@ -121,6 +124,11 @@ final class RemoteWorkbenchSync implements AutoCloseable {
                 if (mode == 0) api.workbenchEvents(token, snapshot -> {
                     JSONObject page = snapshot.optJSONObject("workbench");
                     if (page == null) throw new IOException("Missing workbench summary");
+                    JSONArray rows = page.optJSONArray("conversations");
+                    for (int i = 0; rows != null && i < rows.length(); i++) {
+                        JSONObject row = rows.optJSONObject(i);
+                        if (row != null && (!row.has("lastReplyAt") || !row.has("replyReadAt"))) throw new MissingReplyState();
+                    }
                     accept(api, page);
                 }, () -> heartbeat(api));
                 else if (mode == 1) api.listEvents(token, snapshot -> {
@@ -159,7 +167,7 @@ final class RemoteWorkbenchSync implements AutoCloseable {
                 if (deadline != null) deadline.cancel(false);
                 int status = error instanceof RemoteApi.Failure ? ((RemoteApi.Failure) error).status : 0;
                 long delay;
-                if (status == 404 && mode < 2) { mode++; delay = 0; }
+                if (status == 404 && mode < 2 || error instanceof MissingReplyState && mode == 0) { mode++; delay = 0; }
                 else if (status == 401 || status == 403) {
                     state = State.UNAUTHORIZED; emit(null); cancel(api); return;
                 } else if (error != null) {
@@ -199,7 +207,7 @@ final class RemoteWorkbenchSync implements AutoCloseable {
                 for (JSONObject row : sorted) {
                     if (!active(row) && recent++ >= 10) continue;
                     JSONObject summary = new JSONObject();
-                    for (String key : new String[] { "id", "title", "engine", "currentEngine", "model", "modelName", "workspaceName", "updatedAt", "activity" })
+                    for (String key : new String[] { "id", "title", "engine", "currentEngine", "model", "modelName", "workspaceName", "updatedAt", "activity", "lastReplyAt", "replyReadAt" })
                         if (row.has(key)) summary.put(key, row.get(key));
                     summary.put("backgroundTaskCount", RemoteWorkStatus.backgroundCount(row));
                     selected.put(summary);

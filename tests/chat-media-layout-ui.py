@@ -1,12 +1,23 @@
 """Inline media keeps a fixed size while the window and side panels change."""
 import ast
 import json
+import struct
+import zlib
 from pathlib import Path
 from playwright.sync_api import sync_playwright, expect
 
 repo = Path(__file__).resolve().parents[1]
 preview = repo / 'dist/ui-preview'
 preview.mkdir(parents=True, exist_ok=True)
+# Generate the landscape fixture locally so a clean checkout never depends on
+# a user's untracked screenshot/artifact directory or an image library.
+landscape = preview / 'media-layout-landscape.png'
+def png_chunk(kind, data):
+    return struct.pack('!I', len(data)) + kind + data + struct.pack('!I', zlib.crc32(kind + data))
+landscape.write_bytes(b'\x89PNG\r\n\x1a\n'
+                     + png_chunk(b'IHDR', struct.pack('!2I5B', 1200, 600, 8, 2, 0, 0, 0))
+                     + png_chunk(b'IDAT', zlib.compress((b'\0' + b'\x52\x9a\xc9' * 1200) * 600))
+                     + png_chunk(b'IEND', b''))
 module = ast.parse((repo / 'tests/shared-chat-ui.py').read_text(encoding='utf-8'))
 fixture = next(ast.literal_eval(node.value) for node in module.body
                if isinstance(node, ast.Assign) and any(isinstance(target, ast.Name) and target.id == 'fixture'
@@ -16,7 +27,7 @@ node = next(node for node in module.body if isinstance(node, ast.Assign)
 fixture['cwd'] = repo.as_posix()
 fixture['messages'][-1]['text'] = (
     'Media sizing check:\n\n'
-    '![Landscape](artifacts/mobile-inline-image-demo-20261109/landscape-mountains.jpg)\n\n'
+    f'![Landscape]({landscape.relative_to(repo).as_posix()})\n\n'
     '![Square](assets/icon-1024.png)\n\n'
     '![Small](assets/icon-256.png)'
 )
@@ -67,7 +78,7 @@ with sync_playwright() as p:
     # A panel reserves room beside the chat only while media still fits.
     page.locator('#workPanelToggle').click()
     expect(page.locator('#workPanel')).to_be_visible()
-    page.wait_for_function("getComputedStyle(document.querySelector('#chatScroll')).marginRight === '496px'")
+    page.wait_for_function("getComputedStyle(document.querySelector('#chatScroll')).marginRight === '472px'")
     assert media_boxes(page) == initial
     page.screenshot(path=str(preview / 'media-layout-panel-1440.png'), animations='disabled')
 
@@ -95,7 +106,7 @@ with sync_playwright() as p:
     page.locator('#workbenchSidebarToggle').click()
     expect(page.locator('#sidebar')).to_be_hidden()
     page.set_viewport_size({'width': 1200, 'height': 900})
-    page.wait_for_function("getComputedStyle(document.querySelector('#chatScroll')).marginRight === '496px'")
+    page.wait_for_function("getComputedStyle(document.querySelector('#chatScroll')).marginRight === '472px'")
     assert media_boxes(page) == initial
     page.locator('#workbenchSidebarToggle').click()
     expect(page.locator('#sidebar')).to_be_visible()
