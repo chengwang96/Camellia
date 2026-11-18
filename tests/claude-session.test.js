@@ -85,12 +85,14 @@ test('Claude attributes an adopted background turn to the request that started i
   f.session.sendUserMessage('Run the long verification');
   f.session.emitLine(JSON.stringify({ type: 'system', subtype: 'task_started', task_id: 'task-origin', description: 'Check CI' }));
   f.session.emitLine(JSON.stringify({ type: 'result', subtype: 'success', result: 'The verification is running.' }));
+  f.session.emitLine(JSON.stringify({ type: 'system', subtype: 'task_notification', task_id: 'task-origin', status: 'completed' }));
   const before = f.events.length;
   f.session.emitLine(JSON.stringify({ type: 'user', origin: { kind: 'task-notification' },
     message: { role: 'user', content: '<task-notification>\n<task-id>task-origin</task-id>\n<status>completed</status>\n</task-notification>' } }));
   const adopted = f.events.slice(before).find(event => event.type === 'gui:background-turn');
   assert.equal(adopted.originUserSeq, 7);
   assert.equal(adopted.taskId, 'task-origin');
+  assert.equal(f.session.pendingTaskNotifications.size, 0);
 });
 
 test('Claude adopts a native task-notification turn after a reply so its follow-up is not lost', t => {
@@ -147,6 +149,32 @@ test('Claude still reports an empty reply that consumed model tokens after a not
     usage: { input_tokens: 1200, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } });
   assert.equal(f.results[0].subtype, 'empty_response');
   assert.equal(f.results[0].is_error, true);
+});
+
+test('Claude consumes a tagged no-op acknowledgement after the requested reply has started', context => {
+  const state = fixture(context), send = row => state.session.emitLine(JSON.stringify(row));
+  state.session.sendUserMessage('Continue');
+  send({ type: 'assistant', message: { content: [{ type: 'text', text: 'The requested reply is still streaming.' }] } });
+  send({ type: 'system', subtype: 'task_notification', task_id: 'stopped-job', run_id: 'job-run', status: 'stopped' });
+  send({ type: 'result', subtype: 'success', result: '', origin: { kind: 'task-notification', runId: 'job-run' },
+    usage: { input_tokens: 0, output_tokens: 0 } });
+  assert.equal(state.session.pendingTaskNotifications.size, 0);
+  assert.equal(state.results.length, 0);
+  assert.equal(state.session.running, true);
+  send({ type: 'result', subtype: 'success', result: 'The requested answer.' });
+  assert.equal(state.results[0].result, 'The requested answer.');
+  assert.equal(state.events.some(event => event.type === 'gui:background-turn'), false);
+});
+
+test('Claude retains an idle native follow-up error before any model output', context => {
+  const state = fixture(context), send = row => state.session.emitLine(JSON.stringify(row));
+  send({ type: 'system', subtype: 'task_notification', task_id: 'verification', run_id: 'verification-run', status: 'completed' });
+  assert.equal(state.session.running, false);
+  send({ type: 'result', subtype: 'error_during_execution', origin: { kind: 'task-notification', runId: 'verification-run' },
+    is_error: true, errors: ['Could not load the result.'] });
+  assert.equal(state.events.find(event => event.type === 'gui:background-turn').taskId, 'verification');
+  assert.equal(state.results[0].result, 'Could not load the result.');
+  assert.equal(state.session.running, false);
 });
 
 test('Claude keeps background lifecycle events flowing during context compaction', async t => {

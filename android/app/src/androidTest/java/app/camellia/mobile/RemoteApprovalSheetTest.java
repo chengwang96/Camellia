@@ -47,6 +47,56 @@ public class RemoteApprovalSheetTest extends InstrumentationTestCase {
         assertTrue(footer.performClick());
         assertNotNull(sheet()); return sheet().getWindow().getDecorView();
     }
+    public void testQuestionDraftAndTypingSurviveBothTabletRotations() throws Exception {
+        if (activity.getResources().getConfiguration().smallestScreenWidthDp < 600) return;
+        ui(() -> activity.setRequestedOrientation(android.content.pm.ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE));
+        awaitRotation(true);
+        ui(() -> openSheet().findViewWithTag("workApprovalAnswer:question-1").performClick());
+        AlertDialog original = form(); assertNotNull(original);
+        EditText editor = original.getWindow().getDecorView().findViewWithTag("approvalAnswer:network");
+        var keyboard = activity.getSystemService(android.view.inputmethod.InputMethodManager.class);
+        ui(() -> { editor.setText("abcdef"); editor.requestFocus(); editor.setSelection(2, 4); keyboard.showSoftInput(editor, 0); });
+        long end = android.os.SystemClock.uptimeMillis() + 6000;
+        while (!keyboard.isActive(editor) && android.os.SystemClock.uptimeMillis() < end) Thread.sleep(60);
+        assertTrue(keyboard.isActive(editor));
+        for (boolean landscape : new boolean[]{false, true}) {
+            ui(() -> activity.setRequestedOrientation(landscape ? android.content.pm.ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE : android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT));
+            awaitRotation(landscape);
+            assertTrue("Rotation must keep the unanswered question form open", original.isShowing());
+            assertSame(original, form()); assertNull("The work sheet was closed when its question form opened", sheet());
+            end = android.os.SystemClock.uptimeMillis() + 6000;
+            while ((!editor.hasFocus() || !keyboard.isActive(editor)) && android.os.SystemClock.uptimeMillis() < end) { Thread.sleep(60); getInstrumentation().waitForIdleSync(); }
+            assertTrue(editor.hasFocus()); assertTrue(keyboard.isActive(editor));
+            getInstrumentation().sendStringSync(landscape ? "y" : "x"); getInstrumentation().waitForIdleSync();
+            assertEquals(landscape ? "abxyef" : "abxef", editor.getText().toString());
+        }
+        ui(() -> { original.getButton(AlertDialog.BUTTON_NEUTRAL).performClick(); snapshot.getJSONObject("live").put("approvals", new JSONArray()).put("pendingApprovals", 0); apply(); });
+        assertFalse(original.isShowing());
+        var pending = MainActivity.class.getDeclaredMethod("pendingCommand"); pending.setAccessible(true);
+        assertNull("Rotation and Later must not submit answers", pending.invoke(activity));
+    }
+
+    public void testWorkSheetStaysOpenAndUpdatesAcrossBothTabletRotations() throws Exception {
+        if (activity.getResources().getConfiguration().smallestScreenWidthDp < 600) return;
+        ui(() -> activity.setRequestedOrientation(android.content.pm.ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE)); awaitRotation(true);
+        ui(() -> openSheet()); Dialog original = sheet(); assertNotNull(original);
+        for (boolean landscape : new boolean[]{false, true}) {
+            ui(() -> activity.setRequestedOrientation(landscape ? android.content.pm.ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE : android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT));
+            awaitRotation(landscape); assertTrue("Rotation must keep the work sheet open", original.isShowing()); assertSame(original, sheet());
+            ui(() -> { request.put("fingerprint", landscape ? "landscape" : "portrait"); apply(); });
+            assertNotNull(original.getWindow().getDecorView().findViewWithTag("workApprovalAnswer:question-1"));
+        }
+        ui(() -> { var home = MainActivity.class.getDeclaredMethod("homeScreen"); home.setAccessible(true); home.invoke(activity); });
+        assertFalse("Leaving the conversation must release its work sheet", original.isShowing());
+    }
+
+    private void awaitRotation(boolean landscape) throws Exception {
+        long end = android.os.SystemClock.uptimeMillis() + 6000;
+        int expected = landscape ? android.content.res.Configuration.ORIENTATION_LANDSCAPE : android.content.res.Configuration.ORIENTATION_PORTRAIT;
+        while (activity.getResources().getConfiguration().orientation != expected && android.os.SystemClock.uptimeMillis() < end) { Thread.sleep(60); getInstrumentation().waitForIdleSync(); }
+        assertEquals(expected, activity.getResources().getConfiguration().orientation); getInstrumentation().waitForIdleSync();
+    }
+
     private boolean hasText(View view, String text) {
         if (view instanceof TextView && text.equals(((TextView) view).getText().toString())) return true;
         if (view instanceof ViewGroup) for (int i = 0; i < ((ViewGroup) view).getChildCount(); i++)

@@ -21,29 +21,46 @@ final class WorkbenchNavigation extends FrameLayout {
     private final PopupSurface glass;
     private View backdropSource;
     private int capturedWidth, capturedHeight;
+    private final boolean rail;
 
     WorkbenchNavigation(Context context, String selected, Runnable home, Runnable sessions, Runnable computers, Runnable settings) {
+        this(context, selected, home, sessions, computers, settings, false);
+    }
+
+    WorkbenchNavigation(Context context, String selected, Runnable home, Runnable sessions, Runnable computers, Runnable settings, boolean rail) {
         super(context);
+        this.rail = rail;
         Palette palette = Palette.of(context);
-        setMinimumHeight(dp(HEIGHT_DP));
-        setTag("workbenchNav");
+        setMinimumHeight(rail ? 0 : dp(HEIGHT_DP));
+        setTag(rail ? "tabletNavigation" : "workbenchNav");
         GradientDrawable face = new GradientDrawable();
         face.setColor(palette.card);
         face.setCornerRadius(dp(Palette.RADIUS_NAVIGATION));
         setBackground(face);
         setClipToOutline(true);
-        setElevation(dp(6));
+        setElevation(rail ? 0 : dp(6));
         if (android.os.Build.VERSION.SDK_INT >= 28) {
             setOutlineAmbientShadowColor(0x40000000);
             setOutlineSpotShadowColor(0x30000000);
         }
-        glass = PopupSurface.navigation(context, palette.card);
-        glass.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS);
-        addView(glass, new FrameLayout.LayoutParams(-1, -1));
+        glass = rail ? null : PopupSurface.navigation(context, palette.card);
+        if (glass != null) {
+            glass.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS);
+            addView(glass, new FrameLayout.LayoutParams(-1, -1));
+        }
         LinearLayout items = new LinearLayout(context);
-        items.setGravity(Gravity.CENTER);
-        items.setPadding(dp(4), dp(4), dp(4), dp(4));
+        items.setOrientation(rail ? LinearLayout.VERTICAL : LinearLayout.HORIZONTAL);
+        items.setGravity(rail ? Gravity.TOP | Gravity.CENTER_HORIZONTAL : Gravity.CENTER);
+        items.setPadding(dp(rail ? 8 : 4), dp(rail ? 16 : 4), dp(rail ? 8 : 4), dp(4));
         addView(items, new FrameLayout.LayoutParams(-1, -1));
+        if (rail) {
+            setBackgroundColor(palette.background);
+            ImageView logo = new ImageView(context); logo.setImageResource(R.drawable.desktop_logo);
+            logo.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+            LinearLayout.LayoutParams logoParams = new LinearLayout.LayoutParams(dp(32), dp(32));
+            logoParams.gravity = Gravity.CENTER_HORIZONTAL; logoParams.bottomMargin = dp(30);
+            items.addView(logo, logoParams);
+        }
         addItem(items, "home", "home", "工作台", "Workbench", selected, home, palette);
         addItem(items, "sessions", "sessions", "会话", "Sessions", selected, sessions, palette);
         addItem(items, "computers", "computer", "电脑", "Computers", selected, computers, palette);
@@ -58,7 +75,7 @@ final class WorkbenchNavigation extends FrameLayout {
 
     @Override protected void onLayout(boolean changed, int left, int top, int right, int bottom) {
         super.onLayout(changed, left, top, right, bottom);
-        if (backdropSource == null || getWidth() <= 0 || getHeight() <= 0
+        if (glass == null || backdropSource == null || getWidth() <= 0 || getHeight() <= 0
             || (capturedWidth == getWidth() && capturedHeight == getHeight())) return;
         capturedWidth = getWidth(); capturedHeight = getHeight();
         int[] position = new int[2]; getLocationOnScreen(position);
@@ -80,10 +97,10 @@ final class WorkbenchNavigation extends FrameLayout {
         // A light tonal overlay lets the shared glass remain visible rather
         // than replacing it with a nearly opaque grey tile.
         selectedFace.setColor(active ? (palette.dark ? 0x24ffffff : 0x1c000000) : Color.TRANSPARENT);
-        selectedFace.setCornerRadius(dp(Palette.RADIUS_NAVIGATION_ITEM));
+        selectedFace.setCornerRadius(dp(rail ? 20 : Palette.RADIUS_NAVIGATION_ITEM));
         GradientDrawable rippleMask = new GradientDrawable();
         rippleMask.setColor(Color.WHITE);
-        rippleMask.setCornerRadius(dp(Palette.RADIUS_NAVIGATION_ITEM));
+        rippleMask.setCornerRadius(dp(rail ? 20 : Palette.RADIUS_NAVIGATION_ITEM));
         item.setBackground(new RippleDrawable(ColorStateList.valueOf(Palette.RIPPLE_ON_CARD), selectedFace,
             rippleMask));
         int color = active ? palette.accent : (palette.dark ? 0xffe1e3e8 : 0xff292c32);
@@ -99,12 +116,15 @@ final class WorkbenchNavigation extends FrameLayout {
         label.setTextColor(color);
         label.setGravity(Gravity.CENTER);
         label.setSingleLine(true);
+        if (rail) setMinimumWidth(Math.max(dp(80), Math.max(getMinimumWidth(), (int) Math.ceil(label.getPaint().measureText(label.getText().toString())) + dp(24))));
         label.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
         LinearLayout.LayoutParams labelParams = new LinearLayout.LayoutParams(-2, -2);
         labelParams.topMargin = dp(2);
         item.addView(label, labelParams);
         item.setOnClickListener(view -> action.run());
-        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(0, dp(56), 1);
+        LinearLayout.LayoutParams params = rail ? new LinearLayout.LayoutParams(-1, dp(68))
+            : new LinearLayout.LayoutParams(0, dp(56), 1);
+        if (rail) params.bottomMargin = dp(6);
         items.addView(item, params);
     }
 

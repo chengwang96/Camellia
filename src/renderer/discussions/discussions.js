@@ -47,6 +47,7 @@ const selectedGroupKey = 'camellia:discussion:selected';
 const draftPrefix = 'camellia:discussion:draft:';
 const messageNodes = new Map();
 let latestScrollFrame = null;
+let followingOutput = true, scrollInteracting = false, scrollIntentUntil = 0, lastScrollTop = 0;
 let groupMenu = null, renamingId = null, deleteTarget = null;
 const openStatuses = new Set(['queued', 'preparing', 'running', 'stopping']);
 const stateLabels = { queued: 'Waiting', preparing: 'Preparing context', context: 'Preparing context', running: 'Replying', stopping: 'Stopping',
@@ -134,17 +135,36 @@ function cancelLatestScroll() {
 function scrollToLatest() {
   cancelLatestScroll();
   if (!group || !isVisible()) return;
+  followingOutput = true;
   const id = group.id, ticket = loading, scroll = $('chatScroll');
   scroll.scrollTop = scroll.scrollHeight;
   // The composer or embedded surface may finish layout after history renders.
   latestScrollFrame = requestAnimationFrame(() => {
     latestScrollFrame = null;
-    if (isVisible() && group?.id === id && ticket === loading) scroll.scrollTop = scroll.scrollHeight;
+    if (followingOutput && isVisible() && group?.id === id && ticket === loading) scroll.scrollTop = scroll.scrollHeight;
   });
 }
 for (const event of ['wheel', 'touchstart', 'pointerdown']) $('chatScroll').addEventListener(event, cancelLatestScroll, { passive: true });
+function readHistory() { followingOutput = false; scrollIntentUntil = 0; cancelLatestScroll(); }
+$('chatScroll').addEventListener('camellia:process-reading', readHistory);
+$('chatScroll').addEventListener('wheel', event => { scrollIntentUntil = performance.now() + 250; if (event.deltaY < 0) followingOutput = false; }, { passive: true });
+for (const event of ['pointerdown', 'touchstart']) $('chatScroll').addEventListener(event, () => { scrollInteracting = true; }, { passive: true });
+for (const event of ['pointerup', 'pointercancel', 'touchend', 'touchcancel']) window.addEventListener(event, () => {
+  if (scrollInteracting) { scrollInteracting = false; scrollIntentUntil = performance.now() + 250; }
+}, { passive: true });
+$('chatScroll').addEventListener('scroll', () => {
+  const scroll = $('chatScroll');
+  if (scrollInteracting || performance.now() < scrollIntentUntil) {
+    if (scroll.scrollTop < lastScrollTop) followingOutput = false;
+    else if (scroll.scrollTop > lastScrollTop && scroll.scrollHeight - scroll.clientHeight - scroll.scrollTop <= 2) followingOutput = true;
+  }
+  lastScrollTop = scroll.scrollTop;
+});
 $('chatScroll').addEventListener('keydown', event => {
   if (['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', ' '].includes(event.key)) cancelLatestScroll();
+  if (event.target.closest('input, textarea, select, button') || event.target.isContentEditable) return;
+  scrollIntentUntil = performance.now() + 250;
+  if (['ArrowUp', 'PageUp', 'Home'].includes(event.key) || event.key === ' ' && event.shiftKey) followingOutput = false;
 });
 async function call(action, payload) {
   const result = await desktop.discussion(action, payload);
@@ -328,7 +348,7 @@ function renderMembers() {
   $('stopAll').disabled = !group.preparing && !group.verifying && !group.stopping && !group.deliveries.some(d => openStatuses.has(d.status));
 }
 function renderMessages() {
-  const container = $('messages'), scroll = $('chatScroll'), bottom = scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < 90;
+  const container = $('messages'), scroll = $('chatScroll'), position = scroll.scrollTop;
   const fragment = document.createDocumentFragment();
   const lastByRequest = new Map(group.messages.map(m => [m.requestId, m.id]));
   const anchors = new Map();
@@ -382,7 +402,8 @@ function renderMessages() {
     if (anchor) anchor.before(item); else fragment.append(item);
   }
   container.replaceChildren(fragment);
-  if (bottom) scrollToLatest();
+  if (followingOutput) scrollToLatest();
+  else scroll.scrollTo({ top: position, behavior: 'instant' });
 }
 function render() {
   onChange(group?.id || null);
@@ -406,6 +427,7 @@ async function load(id, refresh = false) {
   const changed = group?.id !== id;
   if (!changed && result.group.revision < group.revision) return;
   group = result.group;
+  if (!refresh || changed) followingOutput = true;
   try { localStorage.setItem(selectedGroupKey, id); } catch { /* Selection is optional; discussion data is saved by the service. */ }
   if (changed) {
     messageNodes.clear();
@@ -736,13 +758,13 @@ function activate() {
   const intent = pendingNavigationIntent; pendingNavigationIntent = null;
   intent?.();
 }
-function suspend() {
-  if (rich.uploading || !rememberDraft()) return false;
+async function suspend() {
+  if (rich.uploading || !rememberDraft() || !await rich.suspend()) return false;
   cancelLatestScroll();
   ++navigationRequest; ++loading;
   navigating = false;
   pendingNavigationIntent = null;
-  rich.suspend(); closeGroupMenu();
+  closeGroupMenu();
   root.querySelectorAll('dialog[open]').forEach(dialog => dialog.close());
   return true;
 }

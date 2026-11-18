@@ -212,9 +212,20 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
   }
   window.addEventListener('beforeunload', saveDraft);
   let scrollSaveTimer;
+  let lastChatScrollTop = chatScroll.scrollTop;
+  function enterHistoryReading() {
+    followRunOutput = false;
+    userScrollIntentUntil = 0;
+    if (followScrollFrame !== null) cancelAnimationFrame(followScrollFrame);
+    followScrollFrame = null;
+  }
+  chatScroll.addEventListener('camellia:process-reading', enterHistoryReading);
   chatScroll.addEventListener('scroll', () => {
-    if (userScrollActive || performance.now() < userScrollIntentUntil)
-      followRunOutput = chatScroll.scrollHeight - chatScroll.scrollTop - chatScroll.clientHeight <= 2;
+    if (userScrollActive || performance.now() < userScrollIntentUntil) {
+      if (chatScroll.scrollTop < lastChatScrollTop) followRunOutput = false;
+      else if (chatScroll.scrollTop > lastChatScrollTop && chatScroll.scrollHeight - chatScroll.scrollTop - chatScroll.clientHeight <= 2) followRunOutput = true;
+    }
+    lastChatScrollTop = chatScroll.scrollTop;
     clearTimeout(scrollSaveTimer); scrollSaveTimer = setTimeout(saveDraft, 120);
   });
   chatScroll.addEventListener('wheel', event => {
@@ -735,11 +746,12 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     const scrollIntent = userScrollIntentUntil;
     followRunOutput = true;
     chatScroll.scrollTop = chatScroll.scrollHeight;
+    lastChatScrollTop = chatScroll.scrollTop;
     if (followScrollFrame !== null) cancelAnimationFrame(followScrollFrame);
     followScrollFrame = requestAnimationFrame(() => {
       followScrollFrame = null;
       if (seq !== sessionOpenSeq || userScrollActive || scrollIntent !== userScrollIntentUntil) return;
-      if (followRunOutput) chatScroll.scrollTop = chatScroll.scrollHeight;
+      if (followRunOutput) { chatScroll.scrollTop = chatScroll.scrollHeight; lastChatScrollTop = chatScroll.scrollTop; }
     });
   }
   function maybeScroll(was) {
@@ -2791,7 +2803,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
         else bucket.insertBefore(el, next);
       }
       process.querySelector('.execution-process-count').textContent = entries.filter(el => el.classList.contains('tool-card')).length + ' tool calls';
-      if (finished) process.open = false;
+      if (finished && process.dataset.userExpanded !== 'true') process.open = false;
       process.hidden = !archived.length;
     }
     for (const el of visible) if (el !== body.lastElementChild) body.appendChild(el);
@@ -3927,6 +3939,10 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     }
 
     if (ev.type === 'result') {
+      const viewport = chatScroll.getBoundingClientRect();
+      const readingEntry = followRunOutput ? null : [...(turnEl?.querySelectorAll('.execution-process[open] .execution-process-body > *') || [])]
+        .find(el => { const rect = el.getBoundingClientRect(); return rect.bottom > viewport.top && rect.top < viewport.bottom; });
+      const readingTop = readingEntry?.getBoundingClientRect().top;
       finishQuestion(ev.subtype === 'stopped' ? 'Stopped' : 'This request is no longer active');
       permissionSubmission = null;
       permRequestId = null;
@@ -3979,6 +3995,10 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       turnEl = null;
       pendingTools = {};
       setRunning(false);
+      // Completion replaces the live status/summary above an open process.
+      // Keep its visible record fixed even though that header changes height.
+      if (readingEntry?.isConnected && !followRunOutput)
+        chatScroll.scrollTo({ top: chatScroll.scrollTop + readingEntry.getBoundingClientRect().top - readingTop, behavior: 'instant' });
       currentRunId = null;
       void sidebar.load();
       void gitUI.refresh(true);
@@ -4538,7 +4558,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
   async function newSession(workspaceId = null) {
     if (!canChangeContext()) return;
     saveDraft();
-    if (!leaveDiscussion()) return;
+    if (!await leaveDiscussion()) return;
     const wasReady = uiReady; uiReady = false;
     const seq = ++sessionOpenSeq;
     resetConversationView();
@@ -5258,7 +5278,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
   async function openHistorySession(id) {
     if (!canChangeContext()) return false;
     saveDraft();
-    if (!leaveDiscussion()) return false;
+    if (!await leaveDiscussion()) return false;
     const seq = ++sessionOpenSeq;
     let draftRestored = false;
     resetConversationView();
@@ -5915,11 +5935,12 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     try {
       await discussionSurface.prepare();
       if (ticket !== discussionNavigationSeq || !canChangeContext()) return;
-      if (discussionVisible && !discussionSurface.suspend()) return;
+      if (!(discussionVisible ? await discussionSurface.suspend() : await closeFilePreview())) return;
+      if (ticket !== discussionNavigationSeq || !canChangeContext()) return;
       await discussionSurface.open(navigation);
       if (ticket !== discussionNavigationSeq || !canChangeContext()) return;
       if (!discussionVisible) {
-        saveDraft(); ++sessionOpenSeq; resetConversationView(); closeFilePreview();
+        saveDraft(); ++sessionOpenSeq; resetConversationView();
         loadingSession = false; input.disabled = false;
         setConversationSessionId(null); context.workspaceId = null;
         contextPanel?.reset();
@@ -5931,8 +5952,8 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     } catch (error) { if (ticket === discussionNavigationSeq) { if (discussionVisible) discussionSurface.error(error); else setStatus(error.message); } }
     finally { if (ticket === discussionNavigationSeq) discussionOpening = false; }
   }
-  function leaveDiscussion() {
-    if (discussionVisible && !discussionSurface.suspend()) return false;
+  async function leaveDiscussion() {
+    if (discussionVisible && !await discussionSurface.suspend()) return false;
     ++discussionNavigationSeq;
     discussionOpening = false;
     discussionVisible = false;

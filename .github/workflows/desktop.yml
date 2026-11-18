@@ -83,8 +83,44 @@ jobs:
       - name: Verify ripgrep is available to native tools
         run: rg --version
       - name: Unit tests
+        if: matrix.platform != 'windows'
         timeout-minutes: 10
-        run: node --test --test-force-exit tests/*.test.js
+        run: node --test --test-force-exit --test-concurrency=4 --test-reporter=tap tests/*.test.js
+      - name: Unit tests (Windows)
+        if: matrix.platform == 'windows'
+        timeout-minutes: 10
+        shell: pwsh
+        run: |
+          $testFiles = @(Get-ChildItem -LiteralPath tests -Filter '*.test.js' -File |
+            Where-Object Name -ne 'background-process.test.js' | ForEach-Object FullName)
+          node --test --test-force-exit --test-concurrency=4 --test-reporter=tap @testFiles
+      - name: Native background process tests (Windows)
+        if: matrix.platform == 'windows'
+        timeout-minutes: 2
+        shell: pwsh
+        run: |
+          $scenarios = @(
+            @{ Pattern = '^Windows |^invalid background launch|^native creation errors'; Count = 6 }
+            @{ Pattern = '^the real Windows CLI'; Count = 1 }
+            @{ Pattern = '^real Windows grandchildren'; Count = 1 }
+          )
+          foreach ($scenario in $scenarios) {
+            $started = Get-Date
+            Write-Host "Native background process scenario: $($scenario.Pattern)"
+            $output = @(node --test --test-isolation=none --test-reporter=tap "--test-name-pattern=$($scenario.Pattern)" tests/background-process.test.js)
+            $exitCode = $LASTEXITCODE
+            $output
+            if ($exitCode -ne 0) {
+              Write-Host "Native background process test exit code: $exitCode"
+              Get-WinEvent -FilterHashtable @{LogName='Application'; Id=1000,1001; StartTime=$started} -ErrorAction SilentlyContinue |
+                Where-Object Message -Match 'node\.exe' | Format-List TimeCreated, Id, Message
+              exit $exitCode
+            }
+            if ($output -notcontains "# tests $($scenario.Count)" -or $output -notcontains "# pass $($scenario.Count)") {
+              throw "Expected $($scenario.Count) passing native background process checks for $($scenario.Pattern)"
+            }
+          }
+          & ./tests/windows-background-argv.ps1
       - name: Diagnostic pipe disconnection
         run: node tests/diagnostic-output-electron.cjs
       - name: Electron smoke test

@@ -2,6 +2,8 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
+const { isUtf8 } = require('node:buffer');
+const { createHash, randomUUID } = require('node:crypto');
 const { pathToFileURL } = require('node:url');
 
 const MAX_TEXT_BYTES = 20 * 1024 * 1024;
@@ -42,7 +44,84 @@ function previewKind(filePath) {
   return 'unsupported';
 }
 
-function describePreview(filePath) {
+function readPreviewText(filePath) {
+  const handle = fs.openSync(filePath, fs.constants.O_RDONLY | fs.constants.O_NONBLOCK);
+  try {
+    const stat = fs.fstatSync(handle);
+    if (!stat.isFile()) throw new Error('The selected path is not a file.');
+    const buffer = Buffer.allocUnsafe(Math.min(stat.size, MAX_TEXT_BYTES) + 1);
+    let length = 0;
+    while (length < buffer.length) {
+      const count = fs.readSync(handle, buffer, length, buffer.length - length, null);
+      if (!count) break;
+      length += count;
+    }
+    return { stat, bytes: buffer.subarray(0, Math.min(length, MAX_TEXT_BYTES)), truncated: stat.size > MAX_TEXT_BYTES || length > MAX_TEXT_BYTES };
+  } finally { fs.closeSync(handle); }
+}
+
+function textRevision(stat, bytes) {
+  return `${stat.dev}:${stat.ino}:${stat.mode}:${createHash('sha256').update(bytes).digest('hex')}`;
+}
+
+function editableTarget(filePath, { stat, bytes, truncated }) {
+  if (truncated || stat.size !== bytes.length || !isUtf8(bytes) || bytes.includes(0)) return null;
+  try {
+    const target = fs.realpathSync.native(filePath);
+    fs.accessSync(target, fs.constants.W_OK);
+    return { path: filePath, target, revision: textRevision(stat, bytes) };
+  } catch { return null; }
+}
+
+function readUnchangedText(edit) {
+  let current;
+  try {
+    if (fs.realpathSync.native(edit.path) === edit.target) current = readPreviewText(edit.target);
+  } catch (error) {
+    if (!['ENOENT', 'ENOTDIR', 'ELOOP'].includes(error.code)) throw error;
+  }
+  if (!current || current.truncated || current.stat.size !== current.bytes.length || textRevision(current.stat, current.bytes) !== edit.revision) {
+    throw new Error('The file changed on disk. Copy your edits and reopen the file before saving.');
+  }
+  return current;
+}
+
+function savePreviewText(edit, text) {
+  if (typeof text !== 'string' || !text.isWellFormed() || text.includes('\0')) throw new Error('Enter valid UTF-8 text without null characters.');
+  if (text.length > MAX_TEXT_BYTES) throw new Error('The edited file exceeds 20 MB.');
+  const current = readUnchangedText(edit);
+  const source = current.bytes.toString('utf8');
+  const lineEnding = edit.lineEnding || source.match(/\r\n?|\n/)?.[0] || '\n';
+  const savedText = (source.startsWith('\uFEFF') ? '\uFEFF' : '') + text.replace(/\r\n?|\n/g, lineEnding);
+  const size = Buffer.byteLength(savedText);
+  if (size > MAX_TEXT_BYTES) throw new Error('The edited file exceeds 20 MB.');
+  const file = { text: savedText, size, modifiedAt: current.stat.mtimeMs };
+  if (savedText === source) return { edit, file };
+
+  fs.accessSync(edit.target, fs.constants.W_OK);
+  const bytes = Buffer.from(savedText);
+  const temporary = path.join(path.dirname(edit.target), `.camellia-preview-${randomUUID()}.tmp`);
+  const handle = fs.openSync(temporary, 'wx', 0o600);
+  let replaced = false;
+  try {
+    let stat;
+    try {
+      fs.writeFileSync(handle, bytes);
+      if (process.platform !== 'win32') fs.fchmodSync(handle, current.stat.mode & 0o777);
+      fs.fsyncSync(handle);
+      stat = fs.fstatSync(handle);
+    } finally { fs.closeSync(handle); }
+    const updated = { ...edit, lineEnding, revision: textRevision(stat, bytes) };
+    readUnchangedText(edit);
+    fs.renameSync(temporary, edit.target);
+    replaced = true;
+    return { edit: updated, file: { ...file, modifiedAt: stat.mtimeMs } };
+  } finally {
+    if (!replaced) try { fs.unlinkSync(temporary); } catch {}
+  }
+}
+
+function describePreview(filePath, issueEditToken) {
   if (typeof filePath !== 'string' || !filePath.trim()) throw new Error('A file path is required.');
   const resolvedPath = path.resolve(filePath);
   const stat = fs.statSync(resolvedPath);
@@ -61,15 +140,16 @@ function describePreview(filePath) {
     url: pathToFileURL(resolvedPath).href,
   };
   if (kind === 'text') {
-    const handle = fs.openSync(resolvedPath, 'r');
-    try {
-      const bytes = Buffer.alloc(Math.min(stat.size, MAX_TEXT_BYTES + 1));
-      const bytesRead = fs.readSync(handle, bytes, 0, bytes.length, 0);
-      preview.truncated = stat.size > MAX_TEXT_BYTES;
-      preview.text = bytes.subarray(0, Math.min(bytesRead, MAX_TEXT_BYTES)).toString('utf8');
-    } finally { fs.closeSync(handle); }
+    const content = readPreviewText(resolvedPath);
+    preview.size = content.stat.size;
+    preview.modifiedAt = content.stat.mtimeMs;
+    preview.truncated = content.truncated;
+    preview.text = content.bytes.toString('utf8');
+    const edit = issueEditToken && editableTarget(resolvedPath, content);
+    const editToken = edit && issueEditToken(edit);
+    if (editToken) preview.editToken = editToken;
   }
   return preview;
 }
 
-module.exports = { MAX_TEXT_BYTES, describePreview, previewKind, LEGACY_DOCUMENT_EXTENSIONS, BIFF_SPREADSHEET_EXTENSIONS };
+module.exports = { MAX_TEXT_BYTES, describePreview, savePreviewText, previewKind, LEGACY_DOCUMENT_EXTENSIONS, BIFF_SPREADSHEET_EXTENSIONS };

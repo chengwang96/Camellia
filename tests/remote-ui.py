@@ -93,9 +93,9 @@ with sync_playwright() as playwright:
             expect(page.locator('#devices .name')).to_contain_text('<img src=x onerror=alert(1)>')
             assert page.evaluate('remoteTest.devices[0].allWorkspaces') is True
             assert page.evaluate('remoteTest.devices[0].includeUnassigned') is True
-            expect(page.locator('#devices button')).to_have_count(2)
-            expect(page.locator('#devices button').first).to_have_text('重命名')
-            expect(page.locator('#devices button').last).to_have_text('撤销')
+            expect(page.locator('#devices .device-actions button:visible')).to_have_count(2)
+            expect(page.locator('#devices .device-actions button:visible').first).to_have_text('重命名')
+            expect(page.locator('#devices .device-actions button:visible').last).to_have_text('撤销')
             expect(page.get_by_text('仅查看', exact=True)).to_have_count(0)
             page.screenshot(path=str(screenshots / f'remote-{scheme}.png'), full_page=True)
             page.get_by_role('button', name='撤销', exact=True).click()

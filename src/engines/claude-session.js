@@ -67,6 +67,7 @@ class ClaudeSession {
     // user request that launched each native task so its automatic follow-up
     // turn is attributed to that request, not to the latest message.
     this.taskUserSeq = new Map();
+    this.pendingTaskNotifications = new Set();
     this.foregroundTasks = new Set();
     this.backgroundMonitor = new BackgroundTaskMonitor({ tasks: this.backgroundTasks,
       closed: () => this.dead || this.closed, log: message => this.log('claude: ' + message),
@@ -184,18 +185,48 @@ class ClaudeSession {
     this.sendChannel(result);
   }
 
-  // A native task-notification user event with no turn in progress means the
-  // CLI is resuming the conversation by itself after background work ended.
-  // Adopt that turn so its events reach a live run instead of being discarded.
-  adoptBackgroundTurn(obj) {
+  observeTaskFollowUp(obj) {
+    const pendingId = this.pendingTaskNotifications.values().next().value;
+    if (obj.type === 'result' && taskNotification(obj)) {
+      const runId = obj.origin?.runId;
+      const taskId = obj.origin?.task_id || obj.task_id || (runId
+        ? [...this.pendingTaskNotifications].find(id => this.backgroundRuns.get(id) === runId) : this.running ? undefined : pendingId);
+      const hasReport = obj.is_error || Boolean(String(obj.result || '').trim());
+      const queued = this.pendingTaskNotifications.has(taskId);
+      if (this.running && (queued || this.nativeTurns > 0) && obj.subtype === 'success' && !hasReport && zeroUsage(obj.usage)) {
+        if (queued) this.pendingTaskNotifications.delete(taskId);
+        else this.nativeTurns--;
+        this.log('claude: ignored a zero-token result for a native notification turn');
+        return true;
+      }
+      if (!this.running && !this.compaction) {
+        this.pendingTaskNotifications.delete(taskId);
+        if (hasReport) this.adoptBackgroundTurn(taskId);
+      }
+      return false;
+    }
+    if (this.compaction) return false;
+    if (obj.type === 'user' && taskNotification(obj)) {
+      const taskId = obj.origin?.task_id || obj.task_id
+        || /<task-id>\s*([^<]+?)\s*<\/task-id>/i.exec(contentText(obj.message?.content))?.[1] || pendingId;
+      this.pendingTaskNotifications.delete(taskId);
+      if (!this.adoptBackgroundTurn(taskId) && this.running) {
+        this.nativeTurns++;
+        this.log('claude: native task notification queued inside an active turn');
+      }
+      return false;
+    }
+    if (pendingId && (obj.type === 'assistant' || obj.type === 'stream_event' && obj.event?.type === 'message_start')
+        && this.adoptBackgroundTurn(pendingId)) this.pendingTaskNotifications.delete(pendingId);
+    return false;
+  }
+
+  adoptBackgroundTurn(taskId) {
     if (this.running || this.cancelled || this.dead) return false;
-    if (!taskNotification(obj)) return false;
     this.running = true;
     this.turnHasActivity = false;
     this.nativeTurns = 0;
     this.subagents.begin(); this.agentCalls.clear();
-    const taskId = obj.origin?.task_id || obj.task_id
-      || /<task-id>\s*([^<]+?)\s*<\/task-id>/i.exec(contentText(obj.message?.content))?.[1];
     const originUserSeq = Number.isSafeInteger(this.taskUserSeq.get(taskId)) ? this.taskUserSeq.get(taskId) : this.subagentUserSeq;
     this.log('claude: adopting native background turn');
     this.sendChannel({ type: 'gui:background-turn', session_id: this.sessionId,
@@ -238,6 +269,7 @@ class ClaudeSession {
       this.rememberSession(obj.session_id);
     }
     const content = obj.message?.content, parentEvent = !obj.parent_tool_use_id && !obj.agent_id;
+    if (parentEvent && this.observeTaskFollowUp(obj)) return;
     if (parentEvent && obj.type === 'assistant' && Array.isArray(content) && content.some(block =>
       ['tool_use', 'server_tool_use'].includes(block.type) || block.type === 'text' && String(block.text || '').trim())) this.turnHasActivity = true;
     if (parentEvent && obj.type === 'stream_event' && obj.event?.delta?.type === 'text_delta' && String(obj.event.delta.text || '').trim()) this.turnHasActivity = true;
@@ -287,9 +319,14 @@ class ClaudeSession {
         const child = this.children.get(this.subagents.resolve(obj.task_id));
         native.status = !newRun && ACTIVE.has(child?.status) ? child.status : 'running';
       }
+      const terminal = TERMINAL_TASK_STATES.has(nativeStatus(native.status));
+      if (terminal && obj.subtype === 'task_notification') {
+        this.pendingTaskNotifications.add(obj.task_id);
+        if (this.pendingTaskNotifications.size > 2048) this.pendingTaskNotifications.delete(this.pendingTaskNotifications.values().next().value);
+      }
       const status = this.observeBackgroundTask(obj.task_id, { ...native, newRun });
       this.publishBackgroundTasks();
-      if (this.endedBackgroundTasks.has(obj.task_id) && !TERMINAL_TASK_STATES.has(nativeStatus(native.status))) return;
+      if (this.endedBackgroundTasks.has(obj.task_id) && !terminal) return;
       if (obj.task_type && !/agent|workflow|teammate/.test(obj.task_type)) return;
       const known = this.subagents.resolve(obj.task_id);
       if (obj.subtype !== 'task_started' && !this.children.has(known) && !obj.subagent_type && !this.agentCalls.has(obj.tool_use_id)) return;
@@ -313,14 +350,6 @@ class ClaudeSession {
     // Context compaction hides its own transcript, but must not hide lifecycle
     // events from work that continues independently of that operation.
     if (this.compaction) return;
-    // The notification itself is forwarded below so the run records the
-    // native trigger; the events after it belong to the adopted turn.
-    if (obj.type === 'user' && !this.adoptBackgroundTurn(obj) && this.running && taskNotification(obj)) {
-      // The notification becomes a native turn ahead of the requested one. Its
-      // zero-token result must not end the turn the user just started.
-      this.nativeTurns++;
-      this.log('claude: native task notification queued inside an active turn');
-    }
     if (obj.parent_tool_use_id || obj.agent_id) {
       const id = this.subagents.resolve(obj.agent_id || this.childTools.get(obj.parent_tool_use_id));
       if (id && this.children.has(id)) {

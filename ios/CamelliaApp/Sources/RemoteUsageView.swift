@@ -388,15 +388,11 @@ struct RemoteUsageView: View {
         VStack(alignment: .leading, spacing: 0) {
             usageCard {
                 VStack(alignment: .leading, spacing: 10) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        note(t("Token 总量", "Total tokens"))
-                        let total = AccountUsage.sum(rows, ["inputTokens", "cacheReadTokens", "cacheWriteTokens", "outputTokens"])
-                        Text(count(total)).accessibilityLabel(t("Token 总量：", "Total tokens: ") + number(total))
-                            .font(.system(size: Palette.textHero, weight: .medium)).foregroundColor(Palette.ink).monospacedDigit()
-                    }
-                    HStack(alignment: .top, spacing: 12) {
+                    LazyVGrid(columns: Array(repeating: GridItem(.flexible(), alignment: .leading), count: 2), alignment: .leading, spacing: 12) {
+                        stat(t("Token 总量", "Total tokens"), ["inputTokens", "outputTokens"])
                         stat(t("成功请求 / 轮次", "Successful requests / turns"), ["requests"])
-                        stat(t("失败 / 取消", "Failed / canceled"), ["failures", "cancelled"])
+                        stat(t("输入 Token", "Input tokens"), ["inputTokens"])
+                        stat(t("输出 Token", "Output tokens"), ["outputTokens"])
                     }
                 }.padding(16)
             }

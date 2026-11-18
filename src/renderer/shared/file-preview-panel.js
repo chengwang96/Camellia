@@ -1,8 +1,77 @@
 'use strict';
-window.CamelliaFilePreview = { create({ fileViewer, inputCard, mdRender, setStatus, finishPreviewResize = () => {}, beforeOpen = () => {}, onClose = () => {}, root = document }) {
+const TEXT_PREVIEW_AUTOSAVE_MS = 1000;
+const monacoBase = new URL('../../../node_modules/monaco-editor/min/vs/', document.currentScript.src);
+const monacoStyles = new WeakMap();
+let monacoLoading;
+const textPreviewClosers = new Set();
+let textPreviewsClosing;
+
+function loadMonacoScript(path) {
+  return new Promise((resolve, reject) => {
+    const script = document.createElement('script');
+    script.src = new URL(path, monacoBase).href;
+    script.onerror = reject;
+    script.onload = resolve;
+    document.head.append(script);
+  });
+}
+
+function loadTextPreviewMonaco(root) {
+  monacoLoading ??= (async () => {
+    await Promise.all([loadMonacoScript('loader.js'), window.CamelliaI18n.language === 'zh-CN'
+      ? loadMonacoScript('nls/lang/zh-cn.js') : null]);
+    window.require.config({ paths: { vs: monacoBase.href.slice(0, -1) } });
+    return new Promise((resolve, reject) => window.require(['vs/editor/editor.main'], resolve, reject));
+  })();
+  if (root === document) return monacoLoading;
+  if (!monacoStyles.has(root)) {
+    monacoStyles.set(root, new Promise((resolve, reject) => {
+      const stylesheet = document.createElement('link');
+      stylesheet.rel = 'stylesheet';
+      stylesheet.href = new URL('editor/editor.main.css', monacoBase).href;
+      stylesheet.onload = resolve;
+      stylesheet.onerror = reject;
+      root.append(stylesheet);
+    }));
+  }
+  return Promise.all([monacoLoading, monacoStyles.get(root)]).then(([monaco]) => monaco);
+}
+
+function textPreviewLanguage(monaco, file) {
+  const name = file.name.toLowerCase();
+  const extension = '.' + file.extension?.toLowerCase();
+  const aliases = { '.cjs': 'javascript', '.mjs': 'javascript', '.mts': 'typescript', '.cts': 'typescript' };
+  return aliases[extension] || monaco.languages.getLanguages().find(language =>
+    language.filenames?.some(filename => filename.toLowerCase() === name) || language.extensions?.includes(extension))?.id || 'plaintext';
+}
+
+function textPreviewTheme() {
+  const theme = document.documentElement.dataset.theme;
+  return (theme === 'dark' || (theme !== 'light' && matchMedia('(prefers-color-scheme: dark)').matches)) ? 'vs-dark' : 'vs';
+}
+
+function closeTextPreviewEditors() {
+  textPreviewsClosing ??= (async () => {
+    for (const close of textPreviewClosers) if (!await close()) return false;
+    return true;
+  })().finally(() => { textPreviewsClosing = null; });
+  return textPreviewsClosing;
+}
+
+window.CamelliaFilePreview = { closeTextEditors: closeTextPreviewEditors, create({
+  fileViewer, inputCard, mdRender, setStatus, finishPreviewResize = () => {}, beforeOpen = () => {}, onClose = () => {}, root = document
+}) {
   const $ = id => root.getElementById(id);
+  const t = text => window.CamelliaI18n.t(text);
+  const body = $('fileViewerBody');
+  const editButton = document.createElement('button');
+  editButton.type = 'button'; editButton.id = 'fileViewerEdit'; editButton.className = 'file-preview-edit-button';
+  editButton.dataset.i18n = ''; editButton.textContent = 'Edit'; editButton.hidden = true;
+  $('fileViewerReveal').before(editButton);
   let previewedFile = null;
   let previewRequest = 0;
+  let previewLocation = {};
+  let textEditor = null;
   const attachmentDragType = 'application/x-camellia-attachment-path';
   function formatFileSize(bytes) {
     if (!Number.isFinite(bytes)) return '';
@@ -12,6 +81,10 @@ window.CamelliaFilePreview = { create({ fileViewer, inputCard, mdRender, setStat
   }
   function previewLabel(file) {
     return file.extension || { text: 'TEXT', image: 'IMAGE', video: 'VIDEO', audio: 'AUDIO', pdf: 'PDF' }[file.kind] || 'FILE';
+  }
+  function updatePreviewMeta(file) {
+    const location = previewLocation.line ? ':' + previewLocation.line : '';
+    $('fileViewerMeta').textContent = [formatFileSize(file.size), file.path && file.path + location].filter(Boolean).join('  ·  ');
   }
   function renderUnsupportedPreview(message) {
     const empty = document.createElement('div');
@@ -28,10 +101,10 @@ window.CamelliaFilePreview = { create({ fileViewer, inputCard, mdRender, setStat
     fileViewer.dataset.mode = 'preview';
     $('fileViewerReveal').hidden = false;
     $('fileViewerExternal').hidden = false;
+    editButton.hidden = file.kind !== 'text' || file.truncated || !file.editToken;
     $('fileViewerTitle').textContent = file.name;
     $('fileViewerType').textContent = previewLabel(file);
-    $('fileViewerMeta').textContent = [formatFileSize(file.size), file.path].filter(Boolean).join('  ·  ');
-    const body = $('fileViewerBody');
+    updatePreviewMeta(file);
     body.replaceChildren();
     if (file.kind === 'text') {
       const format = window.CamelliaArtifacts.documentFormat(file);
@@ -39,7 +112,7 @@ window.CamelliaFilePreview = { create({ fileViewer, inputCard, mdRender, setStat
         body.appendChild(window.CamelliaHtmlPreview.render(file));
       } else if (format === 'markdown') {
         const article = document.createElement('article'); article.className = 'file-preview-markdown md';
-        article.setAttribute('translate', 'no'); article.innerHTML = mdRender(file.text || '', true, file.url);
+        article.setAttribute('translate', 'no'); article.innerHTML = mdRender((file.text || '').replace(/^\uFEFF/, ''), true, file.url);
         article.addEventListener('click', event => {
           const link = event.target.closest('a');
           if (!link) return;
@@ -136,8 +209,16 @@ window.CamelliaFilePreview = { create({ fileViewer, inputCard, mdRender, setStat
     } else renderUnsupportedPreview();
     fileViewer.hidden = false;
   }
+  function lineOffset(text, line) {
+    let offset = 0;
+    for (let current = 1; current < line; current++) {
+      const end = text.indexOf('\n', offset);
+      if (end < 0) break;
+      offset = end + 1;
+    }
+    return offset;
+  }
   function focusPreviewLocation({ line = 0, anchor = '' } = {}) {
-    const body = $('fileViewerBody');
     if (line) {
       const candidates = [...body.querySelectorAll('[data-preview-line]')]
         .filter(node => Number(node.dataset.previewLine) <= line && Number(node.dataset.previewEndLine) >= line)
@@ -146,47 +227,199 @@ window.CamelliaFilePreview = { create({ fileViewer, inputCard, mdRender, setStat
       else {
         const text = body.querySelector('.file-preview-text')?.firstChild;
         if (text) {
-          let offset = 0;
-          for (let current = 1; current < line; current++) {
-            const end = text.textContent.indexOf('\n', offset);
-            if (end < 0) break;
-            offset = end + 1;
-          }
+          const offset = lineOffset(text.textContent, line);
           const range = document.createRange();
           range.setStart(text, offset); range.setEnd(text, Math.min(offset + 1, text.length));
           body.scrollTop += range.getBoundingClientRect().top - body.getBoundingClientRect().top - body.clientHeight / 2;
         }
       }
-      $('fileViewerMeta').textContent += ':' + line;
     } else if (anchor) [...body.querySelectorAll('[data-preview-anchor], [id]')]
       .find(node => node.dataset.previewAnchor === anchor || node.id === anchor)?.scrollIntoView({ block: 'start' });
   }
+  function isDirty(editor) { return editor.model.getAlternativeVersionId() !== editor.savedVersion; }
+  function updateEditor(editor) {
+    const dirty = isDirty(editor);
+    editor.save.disabled = !dirty || Boolean(editor.pending) || editor.leaving || editor.composing;
+    editor.preview.disabled = editor.leaving;
+    const error = dirty && editor.error;
+    editor.status.classList.toggle('error', Boolean(error));
+    const label = t(editor.pending ? 'Saving…' : dirty ? error || 'Unsaved changes' : editor.hasSaved ? 'Saved' : 'Auto-save on');
+    if (editor.status.textContent !== label) editor.status.textContent = label;
+  }
+  function scheduleTextSave(editor) {
+    clearTimeout(editor.timer);
+    if (!editor.composing && !editor.pending && !editor.leaving && isDirty(editor)) {
+      editor.timer = setTimeout(() => { void saveTextEdit(editor); }, TEXT_PREVIEW_AUTOSAVE_MS);
+    }
+    updateEditor(editor);
+  }
+  function saveTextEdit(editor) {
+    if (editor.pending) return editor.pending;
+    clearTimeout(editor.timer);
+    if (editor.composing || !isDirty(editor)) return !editor.composing;
+    const version = editor.model.getAlternativeVersionId();
+    const text = editor.model.getValue();
+    editor.error = '';
+    editor.pending = Promise.resolve().then(() => window.dshDesktop.savePreviewText(editor.file.editToken, text))
+      .then(result => {
+        if (!result?.ok) throw new Error(result?.error || 'Could not save the file.');
+        editor.file = previewedFile = { ...editor.file, ...result.file };
+        editor.savedVersion = version;
+        editor.hasSaved = true;
+        updatePreviewMeta(previewedFile);
+        return true;
+      }).catch(error => {
+        editor.error = error.message || 'Could not save the file.';
+        return false;
+      }).finally(() => {
+        editor.pending = null;
+        if (editor.model.getAlternativeVersionId() !== version) scheduleTextSave(editor);
+        else updateEditor(editor);
+      });
+    updateEditor(editor);
+    return editor.pending;
+  }
+  async function flushTextEdit(editor) {
+    while (!editor.composing && (editor.pending || isDirty(editor))) {
+      if (!await saveTextEdit(editor)) break;
+    }
+    return !editor.composing && !isDirty(editor);
+  }
+  async function finishTextEdit() {
+    const editor = textEditor;
+    if (!editor) return true;
+    if (editor.leaving || editor.composing) return false;
+    editor.leaving = true;
+    editor.input.updateOptions({ readOnly: true });
+    updateEditor(editor);
+    try {
+      if (!await flushTextEdit(editor)
+        && !window.confirm(t(editor.error || 'Could not save the file.') + '\n\n' + t('Discard unsaved changes to this file?'))) return false;
+      clearTimeout(editor.timer);
+      textPreviewClosers.delete(closeFilePreview);
+      editor.discarded = isDirty(editor);
+      textEditor = null;
+      editor.dispose();
+      return true;
+    } finally {
+      if (textEditor === editor) {
+        editor.leaving = false;
+        editor.input.updateOptions({ readOnly: false });
+        updateEditor(editor);
+      }
+    }
+  }
+  function renderSavedPreview() {
+    renderFilePreview(previewedFile);
+    focusPreviewLocation(previewLocation);
+  }
+  async function showRenderedPreview() {
+    const editor = textEditor;
+    if (!editor || !await finishTextEdit()) return;
+    if (editor.discarded) await openFilePreview(editor.file.path, previewLocation);
+    else renderSavedPreview();
+    if (!editButton.hidden) editButton.focus();
+  }
+  async function startTextEdit() {
+    if (editButton.hidden || editButton.disabled || textEditor) return;
+    const request = previewRequest, file = previewedFile;
+    editButton.disabled = true;
+    let monaco;
+    try {
+      monaco = await loadTextPreviewMonaco(root);
+    } catch {
+      if (request === previewRequest) setStatus(t('Could not load the text editor.'));
+      return;
+    } finally {
+      if (request === previewRequest) editButton.disabled = false;
+    }
+    if (request !== previewRequest || fileViewer.hidden) return;
+    const host = document.createElement('div'); host.className = 'file-preview-editor-input';
+    const panel = document.createElement('div'); panel.className = 'file-preview-editor';
+    const toolbar = document.createElement('div'); toolbar.className = 'file-preview-editor-toolbar';
+    const status = document.createElement('div'); status.className = 'file-preview-editor-status'; status.setAttribute('role', 'status');
+    const actions = document.createElement('div'); actions.className = 'file-preview-editor-actions';
+    const preview = document.createElement('button'); preview.type = 'button'; preview.className = 'btn-primary';
+    preview.dataset.i18n = ''; preview.textContent = 'Preview'; preview.onclick = () => void showRenderedPreview();
+    const save = document.createElement('button'); save.type = 'button'; save.className = 'btn-secondary';
+    save.dataset.i18n = ''; save.textContent = 'Save';
+    save.setAttribute('aria-keyshortcuts', window.dshDesktop.platform === 'darwin' ? 'Meta+S' : 'Control+S');
+    actions.append(save, preview); toolbar.append(status, actions); panel.append(toolbar, host);
+    editButton.hidden = true;
+    body.replaceChildren(panel);
+    body.scrollTop = 0;
+    let model, input;
+    try {
+      model = monaco.editor.createModel(file.text.replace(/^\uFEFF/, ''), textPreviewLanguage(monaco, file));
+      input = monaco.editor.create(host, {
+        model, theme: textPreviewTheme(), ariaLabel: t('File contents'), automaticLayout: true,
+        minimap: { enabled: false }, wordWrap: 'on', scrollBeyondLastLine: false, links: false,
+        fontSize: 13, padding: { top: 12, bottom: 12 }, stickyScroll: { enabled: false },
+      });
+    } catch {
+      model?.dispose();
+      renderSavedPreview();
+      setStatus(t('Could not load the text editor.'));
+      editButton.focus();
+      return;
+    }
+    const themePreference = matchMedia('(prefers-color-scheme: dark)');
+    const updateTheme = () => monaco.editor.setTheme(textPreviewTheme());
+    const themeObserver = new MutationObserver(updateTheme);
+    themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+    themePreference.addEventListener('change', updateTheme);
+    const editor = textEditor = { file, input, model, savedVersion: model.getAlternativeVersionId(), status, save, preview,
+      dispose() {
+        themeObserver.disconnect();
+        themePreference.removeEventListener('change', updateTheme);
+        input.dispose();
+        model.dispose();
+      } };
+    textPreviewClosers.add(closeFilePreview);
+    save.onclick = () => void flushTextEdit(editor);
+    input.onDidChangeModelContent(() => scheduleTextSave(editor));
+    input.onDidCompositionStart(() => { editor.composing = true; scheduleTextSave(editor); });
+    input.onDidCompositionEnd(() => { editor.composing = false; scheduleTextSave(editor); });
+    updateEditor(editor);
+    const lineNumber = Math.min(previewLocation.line || 1, model.getLineCount());
+    input.setPosition({ lineNumber, column: 1 });
+    input.revealLineInCenterIfOutsideViewport(lineNumber);
+    input.focus();
+  }
   async function openFilePreview(filePath, location = {}) {
     if (!filePath) return;
+    if (textEditor) {
+      if (!await finishTextEdit()) return;
+      renderSavedPreview();
+    }
     beforeOpen();
     fileViewer.dataset.mode = 'preview';
     $('fileViewerReveal').hidden = false;
     $('fileViewerExternal').hidden = false;
+    editButton.disabled = true;
     const request = ++previewRequest;
     let result;
     try { result = await window.dshDesktop.previewFile(filePath); }
     catch (error) { result = { ok: false, error: error.message }; }
     if (request !== previewRequest) return;
-    if (!result.ok) {
+    editButton.disabled = false;
+    if (!result?.ok) {
       previewedFile = { path: filePath, name: String(filePath).split(/[\\/]/).pop(), kind: 'unsupported' };
       $('fileViewerTitle').textContent = previewedFile.name;
       $('fileViewerType').textContent = window.CamelliaI18n.t('Preview');
       $('fileViewerMeta').textContent = filePath;
+      editButton.hidden = true;
       fileViewer.hidden = false;
-      renderUnsupportedPreview(result.error || window.CamelliaI18n.t('The file could not be opened.'));
+      renderUnsupportedPreview(result?.error || t('The file could not be opened.'));
       return;
     }
     if (result.file.kind === 'directory') {
       await openPreviewExternally(result.file.path);
       return;
     }
+    previewLocation = location;
     renderFilePreview(result.file);
-    focusPreviewLocation(location);
+    focusPreviewLocation(previewLocation);
   }
   async function openPreviewExternally(filePath = previewedFile?.path) {
     if (!filePath) return;
@@ -211,20 +444,39 @@ window.CamelliaFilePreview = { create({ fileViewer, inputCard, mdRender, setStat
     if (platform === 'linux') return 'Show in file manager';
     return 'Show in folder';
   }
-  function closeFilePreview() {
+  async function closeFilePreview() {
+    if (textEditor && !await finishTextEdit()) return false;
     previewRequest++;
     finishPreviewResize();
     fileViewer.hidden = true;
-    $('fileViewerBody').replaceChildren();
+    editButton.hidden = true;
+    body.replaceChildren();
     previewedFile = null;
     onClose();
+    return true;
   }
-  $('fileViewerClose').onclick = closeFilePreview;
+  editButton.onclick = startTextEdit;
+  $('fileViewerClose').onclick = () => void closeFilePreview();
   $('fileViewerExternal').onclick = () => void openPreviewExternally();
   $('fileViewerReveal').title = revealLabel();
   $('fileViewerReveal').setAttribute('aria-label', revealLabel());
   $('fileViewerReveal').onclick = () => void revealFile(previewedFile?.path);
-  root.addEventListener('keydown', event => { if (event.key === 'Escape' && !fileViewer.hidden) closeFilePreview(); });
+  window.addEventListener('camellia:language', () => {
+    if (!textEditor) return;
+    textEditor.input.updateOptions({ ariaLabel: t('File contents') });
+    updateEditor(textEditor);
+  });
+  fileViewer.addEventListener('keydown', event => {
+    if (!textEditor || event.isComposing || !(event.ctrlKey || event.metaKey) || event.altKey || event.shiftKey || event.key.toLowerCase() !== 's') return;
+    event.preventDefault();
+    event.stopPropagation();
+    if (!textEditor.leaving) void flushTextEdit(textEditor);
+  }, true);
+  root.addEventListener('keydown', event => {
+    if (event.key !== 'Escape' || event.defaultPrevented || event.isComposing || fileViewer.hidden || root.querySelector('dialog[open]')) return;
+    if (textEditor) { event.preventDefault(); void showRenderedPreview(); }
+    else void closeFilePreview();
+  });
 
   return { openFilePreview, closeFilePreview, openPreviewExternally, revealFile, revealLabel, formatFileSize, attachmentDragType };
 } };

@@ -30,7 +30,7 @@ async function fixture(context) {
   return { manager, reader, gateway, access, device, request };
 }
 
-test('workbench includes all authorized activity beyond the first page and only ten recent rows without previews', async context => {
+test('workbench includes all authorized activity beyond the first page and thirty recent rows without previews', async context => {
   const h = await fixture(context), states = new Map();
   h.manager.activity = id => states.get(id) || 'idle';
   const running = h.manager.create('codex', 'visible', 'Old but running');
@@ -46,12 +46,12 @@ test('workbench includes all authorized activity beyond the first page and only 
   h.reader.filePreview = () => { throw new Error('Home must never inspect files'); };
   const response = await h.request('/v1/workbench'); assert.equal(response.status, 200);
   const page = await response.json();
-  assert.equal(page.conversations.length, 13);
+  assert.equal(page.conversations.length, 33);
   assert.ok(page.conversations.some(row => row.id === running.id));
   assert.ok(page.conversations.some(row => row.id === waiting.id));
   assert.equal(page.conversations.find(row => row.id === background.id).backgroundTaskCount, 1);
   assert.ok(!page.conversations.some(row => row.id === hidden.id || row.id === archived.id));
-  assert.equal(page.conversations.filter(row => row.activity === 'idle' && !row.backgroundTaskCount).length, 10);
+  assert.equal(page.conversations.filter(row => row.activity === 'idle' && !row.backgroundTaskCount).length, 30);
   assert.ok(!JSON.stringify(page).includes('PRIVATE'));
   assert.equal(page.conversations[3].title, 'Recent 109');
   const version = page.listVersion;

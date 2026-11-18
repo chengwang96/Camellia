@@ -34,8 +34,8 @@ public class TabletRotationContinuityTest extends InstrumentationTestCase {
             getInstrumentation().runOnMainSync(() -> {
                 try { activity.setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED); }
                 catch (RuntimeException ignored) { }
-                activity.finish();
             });
+            NativeActivityCleanup.finish(getInstrumentation(), activity);
             getInstrumentation().waitForIdleSync();
         }
         var context = getInstrumentation().getTargetContext();
@@ -88,14 +88,14 @@ public class TabletRotationContinuityTest extends InstrumentationTestCase {
                 throw new AssertionError(error);
             }
         });
-        assertNull(activity.getWindow().getDecorView().findViewWithTag("detailConversationSidebar"));
+        assertNull(activity.getWindow().getDecorView().findViewWithTag("conversationListPane"));
         rotate(ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE);
         assertSameConnection(owner);
         assertSidebarVisible();
         capture("system-rotation-landscape");
         rotate(ActivityInfo.SCREEN_ORIENTATION_PORTRAIT);
         assertSameConnection(owner);
-        assertNull(activity.getWindow().getDecorView().findViewWithTag("detailConversationSidebar"));
+        assertNull(activity.getWindow().getDecorView().findViewWithTag("conversationListPane"));
         rotate(ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE);
         assertSameConnection(owner);
         assertSidebarVisible();
@@ -160,7 +160,7 @@ public class TabletRotationContinuityTest extends InstrumentationTestCase {
     private void assertSidebarVisible() {
         getInstrumentation().runOnMainSync(() -> {
             View root = activity.getWindow().getDecorView();
-            View sidebar = root.findViewWithTag("detailConversationSidebar");
+            View sidebar = root.findViewWithTag("conversationListPane");
             assertNotNull("A landscape tablet must show the conversation sidebar: "
                 + activity.getResources().getConfiguration(), sidebar);
             assertTrue("The sidebar must have usable width", sidebar.getWidth() > 0);

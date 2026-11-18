@@ -5,6 +5,7 @@ const { createHash } = require('node:crypto');
 const { approval } = require('./commands');
 const { projectOutput, cleanProcess } = require('../../shared/mobile-output');
 const { mobileTurnDetails } = require('../../shared/mobile-turn-details');
+const { normalizeSchedule, taskNotice } = require('../../shared/task-schedule');
 const { settingsView } = require('./settings');
 const { latestFilePreview } = require('./conversation-preview');
 const { MAX_COUNT: MAX_ATTACHMENTS } = require('./attachments');
@@ -30,6 +31,21 @@ function boundedSubtasks(tasks) {
 function text(value) {
   const source = typeof value === 'string' ? value : '';
   return { text: source.slice(-TEXT_LIMIT), textTruncated: source.length > TEXT_LIMIT };
+}
+function mobileTask(task) {
+  // Project display fields explicitly; scheduler tokens and pending reports
+  // stay on the host. Keep the same text bounds as the task editor/scheduler.
+  let schedule;
+  try { schedule = normalizeSchedule(task); } catch { /* Invalid settings remain editable on the host. */ }
+  return { id: task.id, instruction: String(task.instruction || '').slice(0, 12000), status: task.status,
+    schedule, stopping: Boolean(task.stopping), pauseReason: task.pauseReason, waitingReason: task.waitingReason,
+    notice: taskNotice(task).slice(0, 4000), noticeZh: taskNotice(task, 'zh-CN').slice(0, 4000),
+    lastCheck: task.lastCheck ? { at: task.lastCheck.at, status: task.lastCheck.status, summary: String(task.lastCheck.summary || '').slice(0, 4000) } : undefined,
+    state: task.state, intervalMinutes: task.intervalMinutes, maxHours: task.maxHours,
+    runs: task.runs, maxRuns: task.maxRuns, repairs: task.repairs, maxRepairs: task.maxRepairs,
+    nextRunAt: task.nextRunAt, expiresAt: task.expiresAt,
+    lastResult: String(task.lastResult || '').slice(0, 4000),
+    history: (task.history || []).slice(-10).map(entry => ({ at: entry.at, message: String(entry.message || '').slice(0, 4000) })) };
 }
 const VISUALIZATION_STYLES = new Set(['whale', 'editorial', 'paper', 'sketch', 'terminal']);
 const VISUALIZATION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -263,7 +279,7 @@ class RemoteReadModel {
       const activity = this.manager.activity(conversation.id);
       const backgroundTaskCount = (this.manager.backgroundStatus?.(conversation.id)?.tasks || []).filter(task => task?.id).length;
       const running = ['running', 'permission', 'question'].includes(activity) || backgroundTaskCount > 0;
-      if (!running && recent.length >= 10) continue;
+      if (!running && recent.length >= 30) continue;
       const summary = this.summary(conversation, meta);
       // Home never needs transcripts, file previews, task commands or stream counters.
       const { id, title, engine, model, modelName, workspaceName, updatedAt, lastReplyAt, replyReadAt } = summary;
@@ -343,7 +359,7 @@ class RemoteReadModel {
       queueSteering: permission === 'control' && goal?.id && goal.armed && goal.phase === 'active'
         ? { goalId: goal.id } : null,
       automation: { goal: mobileGoal(goal, transcript, info),
-        tasks: (this.manager.tasks?.list(id) || []).map(task => ({ id: task.id, instruction: String(task.instruction || '').slice(0, 500), status: task.status, state: task.state, intervalMinutes: task.intervalMinutes, lastResult: String(task.lastResult || '').slice(0, 600) })) },
+        tasks: (this.manager.tasks?.list(id) || []).map(mobileTask) },
       ...(permission === 'control' ? { settings: settingsView(this.manager, conversation) } : {}),
       };
   }

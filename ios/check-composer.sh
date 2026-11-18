@@ -40,14 +40,27 @@ mkdir -p "$LOGS"
 xcrun simctl boot "$UDID" >/dev/null 2>&1 || true
 perl -e 'alarm shift; exec @ARGV' 60 xcrun simctl bootstatus "$UDID" -b >/dev/null
 xcrun simctl install "$UDID" "$APP"
+CONTAINER="$(xcrun simctl get_app_container "$UDID" app.camellia.mobile.composercheck data)"
+RESULT="$CONTAINER/Documents/composer-verdict.txt"
 
 for ATTEMPT in 1 2; do
+  rm -f -- "$RESULT"
   set +e
   OUTPUT="$(perl -e 'alarm shift; exec @ARGV' 120 xcrun simctl launch --console "$UDID" app.camellia.mobile.composercheck 2>&1)"
   STATUS=$?
   set -e
   printf '%s\n' "$OUTPUT" | tee "$LOGS/composer-attempt-$ATTEMPT.log"
-  if [ "$STATUS" -eq 0 ] && [[ "$OUTPUT" == *"verdict=PASS"* ]]; then
+  if [ "$STATUS" -eq 0 ]; then
+    for _ in {1..100}; do
+      [ -f "$RESULT" ] && break
+      sleep 0.1
+    done
+  fi
+  if [ -f "$RESULT" ]; then
+    cp "$RESULT" "$LOGS/composer-attempt-$ATTEMPT-verdict.txt"
+  fi
+  if [ "$STATUS" -eq 0 ] && [ -f "$RESULT" ] && grep -Fxq '[composer-check] verdict=PASS failures=none' "$RESULT" \
+    && [[ "$OUTPUT" != *"[composer-check] verdict=FAIL"* ]]; then
     echo "verdict: PASS"
     exit 0
   fi
@@ -57,7 +70,7 @@ for ATTEMPT in 1 2; do
     --predicate 'process == "CamelliaComposerCheck"' > "$LOGS/composer-attempt-$ATTEMPT-system.log" 2>&1 || true
   # Retry only a launch timeout before the app returned its verdict. Assertion
   # failures and crashes remain failures; a second missing verdict is fatal.
-  if [ "$ATTEMPT" -eq 2 ] || [ "$STATUS" -ne 142 ] \
+  if [ "$ATTEMPT" -eq 2 ] || [ "$STATUS" -ne 142 ] || [ -f "$RESULT" ] \
     || [[ "$OUTPUT" == *"[composer-check] starting"* ]] || [[ "$OUTPUT" == *"[composer-check] verdict="* ]]; then
     break
   fi

@@ -405,7 +405,7 @@
 "手机" = "Mobile";
 "手机上显示的名字" = "Name shown on this phone";
 "手机与电脑需登录同一个 Tailscale 网络。" = "Sign into the same Tailscale network on both devices.";
-"手机以 camellia-android 加入网络，仍受网络访问策略控制。" = "This phone joins as camellia-android and follows your tailnet access rules.";
+"手机以本机名称加入网络；未设置时使用默认名称，仍受网络访问策略控制。" = "This phone joins using its device name, or a default name when none is set, and follows your tailnet access rules.";
 "手机以独立节点加入网络，仍受 tailnet 访问策略控制。" = "This phone joins as a separate node and remains subject to your tailnet access policy.";
 "手机直连 API，在本地工作区中继续会话。" = "Connect directly to your API. Keep workspaces and chats on this phone.";
 "手机直连 · 本地工作区" = "On this phone · local workspace";
@@ -466,6 +466,7 @@
 "操作结果尚未确认，请核对后重试同一请求。" = "The result is unconfirmed. Inspect it and retry the same request.";
 "支持 PDF、Word、Excel、PPT 和文本。" = "PDF, Word, Excel, PowerPoint and text.";
 "收起" = "Collapse";
+"收起执行过程" = "Collapse execution process";
 "收起文件" = "Show fewer files";
 "收起详情" = "Hide details";
 "数据与诊断" = "Data & diagnostics";
@@ -975,9 +976,9 @@
 "这不是 Camellia 的配对二维码，请扫描电脑端新生成的二维码。" = "This is not a Camellia pairing QR code. Scan a new code generated on your computer.";
 "这个 Harness 尚无已配置的模型，请先在主机上配置。" = "This harness has no configured models. Configure them on the host first.";
 "这台主机尚未开放远程讨论，请更新主机并检查设备授权。" = "Remote discussions are unavailable. Update the host and check device access.";
-"这台平板以 camellia-ios 加入网络，遵循你的 tailnet 访问规则。" = "This iPad joins as camellia-ios and follows your tailnet access rules.";
+"这台平板以本机名称加入网络；未设置时使用默认名称，遵循你的 tailnet 访问规则。" = "This iPad joins using its device name, or a default name when none is set, and follows your tailnet access rules.";
 "这台平板已经配对上电脑，但当前没有选中哪一台。打开电脑列表选一台，就能查看和继续它的会话。" = "This iPad is paired, but no computer is selected. Choose one from the computer list to view and continue its chats.";
-"这台手机以 camellia-ios 加入网络，遵循你的 tailnet 访问规则。" = "This phone joins as camellia-ios and follows your tailnet access rules.";
+"这台手机以本机名称加入网络；未设置时使用默认名称，遵循你的 tailnet 访问规则。" = "This phone joins using its device name, or a default name when none is set, and follows your tailnet access rules.";
 "这台手机已经配对上电脑，但当前没有选中哪一台。打开电脑列表选一台，就能查看和继续它的会话。" = "This phone is paired, but no computer is selected. Choose one from the computer list to view and continue its chats.";
 "这台电脑上还没有会话" = "No chats on this computer";
 "这台电脑尚无相关账号。" = "No matching accounts on this computer.";

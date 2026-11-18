@@ -11,6 +11,16 @@ final class MobileLayout {
 
     private MobileLayout() {}
 
+    /** Window width is not reduced by the IME; a keyboard must not remove the tablet shell. */
+    static boolean useTabletRail(Configuration configuration) {
+        return configuration != null && configuration.smallestScreenWidthDp >= 600
+            && configuration.screenWidthDp >= 840;
+    }
+
+    static boolean useTabletSplit(Configuration configuration) {
+        return useTabletRail(configuration) && configuration.screenWidthDp > configuration.screenHeightDp;
+    }
+
     static boolean useDetailSplit(int widthDp, int heightDp) {
         return widthDp >= DETAIL_SPLIT_MIN_WIDTH_DP
             && heightDp >= DETAIL_SPLIT_MIN_HEIGHT_DP

@@ -2,10 +2,15 @@
 
 package tailnet
 
-// nodeHostname is the device name the embedded node registers with the control
-// plane. iOS builds share this module with Android, so the name is selected by
-// build constraint instead of by a runtime check.
-func nodeHostname() string { return "camellia-ios" }
+// nodeHostname uses the name the user chose, and falls back to the platform
+// default. iOS builds share this module with Android, so the fallback is
+// selected by build constraint instead of by a runtime check.
+func nodeHostname(hostname string) string {
+	if hostname != "" {
+		return hostname
+	}
+	return "camellia-ios"
+}
 
 // prepareStateDirectory deliberately does nothing on iOS.
 //

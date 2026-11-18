@@ -28,12 +28,21 @@ struct ScrollContentBottomKey: PreferenceKey {
     }
 }
 
+struct ScrollViewportFrameKey: PreferenceKey {
+    static var defaultValue: CGRect = .null
+    static func reduce(value: inout CGRect, nextValue: () -> CGRect) {
+        let next = nextValue()
+        if !next.isNull { value = next }
+    }
+}
+
 extension View {
     /// Probes this view's bottom edge as the scroll viewport.
     func measuringViewportBottom() -> some View {
         background(GeometryReader { geo in
             Color.clear.preference(key: ScrollViewportBottomKey.self,
                                    value: geo.frame(in: .global).maxY)
+                .preference(key: ScrollViewportFrameKey.self, value: geo.frame(in: .global))
         })
     }
 
@@ -55,5 +64,9 @@ extension View {
         self
             .onPreferenceChange(ScrollViewportBottomKey.self) { tracker.updateViewport($0) }
             .onPreferenceChange(ScrollContentBottomKey.self) { tracker.updateContent($0) }
+            .onPreferenceChange(ScrollViewportFrameKey.self) { tracker.updateViewportFrame($0) }
+            .simultaneousGesture(DragGesture(minimumDistance: 1)
+                .onChanged { tracker.userScrolled(translation: $0.translation.height) }
+                .onEnded { _ in tracker.endUserScroll() })
     }
 }

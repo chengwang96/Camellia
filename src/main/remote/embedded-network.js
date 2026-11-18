@@ -16,6 +16,11 @@ function loginURL(value) {
   return null;
 }
 
+function tailscaleHostname(value) {
+  return String(value || '').toLowerCase().replace(/[^a-z0-9-]+/g, '-')
+    .replace(/^-+|-+$/g, '').slice(0, 63).replace(/-+$/g, '');
+}
+
 function storageKey(directory, safeStorage) {
   if (!safeStorage.isEncryptionAvailable() || safeStorage.getSelectedStorageBackend?.() === 'basic_text') {
     throw new Error('Secure system storage is unavailable. Unlock your system keychain before using embedded networking.');
@@ -42,7 +47,8 @@ function promoteHelper(executable) {
 
 class EmbeddedNetwork {
   constructor({ app, safeStorage, directory, executable, keyProvider, hostname, openExternal, onFailure = () => {}, spawnProcess = spawn }) {
-    if (hostname !== undefined && (typeof hostname !== 'string' || !/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(hostname))) throw new Error('Invalid Tailscale hostname');
+    if (hostname !== undefined && typeof hostname !== 'function'
+        && (typeof hostname !== 'string' || (hostname && !/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(hostname)))) throw new Error('Invalid Tailscale hostname');
     Object.assign(this, { app, safeStorage, directory, executable, keyProvider, hostname, openExternal, onFailure, spawnProcess });
     this.pending = new Map();
     this.connections = new Set();
@@ -57,6 +63,10 @@ class EmbeddedNetwork {
     if (!fs.existsSync(executable)) throw new Error('Embedded network helper is missing. Reinstall Camellia; source builds must run npm run build:tailnet.');
     const key = this.keyProvider ? this.keyProvider(directory) : storageKey(directory, this.safeStorage);
     if (typeof key !== 'string' || !/^[A-Za-z0-9+/]{43}=$/.test(key) || Buffer.from(key, 'base64').length !== 32) throw new Error('Invalid embedded network storage key');
+    // Callers pass a DNS label, not the display name. An unusable value is
+    // omitted so the helper keeps its own platform fallback.
+    const savedHostname = typeof this.hostname === 'function' ? this.hostname() : this.hostname;
+    const requestedHostname = savedHostname && /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(savedHostname) ? savedHostname : '';
     const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => !/^TS(?:NET)?_/i.test(name)));
     const child = this.spawnProcess(executable, [], { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'], env: { ...env, TS_NO_LOGS_NO_SUPPORT: 'true' } });
     this.child = child;
@@ -85,7 +95,7 @@ class EmbeddedNetwork {
       if (response.error) pending.reject(new Error(response.error));
       else pending.resolve(response.result);
     });
-    try { await this.request('init', { directory, key, ...(this.hostname ? { hostname: this.hostname } : {}) }); }
+    try { await this.request('init', { directory, key, ...(requestedHostname ? { hostname: requestedHostname } : {}) }); }
     catch (error) { await this.stop(); throw error; }
   }
   request(action, payload = {}) {
@@ -123,6 +133,8 @@ class EmbeddedNetwork {
   async listen(target, token) { return this.request('listen', { target, token }); }
   async setHostname(hostname) {
     if (!this.child) return { hostName: '' };
+    hostname = tailscaleHostname(hostname);
+    if (!hostname) return { hostName: '' };
     const result = await this.request('set-hostname', { hostname });
     const hostName = typeof result?.hostName === 'string' ? result.hostName : '';
     if (hostName) this.snapshot = { ...this.snapshot, hostName };
@@ -193,4 +205,4 @@ class EmbeddedNetwork {
   }
 }
 
-module.exports = { EmbeddedNetwork, loginURL, storageKey, promoteHelper };
+module.exports = { EmbeddedNetwork, loginURL, storageKey, promoteHelper, tailscaleHostname };

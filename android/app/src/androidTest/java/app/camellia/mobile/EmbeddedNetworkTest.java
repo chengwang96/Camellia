@@ -130,7 +130,7 @@ public class EmbeddedNetworkTest extends InstrumentationTestCase {
             }
         };
         var directory = new java.io.File(context.getNoBackupFilesDir(), "tailnet-test"); directory.mkdirs();
-        var node = Tailnet.newNode(directory.getAbsolutePath(), storage);
+        var node = Tailnet.newNode(directory.getAbsolutePath(), "camellia-test", storage);
         try {
             JSONObject state = new JSONObject(node.status());
             assertTrue(state.has("state"));

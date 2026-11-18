@@ -44,6 +44,16 @@ final class NetworkLifecycle<N> {
     long backgroundDeadline() { synchronized (lock) { return backgroundDeadline; } }
     int transfers() { synchronized (lock) { return transfers; } }
 
+    CompletableFuture<Void> useReadyNode(NodeOperation<N> operation) {
+        synchronized (lock) {
+            return submitLocked(() -> {
+                N current;
+                synchronized (lock) { current = ready; }
+                if (current != null) operation.run(current);
+            });
+        }
+    }
+
     CompletableFuture<N> node() {
         Creation<N> cancelled;
         CompletableFuture<N> result;
@@ -246,6 +256,7 @@ final class NetworkLifecycle<N> {
     }
 
     private interface Operation { void run() throws Exception; }
+    interface NodeOperation<N> { void run(N node) throws Exception; }
     private static final class Creation<N> {
         final long generation, routeRevision;
         final CompletableFuture<N> future = new CompletableFuture<>();

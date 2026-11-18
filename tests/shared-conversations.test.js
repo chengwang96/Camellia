@@ -4375,6 +4375,61 @@ test('tasks defer to Goal, reject unsupported engines and pause with conversatio
   await assert.rejects(unsupported.manager.command('codex', 'task-create', { sessionId: conversation.id, instruction: 'Check' }), /tool support/);
 });
 
+test('scheduled cancellation reclaims an unresponsive engine without pausing other tasks', async t => {
+  const h = fixture(t, { createGoalBridge: async options => ({ call: options.call, close() {} }), stopTimeoutMs: 25 });
+  t.after(() => h.manager.closeGoalTools());
+  const conversation = h.manager.create('codex', null, 'Checks', h.root);
+  const first = h.manager.tasks.create(conversation.id, 'codex', { instruction: 'Inspect first log' });
+  const other = h.manager.tasks.create(conversation.id, 'codex', { instruction: 'Inspect second log' });
+  h.manager.tasks.get(first.id, conversation.id).nextRunAt = Date.now() - 1;
+  await h.manager.tasks.tick(); await h.flush();
+  const session = h.sent.at(-1).session;
+  let shutdowns = 0;
+  session.interrupt = () => {};
+  session.shutdown = async () => { shutdowns++; session.running = false; session.dead = true; };
+  const result = await h.manager.command('codex', 'task-cancel', { sessionId: conversation.id, id: first.id });
+  assert.equal(result.task.status, 'cancelled'); assert.equal(result.task.stopping, true);
+  if (h.manager.stopping.has(conversation.id)) await h.manager.stopping.get(conversation.id);
+  await h.flush();
+  assert.equal(shutdowns, 1); assert.equal(h.manager.busy(conversation.id), false);
+  assert.equal(h.manager.tasks.inflight.has(first.id), false);
+  assert.equal(h.manager.tasks.get(other.id, conversation.id).status, 'scheduled');
+});
+
+test('cancelling a scheduled check during pre-send compaction releases its reservation', async t => {
+  const h = fixture(t, { createGoalBridge: async options => ({ call: options.call, close() {} }), stopTimeoutMs: 25,
+    modelContextWindow: () => 20000, summarize: { available: () => true, run: () => new Promise(() => {}) } });
+  t.after(() => h.manager.closeGoalTools());
+  const conversation = h.manager.create('codex', null, 'Checks', h.root);
+  h.manager.append(conversation, { role: 'user', text: 'Inspect logs' });
+  h.manager.append(conversation, { role: 'tool', text: 'old context '.repeat(15000) });
+  const task = h.manager.tasks.create(conversation.id, 'codex', { instruction: 'Inspect logs' });
+  h.manager.tasks.get(task.id, conversation.id).nextRunAt = Date.now() - 1;
+  await h.manager.tasks.tick(); await h.flush();
+  assert.equal(h.manager.switching.get(conversation.id)?.scheduledTaskId, task.id);
+  await h.manager.command('codex', 'task-cancel', { sessionId: conversation.id, id: task.id });
+  if (h.manager.stopping.has(conversation.id)) await h.manager.stopping.get(conversation.id);
+  await h.flush();
+  assert.equal(h.manager.busy(conversation.id), false); assert.equal(h.manager.tasks.inflight.has(task.id), false);
+  assert.equal(h.sent.length, 0);
+});
+
+test('new task schedule fields cross the authenticated tool bridge on every engine', async t => {
+  for (const engine of ENGINES) for (const scheduleType of ['once', 'daily']) {
+    const h = fixture(t, { createGoalBridge: async options => ({ call: options.call, close() {} }) });
+    t.after(() => h.manager.closeGoalTools());
+    const prompt = 'Schedule a log check ' + scheduleType;
+    const run = await h.manager.send(engine, { prompt });
+    const active = h.manager.active.get(run.sessionId), bridge = h.sent.at(-1).opts.goalBridge;
+    const args = scheduleType === 'once' ? { runAt: new Date(Date.now() + 3600000).toISOString() }
+      : { dailyTime: '09:00', timeZone: 'Asia/Hong_Kong' };
+    const result = bridge.call('camellia_task_create', { run_token: active.goalRunToken, user_request: prompt,
+      instruction: 'Inspect log', scheduleType, ...args });
+    assert.equal(result.ok, true, result.error); assert.equal(result.task.schedule.type, scheduleType);
+    h.finish(engine); await run.done;
+  }
+});
+
 test('composer cancellation ends all unfinished tasks only in its conversation', async t => {
   const h = fixture(t, { createGoalBridge: async options => ({ call: options.call, close() {} }) });
   t.after(() => h.manager.closeGoalTools());
@@ -8962,13 +9017,17 @@ test('a Markdown handoff gives a short target the exported file instead of rejec
 
 test('a target harness budgets its extra goal instructions before switching from a long model', async context => {
   const calls = [];
-  const shortCap = 8000 + windowsInstructionAllowance;
+  let shortCap;
   const harness = fixture(context, { modelContextWindow: model => model === 'short' ? shortCap : 200000,
     createGoalBridge: async () => ({ close() {} }),
     summarize: { available: () => true, run: async request => { calls.push(request); return { text: 'Preserved task facts' }; } } });
   const manager = harness.manager, conversation = manager.create('codex');
+  // Keep room for the current host tool instructions and a real summary.
+  // A fixed 8k fixture no longer fits the mandatory instructions alone.
+  const instructionTokens = [...manager.toolInstructions(conversation)].reduce((sum, char) => sum + (char.charCodeAt(0) > 127 ? 1 : 1 / 3), 0);
+  shortCap = Math.ceil(instructionTokens / 0.65) + 4000;
   manager.append(conversation, { role: 'user', text: 'Preserve the original task' });
-  manager.append(conversation, { role: 'tool', text: 'OLD_OUTPUT_' + 'x'.repeat(18000) });
+  manager.append(conversation, { role: 'tool', text: 'OLD_OUTPUT_' + 'x'.repeat(Math.floor(shortCap * 1.8)) });
   manager.saveSettings('kimi', { sessionId: conversation.id, model: 'short' });
   const run = await manager.send('kimi', { sessionId: conversation.id, prompt: 'Continue' });
   assert.ok(calls.length > 0);

@@ -75,6 +75,7 @@ public final class RemoteDiscussionsActivity extends Activity {
     private ChatStatusLine workStatus;
     private boolean reconnecting, connectionBlocked;
     private ChatComposer composer;
+    private View pageHeader, composerFade, statusContainer;
     private PermissionTool permissionButton;
     private AlertDialog dialog;
     private ChoiceDropdown choiceDropdown;
@@ -178,6 +179,17 @@ public final class RemoteDiscussionsActivity extends Activity {
         saveDraft(); saved.putString("groupId", groupId); saved.putString("pickerGroup", pickerGroup);
         if (cameraFile != null) saved.putString("cameraFile", cameraFile.getAbsolutePath()); downloads.save(saved); super.onSaveInstanceState(saved);
     }
+    @Override public void onConfigurationChanged(android.content.res.Configuration configuration) {
+        android.view.Window focusWindow = EditorFocusState.focusedWindow(this, approvalDialog, dialog);
+        EditorFocusState focus = EditorFocusState.capture(focusWindow);
+        super.onConfigurationChanged(configuration);
+        dismissMenus();
+        // This page already measures its native controls against the window.
+        // Keep its transcript, connection and unsaved forms attached on resize.
+        if (root != null) { root.requestApplyInsets(); root.requestLayout(); }
+        DialogWindows.requestLayout(this); focus.restore(focusWindow);
+    }
+
     @Override public void onBackPressed() { if (groupId == null || getIntent().getBooleanExtra("fromNavigation", false)) finish(); else openGroup(null); }
     @Override public void finish() { dismissMenus(); super.finish(); }
     private void dismissMenus() {
@@ -231,15 +243,13 @@ public final class RemoteDiscussionsActivity extends Activity {
 
     private void shell() {
         releasePageViews(); rosterSignature = "";
-        root = column(); root.setPadding(dp(ChatStyle.PAGE_SIDE_DP), dp(10), dp(ChatStyle.PAGE_SIDE_DP), dp(8)); root.setBackground(style.pageBackground()); root.setClipToPadding(false);
+        root = new EditorLayout(this); root.setOrientation(LinearLayout.VERTICAL);
+        root.setPadding(dp(ChatStyle.PAGE_SIDE_DP), dp(10), dp(ChatStyle.PAGE_SIDE_DP), dp(8)); root.setBackground(style.pageBackground()); root.setClipToPadding(false);
         getWindow().setStatusBarColor(style.background); getWindow().setNavigationBarColor(style.background);
         if (android.os.Build.VERSION.SDK_INT >= 27) getWindow().getDecorView().setSystemUiVisibility(android.graphics.Color.red(style.background) < 128 ? 0
             : View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR | View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR);
-        root.setOnApplyWindowInsetsListener((view, insets) -> {
-            view.setPadding(dp(ChatStyle.PAGE_SIDE_DP) + insets.getSystemWindowInsetLeft(), dp(10) + insets.getSystemWindowInsetTop(),
-                dp(ChatStyle.PAGE_SIDE_DP) + insets.getSystemWindowInsetRight(), dp(8) + insets.getSystemWindowInsetBottom()); return insets;
-        });
-        LinearLayout header = new LinearLayout(this); style.pageHeader(header);
+        root.setOnApplyWindowInsetsListener(this::applyDiscussionInsets);
+        LinearLayout header = new LinearLayout(this); pageHeader = header; style.pageHeader(header);
         header.addView(style.backButton(tr("返回", "Back"), this::onBackPressed), new LinearLayout.LayoutParams(dp(48), dp(48)));
         LinearLayout labels = column(); labels.setPadding(dp(8), 0, dp(6), 0);
         title = text(tr("Agent 讨论 (beta)", "Agent discussions (beta)"), Palette.TEXT_CARD, style.ink); title.setTag("discussionTitle");
@@ -265,14 +275,17 @@ public final class RemoteDiscussionsActivity extends Activity {
             toolbar.addView(membersButton); TextView beta = text(tr("Agent 讨论 (beta)", "Agent discussions (beta)"), 12, style.muted);
             beta.setPadding(dp(12), 0, 0, 0); beta.setMaxLines(2); toolbar.addView(beta, new LinearLayout.LayoutParams(0, -2, 1));
         }
-        scroll = ScrollViews.plain(this); scroll.setFillViewport(true); scroll.setClipToPadding(false);
+        scroll = new ChatScrollView(this); scroll.setFillViewport(true); scroll.setClipToPadding(false);
+        ((ChatScrollView) scroll).setFollowBottomOnLayout(true);
+        ((ChatScrollView) scroll).setOnReading(this::clearHistoryScroll);
         content = column(); content.setPadding(0, dp(6), 0, dp(12)); scroll.addView(content);
         root.addView(scroll, new LinearLayout.LayoutParams(-1, 0, 1));
         pendingBar = column(); pendingBar.setTag("discussionPendingCommands"); root.addView(pendingBar);
         LinearLayout discussionDock = null;
         if (groupId != null) {
             LinearLayout dock = column(); discussionDock = dock; dock.setBackground(style.dockBackdrop());
-            dock.addView(style.dockFade("discussionComposerBar"), new LinearLayout.LayoutParams(-1, style.dockFadeHeight()));
+            composerFade = style.dockFade("discussionComposerBar");
+            dock.addView(composerFade, new LinearLayout.LayoutParams(-1, style.dockFadeHeight()));
             root.removeView(pendingBar); dock.addView(pendingBar);
             LinearLayout bar = column(); bar.setTag("discussionComposerBar");
             composer = new ChatComposer(bar, style, chinese, tr("提出问题，或粘贴讨论材料…", "Ask a question or paste discussion material…"), 16000,
@@ -305,12 +318,39 @@ public final class RemoteDiscussionsActivity extends Activity {
         if (discussionDock == null) {
             LinearLayout.LayoutParams statusLayout = new LinearLayout.LayoutParams(-1, -2); statusLayout.topMargin = dp(8); root.addView(status, statusLayout);
         } else {
-            style.dockStatus(status); status.setBackgroundColor(style.background); discussionDock.addView(status, new LinearLayout.LayoutParams(-1, -2));
+            style.dockStatus(status); status.setBackgroundColor(style.background);
+            android.widget.FrameLayout footer = new android.widget.FrameLayout(this); statusContainer = footer;
+            footer.addView(status, new android.widget.FrameLayout.LayoutParams(-1, -2));
+            discussionDock.addView(footer, new LinearLayout.LayoutParams(-1, -2));
             ChatDockLayout.attach(root, scroll, content, discussionDock, style, "discussionComposerBar");
         }
         setContentView(root); root.requestApplyInsets(); controls();
     }
     private final Runnable saveDraftLater = this::saveDraft;
+    private android.view.WindowInsets applyDiscussionInsets(View view, android.view.WindowInsets insets) {
+        int left = insets.getSystemWindowInsetLeft(), top = insets.getSystemWindowInsetTop();
+        int right = insets.getSystemWindowInsetRight(), bottom = insets.getSystemWindowInsetBottom();
+        boolean keyboard = bottom > dp(120);
+        int height = getResources().getDisplayMetrics().heightPixels;
+        if (android.os.Build.VERSION.SDK_INT >= 30) {
+            var safe = insets.getInsets(android.view.WindowInsets.Type.systemBars() | android.view.WindowInsets.Type.displayCutout());
+            left = safe.left; top = safe.top; right = safe.right;
+            bottom = Math.max(safe.bottom, insets.getInsets(android.view.WindowInsets.Type.ime()).bottom);
+            keyboard = insets.isVisible(android.view.WindowInsets.Type.ime());
+            height = getWindowManager().getCurrentWindowMetrics().getBounds().height();
+        }
+        view.setPadding(dp(ChatStyle.PAGE_SIDE_DP) + left, dp(10) + top,
+            dp(ChatStyle.PAGE_SIDE_DP) + right, dp(8) + bottom);
+        int contentHeight = height - view.getPaddingTop() - view.getPaddingBottom();
+        boolean compactTyping = composer != null && keyboard && contentHeight < dp(360);
+        for (View auxiliary : new View[]{pageHeader, toolbar, composerFade, statusContainer, roster == null ? null : (View) roster.getParent()}) {
+            if (auxiliary != null) auxiliary.setVisibility(compactTyping ? View.GONE : View.VISIBLE);
+        }
+        if (composer != null) {
+            composer.fitInputToBarHeight(compactTyping ? contentHeight - dp(8) : Integer.MAX_VALUE);
+        }
+        return insets;
+    }
     private void showError(String error) {
         lastError = error == null ? tr("操作失败，请刷新重试。", "Operation failed. Refresh and retry.") : error;
         if (workStatus != null) workStatus.error(lastError, false);
@@ -523,7 +563,7 @@ public final class RemoteDiscussionsActivity extends Activity {
     }
     private HistoryPosition historyPosition(boolean older) {
         HistoryPosition position = new HistoryPosition(); position.owner = scroll; position.y = scroll.getScrollY();
-        position.bottom = !older && content.getHeight() - scroll.getHeight() - position.y < dp(100);
+        position.bottom = !older && ((ChatScrollView) scroll).isFollowingOutput();
         for (int i = 0; i < content.getChildCount(); i++) {
             View child = content.getChildAt(i); Object tag = child.getTag();
             if (!(tag instanceof String) || !((String) tag).startsWith("discussionRow:")) continue;
@@ -661,6 +701,7 @@ public final class RemoteDiscussionsActivity extends Activity {
         roster = null; membersButton = null; attachmentTray = null; attachmentStrip = null;
         olderMessages = null; historyNotice = null;
         root = null; content = null; scroll = null; toolbar = null; pendingBar = null;
+        pageHeader = null; composerFade = null; statusContainer = null;
         title = null; status = null; headerConnection = null;
     }
     private List<JSONObject> liveMembers() {
@@ -712,6 +753,7 @@ public final class RemoteDiscussionsActivity extends Activity {
         choiceDropdown.onDismiss(() -> choiceDropdown = null);
     }
     private void send() {
+        if (scroll instanceof ChatScrollView) ((ChatScrollView) scroll).followOutput();
         if (composer == null || loadingAttachments || composer.input.getText().toString().trim().isEmpty() && images.isEmpty() && documents.isEmpty()) return;
         try {
             ChatAttachments.validate(this, images, documents, true);

@@ -1400,8 +1400,8 @@ struct MobileAccessView: View {
                 SettingsCard {
                     SettingsRowLabel(icon: "", title: "独立网络身份",
                                      detail: UIDevice.current.userInterfaceIdiom == .pad
-                                         ? "这台平板以 camellia-ios 加入网络，遵循你的 tailnet 访问规则。"
-                                         : "这台手机以 camellia-ios 加入网络，遵循你的 tailnet 访问规则。",
+                                         ? "这台平板以本机名称加入网络；未设置时使用默认名称，遵循你的 tailnet 访问规则。"
+                                         : "这台手机以本机名称加入网络；未设置时使用默认名称，遵循你的 tailnet 访问规则。",
                                      showsChevron: false)
                     SettingsDivider(leading: 16)
                     Button { prompt = .forget } label: {

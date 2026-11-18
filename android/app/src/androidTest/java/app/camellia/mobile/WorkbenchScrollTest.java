@@ -169,33 +169,34 @@ public class WorkbenchScrollTest extends InstrumentationTestCase {
         ChatScrollView scroll = (ChatScrollView) field("scroll");
         View[] anchor = new View[1];
         int[] offset = new int[1];
+        int[] flingStart = new int[1];
+        boolean[] moved = {false}, updatedDuringFling = {false};
+        android.view.ViewTreeObserver.OnScrollChangedListener observeFling = () -> {
+            if (!scroll.isFlinging() || scroll.getScrollY() == flingStart[0]) return;
+            moved[0] = true;
+            updatedDuringFling[0] |= !"Work 0".equals(title(0));
+        };
+        rows.getJSONObject(0).put("title", "Changed during fling");
         main(() -> {
             View row = view("homeActive:http://100.80.1.8:43127#scroll-8");
             WorkbenchList list = (WorkbenchList) view("homeConversations");
             scroll.scrollTo(0, list.getTop() + row.getTop() + 10);
             touch(scroll, MotionEvent.ACTION_DOWN);
             touch(scroll, MotionEvent.ACTION_CANCEL);
-            scroll.fling(1800);
+            flingStart[0] = scroll.getScrollY();
+            scroll.getViewTreeObserver().addOnScrollChangedListener(observeFling);
+            scroll.fling(2800);
+            push(rows);
         });
-        SystemClock.sleep(80);
-        rows.getJSONObject(0).put("title", "Changed during fling");
-        push(rows);
-        int[] previous = {-1};
-        boolean moved = false;
-        for (int attempt = 0; attempt < 40; attempt++) {
-            boolean[] moving = {false};
+        try {
+            awaitTitle(0, "Changed during fling");
             main(() -> {
-                int y = scroll.getScrollY();
-                moving[0] = previous[0] >= 0 && y != previous[0];
-                if (moving[0]) assertEquals("A live update must not interrupt the fling", "Work 0", title(0));
-                previous[0] = y;
+                assertTrue("The fixture must exercise a moving fling", moved[0]);
+                assertFalse("A live update must not interrupt the fling", updatedDuringFling[0] || scroll.isFlinging());
             });
-            moved |= moving[0];
-            if (attempt > 3 && !moving[0]) break;
-            SystemClock.sleep(40);
+        } finally {
+            main(() -> scroll.getViewTreeObserver().removeOnScrollChangedListener(observeFling));
         }
-        assertTrue("The fixture must exercise a moving fling", moved);
-        awaitTitle(0, "Changed during fling");
         main(() -> {
             WorkbenchList list = (WorkbenchList) view("homeConversations");
             for (int i = 1; i < rows.length(); i++) {

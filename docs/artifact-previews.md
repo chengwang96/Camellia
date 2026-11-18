@@ -21,6 +21,21 @@ available text with a truncation notice; the complete file can be opened with th
 system app. This bounds preview memory and rendering work without changing the
 file or limiting what the conversation engine can read through its own tools.
 
+Files open in browse mode. Choose **Edit** in the preview header to load the
+bundled Monaco editor with line numbers, syntax highlighting for supported
+languages, and find and replace. It runs locally and does not require VS Code.
+Use it to edit the source of a writable UTF-8
+text file, including Markdown and HTML. Camellia saves to the original file about
+one second after you stop typing, without leaving the editor. Use **Save**
+(`Ctrl+S` on Windows/Linux, `Cmd+S` on macOS) to save immediately, or **Preview**
+to save and return to the rendered view. Closing the preview, opening another
+file, returning Home or quitting also saves pending edits. If the file changed
+on disk, Camellia keeps your draft and does not overwrite the external edit.
+A UTF-8 BOM is retained, and newlines use the first line-ending style in the
+original file. Truncated files, non-UTF-8 files,
+binary previews and protected app data (including saved discussion attachments)
+cannot be edited here. Files in a discussion's work folder can still be edited.
+
 Markdown math uses the same delimiter parser as desktop chats and discussions:
 `$...$`, `$$...$$`, `\(...\)` and `\[...\]`. Escaped dollars such as
 `\text{\$5}` stay inside the expression; formulas in code remain literal.

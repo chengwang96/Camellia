@@ -221,6 +221,48 @@ with sync_playwright() as playwright:
         assert '[documentation index](docs/README.md)' not in article.inner_text()
         article.get_by_role('heading', name='Documentation', exact=True).scroll_into_view_if_needed()
         page.screenshot(path=str(preview / f'markdown-readme-{theme}.png'), animations='disabled')
+        page.evaluate("""() => {
+          window.dshDesktop.previewFile = async path => ({ok:true,file:{name:'Autosave.txt',path,kind:'text',text:'Original',editToken:'test-token'}});
+          window.savedSnapshots = [];
+          window.dshDesktop.savePreviewText = (_, text) => new Promise(resolve => {
+            savedSnapshots.push(text);
+            window.finishPreviewSave = () => resolve({ok:true,file:{text,size:text.length}});
+          });
+        }""")
+        page.evaluate("openFilePreview('C:/project/Autosave.txt')")
+        page.locator('#fileViewerEdit').click()
+        editor = page.get_by_role('textbox', name='文件内容')
+        status = page.locator('.file-preview-editor-status')
+        expect(status).to_have_text('自动保存已开启')
+        page.clock.install()
+        page.evaluate("monaco.editor.getModels()[0].setValue('')")
+        input_session = page.context.new_cdp_session(page)
+        input_session.send('Input.imeSetComposition', {'text': 'zhong', 'selectionStart': 5, 'selectionEnd': 5})
+        assert page.evaluate('monaco.editor.getModels()[0].getValue()') == 'zhong'
+        page.clock.run_for(1200)
+        assert page.evaluate('savedSnapshots') == []
+        input_session.send('Input.insertText', {'text': '中文'})
+        assert page.evaluate('monaco.editor.getModels()[0].getValue()') == '中文'
+        page.clock.run_for(500)
+        assert page.evaluate('savedSnapshots') == []
+        page.evaluate("monaco.editor.getModels()[0].setValue('中文内容')")
+        page.clock.run_for(600)
+        assert page.evaluate('savedSnapshots') == []
+        page.clock.run_for(1000)
+        assert page.evaluate('savedSnapshots') == ['中文内容']
+        expect(status).to_have_text('正在保存…')
+        expect(editor).to_be_editable()
+        editor.press('ControlOrMeta+a')
+        input_session.send('Input.insertText', {'text': 'Edited during save'})
+        page.clock.run_for(1200)
+        assert page.evaluate('savedSnapshots') == ['中文内容']
+        page.evaluate('finishPreviewSave()')
+        assert page.evaluate('monaco.editor.getModels()[0].getValue()') == 'Edited during save'
+        page.clock.run_for(1200)
+        assert page.evaluate('savedSnapshots') == ['中文内容', 'Edited during save']
+        page.evaluate('finishPreviewSave()')
+        expect(status).to_have_text('已保存')
+        expect(editor).to_be_focused()
         page.close()
     browser.close()
     assert not errors, errors

@@ -865,6 +865,31 @@ do {
 // MARK: - Message queue
 
 do {
+    let reader = ScrollFollowTracker()
+    reader.updateViewport(800)
+    reader.updateContent(800)
+    reader.userScrolled(translation: 2)
+    check(!reader.shouldFollow, "a tiny upward history gesture suspends following")
+    reader.updateContent(801)
+    reader.updateContent(800)
+    check(!reader.shouldFollow, "layout changes near the bottom never override reading")
+    reader.readHistory()
+    reader.updateContent(2000)
+    reader.updateContent(800)
+    check(!reader.shouldFollow, "expanded-process reading survives growth and completion shrinkage")
+    reader.endUserScroll()
+    reader.userScrolled(translation: -10)
+    check(reader.shouldFollow, "a deliberate return to the bottom restores following")
+    reader.readHistory()
+    reader.following()
+    check(reader.shouldFollow, "an explicit send resumes following")
+    reader.updateViewportFrame(CGRect(x: 0, y: 100, width: 390, height: 600))
+    check(reader.keepsProcessHeader(CGRect(x: 0, y: 200, width: 350, height: 48), opening: true), "a visible process with room stays in place")
+    check(!reader.keepsProcessHeader(CGRect(x: 0, y: 640, width: 350, height: 48), opening: true), "a process near the bottom moves up to reveal its first record")
+    check(!reader.keepsProcessHeader(CGRect(x: 0, y: -2000, width: 350, height: 48), opening: false), "collapsing a long process reveals its header")
+}
+
+do {
     // The queue is only offered by a desktop that sends the field at all: an
     // older one refuses `queue: true` as an unknown option, so the composer must
     // not offer to enqueue against it.
@@ -969,6 +994,30 @@ do {
     checkEqual(transcript.showsGoal, true, "a completion newer than the last turn is shown")
     checkEqual(transcript.automation?.tasks.count ?? 0, 1, "the scheduled task is kept")
     checkEqual(transcript.automation?.tasks.first?.isPaused ?? false, true, "a paused task reads as paused")
+    let instruction = String(repeating: "Check logs. ", count: 100)
+    let task = RemoteTask(JSONObject(dictionary: ["id": "t-details", "instruction": instruction,
+        "status": "scheduled", "runs": 2, "maxRuns": 48, "repairs": 0, "maxRepairs": 1,
+        "nextRunAt": 1794909600000 as Int64, "expiresAt": 1795082400000 as Int64, "lastResult": "Evidence",
+        "history": [["at": 1794909000000 as Int64, "message": "First check"]]]))
+    checkEqual(task.canPause, true, "waiting scheduled tasks can be paused between checks")
+    checkEqual(task.canCancel, true, "waiting scheduled tasks can be cancelled")
+    checkEqual(task.instruction, instruction, "long task instructions stay complete")
+    checkEqual(task.runs, 2, "check count survives projection")
+    checkEqual(task.maxRuns, 48, "check limit survives projection")
+    checkEqual(task.nextRunAt, 1794909600000, "the next check is epoch milliseconds")
+    checkEqual(task.lastResult, "Evidence", "the last result is readable")
+    checkEqual(task.history.first?.message ?? "", "First check", "task history is decoded")
+    let endedTask = RemoteTask(JSONObject(dictionary: ["status": "cancelled"]))
+    checkEqual(endedTask.canCancel, false, "cancelled tasks have no cancel action")
+    checkEqual(endedTask.canPause, false, "cancelled tasks have no pause action")
+    let dailyTask = RemoteTask(JSONObject(dictionary: ["status": "paused", "stopping": true,
+        "schedule": ["type": "daily", "time": "09:00", "timeZone": "Asia/Hong_Kong"],
+        "notice": "Stopping check", "noticeZh": "正在停止检查"]))
+    checkEqual(dailyTask.scheduleLabel(chinese: false), "Daily at 09:00 (Asia/Hong_Kong)", "daily tasks preserve their explicit time zone")
+    checkEqual(dailyTask.noticeZh, "正在停止检查", "localized lifecycle reasons survive projection")
+    checkEqual(dailyTask.canCancel, false, "a stopping check cannot accept conflicting controls")
+    checkEqual(dailyTask.canPause, false, "a stopping check has no pause action")
+    checkEqual(RemoteTask(JSONObject(dictionary: ["intervalMinutes": 10])).scheduleLabel(chinese: false), "Every 10 min", "old hosts retain interval labels")
 
     transcript.reset()
     checkEqual(transcript.showsGoal, false, "resetting clears the goal")
@@ -1703,6 +1752,12 @@ do {
     checkEqual(stored.deviceName, "iPhone", "a blank stored name falls back to the model")
     checkEqual(stored.signature, "zh-CN:dark", "the signature follows the stored values")
     checkEqual(AppLanguage.simplifiedChinese.tag ?? "", "zh-Hans", "the stored language maps to a locale tag")
+
+    let chosen = MobilePreferences(store: DictionaryPreferenceStore(["deviceName": "Studio phone"]), modelName: "iPhone")
+    checkEqual(chosen.deviceName, "Studio phone", "a saved display name is used as entered")
+    checkEqual(chosen.savedDeviceName, "Studio phone", "the chosen name is available without the display fallback")
+    checkEqual(MobilePreferences(store: DictionaryPreferenceStore()).savedDeviceName, "",
+               "no chosen name is distinct from the display fallback")
     check(AppLanguage.system.tag == nil, "following the system means no tag of our own")
     store.set("nonsense", for: "enterMode")
     checkEqual(stored.enterMode, .send, "an unknown enter mode falls back rather than failing")

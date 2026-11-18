@@ -102,22 +102,25 @@
 .device-settings .device-feedback:empty { display: none; }
 .device-settings button:focus-visible, .device-settings input:focus-visible, .device-settings select:focus-visible, .device-settings summary:focus-visible { outline: 2px solid var(--dsw-static-deepseek-400); outline-offset: 3px; }
 .device-settings dialog { padding: 24px; }
-.device-settings dialog.device-rename {
-  width: min(400px, calc(100vw - 32px));
-  max-width: 400px;
+.device-settings .device-rename-field {
+  flex: 1 1 220px;
+  min-width: 0;
+  width: min(100%, 320px);
+  padding: 7px 10px;
   border: 1px solid var(--dsw-alias-border-l2);
-  border-radius: 16px;
-  background: var(--dsw-alias-bg-layer-1);
-  color: var(--dsw-alias-label-primary);
-  box-shadow: var(--dsw-shadow-lv3);
+  border-radius: 8px;
+  background: var(--dsw-alias-bg-base);
+  color: inherit;
+  font: inherit;
 }
-.device-settings dialog.device-rename::backdrop { background: var(--dsw-alias-bg-mask-1); }
-.device-settings dialog.device-rename form { display: grid; gap: 12px; }
-.device-settings dialog.device-rename h2 { margin: 0; font-size: 17px; }
-.device-settings dialog.device-rename .hint { margin: 0; }
-.device-settings dialog.device-rename label { display: grid; gap: 8px; margin: 0; color: var(--dsw-alias-label-secondary); font-size: 13px; }
-.device-settings dialog.device-rename input { width: 100%; padding: 9px 12px; }
-.device-settings dialog.device-rename .actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 6px; }
+.device-settings .device-rename-field:focus-visible { outline: 2px solid var(--dsw-static-deepseek-400); outline-offset: 3px; }
+.device-settings .device-rename-field[aria-invalid="true"] { border-color: var(--dsw-alias-state-error-primary); }
+.device-settings .device-rename-status { flex: 1 1 100%; margin: 0; }
+.device-settings .device-rename-status:empty { display: none; }
+.device-settings .device-rename-status.error { color: var(--dsw-alias-state-error-primary); }
+.device-settings .device-inline-rename .device-meta,
+.device-settings .device-inline-rename .device-actions > :not(.device-rename-save):not(.device-rename-cancel) { display: none; }
+.device-settings .device-inline-rename .device-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
 /* Shared by the embedded settings category and the separate mobile panel. */
 dialog.mobile-logout {
   width: 440px; max-width: calc(100vw - 32px); max-height: calc(100dvh - 32px);

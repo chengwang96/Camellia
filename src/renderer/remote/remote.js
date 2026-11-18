@@ -28,11 +28,11 @@ const copy = {
 };
 const element = id => document.getElementById(embedded ? `mobile-${id}` : id);
 Object.assign(copy.zh, { login: '登录 Tailscale', openLogin: '打开浏览器授权', logout: '退出 Tailscale 登录', confirmLogout: '退出共用内置网络的登录？手机访问和 CLI 设备会同时断开，下次需要重新授权；已有 Camellia 设备权限保留。',
-  connecting: '正在连接内置网络…', needsLogin: '请登录 Tailscale', needsApproval: '请在 Tailscale 管理后台批准此设备', networkError: '内置网络已断开，请重新开启', networkReady: '内置网络已连接', networkOff: '内置网络已关闭' });
+  connecting: '正在连接内置网络…', needsLogin: '请登录 Tailscale', needsApproval: '请在 Tailscale 管理后台批准此设备', networkError: '内置网络已断开，请重新开启', networkReady: '内置网络已连接', networkOff: '内置网络已关闭', renameSaving: '正在保存名称…' });
 Object.assign(copy.en, { login: 'Sign in to Tailscale', openLogin: 'Authorize in browser', logout: 'Sign out of Tailscale', confirmLogout: 'Sign out of the shared embedded network? Mobile access and CLI device connections will both disconnect. You will need to authorize again. Camellia device permissions are retained.',
-  connecting: 'Connecting to embedded network…', needsLogin: 'Sign in to Tailscale', needsApproval: 'Approve this device in the Tailscale admin console', networkError: 'Embedded network disconnected. Enable it again.', networkReady: 'Embedded network connected', networkOff: 'Embedded network off' });
-Object.assign(copy.zh, { deviceName: '本机名称', deviceNameHint: '此名称会同步到 Tailscale。', deviceNameSave: '保存名称', deviceNameSaved: '已保存本机名称：', deviceNameSynced: '已同步到 Tailscale。', deviceNameLocalSynced: '已更新内置网络；控制台名称未同步。', deviceNameSyncSkipped: '已保存；Tailscale 名称需要字母、数字或连字符，未同步。', deviceNameSyncOffline: '已保存；连接 Tailscale 后再同步。', deviceNameSyncFailed: '已保存；Tailscale 同步失败：', scanHint: '用手机扫码填入地址和配对码，也可手动输入。', qrLabel: '配对二维码', refreshCode: '刷新二维码', copyAddress: '复制地址', addressCopied: '连接地址已复制', pairWaiting: '等待电脑授权', pairApproved: '电脑已授权，等待手机完成', pairSuccess: '配对成功', continuePair: '继续配对', pairFailed: '配对请求已结束，请重新生成二维码。', lastConnected: '最近连接：', justNow: '刚刚', minutesAgo: '{0} 分钟前', hoursAgo: '{0} 小时前', daysAgo: '{0} 天前', rename: '重命名', renameTitle: '重命名移动设备', renameName: '移动设备名称', renameHint: '仅修改显示名称，访问权限不变。', renameSave: '保存', renameCancel: '取消', nameInvalid: '请输入 1–80 个字符的名称。' });
-Object.assign(copy.en, { deviceName: 'This computer name', deviceNameHint: 'Also updates the Tailscale device name.', deviceNameSave: 'Save name', deviceNameSaved: 'Computer name saved: ', deviceNameSynced: 'Synced to Tailscale.', deviceNameLocalSynced: 'Embedded network updated; the console name was not synced.', deviceNameSyncSkipped: 'Saved; Tailscale names allow letters, digits and hyphens only, so it was not synced.', deviceNameSyncOffline: 'Saved; connect to Tailscale to sync it.', deviceNameSyncFailed: 'Saved; Tailscale sync failed: ', scanHint: 'Scan with your phone to fill in the address and code, or enter them manually.', qrLabel: 'Pairing QR code', refreshCode: 'Refresh QR code', copyAddress: 'Copy address', addressCopied: 'Connection address copied', pairWaiting: 'Waiting for computer approval', pairApproved: 'Computer approved; waiting for the phone', pairSuccess: 'Paired successfully', continuePair: 'Pair another device', pairFailed: 'The pairing request ended. Generate a new code.', lastConnected: 'Last connected: ', justNow: 'Just now', minutesAgo: '{0} min ago', hoursAgo: '{0} hr ago', daysAgo: '{0} days ago', rename: 'Rename', renameTitle: 'Rename mobile device', renameName: 'Mobile device name', renameHint: 'Changes the display name; access permissions stay the same.', renameSave: 'Save', renameCancel: 'Cancel', nameInvalid: 'Enter a name of 1–80 characters.' });
+  connecting: 'Connecting to embedded network…', needsLogin: 'Sign in to Tailscale', needsApproval: 'Approve this device in the Tailscale admin console', networkError: 'Embedded network disconnected. Enable it again.', networkReady: 'Embedded network connected', networkOff: 'Embedded network off', renameSaving: 'Saving name…' });
+Object.assign(copy.zh, { deviceName: '本机名称', deviceNameHint: '此名称会同步到 Tailscale。', deviceNameSave: '保存名称', deviceNameSaved: '已保存本机名称：', deviceNameSynced: '已同步到 Tailscale。', deviceNameLocalSynced: '已更新内置网络；控制台名称未同步。', deviceNameSyncSkipped: '已保存；Tailscale 名称需要字母、数字或连字符，未同步。', deviceNameSyncOffline: '已保存；连接 Tailscale 后再同步。', deviceNameSyncFailed: '已保存；Tailscale 同步失败：', scanHint: '用手机扫码填入地址和配对码，也可手动输入。', qrLabel: '配对二维码', refreshCode: '刷新二维码', copyAddress: '复制地址', addressCopied: '连接地址已复制', pairWaiting: '等待电脑授权', pairApproved: '电脑已授权，等待手机完成', pairSuccess: '配对成功', continuePair: '继续配对', pairFailed: '配对请求已结束，请重新生成二维码。', lastConnected: '最近连接：', justNow: '刚刚', minutesAgo: '{0} 分钟前', hoursAgo: '{0} 小时前', daysAgo: '{0} 天前', rename: '重命名', renameName: '移动设备名称', renameSave: '保存', renameCancel: '取消', nameInvalid: '请输入 1–80 个字符的名称。' });
+Object.assign(copy.en, { deviceName: 'This computer name', deviceNameHint: 'Also updates the Tailscale device name.', deviceNameSave: 'Save name', deviceNameSaved: 'Computer name saved: ', deviceNameSynced: 'Synced to Tailscale.', deviceNameLocalSynced: 'Embedded network updated; the console name was not synced.', deviceNameSyncSkipped: 'Saved; Tailscale names allow letters, digits and hyphens only, so it was not synced.', deviceNameSyncOffline: 'Saved; connect to Tailscale to sync it.', deviceNameSyncFailed: 'Saved; Tailscale sync failed: ', scanHint: 'Scan with your phone to fill in the address and code, or enter them manually.', qrLabel: 'Pairing QR code', refreshCode: 'Refresh QR code', copyAddress: 'Copy address', addressCopied: 'Connection address copied', pairWaiting: 'Waiting for computer approval', pairApproved: 'Computer approved; waiting for the phone', pairSuccess: 'Paired successfully', continuePair: 'Pair another device', pairFailed: 'The pairing request ended. Generate a new code.', lastConnected: 'Last connected: ', justNow: 'Just now', minutesAgo: '{0} min ago', hoursAgo: '{0} hr ago', daysAgo: '{0} days ago', rename: 'Rename', renameName: 'Mobile device name', renameSave: 'Save', renameCancel: 'Cancel', nameInvalid: 'Enter a name of 1–80 characters.' });
 Object.assign(copy.zh, { unavailable: '状态加载失败', loading: '正在加载…', retry: '重试', openPanel: '打开独立手机访问面板',
   restart: '手机访问页面已更新，但桌面主进程仍是旧版。请保存工作后完全退出 Camellia（包括托盘）并重新启动；刷新页面不会更新主进程。也可先打开独立面板管理连接。',
   loadFailed: '无法加载手机访问状态，请重试。', loadDevices: '暂时无法加载已授权设备，请重试。' });
@@ -98,6 +98,7 @@ Object.assign(copy.en, { pathTitle: 'Network path', pathHint: 'Off selects paths
   tailscaleReady: 'Admin API connected', tailscaleNeedsSetup: 'Admin API not configured',
   tailscaleUnlock: 'Secure system storage is unavailable. Unlock your system keychain first.' });
 let state = null, language = 'zh', working = false, invitationExpiry = 0, invitationDeviceIds = new Set(), pairingRequestId = '', pairingRequestSeen = false, pairedDeviceId = '', relayError = '';
+let renameEditor = null;
 let relayRenameDraft = null, relayRenameSaving = false, relayFeedback = '';
 const translate = key => copy[language][key];
 const scope = () => ({ workspaceIds: [], allWorkspaces: true, includeUnassigned: true });
@@ -159,9 +160,10 @@ function showError(error) {
   if (embedded) element('openPanel').hidden = !legacy;
 }
 function disablePageControls() {
-  // Modal forms own their busy state; background polling must not lock them.
+  // Inline editors and modal forms own their busy state; background polling must not lock them.
   for (const control of root.querySelectorAll('button, input[type="checkbox"]')) {
-    if (!control.closest('dialog')) control.disabled = true;
+    const editorControl = control === renameEditor?.field || control === renameEditor?.save || control === renameEditor?.cancel;
+    if (!control.closest('dialog') && !editorControl) control.disabled = true;
   }
 }
 function renderUnavailable(error) {
@@ -194,21 +196,51 @@ function renderUnavailable(error) {
   showError(error);
 }
 function renderDevices(target, entries, pending) {
+  if (!pending) {
+    for (const button of target.querySelectorAll('.device-rename-start')) button.disabled = working || Boolean(renameEditor);
+  }
+  if (!pending && renameEditor) {
+    // A save in flight owns the row until it settles; replacing it now would
+    // discard the editor before its response can close it.
+    if (renameEditor.saving) return;
+    const row = renameEditor.row;
+    const live = entries.find(device => device.id === renameEditor.entry.id);
+    if (row?.isConnected && target.contains(row) && live) {
+      Object.assign(renameEditor.entry, live);
+      // Do not leave the other rows' Rename buttons disabled after a poll:
+      // this branch deliberately keeps their DOM instead of rebuilding it.
+      for (const button of target.querySelectorAll('.device-rename-start')) button.disabled = working || Boolean(renameEditor);
+      row.querySelector('.device-meta small').textContent = translate('lastConnected') + (renameEditor.entry.lastSeenAt ? relativeTime(renameEditor.entry.lastSeenAt) : '—');
+      return;
+    }
+    for (const button of target.querySelectorAll('.device-rename-start')) button.disabled = working;
+    closeRenameEditor(renameEditor);
+  }
   target.replaceChildren();
   for (const entry of entries) {
-    const row = document.createElement('div'), icon = mobileDeviceIcon(), name = document.createElement('div'), meta = document.createElement('div'), label = document.createElement('small'), actions = document.createElement('div');
+    const row = document.createElement('div'), icon = mobileDeviceIcon(), name = document.createElement('div'), title = document.createElement('span'), meta = document.createElement('div'), label = document.createElement('small'), actions = document.createElement('div');
     row.className = 'device device-row'; icon.classList.add('device-icon'); name.className = 'name device-info'; meta.className = 'device-meta'; actions.className = 'actions device-actions';
-    name.textContent = entry.name;
+    title.className = 'device-name-text';
+    title.textContent = entry.name;
     label.textContent = pending
       ? `${entry.computerName || ''}${entry.computerName ? ' · ' : ''}${translate(entry.state === 'approved' ? 'pairApproved' : entry.state === 'rejected' ? 'pairingRejected' : 'pairWaiting')}`
       : translate('lastConnected') + (entry.lastSeenAt ? relativeTime(entry.lastSeenAt) : '—');
     meta.append(label);
-    name.append(meta);
+    name.append(title, meta);
     if (!pending) {
       const rename = document.createElement('button');
-      rename.textContent = translate('rename'); rename.disabled = working;
-      rename.addEventListener('click', () => renameDevice(entry));
+      rename.className = 'device-rename-start';
+      rename.textContent = translate('rename'); rename.disabled = working || Boolean(renameEditor);
+      rename.addEventListener('click', () => renameDevice(entry, row, title, name));
       actions.append(rename);
+      const saveName = document.createElement('button');
+      saveName.className = 'device-rename-save'; saveName.type = 'button';
+      saveName.textContent = translate('renameSave'); saveName.hidden = true;
+      actions.append(saveName);
+      const cancelName = document.createElement('button');
+      cancelName.className = 'device-rename-cancel'; cancelName.type = 'button';
+      cancelName.textContent = translate('renameCancel'); cancelName.hidden = true;
+      actions.append(cancelName);
       if (state.diagnosticsAvailable && window.CamelliaNetworkDiagnostics) {
         const diagnose = document.createElement('button');
         diagnose.textContent = translate('diagnose'); diagnose.disabled = working || !state.running;
@@ -447,49 +479,119 @@ function applyRelay() {
     relayError = /ACL changed/i.test(error.message) ? translate('relayAclChanged') : error.message;
   });
 }
-let renameDialog = null;
-function renameDevice(entry) {
-  if (working) return;
-  const dialog = document.createElement('dialog'); renameDialog = dialog; dialog.className = 'device-rename';
-  const form = document.createElement('form'); form.method = 'dialog';
-  const heading = document.createElement('h2'); heading.textContent = translate('renameTitle');
-  const hint = document.createElement('p'); hint.className = 'hint'; hint.textContent = translate('renameHint');
-  const label = document.createElement('label'); label.textContent = translate('renameName');
-  const input = document.createElement('input'); input.maxLength = 80; input.required = true; input.value = entry.name;
-  label.append(input);
-  const error = document.createElement('p'); error.className = 'hint rename-error error'; error.setAttribute('role', 'alert');
-  const actions = document.createElement('div'); actions.className = 'actions';
-  const cancel = document.createElement('button'); cancel.type = 'button'; cancel.textContent = translate('renameCancel');
-  const save = document.createElement('button'); save.type = 'submit'; save.className = 'primary'; save.textContent = translate('renameSave');
+function closeRenameEditor(editor) {
+  if (!editor || renameEditor !== editor) return;
+  renameEditor = null;
+  editor.row.classList.remove('device-inline-rename');
+  editor.field.disabled = false;
+  const wasFocused = editor.field === document.activeElement;
+  editor.field.replaceWith(editor.title);
+  editor.status.remove();
+  editor.start.hidden = false;
+  editor.save.hidden = true;
+  editor.cancel.hidden = true;
+  for (const button of root.querySelectorAll('.device-rename-start')) button.disabled = working;
+  if (wasFocused) editor.start.focus();
+}
+function renameDevice(entry, row, title, name) {
+  if (working || renameEditor?.saving) return;
+  if (renameEditor) {
+    if (renameEditor.entry.id === entry.id) { renameEditor.field.focus(); renameEditor.field.select(); return; }
+    closeRenameEditor(renameEditor);
+  }
+  for (const button of root.querySelectorAll('.device-rename-start')) button.disabled = true;
+  const editor = { entry, row, title, name, field: null, status: null, start: null, save: null, cancel: null, saving: false };
+  const field = document.createElement('input');
+  field.className = 'device-rename-field';
+  field.maxLength = 80;
+  field.autocomplete = 'off';
+  field.value = entry.name;
+  field.setAttribute('aria-label', translate('renameName'));
+  const status = document.createElement('p');
+  status.className = 'hint device-rename-status';
+  status.setAttribute('role', 'status');
+  status.setAttribute('aria-live', 'polite');
+  const actionButton = actionName => row.querySelector(`.device-rename-${actionName}`);
+  editor.start = actionButton('start');
+  editor.save = actionButton('save');
+  editor.cancel = actionButton('cancel');
+  editor.start.hidden = true;
+  editor.save.hidden = false;
+  editor.cancel.hidden = false;
+  editor.save.disabled = editor.cancel.disabled = false;
+  row.append(status);
+  row.classList.add('device-inline-rename');
+  title.replaceWith(field);
+  editor.field = field;
+  editor.status = status;
+  renameEditor = editor;
+
   let saving = false;
-  cancel.addEventListener('click', () => dialog.close());
-  dialog.addEventListener('cancel', event => { if (saving) event.preventDefault(); });
-  form.addEventListener('submit', async event => {
-    event.preventDefault();
-    if (saving || working) return;
-    const value = input.value.trim();
-    if (!value || value.length > 80) { error.textContent = translate('nameInvalid'); input.focus(); return; }
-    saving = true;
-    error.textContent = '';
-    input.disabled = cancel.disabled = save.disabled = true;
-    try {
-      await run(async () => { await call('rename', { id: entry.id, name: value }); dialog.close(); }, failure => { error.textContent = failure.message; });
-    } finally {
-      saving = false;
-      input.disabled = cancel.disabled = save.disabled = false;
-      if (dialog.open) input.focus();
+  const unlock = () => {
+    saving = false;
+    editor.saving = false;
+    field.disabled = false;
+    editor.save.disabled = false;
+    editor.cancel.disabled = false;
+  };
+  const restore = () => {
+    unlock();
+    closeRenameEditor(editor);
+    return { ok: true };
+  };
+  const submit = async () => {
+    if (saving || working || renameEditor !== editor) return;
+    field.setCustomValidity('');
+    const value = field.value.trim();
+    if (!value || value.length > 80) {
+      field.setCustomValidity(translate('nameInvalid'));
+      status.textContent = translate('nameInvalid');
+      status.classList.add('error');
+      field.setAttribute('aria-invalid', 'true');
+      field.focus();
+      return;
     }
+    saving = true;
+    editor.saving = true;
+    const save = editor.save, cancel = editor.cancel;
+    field.disabled = save.disabled = cancel.disabled = true;
+    status.classList.remove('error');
+    status.textContent = translate('renameSaving');
+    try {
+      await call('rename', { id: entry.id, name: value });
+      title.textContent = value;
+      closeRenameEditor(editor);
+      state.devices = (state.devices || []).map(device => device.id === entry.id ? { ...device, name: value } : device);
+      render();
+      try { await refresh(); } catch { showError(new Error(translate('loadFailed'))); }
+      return { ok: true };
+    } catch (error) {
+      status.textContent = error.message;
+      status.classList.add('error');
+      unlock();
+      return { ok: false };
+    }
+  };
+  editor.submit = submit;
+  editor.save.addEventListener('click', () => { void submit(); });
+  editor.cancel.addEventListener('click', restore);
+  field.addEventListener('input', () => {
+    field.setCustomValidity('');
+    field.removeAttribute('aria-invalid');
+    status.classList.remove('error');
+    status.textContent = '';
   });
-  actions.append(cancel, save);
-  form.append(heading, hint, label, error, actions);
-  dialog.append(form);
-  dialog.addEventListener('close', () => { dialog.remove(); if (renameDialog === dialog) renameDialog = null; });
-  root.append(dialog);
-  dialog.showModal();
-  input.focus(); input.select();
+  field.addEventListener('keydown', event => {
+    if (event.isComposing) return;
+    if (event.key === 'Enter') { event.preventDefault(); void submit(); }
+    else if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); restore(); }
+  });
+  field.focus();
+  field.select();
 }
 function render() {
   language = state.language === 'en' ? 'en' : 'zh';
+  if (renameEditor?.saving) return;
   if (!embedded) {
     document.documentElement.lang = language === 'en' ? 'en' : 'zh-CN';
     document.documentElement.dataset.theme = state.theme;
@@ -590,7 +692,15 @@ async function run(operation, onError = showError) {
     // Render once with the fresh state so operation-specific feedback and
     // errors survive; only a failed state read replaces the whole page.
     try { await refresh(); }
-    catch (error) { renderUnavailable(error); }
+    catch (error) {
+      // An unsaved inline rename lives inside the device list. Do not replace
+      // that list with the unavailable state while the user is still editing.
+      if (renameEditor) {
+        showError(error);
+        element('retry').hidden = false;
+        element('retry').disabled = false;
+      } else renderUnavailable(error);
+    }
   }
 }
 element('retry').addEventListener('click', () => run(async () => {}));

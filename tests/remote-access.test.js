@@ -904,6 +904,43 @@ test('remote automation controls are scoped, explicit and cannot create tasks th
   const invalid = await request(gateway, `/v1/conversations/${visible.id}/commands`, { token, method: 'POST', payload: { ...payload, action: 'task-control', taskId: 'anything', operation: 'create', requestId: require('node:crypto').randomUUID() } });
   assert.equal(invalid.body.ok, false);
 });
+test('phone task details keep full instructions, limits and recent evidence; cancellation stays scoped', async context => {
+  const { gateway, pair, visible, hidden, manager, access } = fixture(context);
+  const { token } = pair(); await gateway.start('127.0.0.1', 0);
+  const instruction = 'Inspect the complete log and preserve this instruction. '.repeat(160).trim();
+  const task = manager.tasks.create(visible.id, 'codex', { instruction, intervalMinutes: 30, maxRuns: 48, maxHours: 48, maxRepairs: 0 });
+  const privateTask = manager.tasks.create(hidden.id, 'kimi', { instruction: 'Private task' });
+  const stored = manager.tasks.tasks.get(task.id);
+  stored.runs = 2; stored.lastResult = 'Result evidence '.repeat(150);
+  stored.history = Array.from({ length: 30 }, (_, index) => ({ at: index + 1, message: 'Check ' + index }));
+  stored.runToken = 'task-token-must-not-leak'; stored.pendingReport = { summary: 'not committed' };
+  const snapshot = (await request(gateway, `/v1/conversations/${visible.id}`, { token })).body;
+  const projected = snapshot.automation.tasks[0];
+  assert.equal(projected.instruction, instruction);
+  assert.equal(projected.lastResult, stored.lastResult);
+  assert.equal(projected.runs, 2); assert.equal(projected.maxRuns, 48); assert.equal(projected.maxRepairs, 0);
+  assert.equal(projected.nextRunAt, task.nextRunAt); assert.equal(projected.expiresAt, task.expiresAt);
+  assert.deepEqual(projected.history, stored.history.slice(-10));
+  assert.equal(JSON.stringify(projected).includes('task-token-must-not-leak'), false);
+  assert.equal(projected.pendingReport, undefined);
+  assert.deepEqual(projected.schedule, { type: 'interval', minutes: 30 });
+  stored.status = 'paused'; stored.pauseReason = 'run-limit';
+  const paused = (await request(gateway, `/v1/conversations/${visible.id}`, { token })).body.automation.tasks[0];
+  assert.match(paused.notice, /Check limit reached/); assert.match(paused.noticeZh, /次数已用完/);
+  const daily = manager.tasks.create(visible.id, 'codex', { instruction: 'Morning check', scheduleType: 'daily', dailyTime: '09:00', timeZone: 'Asia/Hong_Kong' });
+  const scheduled = (await request(gateway, `/v1/conversations/${visible.id}`, { token })).body.automation.tasks.find(task => task.id === daily.id);
+  assert.deepEqual(scheduled.schedule, { type: 'daily', time: '09:00', timeZone: 'Asia/Hong_Kong' });
+  const cancel = { action: 'task-control', taskId: task.id, operation: 'cancel', instanceId: gateway.instanceId,
+    requestId: require('node:crypto').randomUUID() };
+  const device = access.authenticate(token); device.permission = 'read';
+  assert.equal((await request(gateway, `/v1/conversations/${visible.id}/commands`, { token, method: 'POST', payload: cancel })).status, 403);
+  device.permission = 'control';
+  assert.equal((await request(gateway, `/v1/conversations/${visible.id}/commands`, { token, method: 'POST', payload: { ...cancel, taskId: privateTask.id, requestId: require('node:crypto').randomUUID() } })).body.ok, false);
+  assert.equal((await request(gateway, `/v1/conversations/${visible.id}/commands`, { token, method: 'POST', payload: cancel })).body.ok, true);
+  assert.equal((await request(gateway, `/v1/conversations/${visible.id}/commands`, { token, method: 'POST', payload: cancel })).body.ok, true);
+  assert.equal(manager.tasks.get(task.id, visible.id).status, 'cancelled');
+  assert.equal(manager.tasks.get(privateTask.id, hidden.id).status, 'scheduled');
+});
 test('remote live fork tolerates tool updates inside the same turn but excludes that whole turn', async context => {
   const { gateway, pair, visible, manager } = fixture(context), { token } = pair();
   await gateway.start('127.0.0.1', 0); const runs = queuedRuns(manager, visible.id);

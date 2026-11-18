@@ -38,6 +38,38 @@ The desktop renderer shrinks the surrounding visualization card to that width
 when the content is compact, while content that fills the available width keeps
 the full-width layout. The width is capped by the current chat column.
 
+## Responsive authoring contract
+
+The tool description, fragment parameter and shared agent instructions require
+cards to support inline chat, desktop fullscreen and mobile portrait/landscape.
+Camellia supplies the viewport; the fragment owns content fitting and reflow.
+This is authoring guidance, not a runtime guarantee for existing fragments.
+
+- Use fluid grids, `min-width:0` and readable, bounded font sizes. At narrow
+  widths, stack controls and panels vertically. Keep touch targets at least
+  44 CSS px and allow vertical scrolling for dense content instead of shrinking
+  everything to fit or clipping controls.
+- Keep inline height content-driven. For desktop fullscreen, use
+  `html[data-viz-presenting="1"]` or the `camellia:presentation` event
+  (`detail.active`). Fit drawings to both available width and height after
+  reserving space for controls, labels and padding. A small fixed drawing-size
+  cap can leave most of a fullscreen viewport empty even if its canvas is wide.
+- For Canvas, observe a stable drawing container with `ResizeObserver`,
+  recompute drawing geometry and update the backing store for `devicePixelRatio`.
+  Stretching only the CSS box is insufficient. Give SVG a `viewBox` and preserve
+  its aspect ratio. Respond to viewport/orientation changes without resetting
+  the interaction state.
+- Mobile viewers do not set the desktop `data-viz-presenting` attribute. Base
+  portrait/landscape reflow on actual container or viewport dimensions so it
+  also works in mobile WebViews.
+- Reflow slide content for portrait unless the user requires a fixed aspect
+  ratio. Fixed-aspect stages must fit both dimensions with letterboxing;
+  stretching or shrinking a text-heavy landscape deck is not a portrait layout.
+- When browser tools are available, check inline chat, desktop fullscreen,
+  narrow portrait (for example, 390 x 844 CSS px) and short landscape
+  (844 x 390 CSS px) before delivery. Check readable labels, reachable controls,
+  preserved geometry and useful drawing-area occupancy.
+
 ## Mobile access
 
 Remote snapshots expose completed card metadata in `message.visualizations`.
@@ -112,10 +144,11 @@ Inside the frame, `html[data-viz-expanded="1"]` and the `camellia:expand` event
 the original inline height instead of retaining the expanded measurement.
 
 Slide decks can mark their root `data-viz-presentation="slides"`. In presentation,
-the host removes theme padding and supplies a black backdrop. The deck should
-fit its stage with `width:min(100vw,calc(100vh * 16 / 9))` for 16:9 slides and
-hide its normal header/footer. Aspect-ratio letterboxing is retained on other
-screen shapes. For slide decks, the presentation menu also offers Previous
+the host removes theme padding and supplies a black backdrop. A fixed 16:9 deck
+should fit its stage with `width:min(100vw,calc(100vh * 16 / 9))` and hide its
+normal header/footer. Aspect-ratio letterboxing is retained on other screen
+shapes; decks with a portrait layout should reflow their content instead.
+For slide decks, the presentation menu also offers Previous
 slide and Next slide. Decks handle the `camellia:presentation-command` event
 (`detail.command` is `previous` or `next`) to change pages without replacing
 their document. Clicking outside the menu dismisses it; keyboard arrows move

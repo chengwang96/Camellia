@@ -3,6 +3,9 @@
 function attachInputContextMenu(contents, { Menu, uiText }) {
   contents.on('context-menu', (_event, params) => {
     if (!params.isEditable && (!params.selectionText?.trim() || params.mediaType === 'image')) return;
+    // Web links use the link menu instead; a selection on an ordinary
+    // non-link keeps the usual copy and select-all actions.
+    if (params.linkURL && !params.isEditable) return;
     const flags = params.editFlags;
     const menu = Menu.buildFromTemplate([
       ...(params.isEditable ? [{ role: 'cut', label: uiText('Cut'), enabled: flags.canCut }] : []),

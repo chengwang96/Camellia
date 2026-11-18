@@ -60,13 +60,15 @@ with sync_playwright() as playwright:
         expect(process).to_have_attribute('open', '')
         assert process.locator('.execution-process-body > *').evaluate_all('(nodes) => nodes.map(node => node.className)') == ['md', 'tool-card open', 'md', 'think', 'tool-card']
         page.evaluate("emit({type:'result',subtype:'success',is_error:false})")
-        expect(process).not_to_have_attribute('open', '')
+        expect(process).to_have_attribute('open', '')
         expect(turn.locator('.turn-body > .md')).to_have_text('Final answer')
         expect(process.locator('.execution-process-count')).to_have_text('2 tool calls')
         page.evaluate("changeLanguage('zh-CN')")
         expect(process.locator('summary')).to_contain_text('执行过程')
         expect(process.locator('.execution-process-collapse')).to_contain_text('收起')
         page.screenshot(path=str(preview / f'execution-process-{theme}.png'))
+        turn.locator('button.completion-label').click()
+        expect(process).not_to_have_attribute('open', '')
         turn.locator('button.completion-label').click()
         expect(process.locator('.md')).to_have_text(['First progress', 'Latest progress'])
         # The footer control folds a long expanded process without scrolling
@@ -217,7 +219,7 @@ with sync_playwright() as playwright:
         expect(tagged.locator('.think-body')).to_have_text('Final reasoning')
         expect(tagged.locator('.tool-card')).to_have_count(11)
         page.evaluate("emit({type:'result',subtype:'success'})")
-        expect(tagged.locator('.execution-process')).not_to_have_attribute('open', '')
+        expect(tagged.locator('.execution-process')).to_have_attribute('open', '')
         expect(tagged.locator('.turn-body > .md')).to_have_text('Tagged final answer')
         page.screenshot(path=str(preview / f'execution-process-tagged-{theme}.png'))
         page.evaluate("""() => {

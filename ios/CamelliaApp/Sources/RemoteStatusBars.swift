@@ -139,6 +139,7 @@ private struct GoalCard: View {
 private struct TaskCard: View {
     let task: RemoteTask
     @EnvironmentObject private var model: AppModel
+    @State private var showDetails = false
 
     var body: some View {
         HStack(spacing: 10) {
@@ -146,32 +147,37 @@ private struct TaskCard: View {
                 .font(.caption2)
                 .foregroundColor(Palette.muted)
                 .lineLimit(1)
-            Text(task.instruction)
-                .font(.caption)
-                .foregroundColor(Palette.ink)
-                .lineLimit(1)
-                .truncationMode(.tail)
+            Button { showDetails = true } label: {
+                Text(verbatim: task.instruction)
+                    .font(.caption)
+                    .foregroundColor(Palette.ink)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                    .contentShape(Rectangle())
+            }.buttonStyle(.plain)
+                .accessibilityHint(model.usesChinese ? "查看任务详情" : "View task details")
             Spacer(minLength: 8)
-            if task.intervalMinutes > 0 {
-                Text(model.usesChinese ? "每 \(task.intervalMinutes) 分钟"
-                     : "every \(task.intervalMinutes) min")
+            if task.intervalMinutes > 0 || task.scheduleType != "interval" {
+                Text(task.scheduleType == "daily" ? (model.usesChinese ? "每天 \(task.dailyTime)" : "Daily \(task.dailyTime)") : task.scheduleLabel(chinese: model.usesChinese))
                     .font(.caption2)
                     .foregroundColor(Palette.muted)
             }
-            if task.isRunning || task.isPaused {
+            if task.canPause || task.isPaused {
                 Button(task.isPaused ? "恢复" : "暂停") {
-                    model.controlTask(task.id, pause: task.isRunning)
+                    model.controlTask(task.id, pause: task.canPause)
                 }
                 .font(.caption2.weight(.medium))
                 .buttonStyle(.plain)
                 .foregroundColor(Palette.ink)
                 .padding(.horizontal, 10)
                 .padding(.vertical, 5)
-                .frame(minHeight: 40)
+                .frame(minHeight: 44)
                 .background(Capsule(style: .continuous).fill(Palette.background))
                 .accessibilityLabel(model.usesChinese
                     ? "\(task.isPaused ? "恢复" : "暂停")任务：\(task.instruction)"
                     : "\(task.isPaused ? "Resume" : "Pause") task: \(task.instruction)")
+                .disabled(task.stopping || !model.canDrive || model.commandBusy || model.hasPendingDetailOperation)
             }
         }
         .padding(.horizontal, 12)
@@ -179,15 +185,101 @@ private struct TaskCard: View {
         .background(RoundedRectangle(cornerRadius: Palette.smallRadius, style: .continuous)
             .fill(Palette.surface))
         .padding(.horizontal, 8)
+        .sheet(isPresented: $showDetails) {
+            ScheduledTaskDetails(original: task).environmentObject(model)
+        }
     }
 
     private var label: String {
+        if task.stopping { return model.usesChinese ? "停止中" : "Stopping" }
         switch task.status {
         case "running": return "检查中"
         case "paused": return "已暂停"
         case "complete": return "已完成"
+        case "cancelled": return model.usesChinese ? "已取消" : "Cancelled"
         default: return "等待"
         }
+    }
+}
+
+private struct ScheduledTaskDetails: View {
+    let original: RemoteTask
+    @EnvironmentObject private var model: AppModel
+    @Environment(\.dismiss) private var dismiss
+    @State private var confirmingCancel = false
+    private var task: RemoteTask {
+        model.transcript.automation?.tasks.first(where: { $0.id == original.id }) ?? original
+    }
+    private var canControl: Bool { !task.stopping && model.canDrive && !model.commandBusy && !model.hasPendingDetailOperation }
+    private func date(_ at: Int64) -> String {
+        Date(timeIntervalSince1970: Double(at) / 1000).formatted(date: .abbreviated, time: .shortened)
+    }
+
+    var body: some View {
+        NavigationView {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    Text(model.usesChinese
+                         ? ["scheduled": "等待检查", "running": "正在检查", "paused": "已暂停", "complete": "已完成", "cancelled": "已取消"][task.status] ?? task.status
+                         : task.status.capitalized)
+                        .font(.subheadline.weight(.medium))
+                    HStack(spacing: 20) {
+                        if task.canPause || task.isPaused {
+                            Button(model.usesChinese ? (task.isPaused ? "恢复" : "暂停") : (task.isPaused ? "Resume" : "Pause")) {
+                                model.controlTask(task.id, pause: task.canPause)
+                            }.frame(minHeight: 44).disabled(!canControl)
+                        }
+                        if task.canCancel {
+                            Button(model.usesChinese ? "取消任务" : "Cancel task", role: .destructive) { confirmingCancel = true }
+                                .frame(minHeight: 44).disabled(!canControl)
+                        }
+                    }
+                    Text(verbatim: task.instruction).textSelection(.enabled)
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(task.scheduleLabel(chinese: model.usesChinese))
+                        if task.maxRuns > 0 {
+                            Text(model.usesChinese
+                                 ? "\(task.runs)/\(task.maxRuns) 次检查 · \(task.repairs)/\(task.maxRepairs) 次恢复"
+                                 : "\(task.runs)/\(task.maxRuns) checks · \(task.repairs)/\(task.maxRepairs) recoveries")
+                        }
+                        if task.nextRunAt > 0 {
+                            Text((model.usesChinese ? "下次检查：" : "Next check: ") + date(task.nextRunAt))
+                        }
+                        if task.expiresAt > 0 {
+                            Text((model.usesChinese ? "截止时间：" : "Deadline: ") + date(task.expiresAt))
+                        }
+                    }.font(.caption).foregroundColor(Palette.muted)
+                    let notice = model.usesChinese ? task.noticeZh : task.notice
+                    if !notice.isEmpty { Text(verbatim: notice).textSelection(.enabled) }
+                    if !task.lastResult.isEmpty { Text(verbatim: task.lastResult).textSelection(.enabled) }
+                    if !task.history.isEmpty {
+                        DisclosureGroup(model.usesChinese ? "最近记录" : "Recent checks") {
+                            VStack(alignment: .leading, spacing: 12) {
+                                ForEach(Array(task.history.reversed().enumerated()), id: \.offset) { _, entry in
+                                    VStack(alignment: .leading, spacing: 4) {
+                                        Text(date(entry.at)).font(.caption).foregroundColor(Palette.muted)
+                                        Text(verbatim: entry.message).textSelection(.enabled)
+                                    }
+                                }
+                            }.padding(.top, 8)
+                        }
+                    }
+                }.font(.subheadline).frame(maxWidth: .infinity, alignment: .leading).padding(20)
+            }
+            .background(Palette.background)
+            .navigationTitle(model.usesChinese ? "定时任务" : "Scheduled task")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .confirmationAction) { Button(model.usesChinese ? "关闭" : "Close") { dismiss() } } }
+            .confirmationDialog(model.usesChinese ? "取消任务？" : "Cancel task?", isPresented: $confirmingCancel, titleVisibility: .visible) {
+                Button(model.usesChinese ? "取消任务" : "Cancel task", role: .destructive) {
+                    model.controlTask(task.id, operation: "cancel")
+                }
+            } message: {
+                Text(model.usesChinese ? "停止定时检查，保留记录。正在运行的实验不会停止。"
+                     : "Stops scheduled checks and keeps their history. The experiment keeps running.")
+            }
+        }
+        .navigationViewStyle(.stack)
     }
 }
 

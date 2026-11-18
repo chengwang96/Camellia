@@ -78,6 +78,91 @@ public class RemoteDiscussionsTest extends InstrumentationTestCase {
         });
     }
 
+    public void testDiscussionTypingAndConnectionOwnerSurviveBothTabletRotations() throws Exception {
+        NativeActivityCleanup.prepareTabletLandscape(getInstrumentation());
+        offlineFixture();
+        boolean initiallyLandscape = activity.getResources().getConfiguration().orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE;
+        var keyboard = activity.getSystemService(android.view.inputmethod.InputMethodManager.class);
+        EditText editor = (EditText) view("discussionComposer"); Object owner = field(activity, "generation");
+        waitFor(() -> activity.hasWindowFocus() && editor.isShown() && editor.isLaidOut() && editor.hasWindowFocus());
+        ui(() -> { editor.setText("abcdef"); editor.requestFocus(); editor.setSelection(2, 4); keyboard.showSoftInput(editor, 0); });
+        try {
+            waitFor(() -> keyboard.isActive(editor) && editor.getRootWindowInsets().isVisible(android.view.WindowInsets.Type.ime()));
+        } catch (junit.framework.AssertionFailedError error) {
+            screenshot("discussion-ime-failure");
+            fail("Initial discussion IME: focus=" + editor.hasFocus() + ", window=" + editor.hasWindowFocus()
+                + ", active=" + keyboard.isActive(editor) + ", shown=" + editor.isShown() + ", height=" + editor.getHeight()
+                + ", fullscreen=" + keyboard.isFullscreenMode() + ", ime=" + editor.getRootWindowInsets().isVisible(android.view.WindowInsets.Type.ime()));
+        }
+        for (int rotation = 0; rotation < 2; rotation++) {
+            boolean landscape = rotation == 0 ? !initiallyLandscape : initiallyLandscape;
+            ui(() -> activity.setRequestedOrientation(landscape ? android.content.pm.ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE : android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT));
+            waitFor(() -> {
+                if (activity.isDestroyed()) return true;
+                var bounds = activity.getWindowManager().getCurrentWindowMetrics().getBounds();
+                return (bounds.width() > bounds.height()) == landscape && activity.getResources().getConfiguration().orientation
+                    == (landscape ? android.content.res.Configuration.ORIENTATION_LANDSCAPE : android.content.res.Configuration.ORIENTATION_PORTRAIT);
+            });
+            assertFalse("Discussion rotation must retain the current page owner", activity.isDestroyed());
+            RenderedFrameFixture.awaitFrames(getInstrumentation(), activity.getWindow().getDecorView());
+            assertSame(editor, view("discussionComposer")); assertEquals(owner, field(activity, "generation"));
+            waitFor(() -> editor.hasWindowFocus() && editor.hasFocus() && keyboard.isActive(editor)
+                && editor.getRootWindowInsets() != null && editor.getRootWindowInsets().isVisible(android.view.WindowInsets.Type.ime()));
+            InputDeliveryFixture.type(getInstrumentation(), rotation == 0 ? "x" : "y");
+            assertEquals(rotation == 0 ? "abxef" : "abxyef", editor.getText().toString());
+        }
+    }
+
+    public void testDiscussionNameFormKeepsItsDraftAndFitsAfterBothRotations() throws Exception {
+        offlineFixture();
+        boolean initial = activity.getResources().getConfiguration().orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE;
+        ui(() -> invoke("editTitle", new Class<?>[]{JSONObject.class}, field(activity, "group")));
+        AlertDialog original = (AlertDialog) field(activity, "dialog");
+        EditText editor = original.getWindow().getDecorView().findViewWithTag("discussionNameInput");
+        ui(() -> editor.setText("Unsaved discussion name"));
+        for (boolean landscape : new boolean[]{!initial, initial}) {
+            ui(() -> activity.setRequestedOrientation(landscape ? android.content.pm.ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE : android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT));
+            waitFor(() -> activity.isDestroyed() || activity.getResources().getConfiguration().orientation == (landscape ? android.content.res.Configuration.ORIENTATION_LANDSCAPE : android.content.res.Configuration.ORIENTATION_PORTRAIT));
+            assertFalse(activity.isDestroyed()); assertTrue(original.isShowing()); assertSame(original, field(activity, "dialog"));
+            waitFor(() -> original.getWindow().getDecorView().getWidth() <= activity.getWindowManager().getCurrentWindowMetrics().getBounds().width());
+            assertEquals("Unsaved discussion name", editor.getText().toString());
+            assertTrue(editor.getWidth() > 0);
+        }
+        ui(() -> original.getButton(AlertDialog.BUTTON_NEGATIVE).performClick());
+        assertFalse(original.isShowing()); assertEquals("Initial title", ((JSONObject) field(activity, "group")).getString("title"));
+    }
+
+    public void testLongDiscussionDraftKeepsInputAndToolsAboveTheKeyboard() throws Exception {
+        NativeActivityCleanup.prepareTabletLandscape(getInstrumentation()); offlineFixture();
+        ui(() -> activity.setRequestedOrientation(android.content.pm.ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE));
+        waitFor(() -> activity.getResources().getConfiguration().orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE);
+        EditText editor = (EditText) view("discussionComposer");
+        waitFor(() -> editor.isLaidOut() && editor.hasWindowFocus());
+        int normalLines = editor.getMaxLines();
+        String draft = "A long draft\nLine two\nLine three\nLine four\nLine five\nLine six";
+        ui(() -> { editor.setText(draft); editor.requestFocus(); editor.setSelection(editor.length());
+            editor.getWindowInsetsController().show(android.view.WindowInsets.Type.ime()); });
+        waitFor(() -> editor.getRootWindowInsets().isVisible(android.view.WindowInsets.Type.ime()));
+        Thread.sleep(350); getInstrumentation().waitForIdleSync();
+        android.graphics.Rect input = new android.graphics.Rect(), send = new android.graphics.Rect();
+        assertTrue("The long draft editor must remain on screen", editor.getGlobalVisibleRect(input));
+        assertTrue("Send must remain reachable with a long draft", view("discussionSend").getGlobalVisibleRect(send));
+        float density = editor.getResources().getDisplayMetrics().density;
+        assertTrue("Keep a usable editor above the keyboard", input.height() >= 44 * density);
+        View stage = view("discussionComposerBarStage"), dock = view("discussionComposerBarDock"), root = (View) field(activity, "root");
+        assertTrue("Keep the full send touch target above the keyboard: input=" + input + "/" + editor.getHeight()
+            + " maxLines=" + editor.getMaxLines() + ", send=" + send + "/" + view("discussionSend").getHeight()
+            + ", stage=" + stage.getHeight() + ", dock=" + dock.getHeight()
+            + ", window=" + activity.getWindowManager().getCurrentWindowMetrics().getBounds()
+            + ", root=" + root.getHeight() + " padding=" + root.getPaddingTop() + "/" + root.getPaddingBottom()
+            + ", IME=" + editor.getRootWindowInsets().getInsets(android.view.WindowInsets.Type.ime())
+            + " fullscreen=" + activity.getSystemService(android.view.inputmethod.InputMethodManager.class).isFullscreenMode(), send.height() >= 44 * density);
+        assertTrue(input.bottom <= send.bottom); assertEquals(draft, editor.getText().toString());
+        ui(() -> editor.getWindowInsetsController().hide(android.view.WindowInsets.Type.ime()));
+        waitFor(() -> !editor.getRootWindowInsets().isVisible(android.view.WindowInsets.Type.ime()) && editor.getMaxLines() == normalLines);
+        assertEquals(draft, editor.getText().toString());
+    }
+
     public void testReplyModeDropdownPreservesDraftAndSelectsInPlace() throws Exception {
         offlineFixture();
         ui(() -> {

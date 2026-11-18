@@ -113,3 +113,13 @@ test('hidden accessible text stays inside the settings page', () => {
   const remote = fs.readFileSync(path.join(__dirname, '../src/renderer/remote/remote.css'), 'utf8');
   assert.match(remote, /main\.mobile-access \{ position: relative; max-width: 900px; \}/);
 });
+
+test('authorized devices rename in place instead of opening a dialog', () => {
+  const remote = fs.readFileSync(path.join(__dirname, '../src/renderer/remote/remote.js'), 'utf8');
+  assert.doesNotMatch(remote, /dialog\.device-rename/);
+  assert.match(remote, /function renameDevice\(entry, row, title, name\)/);
+  assert.match(remote, /title\.replaceWith\(field\)/);
+  const styles = fs.readFileSync(path.join(__dirname, '../src/renderer/settings/device-settings.css'), 'utf8');
+  assert.match(styles, /\.device-settings \.device-rename-field \{/);
+  assert.doesNotMatch(styles, /dialog\.device-rename/);
+});

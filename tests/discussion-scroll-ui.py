@@ -78,10 +78,11 @@ with sync_playwright() as playwright:
             at_latest(scroll)
 
             # Updates follow new output at the bottom, then leave an earlier reading position alone.
-            for index, reading in enumerate([False, True]):
+            for index, delta in enumerate([0, -24, -700]):
+                reading = delta != 0
                 if reading:
                     scroll.hover()
-                    page.mouse.wheel(0, -700)
+                    page.mouse.wheel(0, delta)
                     expect(scroll).not_to_have_js_property('scrollTop', scroll.evaluate('(s) => s.scrollHeight-s.clientHeight'))
                     settled(page)
                 before = scroll.evaluate('(s) => s.scrollTop')

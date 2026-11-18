@@ -112,8 +112,10 @@ final class SubtaskPage extends Dialog {
     }
 
     @Override protected void onStart() {
-        super.onStart(); getWindow().setLayout(-1, -1); page.requestApplyInsets();
+        super.onStart(); DialogWindows.shown(getContext(), this); getWindow().setLayout(-1, -1); page.requestApplyInsets();
     }
+
+    @Override protected void onStop() { DialogWindows.hidden(getContext(), this); super.onStop(); }
 
     void update(JSONArray value) {
         tasks = value; current = null;

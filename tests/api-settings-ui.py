@@ -304,6 +304,17 @@ try:
         assert rpc('routerRequest','model-test')['result']['status']==200
         page.reload(wait_until='networkidle')
         page.locator('[data-view=usage]').click()
+        summary=page.locator('#usageSummary > div')
+        expect(summary).to_have_count(4)
+        for index,title in enumerate(['Total tokens', 'Successful requests', 'Input tokens', 'Output tokens']):
+            assert summary.nth(index).locator('small').first.text_content() == title
+        expect(summary.first.locator('small').last).to_have_text('Input + output')
+        expected_total=page.evaluate("""() => new Intl.NumberFormat(window.CamelliaI18n.locale,
+            {maximumFractionDigits: 1, notation: 'compact'}).format(
+            usageData.reduce((sum, row) => sum + row.inputTokens + row.outputTokens, 0))""")
+        expect(summary.locator('strong').first).to_have_text(expected_total)
+        page.locator('#usageSummary').scroll_into_view_if_needed()
+        page.screenshot(path=str(repo/'dist/ui-preview/settings-usage-summary.png'))
         page.locator('#usageModel').select_option('model-test')
         expect(page.locator('#usageRows tr')).to_have_count(1)
         expect(page.locator('#usageRows')).to_contain_text('model-test')

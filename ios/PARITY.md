@@ -108,7 +108,7 @@
 | 配置迁移「从电脑导入」 | ✅ | `RemoteApi.apiKeys()` → `GET /v1/api-keys` |
 | 已归档（恢复／永久删除） | ⚠️（假资料恢复与删除确认已点验） | `LocalChatSettingsScreens.swift` `LocalChatArchiveView`：列出**本机**已归档会话，卡片内直接有「恢复」与「永久删除」按钮（删除前二次确认），不是滑动/长按。iPhone 模拟器用一条空假会话核过有数据卡片、删除确认取消、恢复后空态和设置计数归零，未执行永久删除。页注与 Android `SettingsActivity.archived()` 一致。**澄清**：Android 的「已归档」页同样**只列本机会话**，远程归档由电脑端管理，**不存在远程归档列表**；远程侧无需新界面，远程归档命令 iOS 已有（`AppModel.archiveConversation`）。 |
 | 语言／外观／回车三模式 | ⚠️（选项面板已对齐并模拟器点验） | 偏好与外观、回车行为已有；通用页三组选择现共用与 Android `SettingsChoiceDialog` 对应的底部面板（标题、单选勾、取消），不再用系统 `confirmationDialog`。语言/外观环境已放到 `RootView` 全屏展示器外侧，修复设置页打开时切换语言不即时更新；iPhone 模拟器已核三组选项英文、已选标记、取消、中文深色及中文→系统英文即时切换，并恢复系统外观；iPad 模拟器已核回车面板宽度与底部位置。共用输入控件已修复尾随换行粘贴误发，以及与 Android `LengthFilter` 不一致的字符计数/插入位置截断；模拟器 delegate 回归覆盖 Return、粘贴、仅按钮发送与 UTF-16 边界，完整键盘交互仍待验。iOS 不支持所有键盘通用的长按回车手势，选项文案按实际能力调整；真机/iOS 15、其他动态文案仍待验。 |
-| 本机名称 | ✅ | `SettingsView` 内就地编辑弹窗（与 Android 相同；最多 80 字符、空名阻止保存） |
+| 本机名称 | ✅ | `SettingsView` 内就地编辑弹窗（与 Android 相同；最多 80 字符、空名阻止保存）；保存后立即用于内置网络的 Tailscale 节点名，未设置时使用平台默认名 |
 
 ### 本机聊天
 

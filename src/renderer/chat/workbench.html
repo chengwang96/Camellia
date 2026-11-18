@@ -301,23 +301,39 @@
   <p class="switch-hint" data-i18n>Markdown exports the saved conversation locally, then opens a new session in the target engine with the exported file. The conversation stays in this shared list.</p>
   <div class="perm-actions"><button id="switchCancel" class="btn-secondary" data-i18n>Cancel</button><button id="switchConfirm" class="btn-primary" data-i18n>Continue</button></div>
 </dialog>
-<dialog id="tasksDialog" class="switch-dialog tasks-dialog" aria-labelledby="tasksTitle">
-  <h2 id="tasksTitle" data-i18n>Scheduled tasks</h2>
-  <p class="switch-hint" data-i18n>Checks run while Camellia is open. Restart pauses tasks. Cancelling monitoring does not stop the experiment. Each check uses model tokens and keeps native permissions.</p>
-  <div id="tasksList" aria-live="polite"></div>
-  <form id="tasksForm">
-    <label for="taskInstruction" data-i18n>What to check</label>
-    <textarea id="taskInstruction" required maxlength="12000" rows="3"></textarea>
-    <div class="task-fields">
-      <label data-i18n>Interval (minutes)<input id="taskInterval" type="number" min="1" max="1440" value="10" required></label>
-      <label data-i18n>Maximum checks<input id="taskRuns" type="number" min="1" max="1000" value="24" required></label>
-      <label data-i18n>Maximum hours<input id="taskHours" type="number" min="1" max="168" value="24" required></label>
-      <label data-i18n>Allowed recovery attempts<input id="taskRepairs" type="number" min="0" max="5" value="0" required></label>
-    </div>
-    <p class="switch-hint" data-i18n>Zero recovery attempts means inspect only. A higher limit authorizes recovery within your instruction, not data deletion, protocol changes or extra paid resources.</p>
+<dialog id="tasksDialog" class="tasks-dialog" aria-labelledby="tasksTitle" aria-describedby="tasksHint">
+  <header class="tasks-header">
+    <h2 id="tasksTitle" tabindex="-1" autofocus data-i18n>Scheduled tasks</h2>
+    <button type="button" id="tasksClose" class="tasks-close" title="Close" aria-label="Close" data-i18n-attrs="title aria-label"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button>
+  </header>
+  <div class="tasks-body">
+    <p class="tasks-hint" id="tasksHint" data-i18n>Checks run while Camellia is open. Restart pauses tasks. Cancelling monitoring does not stop the experiment. Each check uses model tokens and keeps native permissions.</p>
     <p id="tasksError" role="alert"></p>
-    <div class="perm-actions"><button type="button" id="tasksClose" class="btn-secondary" data-i18n>Close</button><button type="submit" id="taskSave" class="btn-primary" data-i18n>Create task</button></div>
-  </form>
+    <p id="tasksConflict" class="tasks-hint" hidden></p>
+    <div id="tasksList" aria-live="polite"></div>
+    <details id="tasksEditor" class="task-editor">
+      <summary id="taskEditorTitle" data-i18n>Create task</summary>
+      <form id="tasksForm">
+        <label for="taskInstruction" data-i18n>What to check</label>
+        <textarea id="taskInstruction" required maxlength="12000" rows="3"></textarea>
+        <div class="task-schedule-fields">
+          <label><span data-i18n>Schedule</span><select id="taskSchedule"><option value="interval" data-i18n>Fixed interval</option><option value="once" data-i18n>One time</option><option value="daily" data-i18n>Daily</option></select></label>
+          <label id="taskIntervalField"><span data-i18n>Interval (minutes)</span><input id="taskInterval" type="number" min="1" max="1440" value="10" required></label>
+          <label id="taskOnceField" hidden><span data-i18n>Run at (this device's time)</span><input id="taskRunAt" type="datetime-local"></label>
+          <label id="taskDailyField" hidden><span data-i18n>Time of day</span><input id="taskDailyTime" type="time" value="09:00"></label>
+          <label id="taskZoneField" hidden><span data-i18n>Time zone</span><input id="taskZone" type="text" list="taskZones" maxlength="100"><datalist id="taskZones"></datalist></label>
+        </div>
+        <div class="task-fields">
+          <label data-i18n>Maximum checks<input id="taskRuns" type="number" min="1" max="1000" value="24" required></label>
+          <label data-i18n>Maximum hours<input id="taskHours" type="number" min="1" max="168" value="24" required></label>
+          <label data-i18n>Allowed recovery attempts<input id="taskRepairs" type="number" min="0" max="5" value="0" required></label>
+        </div>
+        <p id="taskPreview" class="tasks-hint" role="status"></p>
+        <p class="tasks-hint" data-i18n>Zero recovery attempts means inspect only. A higher limit authorizes recovery within your instruction, not data deletion, protocol changes or extra paid resources.</p>
+        <div class="task-form-actions"><button type="button" id="taskEditCancel" class="btn-secondary" hidden data-i18n>Cancel editing</button><button type="submit" id="taskSave" class="btn-primary" data-i18n>Create task</button></div>
+      </form>
+    </details>
+  </div>
 </dialog>
 <script src="../../shared/i18n-messages.js"></script>
 <script src="../shared/tooltip.js"></script>
@@ -339,6 +355,7 @@
 <script src="../../shared/shortcuts.js"></script>
 <script src="./workbench-sidebar.js"></script>
 <script src="./workbench-goal-ui.js"></script>
+<script src="../../shared/task-schedule.js"></script>
 <script src="./scheduled-tasks-ui.js"></script>
 <script src="../../../node_modules/markdown-it/dist/markdown-it.min.js"></script>
 <script src="../../../node_modules/markdown-it-footnote/dist/markdown-it-footnote.min.js"></script>

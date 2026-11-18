@@ -155,12 +155,17 @@ public final class MobilePreferences {
     /// always has something to show next to a request.
     public var deviceName: String {
         get {
-            let stored = store.string("deviceName").map(ComposerText.androidTrim) ?? ""
+            let stored = savedDeviceName
             if !stored.isEmpty { return stored }
             let model = modelName.trimmingCharacters(in: .whitespacesAndNewlines)
             return model.isEmpty ? "iPhone" : model
         }
         set { store.set(newValue, for: "deviceName") }
+    }
+
+    /// Only the name the user chose; empty means the platform default.
+    public var savedDeviceName: String {
+        store.string("deviceName").map(ComposerText.androidTrim) ?? ""
     }
 
     /// Whether a conversation-list workspace group is folded away.

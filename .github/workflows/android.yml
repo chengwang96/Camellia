@@ -137,7 +137,12 @@ jobs:
           # Native SwiftShader GLES crashes during activity transitions on this
           # runner; swangle uses ANGLE with the SwiftShader software drivers.
           "$EMULATOR" -avd CamelliaCI -port 5584 -no-window -no-snapshot -no-audio -no-boot-anim -gpu swangle -feature -Vulkan,-WiFiPacketStream -cores 2 > .ci-logs/emulator.log 2>&1 &
-          trap '"$ADB" -s "$ANDROID_SERIAL" emu kill || true' EXIT
+          finish_emulator() {
+            timeout 15 "$ADB" -s "$ANDROID_SERIAL" logcat -d -t 10000 > .ci-logs/android-logcat.txt || true
+            timeout 15 "$ADB" -s "$ANDROID_SERIAL" logcat -b crash -d > .ci-logs/android-crash.txt || true
+            timeout 15 "$ADB" -s "$ANDROID_SERIAL" emu kill || true
+          }
+          trap finish_emulator EXIT
           timeout 180 "$ADB" -s "$ANDROID_SERIAL" wait-for-device
           for i in $(seq 1 90); do
             if [ "$("$ADB" -s "$ANDROID_SERIAL" shell getprop sys.boot_completed | tr -d '\r')" = 1 ]; then break; fi
@@ -174,15 +179,25 @@ jobs:
             UiConsistencyTest SettingsControlsTest SubtaskPageLayoutTest ModernSettingsLayoutTest NavigationVeilTest SettingsFeedbackTest
             ChoiceDropdownTest ComposerAttachmentOverflowTest RemoteApprovalSheetTest WorkbenchServersTest ConversationListScrollTest
             VisualizationDialogTest RemoteDownloadIntegrityTest LocalChatTest
+            CardViewerTest ChatReadingTest EditorInputTest VisualizationRotationTest
           )
-          ui_selection="$(node scripts/android-ci-shards.cjs --index "$SHARD" --total "$SHARD_COUNT" "${ui_classes[@]}")"
-          printf '%s\n' "$ui_selection" > .ci-logs/android-ui-selection.txt
-          if ! "$ADB" -s "$ANDROID_SERIAL" shell am instrument -w -e class "$ui_selection" app.camellia.mobile.test/android.test.InstrumentationTestRunner | tee .ci-logs/android-ui.log; then
-            "$ADB" -s "$ANDROID_SERIAL" logcat -d -t 3000 > .ci-logs/android-logcat.txt
-            exit 1
-          fi
-          "$ADB" -s "$ANDROID_SERIAL" logcat -d -t 3000 > .ci-logs/android-logcat.txt
-          grep -Eq '^OK \([1-9][0-9]* tests\)' .ci-logs/android-ui.log
+          tablet_classes=(
+            DialogRotationTest
+            TabletConversationListTest TabletDestinationsTest TabletInteractionTest TabletRotationContinuityTest TabletSettingsNavigationTest
+          )
+          run_ui() {
+            local phase="$1" selection
+            shift
+            selection="$(node scripts/android-ci-shards.cjs --index "$SHARD" --total "$SHARD_COUNT" "$@")"
+            printf '%s\n' "$selection" > ".ci-logs/android-$phase-selection.txt"
+            "$ADB" -s "$ANDROID_SERIAL" shell am instrument -w -e class "$selection" app.camellia.mobile.test/android.test.InstrumentationTestRunner | tee ".ci-logs/android-$phase.log"
+            grep -Eq '^OK \([1-9][0-9]* tests?\)' ".ci-logs/android-$phase.log"
+          }
+          run_ui ui "${ui_classes[@]}"
+          "$ADB" -s "$ANDROID_SERIAL" shell wm size 960x1536
+          "$ADB" -s "$ANDROID_SERIAL" shell wm density 240
+          "$ADB" -s "$ANDROID_SERIAL" shell settings put secure show_ime_with_hard_keyboard 1
+          run_ui tablet-ui "${tablet_classes[@]}"
       - name: Save shard evidence
         if: always()
         uses: actions/upload-artifact@v7

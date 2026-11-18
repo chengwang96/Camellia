@@ -459,3 +459,12 @@ func TestStatusPayloadMarshalsAnEmptyAddressListAsAnArray(t *testing.T) {
 		t.Fatalf("a node with no self entry produced an unexpected payload: %s", payload)
 	}
 }
+
+func TestNodeHostnamePrefersTheSavedNameAndKeepsThePlatformFallback(t *testing.T) {
+	if got := nodeHostname("studio-phone"); got != "studio-phone" {
+		t.Fatalf("the saved name was not used: %s", got)
+	}
+	if got := nodeHostname(""); got == "" {
+		t.Fatal("an empty name must fall back to the platform default")
+	}
+}

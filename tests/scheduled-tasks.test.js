@@ -274,3 +274,86 @@ test('shutdown and deletion disarm timers and leave external experiments alone',
   assert.equal(harness.runs.length, 0); assert.equal(harness.interrupts.length, 0);
   assert.throws(() => harness.create(), /shutting down/);
 });
+
+test('creation, edits and resume reject a first check at or after the deadline', context => {
+  const h = fixture(context);
+  assert.throws(() => h.create({ intervalMinutes: 1440 }), /before the deadline/);
+  assert.equal(h.scheduler.list().length, 0);
+  const task = h.create({ maxHours: 1 });
+  h.scheduler.action(task.id, task.sessionId, 'pause');
+  assert.throws(() => h.scheduler.action(task.id, task.sessionId, 'update', { intervalMinutes: 60 }), /before the deadline/);
+  assert.equal(h.scheduler.get(task.id, task.sessionId).intervalMinutes, 1);
+  h.advance(59);
+  assert.throws(() => h.scheduler.action(task.id, task.sessionId, 'resume'), /before the deadline/);
+  assert.equal(h.scheduler.get(task.id, task.sessionId).status, 'paused');
+});
+
+test('waiting explains Goal deferral and expiration without replacing the last check result', async context => {
+  const h = fixture(context), task = h.create({ maxHours: 1 });
+  h.busy('goal'); h.advance(1); await h.scheduler.tick();
+  assert.equal(h.scheduler.get(task.id, task.sessionId).waitingReason, 'goal');
+  h.advance(60); await h.scheduler.tick();
+  assert.equal(h.scheduler.get(task.id, task.sessionId).pauseReason, 'deadline');
+  assert.equal(h.runs.length, 0);
+});
+
+test('exhausted checks retain their evidence and a separate actionable pause reason', async context => {
+  const h = fixture(context), task = h.create({ maxRuns: 1 });
+  h.advance(1); await h.scheduler.tick();
+  h.scheduler.report(task.id, task.sessionId, { status: 'continue', summary: 'Healthy; epoch 20' });
+  h.runs[0].resolve({ subtype: 'success' }); await h.flush();
+  const saved = h.scheduler.get(task.id, task.sessionId);
+  assert.equal(saved.status, 'paused'); assert.equal(saved.pauseReason, 'run-limit');
+  assert.equal(saved.lastCheck.summary, 'Healthy; epoch 20');
+  h.scheduler.action(task.id, task.sessionId, 'update', { maxRuns: 2 });
+  h.scheduler.action(task.id, task.sessionId, 'resume');
+  assert.equal(saved.pauseReason, undefined); assert.equal(saved.lastCheck.summary, 'Healthy; epoch 20');
+});
+
+test('one-time checks end after one successful report and keep their schedule across restart', async context => {
+  const h = fixture(context);
+  const task = h.create({ scheduleType: 'once', runAt: new Date(121000).toISOString() });
+  assert.equal(task.maxRuns, 1); assert.equal(task.maxHours, 168); assert.equal(task.intervalMinutes, 0);
+  h.advance(2); await h.scheduler.tick();
+  h.scheduler.report(task.id, task.sessionId, { status: 'continue', summary: 'One-time inspection complete; experiment healthy' });
+  h.runs[0].resolve({ subtype: 'success' }); await h.flush();
+  assert.equal(h.scheduler.get(task.id, task.sessionId).status, 'complete');
+  const restored = new ScheduledTasks(h.options); context.after(() => restored.close());
+  assert.deepEqual(restored.get(task.id, task.sessionId).schedule, task.schedule);
+  h.advance(1440); await restored.tick(); assert.equal(h.runs.length, 1);
+});
+
+test('past one-time creation fails while explicit manual resume can run a missed check', async context => {
+  const h = fixture(context);
+  assert.throws(() => h.create({ scheduleType: 'once', runAt: new Date(0).toISOString() }), /future/);
+  const task = h.create({ scheduleType: 'once', runAt: new Date(61000).toISOString() });
+  h.scheduler.action(task.id, task.sessionId, 'pause'); h.advance(5);
+  h.scheduler.action(task.id, task.sessionId, 'resume'); await h.scheduler.tick();
+  assert.equal(h.runs.length, 1); h.runs[0].resolve({ subtype: 'stopped' }); await h.flush();
+});
+
+test('daily checks skip missed runs after sleep and preserve local time after an edit', async context => {
+  const h = fixture(context);
+  const task = h.create({ scheduleType: 'daily', dailyTime: '09:00', timeZone: 'UTC' });
+  assert.equal(task.maxHours, 168); assert.equal(task.maxRuns, 7);
+  h.advance(3 * 1440 + 10 * 60); await h.scheduler.tick();
+  assert.equal(h.runs.length, 1);
+  h.scheduler.report(task.id, task.sessionId, { status: 'continue', summary: 'Healthy' });
+  h.runs[0].resolve({ subtype: 'success' }); await h.flush();
+  const saved = h.scheduler.get(task.id, task.sessionId);
+  assert.equal(saved.nextRunAt, Date.parse('1970-01-05T09:00:00Z'));
+  h.scheduler.action(task.id, task.sessionId, 'pause');
+  h.scheduler.action(task.id, task.sessionId, 'update', { dailyTime: '11:00' });
+  h.scheduler.action(task.id, task.sessionId, 'resume');
+  assert.equal(saved.nextRunAt, Date.parse('1970-01-05T11:00:00Z'));
+});
+
+test('legacy records gain interval schedules and legacy interval edits still work', context => {
+  const h = fixture(context), task = h.create(); h.scheduler.action(task.id, task.sessionId, 'pause');
+  const records = JSON.parse(fs.readFileSync(h.options.file)); delete records[0].schedule;
+  fs.writeFileSync(h.options.file, JSON.stringify(records));
+  const restored = new ScheduledTasks(h.options); context.after(() => restored.close());
+  assert.deepEqual(restored.get(task.id, task.sessionId).schedule, { type: 'interval', minutes: 1 });
+  restored.action(task.id, task.sessionId, 'update', { intervalMinutes: 30 });
+  assert.deepEqual(restored.get(task.id, task.sessionId).schedule, { type: 'interval', minutes: 30 });
+});

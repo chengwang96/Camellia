@@ -51,14 +51,18 @@ main.mobile-access .device-name-row input { flex: 0 1 208px; width: 208px; }
 main.mobile-access .device-name-row .primary { margin-left: auto; }
 main.mobile-access .device-pair:has(#invitation:not([hidden])) .device-name-row { display: none; }
 main.mobile-access .pair-code-actions { margin-top: 10px; }
-dialog.device-rename { border: 1px solid var(--dsw-alias-border-l2); border-radius: 12px; background: var(--dsw-alias-bg-base); color: inherit; padding: 20px; max-width: 360px; }
-dialog.device-rename form { display: flex; flex-direction: column; gap: 10px; }
-dialog.device-rename label { display: flex; flex-direction: column; gap: 6px; font: var(--f-xxs-strong-12); color: var(--dsw-alias-label-secondary); }
-dialog.device-rename input { border: 1px solid var(--dsw-alias-border-l2); border-radius: 9px; background: var(--dsw-alias-bg-layer-1); color: inherit; padding: 8px 12px; font: inherit; }
-.rename-error { color: var(--dsw-alias-state-error-primary); }
 .device { margin-top: 12px; padding: 12px; border: 1px solid var(--dsw-alias-border-l2); border-radius: 10px; }
 .device-icon { flex: 0 0 34px; width: 34px; height: 34px; padding: 7px; border-radius: 9px; background: var(--dsw-alias-bg-soft); fill: none; stroke: var(--dsw-alias-label-secondary); stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
 .device .name { min-width: 0; flex: 1; overflow-wrap: anywhere; }
+.device-rename-field { flex: 1 1 220px; min-width: 0; width: min(100%, 320px); padding: 7px 10px; border: 1px solid var(--dsw-alias-border-l2); border-radius: 9px; background: var(--dsw-alias-bg-base); color: inherit; font: inherit; }
+.device-rename-field[aria-invalid="true"] { border-color: var(--dsw-alias-state-error-primary); }
+.device-rename-status { flex: 1 1 100%; margin: 0; }
+.device-rename-status:empty { display: none; }
+.device-rename-status.error { color: var(--dsw-alias-state-error-primary); }
+.device-inline-rename .device-meta,
+.device-inline-rename .device-actions > :not(.device-rename-save):not(.device-rename-cancel) { display: none; }
+.device-inline-rename .device-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
+@media (max-width: 620px) { .device-inline-rename .device-info { flex-basis: 100%; } }
 .device small { display: block; color: var(--dsw-alias-label-tertiary); }
 .pair-success { display: flex; align-items: center; gap: 12px; margin-top: 16px; padding: 14px 16px; border-radius: 12px; background: var(--dsw-alias-state-success-tertiary); }
 .pair-success > div { display: grid; flex: 1; gap: 3px; min-width: 0; }
@@ -99,6 +103,6 @@ dialog.device-rename input { border: 1px solid var(--dsw-alias-border-l2); borde
 .mobile-tailscale-form { display: grid; gap: 8px; margin-top: 12px; }
 .mobile-tailscale-form label { color: var(--dsw-alias-label-secondary); font: var(--f-xxs-strong-12); }
 .mobile-tailscale-form input { width: 100%; min-width: 0; border: 1px solid var(--dsw-alias-border-l2); border-radius: 9px; background: var(--dsw-alias-bg-layer-1); color: inherit; padding: 8px 12px; font: inherit; }
-@media (max-width: 620px) { main { padding: 22px; } .device { flex-wrap: wrap; } .pair-layout { grid-template-columns: minmax(0, 1fr); } .pair-layout .qr { min-height: 0; padding: 10px; } }
+@media (max-width: 620px) { main { padding: 22px; } .device { flex-wrap: wrap; } .device-inline-rename .device-actions { flex: 1 1 100%; justify-content: flex-end; } .pair-layout { grid-template-columns: minmax(0, 1fr); } .pair-layout .qr { min-height: 0; padding: 10px; } }
 main.mobile-access { padding-bottom: 0; }
 main.mobile-access > :last-child { margin-bottom: 0; }

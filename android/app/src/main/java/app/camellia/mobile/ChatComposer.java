@@ -13,6 +13,7 @@ import android.widget.TextView;
 
 final class ChatComposer {
     private static final float MODEL_WIDTH_FRACTION = .58f;
+    private static final int INPUT_MAX_LINES = 4;
     final ComposerInput input;
     final TextView model;
     final ImageButton send, stop;
@@ -47,7 +48,7 @@ final class ChatComposer {
         editing.addView(cancelEdit, new LinearLayout.LayoutParams(dp(48), dp(48)));
         editing.setVisibility(View.GONE); bar.addView(editing);
         input = new ComposerInput(context); input.setTextColor(style.ink); input.setTextSize(MobilePreferences.chatTextSize(context, Palette.TEXT_ROW));
-        input.setMaxLines(4); input.setMinHeight(dp(48)); input.setVerticalScrollBarEnabled(false);
+        input.setMaxLines(INPUT_MAX_LINES); input.setMinHeight(dp(48)); input.setVerticalScrollBarEnabled(false);
         input.setHint(hint); input.setHintTextColor(style.muted);
         input.setContentDescription(chinese ? "消息输入框" : "Message input");
         input.setGravity(Gravity.TOP | Gravity.START);
@@ -83,6 +84,19 @@ final class ChatComposer {
         input.setOnFocusChangeListener((view, focused) -> shape.setStroke(dp(1), focused ? style.accent : style.floatingBarEdge()));
         bar.addOnLayoutChangeListener((view, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom) ->
             updateModelMaxWidth());
+    }
+
+    void fitInputToBarHeight(int height) {
+        int reserved = bar.getPaddingTop() + bar.getPaddingBottom() + dp(48) + tools.getPaddingTop() + tools.getPaddingBottom();
+        for (int index = 0; index < bar.getChildCount(); index++) {
+            View child = bar.getChildAt(index);
+            if (child != input && child != tools && child.getVisibility() != View.GONE) reserved += child.getMeasuredHeight();
+        }
+        var font = input.getPaint().getFontMetricsInt();
+        int fontPadding = input.getIncludeFontPadding() ? font.ascent - font.top + font.bottom - font.descent : 0;
+        int available = height - reserved - input.getCompoundPaddingTop() - input.getCompoundPaddingBottom() - fontPadding;
+        int lines = Math.max(1, Math.min(INPUT_MAX_LINES, available / Math.max(1, input.getLineHeight())));
+        if (input.getMaxLines() != lines) input.setMaxLines(lines);
     }
 
     void addTool(View tool) {

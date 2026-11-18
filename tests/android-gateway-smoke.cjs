@@ -60,7 +60,7 @@ async function main() {
   goal.setTimer = () => { goalSchedules++; return {}; }; goal.clearTimer = () => {};
   assert.equal((await manager.command('codex', 'goal-start', { sessionId: conversation.id, objective: 'Android automation fixture' })).ok, true);
   goal.setPhase('paused');
-  const task = manager.tasks.create(conversation.id, 'codex', { instruction: 'Inspect fixture logs', intervalMinutes: 1440 });
+  const task = manager.tasks.create(conversation.id, 'codex', { instruction: 'Inspect fixture logs', intervalMinutes: 1440, maxHours: 48 });
   manager.tasks.action(task.id, conversation.id, 'pause');
   const download = gateway.download.bind(gateway);
   let downloads = 0;

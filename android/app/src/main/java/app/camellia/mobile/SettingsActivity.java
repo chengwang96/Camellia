@@ -40,6 +40,8 @@ public final class SettingsActivity extends Activity {
     private boolean finishingAfterSave;
     private TextView storageRetry;
     private String storageError = "";
+    private View tabletCategories;
+    private int tabletCategoryScroll;
 
     @Override protected void attachBaseContext(Context context) { super.attachBaseContext(MobilePreferences.wrap(context)); }
 
@@ -49,6 +51,7 @@ public final class SettingsActivity extends Activity {
         settingsStyle = new SettingsStyle(this);
         section = saved == null ? getIntent().getStringExtra("section") : saved.getString("section");
         if (section == null) section = "providers";
+        if (saved != null) tabletCategoryScroll = saved.getInt(TabletScaffold.CATEGORY_SCROLL, 0);
         pages = new PageTransitions(this);
         worker = java.util.concurrent.Executors.newSingleThreadExecutor();
         EmbeddedNetwork.initialize(getApplicationContext());
@@ -68,6 +71,32 @@ public final class SettingsActivity extends Activity {
             getWindow().setNavigationBarColor(android.graphics.Color.TRANSPARENT);
             if (android.os.Build.VERSION.SDK_INT >= 29) getWindow().setNavigationBarContrastEnforced(false);
         }
+    }
+
+    @Override protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent); setIntent(intent); PageTransitions.configureActivity(this);
+        String target = intent.getStringExtra("section");
+        if (target != null) selectTabletSection(target);
+        TabletScaffold.applyCategoryScroll(this);
+    }
+
+    @Override public void onConfigurationChanged(android.content.res.Configuration configuration) {
+        android.view.Window focusWindow = EditorFocusState.focusedWindow(this, dialog);
+        EditorFocusState focus = EditorFocusState.capture(focusWindow);
+        android.widget.EditText previousName = getWindow().getDecorView().findViewWithTag("tabletDeviceNameInput");
+        String draftName = previousName == null ? null : previousName.getText().toString();
+        ScrollView previousBody = getWindow().getDecorView().findViewWithTag("settingsScroll");
+        int bodyY = previousBody == null ? 0 : previousBody.getScrollY();
+        super.onConfigurationChanged(configuration); PageTransitions.configureActivity(this);
+        if (choiceDropdown != null) choiceDropdown.dismiss();
+        try {
+            if (store == null) shell(tr("正在读取设置…", "Loading settings…")); else render();
+            android.widget.EditText name = getWindow().getDecorView().findViewWithTag("tabletDeviceNameInput");
+            if (draftName != null && name != null) name.setText(draftName);
+            DialogWindows.requestLayout(this); focus.restore(focusWindow);
+            ScrollView body = getWindow().getDecorView().findViewWithTag("settingsScroll");
+            if (body != null) TabletScaffold.restoreScroll(body, bodyY);
+        } catch (Exception error) { failure(error); }
     }
 
     private void loadStore() {
@@ -93,7 +122,11 @@ public final class SettingsActivity extends Activity {
         });
     }
 
-    @Override protected void onSaveInstanceState(Bundle saved) { super.onSaveInstanceState(saved); saved.putString("section", section); }
+    @Override protected void onSaveInstanceState(Bundle saved) {
+        super.onSaveInstanceState(saved); saved.putString("section", section);
+        tabletCategoryScroll = tabletCategories == null ? TabletScaffold.consumeCategoryScroll(this, tabletCategoryScroll) : TabletScaffold.categoryScroll(tabletCategories);
+        saved.putInt(TabletScaffold.CATEGORY_SCROLL, tabletCategoryScroll);
+    }
     @Override protected void onStop() {
         if (choiceDropdown != null) choiceDropdown.dismiss();
         clearStatus();
@@ -138,10 +171,13 @@ public final class SettingsActivity extends Activity {
     }
     private void shell(String title) {
         clearStatus();
+        if (tabletCategories != null) tabletCategoryScroll = TabletScaffold.categoryScroll(tabletCategories);
+        tabletCategoryScroll = TabletScaffold.consumeCategoryScroll(this, tabletCategoryScroll);
+        tabletCategories = null;
         LinearLayout root = column(); root.setBackground(settingsStyle.palette().pageBackground());
         root.setClipChildren(true); root.setClipToPadding(true);
         root.setPadding(dp(16), dp(6), dp(16), 0);
-        root.addView(settingsStyle.header(title, tr("返回", "Back"), this::finish));
+        root.addView(MobileLayout.useTabletRail(getResources().getConfiguration()) ? settingsStyle.header(title) : settingsStyle.header(title, tr("返回", "Back"), this::finish));
         FrameLayout viewport = new FrameLayout(this); viewport.setTag("settingsViewport");
         // Keep scrolling text and elevated cards inside the body, below the header and system insets.
         viewport.setClipChildren(true); viewport.setClipToPadding(true);
@@ -186,7 +222,46 @@ public final class SettingsActivity extends Activity {
             if (retryPlacement.bottomMargin != margin) { retryPlacement.bottomMargin = margin; retry.setLayoutParams(retryPlacement); }
             return insets;
         });
-        pages.show(root, section, 0); root.requestApplyInsets();
+        View page = root;
+        if (MobileLayout.useTabletRail(getResources().getConfiguration())) {
+            root.setOnApplyWindowInsetsListener(null);
+            root.setPadding(dp(24), dp(8), dp(24), 0);
+            View split = TabletScaffold.settingsBody(this, root, section, this::selectTabletSection, tabletCategoryScroll);
+            tabletCategories = split.findViewWithTag("tabletSettingsCategories");
+            page = TabletScaffold.wrap(this, split, "settings", () -> leaveForTablet("home"),
+                () -> leaveForTablet("sessions"), () -> leaveForTablet("computers"), () -> {});
+        }
+        pages.show(page, section, 0, MobileLayout.useTabletRail(getResources().getConfiguration())); page.requestApplyInsets();
+    }
+
+    private void selectTabletSection(String target) {
+        if (target.equals(section)) return;
+        if (target.equals("network")) { leaveForTablet("network"); return; }
+        if (target.equals("usage")) {
+            try {
+                JSONObject computer = new ComputerStore(new CredentialStore(this)).load();
+                TabletScaffold.openSettingsCategory(this, new Intent(this, RemoteUsageActivity.class).putExtra("address", computer.optString("address")));
+            } catch (Exception error) { failure(error); }
+            return;
+        }
+        if (choiceDropdown != null) choiceDropdown.dismiss();
+        if (dialog != null) dialog.dismiss();
+        section = target;
+        if (store == null) return;
+        try { render(); } catch (Exception error) { failure(error); }
+    }
+
+    private void leaveForTablet(String destination) {
+        Runnable leave = () -> {
+            Intent target = new Intent(this, MainActivity.class).putExtra("tabletDestination", destination)
+                .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP);
+            if (destination.equals("network")) TabletScaffold.openSettingsCategory(this, target);
+            else PageTransitions.openDestination(this, target);
+            finishingAfterSave = true; PageTransitions.finishDestination(this);
+        };
+        if (store == null) { leave.run(); return; }
+        try { store.flush(stored(value -> leave.run())); }
+        catch (Exception error) { storageFailure(error); }
     }
     private void clearStatus() {
         if (status == null) return;
@@ -209,7 +284,26 @@ public final class SettingsActivity extends Activity {
     }
     private void failure(Exception error) { showStatus(error.getMessage() == null ? tr("无法保存，请重试。", "Could not save. Try again.") : error.getMessage(), false); }
     private void render() throws Exception {
-        if (section.equals("general")) general();
+        if (section.equals("deviceName")) {
+            shell(tr("本机名称", "Device name"));
+            LinearLayout group = settingsStyle.group(content, "");
+            EditText name = new EditorInput(this); name.setSingleLine(true); name.setTextSize(Palette.TEXT_ROW);
+            name.setTextColor(settingsStyle.ink); name.setText(MobilePreferences.deviceName(this));
+            name.setContentDescription(tr("本机名称", "Device name")); name.setTag("tabletDeviceNameInput");
+            name.setFilters(new android.text.InputFilter[]{new android.text.InputFilter.LengthFilter(80)});
+            group.addView(new SettingsField(name), new LinearLayout.LayoutParams(-1, -2));
+            settingsStyle.action(group, tr("保存名称", "Save name"), "", "tabletDeviceNameSave", false, () -> {
+                String value = name.getText().toString().trim();
+                if (value.isEmpty()) { ((SettingsField) name.getParent()).showError(tr("请输入设备名称", "Enter a device name")); return; }
+                MobilePreferences.set(this, "deviceName", value);
+                EmbeddedNetwork.setNodeHostname(value);
+                showStatus(tr("名称已保存", "Name saved"));
+            });
+        } else if (section.equals("about")) {
+            shell(tr("关于 Camellia", "About Camellia"));
+            String version = getPackageManager().getPackageInfo(getPackageName(), 0).versionName;
+            settingsStyle.valueRow(settingsStyle.group(content, ""), "file", tr("Camellia 版本", "Version"), version, "settings:about");
+        } else if (section.equals("general")) general();
         else if (section.equals("reading")) reading();
         else if (section.equals("notifications")) notifications();
         else if (section.equals("archived")) archived(); else providers();
@@ -499,7 +593,7 @@ public final class SettingsActivity extends Activity {
     }
     private EditText field(LinearLayout form, String label, String tag, String value, boolean secret, boolean multiline) {
         TextView caption = text(label, Palette.TEXT_NOTE, settingsStyle.secondary); caption.setPadding(dp(2), dp(16), dp(2), dp(8)); form.addView(caption);
-        EditText field = new EditText(this); field.setTextColor(style.ink); field.setTextSize(Palette.TEXT_INPUT); field.setTag(tag);
+        EditText field = new EditorInput(this); field.setTextColor(style.ink); field.setTextSize(Palette.TEXT_INPUT); field.setTag(tag);
         field.setInputType(InputType.TYPE_CLASS_TEXT | (secret ? InputType.TYPE_TEXT_VARIATION_PASSWORD : InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS)
             | (multiline ? InputType.TYPE_TEXT_FLAG_MULTI_LINE : 0));
         field.setSingleLine(!multiline); field.setMinLines(multiline ? 3 : 1); field.setMaxLines(multiline ? 6 : 1);

@@ -226,7 +226,7 @@ public final class AttachmentStreamingTest extends InstrumentationTestCase {
             @Override public void write(String key, String value) { state.put(key, value); }
         };
         File directory = new File(context.getNoBackupFilesDir(), "tailnet-upload-fixture"); assertTrue(directory.isDirectory() || directory.mkdirs());
-        tailnet.Node node = tailnet.Tailnet.newNode(directory.getPath(), storage);
+        tailnet.Node node = tailnet.Tailnet.newNode(directory.getPath(), "camellia-test", storage);
         try {
             AttachmentJson.Body body = AttachmentJson.prepare(context, new JSONObject().put("text", "fixture"), JsonStreams.NEVER_CANCELLED);
             AttachmentUpload first = new AttachmentUpload(body);

@@ -18,6 +18,7 @@ import android.widget.ImageView;
 
 @android.annotation.SuppressLint("ViewConstructor")
 final class PageTransitions extends FrameLayout {
+    static final String MAIN_DESTINATION = "mainDestination";
     private View page;
     private String route;
     private int depth;
@@ -38,6 +39,7 @@ final class PageTransitions extends FrameLayout {
 
     void show(View next, String nextRoute, int nextDepth, boolean instant) {
         finishTransition();
+        instant = instant || MobileLayout.useTabletRail(getResources().getConfiguration());
         boolean animate = !instant && page != null && !nextRoute.equals(route) && isLaidOut()
             && getWidth() > 0 && getHeight() > 0 && ValueAnimator.areAnimatorsEnabled();
         boolean back = nextDepth < depth;
@@ -95,17 +97,47 @@ final class PageTransitions extends FrameLayout {
     }
 
     static void configureActivity(Activity activity) {
+        boolean instant = instantActivity(activity);
         if (Build.VERSION.SDK_INT >= 34) {
-            activity.overrideActivityTransition(Activity.OVERRIDE_TRANSITION_OPEN, R.anim.page_push_enter, R.anim.page_push_exit);
-            activity.overrideActivityTransition(Activity.OVERRIDE_TRANSITION_CLOSE, R.anim.page_pop_enter, R.anim.page_pop_exit);
-        }
+            activity.overrideActivityTransition(Activity.OVERRIDE_TRANSITION_OPEN, instant ? 0 : R.anim.page_push_enter, instant ? 0 : R.anim.page_push_exit);
+            activity.overrideActivityTransition(Activity.OVERRIDE_TRANSITION_CLOSE, instant ? 0 : R.anim.page_pop_enter, instant ? 0 : R.anim.page_pop_exit);
+        } else if (instant) activity.overridePendingTransition(0, 0);
+    }
+
+    private static boolean instantActivity(Activity activity) {
+        return activity.getIntent().getBooleanExtra(MAIN_DESTINATION, false)
+            || MobileLayout.useTabletRail(activity.getResources().getConfiguration());
+    }
+
+    static void openActivity(Activity activity, android.content.Intent intent) {
+        if (MobileLayout.useTabletRail(activity.getResources().getConfiguration())) openDestination(activity, intent);
+        else { activity.startActivity(intent); openActivity(activity); }
+    }
+
+    static void openDestination(Activity activity, android.content.Intent intent) {
+        intent.putExtra(MAIN_DESTINATION, true).addFlags(android.content.Intent.FLAG_ACTIVITY_NO_ANIMATION);
+        activity.startActivity(intent, android.app.ActivityOptions.makeCustomAnimation(activity, 0, 0).toBundle());
+        if (Build.VERSION.SDK_INT < 34) activity.overridePendingTransition(0, 0);
+    }
+
+    static void finishDestination(Activity activity) {
+        activity.getIntent().putExtra(MAIN_DESTINATION, true);
+        configureActivity(activity);
+        activity.finish();
+        if (Build.VERSION.SDK_INT < 34) activity.overridePendingTransition(0, 0);
     }
 
     static void openActivity(Activity activity) {
-        if (Build.VERSION.SDK_INT < 34) activity.overridePendingTransition(R.anim.page_push_enter, R.anim.page_push_exit);
+        if (Build.VERSION.SDK_INT < 34) {
+            boolean instant = MobileLayout.useTabletRail(activity.getResources().getConfiguration());
+            activity.overridePendingTransition(instant ? 0 : R.anim.page_push_enter, instant ? 0 : R.anim.page_push_exit);
+        }
     }
 
     static void closeActivity(Activity activity) {
-        if (Build.VERSION.SDK_INT < 34) activity.overridePendingTransition(R.anim.page_pop_enter, R.anim.page_pop_exit);
+        if (Build.VERSION.SDK_INT < 34) {
+            boolean instant = instantActivity(activity);
+            activity.overridePendingTransition(instant ? 0 : R.anim.page_pop_enter, instant ? 0 : R.anim.page_pop_exit);
+        }
     }
 }

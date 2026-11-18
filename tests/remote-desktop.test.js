@@ -297,6 +297,29 @@ test('saving the computer name also renames the embedded node', async context =>
   assert.equal(network.snapshot.hostName, 'work-pc');
 });
 
+test('the embedded node starts with the saved computer name, or the helper fallback', async context => {
+  for (const [saved, expected] of [['Work PC', 'work-pc'], ['', '']]) {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'remote-boot-name-'));
+    context.after(() => removeTree(root));
+    let options;
+    const network = {
+      snapshot: { state: 'Running', address: '100.80.1.2' },
+      async start() {}, async status() { return this.snapshot; }, async login() {}, async openLogin() {},
+      async listen() {}, async stop() {},
+    };
+    const handlers = new Map();
+    const settings = { webContents: { mainFrame: {} }, isDestroyed: () => false };
+    const controller = createRemoteDesktop({ app: { getPath: () => root },
+      ipcMain: { handle: (channel, callback) => handlers.set(channel, callback) },
+      manager: { workspaces: { sessionMeta: () => ({ workspaces: [] }) } }, loadConfig: () => ({}),
+      getSettingsWindow: () => settings, networkFactory: value => { options = value; return network; },
+      computerName: () => saved, saveComputerName: name => name });
+    context.after(() => controller.close());
+    await handlers.get('dsh:remote-control')({ sender: settings.webContents, senderFrame: settings.webContents.mainFrame }, { action: 'state' });
+    assert.equal(options.hostname(), expected);
+  }
+});
+
 test('a transient network state and an address change recover without reenabling manually', async context => {
   const { controller, command, network, calls } = startupHarness(context, [trustedPhone()]);
   await controller.startTrustedDevices(); assert.equal(calls.listen, 1);

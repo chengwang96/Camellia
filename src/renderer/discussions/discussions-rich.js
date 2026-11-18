@@ -73,7 +73,7 @@ window.CamelliaDiscussionRich = { create({ getGroup, call, mutate, getAttachment
       const finished = !['queued', 'preparing', 'running', 'stopping'].includes(delivery.status);
       // Pending message nodes are recreated on every update. Keep the disclosure
       // with its delivery so both it and individual tool cards stay expanded.
-      if (finished && state.finished === false) state.el.open = false;
+      if (finished && state.finished === false && state.el.dataset.userExpanded !== 'true') state.el.open = false;
       state.finished = finished;
       state.el.querySelector('.execution-process-count').textContent = tools.length + ' tool calls';
       bucket = state.body; bucket.replaceChildren(); process.append(state.el);
@@ -192,5 +192,8 @@ window.CamelliaDiscussionRich = { create({ getGroup, call, mutate, getAttachment
   $('fileViewerResize').onpointerdown = event => { if (event.button !== 0) return; drag = { x: event.clientX, width: $('fileViewer').getBoundingClientRect().width }; $('fileViewerResize').setPointerCapture(event.pointerId); };
   $('fileViewerResize').onpointermove = event => { if (drag) $('fileViewer').style.setProperty('--file-viewer-width', Math.max(260, Math.min(innerWidth - 40, drag.width + drag.x - event.clientX)) + 'px'); };
   $('fileViewerResize').onpointerup = $('fileViewerResize').onpointercancel = () => { drag = null; };
-  return { render, renderTools, attachments, suspend() { pending = null; $('discussionPermission').close(); preview.closeFilePreview(); }, get uploading() { return uploading; } };
+  return { render, renderTools, attachments, async suspend() {
+    if (!await preview.closeFilePreview()) return false;
+    pending = null; $('discussionPermission').close(); return true;
+  }, get uploading() { return uploading; } };
 } };

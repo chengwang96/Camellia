@@ -12,6 +12,9 @@ import android.widget.TextView;
 
 @android.annotation.SuppressLint("ViewConstructor")
 final class ConversationRow extends LinearLayout {
+    private android.graphics.drawable.GradientDrawable face;
+    private final Palette palette;
+    private boolean selecting;
     ConversationRow(Context context, ChatStyle style, boolean grouped, String title, String state,
                     String tag, String stateTag, Runnable open, Runnable actions) {
         this(context, style, grouped, "", title, "", state, style.accent, "", tag, stateTag, open, actions);
@@ -25,11 +28,11 @@ final class ConversationRow extends LinearLayout {
     ConversationRow(Context context, ChatStyle style, boolean grouped, String engine, String title, String subtitle,
                     String state, int statusColor, String time, String tag, String stateTag, Runnable open, Runnable actions) {
         super(context);
-        Palette palette = Palette.of(context);
+        palette = Palette.of(context);
         setOrientation(HORIZONTAL); setGravity(Gravity.CENTER_VERTICAL);
         setMinimumHeight(dp(68));
         setPadding(dp(14), dp(8), dp(12), dp(8));
-        android.graphics.drawable.GradientDrawable face = rounded(palette.card, Palette.RADIUS_CARD);
+        face = rounded(palette.card, Palette.RADIUS_CARD);
         face.setStroke(dp(1), palette.cardBorder);
         setBackground(new RippleDrawable(ColorStateList.valueOf(Palette.RIPPLE_ON_CARD), face, rounded(Color.WHITE, Palette.RADIUS_CARD)));
         setElevation(dp(1));
@@ -97,6 +100,7 @@ final class ConversationRow extends LinearLayout {
     }
 
     void selection(boolean active, boolean selected) {
+        selecting = active;
         if (!active) return;
         SelectionMark mark = new SelectionMark(getContext(), false);
         mark.setChecked(selected);
@@ -105,6 +109,12 @@ final class ConversationRow extends LinearLayout {
         addView(mark, 0, params);
         setSelected(selected);
         setContentDescription(getContentDescription() + (selected ? " · ✓" : " · ○"));
+    }
+
+    void activeConversation(boolean selected) {
+        if (selecting) return; // The checked selection owns this state during bulk actions.
+        setSelected(selected);
+        face.setStroke(dp(1), selected ? palette.accent : palette.cardBorder);
     }
 
     private android.graphics.drawable.GradientDrawable rounded(int color, int radiusDp) {

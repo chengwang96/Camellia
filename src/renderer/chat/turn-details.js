@@ -80,7 +80,7 @@
       label.setAttribute('aria-controls', process.id);
       const sync = () => label.setAttribute('aria-expanded', String(process.open));
       label.innerHTML += chevron;
-      label.onclick = () => { process.open = !process.open; sync(); };
+      label.onclick = () => { window.CamelliaChatControls.setExecutionProcessOpen(process, !process.open); sync(); };
       process.addEventListener('toggle', sync); sync();
     }
     header.appendChild(label);

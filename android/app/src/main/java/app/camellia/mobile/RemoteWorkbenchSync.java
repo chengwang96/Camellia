@@ -20,6 +20,9 @@ final class RemoteWorkbenchSync implements AutoCloseable {
     private static final class MissingReplyState extends IOException {
         MissingReplyState() { super("Workbench summary has no reply markers"); }
     }
+    private static final class ShortRecentSummary extends IOException {
+        ShortRecentSummary() { super("Older workbench summary is limited to ten recent conversations"); }
+    }
     static final class Update {
         final JSONObject computer, page;
         final State state;
@@ -33,6 +36,7 @@ final class RemoteWorkbenchSync implements AutoCloseable {
     private final ScheduledExecutorService deadlines = executor("camellia-home-deadlines");
     private final long openingMs, idleMs, retryMs;
     private Consumer<Update> listener;
+    private int recentLimit = 3;
     private boolean closed;
 
     RemoteWorkbenchSync(Function<String, RemoteApi> clients) { this(clients, 12_000, 45_000, 1_000); }
@@ -52,6 +56,20 @@ final class RemoteWorkbenchSync implements AutoCloseable {
     }
     synchronized void refresh(List<JSONObject> computers, Consumer<Update> listener) {
         reconcile(computers, listener, true);
+    }
+    synchronized void setRecentLimit(int limit) {
+        recentLimit = Math.max(3, Math.min(30, limit));
+        if (recentLimit <= 10 || closed) return;
+        // Expand older desktop summaries through their existing list stream.
+        // Each host keeps its own worker and never touches the selected chat.
+        for (Host host : new ArrayList<>(hosts.values())) {
+            if (host.mode != 0 || host.recentRows != 10) continue;
+            boolean fresh = host.state == State.LIVE && now() - host.contact < idleMs;
+            host.close();
+            Host replacement = new Host(host.computer); replacement.mode = 1;
+            if (fresh) replacement.state = State.LIVE;
+            hosts.put(host.key, replacement); replacement.schedule(0);
+        }
     }
     private void reconcile(List<JSONObject> computers, Consumer<Update> listener, boolean force) {
         if (closed) return;
@@ -92,6 +110,7 @@ final class RemoteWorkbenchSync implements AutoCloseable {
         ScheduledFuture<?> deadline;
         State state = State.CONNECTING;
         int mode, failures; // summary stream, legacy list stream, legacy polling
+        int recentRows = -1;
         long contact, started;
         boolean received, disposed;
 
@@ -125,9 +144,16 @@ final class RemoteWorkbenchSync implements AutoCloseable {
                     JSONObject page = snapshot.optJSONObject("workbench");
                     if (page == null) throw new IOException("Missing workbench summary");
                     JSONArray rows = page.optJSONArray("conversations");
+                    int recent = 0;
                     for (int i = 0; rows != null && i < rows.length(); i++) {
                         JSONObject row = rows.optJSONObject(i);
                         if (row != null && (!row.has("lastReplyAt") || !row.has("replyReadAt"))) throw new MissingReplyState();
+                        if (row != null && !active(row)) recent++;
+                    }
+                    synchronized (RemoteWorkbenchSync.this) {
+                        if (!valid(api)) return;
+                        recentRows = recent;
+                        if (recentLimit > 10 && recentRows == 10) throw new ShortRecentSummary();
                     }
                     accept(api, page);
                 }, () -> heartbeat(api));
@@ -167,7 +193,7 @@ final class RemoteWorkbenchSync implements AutoCloseable {
                 if (deadline != null) deadline.cancel(false);
                 int status = error instanceof RemoteApi.Failure ? ((RemoteApi.Failure) error).status : 0;
                 long delay;
-                if (status == 404 && mode < 2 || error instanceof MissingReplyState && mode == 0) { mode++; delay = 0; }
+                if (status == 404 && mode < 2 || (error instanceof MissingReplyState || error instanceof ShortRecentSummary) && mode == 0) { mode++; delay = 0; }
                 else if (status == 401 || status == 403) {
                     state = State.UNAUTHORIZED; emit(null); cancel(api); return;
                 } else if (error != null) {
@@ -205,7 +231,7 @@ final class RemoteWorkbenchSync implements AutoCloseable {
                 sorted.sort((left, right) -> Long.compare(right.optLong("updatedAt"), left.optLong("updatedAt")));
                 JSONArray selected = new JSONArray(); int recent = 0;
                 for (JSONObject row : sorted) {
-                    if (!active(row) && recent++ >= 10) continue;
+                    if (!active(row) && recent++ >= 30) continue;
                     JSONObject summary = new JSONObject();
                     for (String key : new String[] { "id", "title", "engine", "currentEngine", "model", "modelName", "workspaceName", "updatedAt", "activity", "lastReplyAt", "replyReadAt" })
                         if (row.has(key)) summary.put(key, row.get(key));

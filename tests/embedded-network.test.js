@@ -62,13 +62,14 @@ test('embedded networking accepts a headless key provider without an Electron ap
   child.stdin.on('finish', () => child.emit('exit', 0));
   const network = new EmbeddedNetwork({ directory, executable: process.execPath,
     keyProvider: target => { assert.equal(target, directory); return key; },
+    hostname: () => 'work-pc',
     spawnProcess: (executable, args, options) => {
       assert.equal(executable, process.execPath);
       assert.equal(options.env.TS_NO_LOGS_NO_SUPPORT, 'true');
       return child;
     } });
   await network.start();
-  assert.deepEqual(requests[0], { directory, key, id: 1, action: 'init' });
+  assert.deepEqual(requests[0], { directory, key, hostname: 'work-pc', id: 1, action: 'init' });
   await network.stop();
   assert.equal(network.child, null);
   assert.equal(fs.existsSync(path.join(directory, 'key.enc')), false);
@@ -107,6 +108,37 @@ test('headless hostname is validated before any helper process starts', () => {
     assert.throws(() => new EmbeddedNetwork({ hostname }), /hostname/);
   }
   assert.equal(new EmbeddedNetwork({ hostname: 'gpu-lab-01' }).hostname, 'gpu-lab-01');
+  const changing = new EmbeddedNetwork({ hostname: () => 'first-node' });
+  assert.equal(typeof changing.hostname, 'function');
+});
+
+test('the helper receives a DNS label and can be given a lazily read name', async context => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'helper-hostname-'));
+  context.after(() => removeTree(directory));
+  const requests = [];
+  const key = Buffer.alloc(32, 7).toString('base64');
+  const spawnProcess = () => {
+    const child = new EventEmitter();
+    child.stdout = new PassThrough(); child.stderr = new PassThrough();
+    child.kill = () => child.emit('exit', 0);
+    child.stdin = new Writable({ write(chunk, encoding, callback) {
+      const request = JSON.parse(chunk.toString()); requests.push(request);
+      child.stdout.write(JSON.stringify({ id: request.id, result: {} }) + '\n'); callback();
+    } });
+    child.stdin.on('finish', () => child.emit('exit', 0));
+    return child;
+  };
+  let name = 'initial-name';
+  const network = new EmbeddedNetwork({ directory, executable: process.execPath,
+    keyProvider: () => key, hostname: () => name,
+    spawnProcess });
+  await network.start();
+  assert.equal(requests[0].hostname, 'initial-name');
+  name = 'second-name';
+  await network.stop();
+  await network.start();
+  assert.equal(requests[1].hostname, 'second-name');
+  await network.stop();
 });
 
 test('embedded hostname changes use the helper and refresh the cached identity', async () => {

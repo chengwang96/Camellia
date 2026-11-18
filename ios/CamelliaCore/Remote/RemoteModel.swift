@@ -732,16 +732,62 @@ public struct RemoteTask: Sendable, Identifiable, Equatable {
     public let instruction: String
     public let status: String
     public let intervalMinutes: Int
+    public let scheduleType: String
+    public let dailyTime: String
+    public let timeZone: String
+    public let notice: String
+    public let noticeZh: String
+    public let stopping: Bool
+    public let runs: Int
+    public let maxRuns: Int
+    public let repairs: Int
+    public let maxRepairs: Int
+    public let nextRunAt: Int64
+    public let expiresAt: Int64
+    public let lastResult: String
+    public let history: [RemoteTaskCheck]
 
     public init(_ json: JSONObject) {
         id = json.text("id")
         instruction = json.text("instruction")
         status = json.text("status")
         intervalMinutes = json.int("intervalMinutes")
+        let schedule = json.object("schedule")
+        scheduleType = schedule?.text("type", fallback: "interval") ?? "interval"
+        dailyTime = schedule?.text("time") ?? ""
+        timeZone = schedule?.text("timeZone") ?? ""
+        notice = json.text("notice")
+        noticeZh = json.text("noticeZh")
+        stopping = json.bool("stopping")
+        runs = json.int("runs")
+        maxRuns = json.int("maxRuns")
+        repairs = json.int("repairs")
+        maxRepairs = json.int("maxRepairs")
+        nextRunAt = json.long("nextRunAt")
+        expiresAt = json.long("expiresAt")
+        lastResult = json.text("lastResult")
+        history = json.objects("history").map(RemoteTaskCheck.init)
     }
 
     public var isPaused: Bool { status == "paused" }
     public var isRunning: Bool { status == "running" }
+    public var canPause: Bool { !stopping && (status == "scheduled" || isRunning) }
+    public var canCancel: Bool { !stopping && (canPause || isPaused) }
+    public func scheduleLabel(chinese: Bool) -> String {
+        if scheduleType == "once" { return chinese ? "执行一次" : "One time" }
+        if scheduleType == "daily" { return chinese ? "每天 \(dailyTime)（\(timeZone)）" : "Daily at \(dailyTime) (\(timeZone))" }
+        return chinese ? "每 \(intervalMinutes) 分钟" : "Every \(intervalMinutes) min"
+    }
+}
+
+public struct RemoteTaskCheck: Sendable, Equatable {
+    public let at: Int64
+    public let message: String
+
+    public init(_ json: JSONObject) {
+        at = json.long("at")
+        message = json.text("message")
+    }
 }
 
 public struct RemoteQueueEntry: Sendable, Identifiable, Equatable {

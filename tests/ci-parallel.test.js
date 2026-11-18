@@ -148,6 +148,11 @@ test('Android aggregate requires the package and all shards, including on failur
   assert.equal(Number(run.env.SHARD_COUNT), jobs.ui.strategy.matrix.shard.length);
   const classes = run.run.match(/ui_classes=\(([\s\S]*?)\)/)[1].trim().split(/\s+/);
   assert.equal(new Set(classes).size, classes.length);
+  const tabletClasses = run.run.match(/tablet_classes=\(([\s\S]*?)\)/)[1].trim().split(/\s+/);
+  assert.equal(new Set([...classes, ...tabletClasses]).size, classes.length + tabletClasses.length);
+  for (const name of ['DialogRotationTest', 'TabletConversationListTest', 'TabletDestinationsTest',
+    'TabletInteractionTest', 'TabletRotationContinuityTest', 'TabletSettingsNavigationTest']) assert.ok(tabletClasses.includes(name), name);
+  assert.match(run.run, /run_ui ui[^\n]*\n[\s\S]+wm size 960x1536\n[\s\S]+wm density 240\n[\s\S]+run_ui tablet-ui/);
   for (const name of ['ModernSettingsLayoutTest', 'NavigationVeilTest', 'UiConsistencyTest', 'SettingsFeedbackTest',
     'ChoiceDropdownTest', 'ComposerAttachmentOverflowTest', 'RemoteApprovalSheetTest', 'WorkbenchServersTest', 'ConversationListScrollTest']) assert.ok(classes.includes(name), name);
   const gateway = run.run.match(/if \[ "\$SHARD" = 1 \]; then([\s\S]*?)\nfi/)[1];

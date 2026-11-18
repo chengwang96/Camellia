@@ -60,7 +60,7 @@ with tempfile.TemporaryDirectory(prefix='discussion-ui-', ignore_cleanup_errors=
         try:
             context = browser.contexts[0]
             page = context.pages[0] if context.pages else context.wait_for_event('page', timeout=30000)
-            page.on('pageerror', lambda e: errors.append(str(e)))
+            page.on('pageerror', lambda error: errors.append(error.stack or str(error)))
             expect(page.locator('#openDiscussions')).to_be_visible(timeout=30000)
         except Exception:
             (preview / 'discussion-electron-error.log').write_text((root / 'electron.log').read_text(encoding='utf8'), encoding='utf8')
@@ -113,6 +113,7 @@ with tempfile.TemporaryDirectory(prefix='discussion-ui-', ignore_cleanup_errors=
             original.unlink()
             page.locator('#attachRow .attchip-name').click()
             expect(page.locator('#discussionSurface #fileViewerBody')).to_contain_text('Attachment evidence 42')
+            expect(page.locator('#discussionSurface #fileViewerEdit')).to_be_hidden()
             page.locator('#discussionSurface #fileViewerClose').click()
             page.reload()
             expect(page.locator('#attachRow .attchip')).to_have_count(1)
@@ -144,7 +145,7 @@ with tempfile.TemporaryDirectory(prefix='discussion-ui-', ignore_cleanup_errors=
             expect(page.locator('.message.assistant .execution-process')).to_have_count(1)
             expect(page.locator('.message.assistant .execution-process')).not_to_have_attribute('open', '')
             expect(page.locator('.tool-card .tool-output').last).to_contain_text('Denied by the user')
-            page.locator('#message').fill('[tools] allow a fixture')
+            page.locator('#message').fill('[tools] allow a fixture: [Show result](fixture-result.txt)')
             page.locator('#discussionSurface #send').click()
             expect(page.locator('#discussionPermission')).to_be_visible()
             page.emulate_media(color_scheme='dark')
@@ -156,6 +157,16 @@ with tempfile.TemporaryDirectory(prefix='discussion-ui-', ignore_cleanup_errors=
             expect(page.locator('.discussion-artifacts .attchip-name')).to_contain_text(['fixture-result.txt'])
             page.locator('.discussion-artifacts .attchip-name').last.click()
             expect(page.locator('#discussionSurface #fileViewerBody')).to_contain_text('Synthetic UI result')
+            preview_panel = page.locator('#discussionSurface #fileViewer')
+            preview_panel.get_by_role('button', name='Edit', exact=True).click()
+            editor = preview_panel.get_by_role('textbox', name='File contents')
+            editor.press('ControlOrMeta+a')
+            page.keyboard.insert_text('Edited discussion result')
+            expect(preview_panel.locator('.file-preview-editor-status')).to_have_text('Saved')
+            assert page.evaluate('monaco.editor.getModels()[0].getValue()') == 'Edited discussion result'
+            preview_panel.get_by_role('button', name='Preview', exact=True).click()
+            expect(preview_panel.locator('.file-preview-text')).to_have_text('Edited discussion result')
+            assert (Path(calls()[-1]['identity']['cwd']) / 'fixture-result.txt').read_text(encoding='utf8') == 'Edited discussion result'
             page.locator('#discussionSurface #fileViewerClose').click()
             page.emulate_media(color_scheme='light')
             page.set_viewport_size({'width':1440,'height':1000})

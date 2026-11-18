@@ -80,6 +80,8 @@ with sync_playwright() as p:
         page.wait_for_function('uiReady && !loadingSession')
         answer = page.locator('.turn').last.locator('.turn-body > .md')
         expect(answer.locator('.md-source-marker')).to_have_count(4)
+        expect(answer.locator('.md-source-marker').first).to_have_css('text-decoration-line', 'none')
+        expect(answer.locator('a[data-chat-source]').first).to_have_css('text-decoration-line', 'underline')
         assert marker_numbers(answer) == ['1', '2', '3', '1'], variant
         assert marker_numbers(page.locator('.turn').first) == ['1'], variant
         expect(page.locator('.msg-user .md-source-marker')).to_have_count(0)

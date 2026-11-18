@@ -33,6 +33,8 @@ import java.util.concurrent.Executors;
 
 public final class LocalChatActivity extends Activity {
     private AttachmentMaintenance.Lease composerAttachments;
+    private ConversationListPane tabletConversationList;
+    private String tabletDestination;
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final Handler viewHandler = new Handler(Looper.getMainLooper());
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
@@ -76,6 +78,7 @@ public final class LocalChatActivity extends Activity {
     private StreamingMarkdownView liveMarkdown;
     private final java.util.IdentityHashMap<JSONObject, LocalMessage> messageBindings = new java.util.IdentityHashMap<>();
     private AlertDialog dialog;
+    private boolean retainingDialogForConfiguration;
     private boolean reloadSettings;
     private String preferenceSignature;
     private final ChatNotifications chatNotifications = new ChatNotifications();
@@ -99,6 +102,7 @@ public final class LocalChatActivity extends Activity {
         if (preferenceSignature != null && !preferenceSignature.equals(MobilePreferences.signature(this))) { recreate(); return; }
         if (reloadSettings) {
             reloadSettings = false;
+            discardLocalList();
             loadStore(false);
         }
     }
@@ -155,7 +159,7 @@ public final class LocalChatActivity extends Activity {
     private void providerSettings() {
         if (runningId != null || sendPending) { status.setText(tr("请先停止回复，再更换 API 配置。", "Stop the reply before replacing API configuration.")); return; }
         persistDraft(); reloadSettings = true;
-        startActivity(new android.content.Intent(this, SettingsActivity.class).putExtra("section", "providers")); PageTransitions.openActivity(this);
+        PageTransitions.openActivity(this, new android.content.Intent(this, SettingsActivity.class).putExtra("section", "providers"));
     }
 
     @Override protected void onCreate(Bundle saved) {
@@ -172,6 +176,7 @@ public final class LocalChatActivity extends Activity {
         if (!dark) getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR | View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR);
         if (saved != null) {
             conversationId = saved.getString("conversationId"); query = saved.getString("query", "");
+            collapsed.addAll(saved.getStringArrayList("localCollapsed") == null ? java.util.Collections.emptyList() : saved.getStringArrayList("localCollapsed"));
             conversationListScroll.load(saved.getBundle("conversationListScroll"));
         }
         else conversationId = getIntent().getStringExtra("conversationId");
@@ -181,7 +186,33 @@ public final class LocalChatActivity extends Activity {
     @Override protected void onSaveInstanceState(Bundle saved) {
         super.onSaveInstanceState(saved);
         saved.putString("conversationId", conversationId); saved.putString("query", query);
+        saved.putStringArrayList("localCollapsed", new java.util.ArrayList<>(collapsed));
         saved.putBundle("conversationListScroll", conversationListScroll.save());
+    }
+
+    @Override public void onConfigurationChanged(Configuration configuration) {
+        android.view.Window focusWindow = EditorFocusState.focusedWindow(this, dialog);
+        EditorFocusState focus = EditorFocusState.capture(focusWindow);
+        super.onConfigurationChanged(configuration);
+        PageTransitions.configureActivity(this);
+        if (store == null) return;
+        retainingDialogForConfiguration = true;
+        try {
+            persistDraft();
+            int previous = scroll == null ? 0 : scroll.getScrollY();
+            boolean bottom = scroll == null || scroll instanceof ChatScrollView && ((ChatScrollView) scroll).isFollowingOutput();
+            if (conversationId == null) list(); else detail();
+            DialogWindows.requestLayout(this); focus.restore(focusWindow);
+            if (!bottom && scroll instanceof ChatScrollView) {
+                ((ChatScrollView) scroll).readHistory();
+                ScrollView pane = scroll;
+                pane.addOnLayoutChangeListener(new View.OnLayoutChangeListener() {
+                    public void onLayoutChange(View v, int l, int t, int r, int b, int ol, int ot, int or, int ob) {
+                        pane.removeOnLayoutChangeListener(this); pane.scrollTo(0, previous);
+                    }
+                });
+            }
+        } finally { retainingDialogForConfiguration = false; }
     }
 
     @Override protected void onStop() {
@@ -213,7 +244,15 @@ public final class LocalChatActivity extends Activity {
     }
 
     @Override public void finish() {
-        if (store == null || finishingAfterSave) { super.finish(); PageTransitions.closeActivity(this); return; }
+        if (store == null || finishingAfterSave) {
+            if (tabletDestination != null) {
+                PageTransitions.openDestination(this, new android.content.Intent(this, MainActivity.class).putExtra("tabletDestination", tabletDestination)
+                    .addFlags(android.content.Intent.FLAG_ACTIVITY_CLEAR_TOP | android.content.Intent.FLAG_ACTIVITY_SINGLE_TOP));
+                tabletDestination = null;
+                PageTransitions.finishDestination(this); return;
+            }
+            super.finish(); PageTransitions.closeActivity(this); return;
+        }
         persistDraft();
         if (sendPending) { closeRequested = true; generation++; return; }
         if (client != null) finishRun(tr("已暂停，部分回复已保留。", "Paused; partial reply kept."), "interrupted");
@@ -242,7 +281,7 @@ public final class LocalChatActivity extends Activity {
         dialog = new CamelliaDialog.Builder(this).setView(panel).create(); dialog.show();
     }
     private EditText input(String hint, String tag) {
-        EditText input = tag.equals("localComposer") ? new ComposerInput(this) : new EditText(this); input.setHint(hint); input.setTag(tag); input.setTextSize(Palette.TEXT_INPUT);
+        EditText input = tag.equals("localComposer") ? new ComposerInput(this) : new EditorInput(this); input.setHint(hint); input.setTag(tag); input.setTextSize(Palette.TEXT_INPUT);
         input.setTextColor(ink); input.setHintTextColor(muted); input.setBackground(chatStyle.outlinedCapsule(surface));
         input.setElevation(dp(1));
         input.setContentDescription(hint); input.setImportantForAutofill(View.IMPORTANT_FOR_AUTOFILL_NO);
@@ -251,6 +290,25 @@ public final class LocalChatActivity extends Activity {
     private void shell(String title) {
         releasePageViews();
         if (conversationId == null) composerAttachments.replace();
+        boolean tablet = MobileLayout.useTabletRail(getResources().getConfiguration());
+        if (tablet && conversationId == null) {
+            ConversationListPane pane = tabletLocalList(false);
+            root = pane.root; scroll = pane.scroll; content = pane.content; status = pane.status;
+            pane.root.setVisibility(View.VISIBLE); pane.select("localConversation:", "");
+            LinearLayout split = new LinearLayout(this); split.setTag("tabletLocalListSplit");
+            split.addView(pane.takeView(), new LinearLayout.LayoutParams(dp(ConversationListPane.WIDTH_DP), -1));
+            android.widget.FrameLayout preview = new android.widget.FrameLayout(this);
+            LinearLayout hint = column(); hint.setPadding(dp(24), dp(24), dp(24), dp(24));
+            new SettingsStyle(this).emptyState(hint, tr("选择一个本地会话", "Select a local conversation"),
+                tr("从左侧工作区继续，或新建一段对话。", "Continue from a workspace on the left, or create a conversation."), "", null);
+            preview.addView(hint, new android.widget.FrameLayout.LayoutParams(-1, -2, Gravity.CENTER));
+            split.addView(preview, new LinearLayout.LayoutParams(0, -1, 1));
+            View page = TabletScaffold.wrap(this, split, "sessions", () -> leaveForTablet("home"),
+                () -> { persistDraft(); conversationId = null; list(); }, () -> leaveForTablet("computers"), () -> leaveForTablet("settings"));
+            if (pages == null) pages = new PageTransitions(this);
+            pages.show(page, "list", 0, true); page.requestApplyInsets(); return;
+        }
+        if (conversationId == null) discardLocalList();
         root = column(); root.setBackground(chatStyle.pageBackground());
         root.setPadding(dp(ChatStyle.PAGE_SIDE_DP), dp(10), dp(ChatStyle.PAGE_SIDE_DP), chatStyle.dockBottomPadding());
         root.setClipToPadding(false);
@@ -261,22 +319,31 @@ public final class LocalChatActivity extends Activity {
             return insets;
         });
         if (pages == null) pages = new PageTransitions(this);
-        pages.show(root, conversationId == null ? "list" : "detail:" + conversationId, conversationId == null ? 0 : 1);
-        root.requestApplyInsets();
-        LinearLayout header = new LinearLayout(this); chatStyle.pageHeader(header);
-        ImageButton back = chatStyle.backButton(tr("返回上一级", "Back"), this::onBackPressed); back.setTag("localBack");
-        header.addView(back, new LinearLayout.LayoutParams(dp(48), dp(48)));
-        LinearLayout titles = column(); titles.setPadding(dp(8), 0, 0, 0);
-        TextView heading = text(title, Palette.TEXT_CARD, ink); heading.setSingleLine(true); heading.setEllipsize(android.text.TextUtils.TruncateAt.END);
-        if (conversationId != null) heading.setTag("localChatTitle");
-        heading.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL)); titles.addView(heading);
-        LinearLayout device = new LinearLayout(this); device.setGravity(Gravity.CENTER_VERTICAL);
-        ImageView phone = new ImageView(this); phone.setImageDrawable(new LineIcon("phone", muted));
-        device.addView(phone, new LinearLayout.LayoutParams(dp(14), dp(14)));
-        TextView subtitle = text(tr("本机 · 手机直连 API", "On this phone · Direct API"), Palette.TEXT_SMALL, muted);
-        subtitle.setPadding(dp(6), 0, 0, 0); subtitle.setSingleLine(true); subtitle.setEllipsize(android.text.TextUtils.TruncateAt.END);
-        device.addView(subtitle); titles.addView(device);
-        header.addView(titles, new LinearLayout.LayoutParams(0, -2, 1)); root.addView(header);
+        View page = root;
+        if (tablet) {
+            root.setOnApplyWindowInsetsListener(null); root.setPadding(dp(20), dp(10), dp(20), chatStyle.dockBottomPadding());
+            if (conversationId != null && store != null) {
+                LinearLayout split = new LinearLayout(this); split.setTag("tabletLocalDetailSplit");
+                ConversationListPane pane = tabletLocalList(true);
+                pane.select("localConversation:", conversationId);
+                split.addView(pane.takeView(), new LinearLayout.LayoutParams(dp(ConversationListPane.WIDTH_DP), -1));
+                split.addView(root, new LinearLayout.LayoutParams(0, -1, 1)); page = split;
+            } else {
+                LinearLayout split = new LinearLayout(this); split.setTag("tabletLocalListSplit");
+                split.addView(root, new LinearLayout.LayoutParams(dp(320), -1));
+                android.widget.FrameLayout preview = new android.widget.FrameLayout(this);
+                LinearLayout hint = column(); hint.setPadding(dp(24), dp(24), dp(24), dp(24));
+                new SettingsStyle(this).emptyState(hint, tr("选择一个本地会话", "Select a local conversation"),
+                    tr("从左侧工作区继续，或新建一段对话。", "Continue from a workspace on the left, or create a conversation."), "", null);
+                preview.addView(hint, new android.widget.FrameLayout.LayoutParams(-1, -2, Gravity.CENTER));
+                split.addView(preview, new LinearLayout.LayoutParams(0, -1, 1)); page = split;
+            }
+            page = TabletScaffold.wrap(this, page, "sessions", () -> leaveForTablet("home"),
+                () -> { persistDraft(); conversationId = null; list(); }, () -> leaveForTablet("computers"), () -> leaveForTablet("settings"));
+        }
+        pages.show(page, conversationId == null ? "list" : "detail:" + conversationId, conversationId == null ? 0 : 1, tablet);
+        page.requestApplyInsets();
+        addLocalHeader(root, title, conversationId != null);
         scroll = new ChatScrollView(this); scroll.setFillViewport(true); scroll.setVerticalScrollBarEnabled(false);
         content = column(); content.setPadding(0, 0, 0, dp(16)); scroll.addView(content);
         root.addView(scroll, new LinearLayout.LayoutParams(-1, 0, 1));
@@ -297,7 +364,48 @@ public final class LocalChatActivity extends Activity {
         ErrorDetails.bindStatus(this, status, chinese);
     }
 
-    private LinearLayout bottomBar(String tag) {
+    private void addLocalHeader(LinearLayout root, String title, boolean detail) {
+        LinearLayout header = new LinearLayout(this); chatStyle.pageHeader(header);
+        ImageButton back = chatStyle.backButton(tr("返回上一级", "Back"), this::onBackPressed); back.setTag("localBack");
+        header.addView(back, new LinearLayout.LayoutParams(dp(48), dp(48)));
+        LinearLayout titles = column(); titles.setPadding(dp(8), 0, 0, 0);
+        TextView heading = text(title, Palette.TEXT_CARD, ink); heading.setSingleLine(true); heading.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        if (detail) heading.setTag("localChatTitle");
+        heading.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL)); titles.addView(heading);
+        LinearLayout device = new LinearLayout(this); device.setGravity(Gravity.CENTER_VERTICAL);
+        ImageView phone = new ImageView(this); phone.setImageDrawable(new LineIcon("phone", muted));
+        device.addView(phone, new LinearLayout.LayoutParams(dp(14), dp(14)));
+        TextView subtitle = text(tr("本机 · 手机直连 API", "On this phone · Direct API"), Palette.TEXT_SMALL, muted);
+        subtitle.setPadding(dp(6), 0, 0, 0); subtitle.setSingleLine(true); subtitle.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        device.addView(subtitle); titles.addView(device);
+        header.addView(titles, new LinearLayout.LayoutParams(0, -2, 1)); root.addView(header, 0);
+    }
+
+    private void leaveForTablet(String destination) {
+        tabletDestination = destination; finish();
+    }
+
+    private ConversationListPane tabletLocalList(boolean initialize) {
+        if (tabletConversationList == null) {
+            tabletConversationList = ConversationListPane.create(this, chatStyle, "local", 20);
+            addLocalHeader(tabletConversationList.root, tr("本机聊天", "Local chat"), false);
+        }
+        ConversationListPane pane = tabletConversationList;
+        if (initialize && store != null && !pane.initialized) initializeLocalList(pane.root, pane.scroll, pane.content, pane.status);
+        return pane;
+    }
+
+    private void discardLocalList() {
+        if (tabletConversationList == null) return;
+        conversationListScroll.detach(); tabletConversationList = null;
+    }
+
+    private LinearLayout listRoot() { return tabletConversationList == null ? root : tabletConversationList.root; }
+    private LinearLayout listContent() { return tabletConversationList == null ? content : tabletConversationList.content; }
+
+    private LinearLayout bottomBar(String tag) { return bottomBar(tag, root, scroll, content, status); }
+
+    private LinearLayout bottomBar(String tag, LinearLayout root, ScrollView scroll, LinearLayout content, TextView status) {
         chatStyle.dockStatus(status);
         root.removeView(status);
         LinearLayout dock = column(); dock.setTag(tag + "Dock"); dock.setBackground(chatStyle.dockBackdrop());
@@ -325,6 +433,13 @@ public final class LocalChatActivity extends Activity {
         store.releaseHistory();
         processState.clear();
         conversationId = null; shell(tr("本机聊天", "Local chat"));
+        if (tabletConversationList != null && tabletConversationList.initialized) {
+            LinearLayout groups = tabletConversationList.root.findViewWithTag("localGroups");
+            if (groups != null) renderGroups(groups);
+        } else initializeLocalList(root, scroll, content, status);
+    }
+
+    private void initializeLocalList(LinearLayout root, ScrollView scroll, LinearLayout content, TextView status) {
         conversationListScroll.attach("local", scroll, content);
         status.setText(tr("本机模式 · 聊天记录仅保存在此设备", "Local mode · Chat history stays on this device"));
         root.setClipChildren(false);
@@ -337,7 +452,7 @@ public final class LocalChatActivity extends Activity {
         }
         LinearLayout groups = column(); groups.setTag("localGroups"); content.addView(groups);
         renderGroups(groups);
-        LinearLayout bottom = bottomBar("localSearchBar"); bottom.setElevation(0); bottom.setPadding(0, dp(6), 0, dp(6));
+        LinearLayout bottom = bottomBar("localSearchBar", root, scroll, content, status); bottom.setElevation(0); bottom.setPadding(0, dp(6), 0, dp(6));
         LinearLayout searchPill = new LinearLayout(this); searchPill.setGravity(Gravity.CENTER_VERTICAL); chatStyle.floatingBar(searchPill);
         LinearLayout.LayoutParams searchParams = new LinearLayout.LayoutParams(0, -2, 1); searchParams.setMargins(0, 0, dp(10), 0); bottom.addView(searchPill, searchParams);
         ImageView searchIcon = new ImageView(this); searchIcon.setImageDrawable(new LineIcon("search", ink)); searchIcon.setPadding(dp(10), dp(10), dp(10), dp(10));
@@ -354,6 +469,7 @@ public final class LocalChatActivity extends Activity {
             public void afterTextChanged(Editable value) {}
         });
         updateListDock((content.getGravity() & Gravity.VERTICAL_GRAVITY_MASK) == Gravity.CENTER_VERTICAL);
+        if (tabletConversationList != null) tabletConversationList.initialized = true;
     }
 
     private void renderGroups(LinearLayout groups) {
@@ -383,7 +499,7 @@ public final class LocalChatActivity extends Activity {
         if (!query.isEmpty() && !matches) {
             groups.addView(new ChatEmptyState(this, chatStyle, "search", tr("没有找到会话", "No conversations found"),
                 tr("试试更短的关键词，或清除搜索查看全部会话。", "Try a shorter keyword, or clear the search to see all conversations."),
-                tr("清除搜索", "Clear search"), () -> ((EditText) root.findViewWithTag("localSearch")).setText("")));
+                tr("清除搜索", "Clear search"), () -> ((EditText) listRoot().findViewWithTag("localSearch")).setText("")));
             layoutGroups(true); return;
         }
         if (selectingConversations) {
@@ -406,12 +522,15 @@ public final class LocalChatActivity extends Activity {
     }
 
     private void layoutGroups(boolean centered) {
+        LinearLayout content = listContent();
+        if (tabletConversationList != null) tabletConversationList.select("localConversation:", conversationId == null ? "" : conversationId);
         content.setGravity(centered ? Gravity.CENTER_VERTICAL : Gravity.TOP);
         updateListDock(centered);
         conversationListScroll.afterRender(centered);
     }
 
     private void updateListDock(boolean centered) {
+        LinearLayout root = listRoot(), content = listContent();
         View dock = root.findViewWithTag("localSearchBarDock");
         if (dock == null) return; // The first group render precedes toolbar creation.
         boolean welcome = centered && query.isEmpty();
@@ -461,7 +580,7 @@ public final class LocalChatActivity extends Activity {
                     if (selectingConversations) {
                         if (!selectedConversations.add(selectedId)) selectedConversations.remove(selectedId);
                         renderGroups(parent);
-                    } else { conversationId = selectedId; detail(); }
+                    } else { if (selectedId.equals(conversationId)) return; persistDraft(); conversationId = selectedId; detail(); }
                 }, () -> conversationMenu(conversation));
             row.selection(selectingConversations, selectedConversations.contains(selectedId)); group.addView(row);
         }
@@ -491,7 +610,7 @@ public final class LocalChatActivity extends Activity {
 
     private void workspaceMenu(JSONObject workspace) {
         if (conversationPopup != null) conversationPopup.dismiss();
-        View anchor = root.findViewWithTag("localWorkspaceMenu:" + workspace.optString("id"));
+        View anchor = listRoot().findViewWithTag("localWorkspaceMenu:" + workspace.optString("id"));
         if (anchor == null) return;
         conversationPopup = new ConversationMenu(anchor, chatStyle,
             new String[]{tr("重命名", "Rename"), tr("移除工作区（保留会话）", "Remove workspace (keep chats)")},
@@ -502,7 +621,7 @@ public final class LocalChatActivity extends Activity {
     private void conversationMenu(JSONObject conversation) {
         if (conversation.optString("id").equals(runningId)) { status.setText(tr("请先停止此会话的回复。", "Stop this reply first.")); return; }
         if (conversationPopup != null) conversationPopup.dismiss();
-        View anchor = root.findViewWithTag("localConversation:" + conversation.optString("id"));
+        View anchor = listRoot().findViewWithTag("localConversation:" + conversation.optString("id"));
         if (anchor == null) return;
         conversationPopup = new ConversationMenu(anchor, chatStyle, chinese, conversation.optBoolean("pinned"),
             () -> renameConversation(conversation), () -> {
@@ -640,7 +759,11 @@ public final class LocalChatActivity extends Activity {
             }
             public void afterTextChanged(Editable value) { persistDraft(); }
         });
-        updateControls(); viewHandler.post(() -> scroll.scrollTo(0, content.getBottom()));
+        updateControls();
+        ScrollView openedScroll = scroll;
+        viewHandler.post(() -> {
+            if (scroll == openedScroll && ((ChatScrollView) openedScroll).isFollowingOutput()) openedScroll.scrollTo(0, openedScroll.getChildAt(0).getHeight());
+        });
     }
 
     private LocalChatConfig.Route selectedRoute() throws Exception {
@@ -964,12 +1087,14 @@ public final class LocalChatActivity extends Activity {
     }
 
     private void releasePageViews() {
-        conversationListScroll.detach();
+        if (tabletConversationList == null) conversationListScroll.detach();
+        else tabletConversationList.takeView();
         // PageTransitions captures the outgoing hierarchy before detaching it.
         viewHandler.removeCallbacksAndMessages(null); disposeMessages(); locationConsent.cancel();
         if (conversationPopup != null) { conversationPopup.dismiss(); conversationPopup = null; }
         if (modelPicker != null) { modelPicker.dismiss(); modelPicker = null; }
-        if (dialog != null) { dialog.dismiss(); dialog = null; }
+        if (!retainingDialogForConfiguration && dialog != null) { dialog.dismiss(); dialog = null; }
+        if (!retainingDialogForConfiguration) DialogWindows.dismiss(this);
         messageViews = null; composer = null; chatComposer = null;
         send = null; stop = null; toolsButton = null; attachButton = null; modelButton = null;
         imageTray = null; imageStrip = null;
@@ -1082,7 +1207,12 @@ public final class LocalChatActivity extends Activity {
                         latest = ""; lastCheckpoint = System.currentTimeMillis();
                         LocalChatClient active = new LocalChatClient(LocalChatActivity.this); client = active;
                         JSONObject request = turn.request;
-                        renderMessages(); updateControls(); viewHandler.post(() -> scroll.scrollTo(0, content.getBottom()));
+                        ((ChatScrollView) scroll).followOutput();
+                        renderMessages(); updateControls();
+                        ScrollView sentScroll = scroll;
+                        viewHandler.post(() -> {
+                            if (scroll == sentScroll && ((ChatScrollView) sentScroll).isFollowingOutput()) sentScroll.scrollTo(0, sentScroll.getChildAt(0).getHeight());
+                        });
             worker.submit(() -> {
                 String problem = null;
                 try {

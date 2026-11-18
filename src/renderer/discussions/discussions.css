@@ -12,7 +12,7 @@
 .discussion-workbench .input-zone { flex-shrink: 0; }
 .discussion-workbench .input-row { flex-wrap: wrap; }
 .discussion-workbench #attachFiles svg { width: 18px; height: 18px; }
-.discussion-workbench .file-viewer { position: fixed; right: 0; top: 0; bottom: 0; z-index: 55; }
+.discussion-workbench .file-viewer { position: fixed; inset: var(--desktop-chrome-height, 0px) 0 0 auto; height: calc(100dvh - var(--desktop-chrome-height, 0px)); z-index: 55; }
 .discussion-tools { min-width: 0; margin-bottom: 12px; }
 .discussion-tools:empty { display: none; }
 .discussion-message-attachments, .discussion-artifacts { margin-top: 12px; }

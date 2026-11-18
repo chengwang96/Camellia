@@ -25,6 +25,9 @@ final class ChatStyle {
         header.setGravity(Gravity.CENTER_VERTICAL);
         header.setPadding(0, dp(4), 0, dp(12));
         header.setBackgroundColor(background);
+        header.setTag("conversationPageHeader");
+        header.setTranslationZ(dp(4));
+        header.setOutlineProvider(null);
         header.setClipChildren(false); header.setClipToPadding(false);
     }
     final int background, surface, ink, muted, faint, accent;

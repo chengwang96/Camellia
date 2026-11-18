@@ -1,4 +1,5 @@
-"""Rename mobile devices through both desktop surfaces, including polling and failures."""
+"""Rename mobile devices in place on both desktop surfaces, including polling and failures."""
+import re
 from pathlib import Path
 from playwright.sync_api import sync_playwright, expect
 
@@ -19,7 +20,11 @@ bridge = """(() => {
     remoteCalls.push({ action, payload });
     if (action === 'state' && window.remoteStateFailure) return { ok: false, error: 'Mobile access is unavailable' };
     if (action === 'rename') {
-      if (window.holdRename) await new Promise(resolve => { window.finishRename = resolve; });
+      if (window.holdRename) await new Promise(resolve => {
+        window.pendingRenameResolvers ||= [];
+        window.pendingRenameResolvers.push(resolve);
+        window.finishRename = () => { for (const finish of window.pendingRenameResolvers.splice(0)) finish(); };
+      });
       if (window.renameFailure) return { ok: false, error: 'Rename failed. Please retry.' };
       state.devices.find(device => device.id === payload.id).name = payload.name;
     }
@@ -69,60 +74,75 @@ with sync_playwright() as playwright:
                     page.locator('[data-view=mobile]').click()
                 prefix = 'mobile-' if embedded else ''
                 devices = page.locator(f'#{prefix}devices')
-                rename = devices.get_by_role('button', name='重命名' if chinese else 'Rename', exact=True).first
-                dialog = page.locator('dialog.device-rename')
-                field = dialog.get_by_role('textbox', name='移动设备名称' if chinese else 'Mobile device name', exact=True)
-                save = dialog.get_by_role('button', name='保存' if chinese else 'Save', exact=True)
-                cancel = dialog.get_by_role('button', name='取消' if chinese else 'Cancel', exact=True)
+                row = devices.locator('.device-row').first
+                rename = row.locator('.device-rename-start')
+                field = row.get_by_role('textbox', name='移动设备名称' if chinese else 'Mobile device name', exact=True)
+                save = row.get_by_role('button', name='保存' if chinese else 'Save', exact=True)
+                cancel = row.get_by_role('button', name='取消' if chinese else 'Cancel', exact=True)
                 original = page.evaluate('structuredClone(remoteTest)')
 
                 rename.click()
-                expect(dialog.get_by_role('heading')).to_have_text('重命名移动设备' if chinese else 'Rename mobile device')
+                expect(page.locator('dialog.device-rename')).to_have_count(0)
+                expect(row).to_have_class(re.compile(r'\bdevice-inline-rename\b'))
                 expect(field).to_have_value('iPad14,1')
-                expect(dialog).to_contain_text('访问权限不变' if chinese else 'access permissions stay the same')
+                expect(field).to_be_focused()
+                expect(devices.locator('.device-row').nth(1).get_by_role('button', name='重命名' if chinese else 'Rename', exact=True)).to_be_visible()
+                expect(devices.locator('.device-row').nth(1).get_by_role('button', name='重命名' if chinese else 'Rename', exact=True)).to_be_disabled()
                 field.fill('Reading iPad')
                 poll(page)
                 expect(save).to_be_enabled()
                 expect(cancel).to_be_enabled()
                 expect(field).to_have_value('Reading iPad')
+                page.evaluate("window.__scrollBeforeNarrow = scrollY")
+                page.set_viewport_size({'width': 480, 'height': 760})
+                page.wait_for_timeout(100)
+                assert page.evaluate("""() => {
+                  const field = document.querySelector('.device-inline-rename .device-rename-field').getBoundingClientRect();
+                  const save = document.querySelector('.device-inline-rename .device-rename-save').getBoundingClientRect();
+                  return field.bottom <= save.top && field.right <= innerWidth && save.right <= innerWidth && document.documentElement.scrollWidth <= innerWidth;
+                }""")
+                page.evaluate("scrollTo(0, window.__scrollBeforeNarrow)")
+                page.set_viewport_size({'width': 1180, 'height': 850})
+                page.wait_for_timeout(100)
                 page.screenshot(path=str(screenshots / f'remote-rename-{surface}-{language}.png'))
-                cancel.click()
-                expect(dialog).to_have_count(0)
+                page.keyboard.press('Escape')
+                expect(field).to_have_count(0)
+                expect(row).not_to_have_class(re.compile(r'\bdevice-inline-rename\b'))
+                expect(row.locator('.device-rename-start')).to_be_visible()
+                expect(row.locator('.device-rename-start')).to_be_enabled()
                 assert rename_calls(page) == []
-                assert page.evaluate('remoteTest.devices') == original['devices']
 
-                # Validation and a failed save leave the form usable, with the error visible inside it.
-                rename.click()
+                # Validation and a failed save stay in the edited row.
+                expect(row.locator('.device-rename-start')).to_be_enabled()
+                row.locator('.device-rename-start').click()
                 field.fill('   ')
                 save.click()
-                expect(dialog.get_by_role('alert')).not_to_be_empty()
+                expect(row.get_by_role('status')).to_have_text('请输入 1–80 个字符的名称。' if chinese else 'Enter a name of 1–80 characters.')
                 assert rename_calls(page) == []
                 field.fill('  Reading iPad  ')
                 page.evaluate('window.renameFailure = true')
                 save.click()
-                expect(dialog.get_by_role('alert')).to_have_text('Rename failed. Please retry.')
+                expect(row.get_by_role('status')).to_have_text('Rename failed. Please retry.')
                 expect(save).to_be_enabled()
                 expect(cancel).to_be_enabled()
                 expect(field).to_be_enabled()
                 expect(field).to_have_value('  Reading iPad  ')
                 poll(page)
-                expect(dialog.get_by_role('alert')).to_have_text('Rename failed. Please retry.')
+                expect(row.get_by_role('status')).to_have_text('Rename failed. Please retry.')
                 expect(save).to_be_enabled()
 
-                # Only the rename request locks the form; duplicate submission sends no second request.
+                # Only the rename request locks the inline editor; duplicate submission sends no second request.
                 page.evaluate('window.renameFailure = false; window.holdRename = true')
                 save.click()
                 page.wait_for_function("typeof window.finishRename === 'function'")
                 expect(save).to_be_disabled()
-                expect(cancel).to_be_disabled()
-                expect(field).to_be_disabled()
-                page.evaluate("document.querySelector('dialog form').requestSubmit()")
+                field.press('Enter')
                 assert len(rename_calls(page)) == 2  # Failed request plus the in-flight retry.
                 page.keyboard.press('Escape')
-                expect(dialog).to_be_visible()
+                expect(field).to_be_visible()
                 page.evaluate('window.holdRename = false; window.finishRename()')
-                expect(dialog).to_have_count(0)
-                expect(devices.locator('.name').first).to_contain_text('Reading iPad')
+                expect(field).to_have_count(0)
+                expect(row.locator('.device-name-text')).to_have_text('Reading iPad')
                 assert rename_calls(page)[-1]['payload'] == {'id': 'ipad', 'name': 'Reading iPad'}
                 original['devices'][0]['name'] = 'Reading iPad'
                 assert page.evaluate('remoteTest') == original
@@ -139,13 +159,14 @@ with sync_playwright() as playwright:
                 expect(cancel).to_be_enabled()
                 expect(field).to_have_value('Unsaved draft')
                 cancel.click()
-                expect(dialog).to_have_count(0)
+                expect(field).to_have_count(0)
+                expect(row.locator('.device-name-text')).to_contain_text('Reading iPad')
                 page.evaluate('window.remoteStateFailure = false')
                 poll(page)
                 rename.click()
                 expect(field).to_have_value('Reading iPad')
                 page.keyboard.press('Escape')
-                expect(dialog).to_have_count(0)
+                expect(field).to_have_count(0)
                 assert len(rename_calls(page)) == 2
 
                 # The network sign-out confirmation stays in the app, preserves

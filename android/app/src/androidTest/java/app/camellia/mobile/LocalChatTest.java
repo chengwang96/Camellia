@@ -159,6 +159,7 @@ public class LocalChatTest extends InstrumentationTestCase {
                 try {
                 var storeField = LocalChatActivity.class.getDeclaredField("store"); storeField.setAccessible(true);
                 JSONObject reply = ((LocalChatStore) storeField.get(activity)).conversation(id).getJSONArray("messages").getJSONObject(0);
+                reply.put("process", new JSONArray().put(new JSONObject().put("type", "tool").put("title", "Read").put("text", "Local tool output").put("status", "completed")));
                 replyRef.set(reply);
                 var replyField = LocalChatActivity.class.getDeclaredField("runningReply"); replyField.setAccessible(true); replyField.set(activity, reply);
                 var runningField = LocalChatActivity.class.getDeclaredField("runningId"); runningField.setAccessible(true); runningField.set(activity, id);
@@ -167,10 +168,16 @@ public class LocalChatTest extends InstrumentationTestCase {
                 View block = activity.getWindow().getDecorView().findViewWithTag("localMessage:0");
                 blockRef.set(block); processRef.set(((android.view.ViewGroup) block).getChildAt(0)); bodyRef.set(block.findViewWithTag("markdown"));
                 assertNotNull(block.findViewWithTag("markdown"));
+                String processKey = id + ":0";
+                block.findViewWithTag("processToggle:" + processKey).performClick();
+                assertEquals(View.VISIBLE, block.findViewWithTag("processCollapseFooter:" + processKey).getVisibility());
+                block.findViewWithTag("processCollapse:" + processKey).performClick();
+                assertEquals(View.GONE, block.findViewWithTag("processBody:" + processKey).getVisibility());
                 latestField.set(activity, "**Streaming**\n\n- More output");
                 var update = LocalChatActivity.class.getDeclaredMethod("renderLiveBody"); update.setAccessible(true); update.invoke(activity);
                 assertSame(block, activity.getWindow().getDecorView().findViewWithTag("localMessage:0"));
                 assertNotNull(block.findViewWithTag("markdown"));
+                assertEquals(View.GONE, block.findViewWithTag("processBody:" + processKey).getVisibility());
                 } catch (Exception error) { throw new AssertionError(error); }
             });
             long end = android.os.SystemClock.uptimeMillis() + 10000;

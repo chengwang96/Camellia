@@ -40,6 +40,7 @@ Object.assign(english, { connectionSettings: 'Connection settings', serverTools:
 Object.assign(chinese, { emptyTitle: '连接到服务器', emptyBody: '点击「连接 / 刷新」重试，或在连接设置中管理配对。' });
 let language = 'zh-CN', devices = [], selected = boundDevice, chats = [], info = null, snapshot = null, conversationId = null;
 let online = false, busy = false, version = 0, watchId = '', pendingPair = null, dialogAction = null, nextOffset = null, refreshTimer = null, refreshedAt = '';
+let renamingConversation = null, renamingRemoteWorkspace = null;
 let olderMessages = [], olderCursor;
 let attachments = [], selecting = false, selectedChats = new Set(), artifactOffset = null;
 let archivedOffset = null;
@@ -170,6 +171,7 @@ function dropConversation(event, workspaceId, target) {
   void run(() => command(source.id, { action: 'move', workspaceId, ...(target ? { targetSessionId: target.id, placement } : {}) }));
 }
 function renderTree() {
+  if (renamingRemoteWorkspace) return;
   elements.tree.replaceChildren();
   const groups = [...(info?.workspaces || []), { id: null, name: copy('independent') }];
   for (const group of groups) {
@@ -184,8 +186,8 @@ function renderTree() {
     const add = document.createElement('button'); add.textContent = '+'; add.title = copy('newChat'); add.setAttribute('aria-label', `${copy('newChat')} · ${group.name}`); add.dataset.write = '';
     add.onclick = () => { saveDraft(); activeWorkspace = group.id || ''; elements.newChat.click(); }; heading.append(add);
     if (group.id && info.capabilities.includes('rename-workspace')) {
-      const rename = document.createElement('button'); rename.textContent = '…'; rename.title = copy('rename'); rename.dataset.write = '';
-      rename.onclick = () => showDialog(`${copy('rename')} · ${currentDevice().name}`, group.name, [{ key: 'name', value: group.name }], values => command(null, { action: 'rename-workspace', workspaceId: group.id, expectedName: group.name, name: values.name }));
+      const rename = document.createElement('button'); rename.className = 'workspace-rename'; rename.textContent = '…'; rename.title = copy('rename'); rename.dataset.write = '';
+      rename.onclick = () => startRemoteWorkspaceRename(group, title);
       heading.append(rename);
     }
     if (group.id && info.capabilities.includes('delete-workspace')) {
@@ -290,7 +292,7 @@ function renderChat() {
   root.querySelector('[data-copy="emptyTitle"]').textContent = online ? harnessNames[activeHarness] || activeHarness : copy('emptyTitle');
   root.querySelector('[data-copy="emptyBody"]').textContent = copy(online ? 'chooseChatBody' : 'emptyBody');
   if (!snapshot) { messageCache.clear(); return; }
-  elements.chatTitle.textContent = snapshot.conversation.title;
+  if (!renamingConversation) elements.chatTitle.textContent = snapshot.conversation.title;
   elements.configure.textContent = snapshot.settings?.model || copy('configure');
   elements.configure.title = `${copy('configure')} · ${copy(snapshot.settings?.permissionMode || 'ask')}`;
   elements.automationPanel.hidden = !info?.capabilities?.includes('automation-control');
@@ -627,7 +629,93 @@ elements.deleteSelected.onclick = () => {
   showDialog(`${copy('delete')} (${targets.length}) · ${currentDevice().name}`, copy('deleteHint') + '\n' + chats.filter(chat => selectedChats.has(chat.id)).map(chat => chat.title).join('\n'), [], () => command(null, { action: 'delete', targets }));
 };
 elements.stop.onclick = () => run(() => command(conversationId, { action: 'stop', runId: snapshot.live.runId }));
-elements.rename.onclick = () => showDialog(`${copy('rename')} · ${currentDevice().name}`, snapshot.conversation.title, [{ key: 'name', value: snapshot.conversation.title }], values => command(null, { action: 'rename', targets: [{ id: conversationId, seq: snapshot.conversation.seq }], title: values.name }));
+function remoteRenameInput(value, label) {
+  const input = document.createElement('input');
+  input.className = 'remote-rename-input';
+  input.value = value;
+  input.maxLength = 100;
+  input.autocomplete = 'off';
+  input.setAttribute('aria-label', label);
+  return input;
+}
+function startRemoteConversationRename() {
+  if (!snapshot || busy) return;
+  if (renamingConversation) { renamingConversation.input.focus(); renamingConversation.input.select(); return; }
+  const title = snapshot.conversation.title;
+  const field = remoteRenameInput(title, copy('name'));
+  elements.chatTitle.replaceWith(field);
+  elements.chatTitle.hidden = true;
+  renamingConversation = { input: field, title };
+  let done = false;
+  let composing = false;
+  const finish = async save => {
+    if (done) return;
+    done = true;
+    const value = field.value.trim();
+    renamingConversation = null;
+    if (!save || !value || value === title) { restore(); return; }
+    try {
+      await command(null, { action: 'rename', targets: [{ id: conversationId, seq: snapshot.conversation.seq }], title: value });
+      elements.chatTitle.textContent = value;
+    } catch (error) {
+      elements.error.textContent = error.message;
+    } finally {
+      restore();
+    }
+  };
+  const restore = () => {
+    if (field.isConnected) field.replaceWith(elements.chatTitle);
+    elements.chatTitle.hidden = false;
+  };
+  field.addEventListener('click', event => event.stopPropagation());
+  field.addEventListener('compositionstart', () => { composing = true; });
+  field.addEventListener('compositionend', () => { composing = false; });
+  field.addEventListener('keydown', event => {
+    event.stopPropagation();
+    if (event.isComposing || composing) return;
+    if (event.key === 'Enter') { event.preventDefault(); void finish(true); }
+    else if (event.key === 'Escape') { event.preventDefault(); void finish(false); }
+  });
+  field.addEventListener('blur', () => void finish(true));
+  field.focus();
+  field.select();
+}
+function startRemoteWorkspaceRename(group, title) {
+  if (busy || renamingRemoteWorkspace) return;
+  const field = remoteRenameInput(group.name, copy('name'));
+  field.maxLength = 200;
+  title.replaceWith(field);
+  renamingRemoteWorkspace = { input: field, title, name: group.name };
+  let done = false;
+  let composing = false;
+  const finish = async save => {
+    if (done) return;
+    done = true;
+    const value = field.value.trim();
+    renamingRemoteWorkspace = null;
+    if (!save || !value || value === group.name) { restore(); renderTree(); return; }
+    try {
+      await command(null, { action: 'rename-workspace', workspaceId: group.id, expectedName: group.name, name: value });
+    } catch (error) {
+      elements.error.textContent = error.message;
+      restore(); renderTree();
+    }
+  };
+  const restore = () => { if (field.isConnected) field.replaceWith(title); };
+  field.addEventListener('click', event => event.stopPropagation());
+  field.addEventListener('compositionstart', () => { composing = true; });
+  field.addEventListener('compositionend', () => { composing = false; });
+  field.addEventListener('keydown', event => {
+    event.stopPropagation();
+    if (event.isComposing || composing) return;
+    if (event.key === 'Enter') { event.preventDefault(); void finish(true); }
+    else if (event.key === 'Escape') { event.preventDefault(); void finish(false); }
+  });
+  field.addEventListener('blur', () => void finish(true));
+  field.focus();
+  field.select();
+}
+elements.rename.onclick = () => startRemoteConversationRename();
 elements.pin.onclick = () => run(() => command(null, { action: 'pin', targets: [{ id: conversationId, seq: snapshot.conversation.seq }], pinned: !snapshot.conversation.pinned }));
 elements.archive.onclick = () => showDialog(`${copy('archive')} · ${currentDevice().name}`, snapshot.conversation.title, [], () => command(null, { action: 'archive', conversationId, expectedSeq: snapshot.conversation.seq }));
 elements.deleteChat.onclick = () => showDialog(`${copy('delete')} · ${currentDevice().name} · ${snapshot.conversation.title}`, copy('deleteHint'), [], () => command(null, { action: 'delete', targets: [{ id: conversationId, seq: snapshot.conversation.seq }] }));

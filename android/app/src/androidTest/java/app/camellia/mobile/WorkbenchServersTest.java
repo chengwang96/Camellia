@@ -452,4 +452,273 @@ public class WorkbenchServersTest extends InstrumentationTestCase {
             }
         });
     }
+
+    private final java.util.List<String> actionReads = new java.util.concurrent.CopyOnWriteArrayList<>();
+    private final java.util.List<JSONObject> actionWrites = new java.util.concurrent.CopyOnWriteArrayList<>();
+    private CountDownLatch menuReadGate;
+    private JSONObject actionInfo, actionConversation;
+    private boolean actionOutsideFirstPage;
+
+    private void actionFixture(String state, boolean pinned) throws Exception {
+        String id = "12345678-1234-1234-1234-123456789abc";
+        long now = System.currentTimeMillis();
+        seed(hp, row(id, "Same ID on HP", "idle", now - 1));
+        seed(other, row(id, "Server task", state, now));
+        actionConversation = row(id, "Current server title", state, now).put("seq", 42).put("pinned", pinned);
+        actionInfo = new JSONObject().put("protocol", 1).put("permission", "control").put("instanceId", "other-instance")
+            .put("includeUnassigned", true).put("capabilities", new JSONArray(java.util.List.of(
+                "conversation-actions", "archive", "create", "fork", "command-receipts")));
+        Function<String, RemoteApi> clients = address -> new RemoteApi(address) {
+            private final CountDownLatch closed = new CountDownLatch(1);
+            @Override public JSONObject json(String path, String token, JSONObject payload) throws java.io.IOException {
+                try {
+                    assertEquals("Actions must use the source computer", other.optString("address"), address);
+                    assertEquals(other.optString("token"), token);
+                    if (payload != null) {
+                        actionWrites.add(new JSONObject(payload.toString()).put("testPath", path));
+                        return new JSONObject().put("state", "done").put("ok", true);
+                    }
+                    actionReads.add(path);
+                    if (path.equals("/v1/status")) {
+                        if (menuReadGate != null) menuReadGate.await(5, TimeUnit.SECONDS);
+                        return new JSONObject(actionInfo.toString());
+                    }
+                    if (path.equals("/v1/conversations/" + id + "?before=1"))
+                        return new JSONObject().put("conversation", new JSONObject(actionConversation.toString()));
+                    if (path.equals("/v1/conversations?offset=0")) return actionPage(0);
+                    if (actionOutsideFirstPage && path.equals("/v1/conversations?offset=100")) return actionPage(100);
+                    throw new AssertionError("Unexpected Home action request: " + path);
+                } catch (InterruptedException error) { Thread.currentThread().interrupt(); throw new java.io.IOException(error); }
+                catch (org.json.JSONException error) { throw new java.io.IOException(error); }
+            }
+            @Override public void listEvents(String token, SnapshotListener listener) throws java.io.IOException {
+                listEvents(token, listener, null);
+            }
+            @Override void listEvents(String token, SnapshotListener listener, SseReader.HeartbeatListener heartbeat) throws java.io.IOException {
+                try {
+                    if (actionOutsideFirstPage) listener.onSnapshot(new JSONObject().put("conversationList", actionPage(0)));
+                } catch (org.json.JSONException error) { throw new java.io.IOException(error); }
+                try { closed.await(); } catch (InterruptedException error) { Thread.currentThread().interrupt(); }
+            }
+            @Override public void cancel() { closed.countDown(); }
+        };
+        main(() -> { field("homeClientFactory", clients); field("remoteClientFactory", clients); });
+        home();
+        main(() -> field("foreground", true));
+        getInstrumentation().waitForIdleSync();
+    }
+
+    private JSONObject actionPage(int offset) throws org.json.JSONException {
+        JSONArray rows = new JSONArray();
+        if (actionOutsideFirstPage) {
+            for (int index = offset; index < offset + 100; index++) rows.put(new JSONObject().put("id", "off-page-" + index)
+                .put("title", "Other conversation " + index).put("seq", 1));
+        } else rows.put(actionConversation);
+        return new JSONObject(actionInfo.toString()).put("conversations", rows).put("nextOffset", actionOutsideFirstPage ? offset + 100 : JSONObject.NULL);
+    }
+
+    private ConversationMenu actionMenu() throws Exception { return (ConversationMenu) field("conversationPopup"); }
+    @android.annotation.TargetApi(29)
+    private View dialogView(Object tag) {
+        for (View window : android.view.inspector.WindowInspector.getGlobalWindowViews()) {
+            View found = tag instanceof Integer ? window.findViewById((Integer) tag) : window.findViewWithTag(tag);
+            if (found != null && found.isShown()) return found;
+        }
+        throw new AssertionError("Missing dialog view: " + tag);
+    }
+    private View actionRow(String state) {
+        return view(tag(state.equals("running") ? "homeActive:" : "homeRecent:", other, actionConversation.optString("id")));
+    }
+    private void openActionMenu(String state) throws Exception {
+        main(() -> assertTrue(actionRow(state).performLongClick()));
+        awaitAction(() -> actionMenu() != null && actionMenu().isShowing());
+    }
+    private void awaitAction(java.util.concurrent.Callable<Boolean> condition) {
+        for (int attempt = 0; attempt < 200; attempt++) {
+            boolean[] done = {false};
+            main(() -> done[0] = condition.call());
+            if (done[0]) { getInstrumentation().waitForIdleSync(); return; }
+            android.os.SystemClock.sleep(25);
+        }
+        fail("Home conversation action did not settle");
+    }
+
+    public void testHomeRunningLongPressOpensSharedMenuWithFreshPinStateWithoutOpeningChat() throws Exception {
+        actionFixture("running", true);
+        openActionMenu("running");
+        main(() -> {
+            assertEquals("home", field("screen")); assertNull(field("conversationId"));
+            assertEquals(hp.optString("address"), store.load().optString("address"));
+            for (String icon : new String[]{"edit", "select", "pin", "branch", "archive", "delete"})
+                assertNotNull(actionMenu().panel.findViewWithTag("conversationAction:" + icon));
+            String label = ((TextView) actionMenu().panel.findViewWithTag("conversationAction:pin")).getText().toString();
+            assertTrue("Pin label must use the server's current state", label.equals("取消置顶") || label.equals("Unpin"));
+            assertNotNull(actionMenu().panel.findViewWithTag("glassBackdrop"));
+            assertTrue(actionWrites.isEmpty());
+            assertEquals(java.util.List.of("/v1/status", "/v1/conversations/" + actionConversation.optString("id") + "?before=1"), actionReads);
+        });
+        android.graphics.Bitmap shot = getInstrumentation().getUiAutomation().takeScreenshot();
+        if (shot != null) {
+            try (var out = new java.io.FileOutputStream(new java.io.File(activity.getExternalFilesDir(null), "home-conversation-menu.png"))) {
+                shot.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, out);
+            } finally { shot.recycle(); }
+        }
+        main(() -> { actionMenu().dismiss(); assertEquals("home", field("screen")); });
+    }
+
+    public void testHomeRecentMenuSelectsOnlyItsSourceComputer() throws Exception {
+        actionFixture("idle", false); openActionMenu("idle");
+        main(() -> actionMenu().panel.findViewWithTag("conversationAction:select").performClick());
+        awaitAction(() -> (Boolean) field("listLoaded"));
+        main(() -> {
+            assertEquals("list", field("screen")); assertNull(field("conversationId"));
+            assertEquals(other.optString("address"), ((JSONObject) field("credentials")).optString("address"));
+            assertEquals(java.util.Set.of(actionConversation.optString("id")), field("selectedConversations"));
+            assertTrue((Boolean) field("selectingConversations")); assertTrue(actionWrites.isEmpty());
+        });
+    }
+
+    public void testHomeSelectionRetainsConversationOutsideFirstListPage() throws Exception {
+        actionFixture("idle", false); actionOutsideFirstPage = true; openActionMenu("idle");
+        main(() -> actionMenu().panel.findViewWithTag("conversationAction:select").performClick());
+        awaitAction(() -> (Integer) field("nextOffset") == 200 && !(Boolean) field("listRefreshBusy"));
+        main(() -> {
+            assertEquals(java.util.Set.of(actionConversation.optString("id")), field("selectedConversations"));
+            assertNotNull(view("conversation:" + actionConversation.optString("id")));
+            assertTrue(actionWrites.isEmpty());
+        });
+    }
+
+    public void testHomePinCommandUsesFreshSequenceAndSourceServerInstance() throws Exception {
+        actionFixture("running", true); openActionMenu("running");
+        main(() -> actionMenu().panel.findViewWithTag("conversationAction:pin").performClick());
+        awaitAction(() -> !actionWrites.isEmpty());
+        JSONObject payload = actionWrites.get(0);
+        assertEquals("pin", payload.getString("action")); assertFalse(payload.getBoolean("pinned"));
+        assertEquals("other-instance", payload.getString("instanceId"));
+        assertEquals("/v1/commands", payload.getString("testPath"));
+        assertEquals(42, payload.getJSONArray("targets").getJSONObject(0).getInt("seq"));
+        assertEquals(actionConversation.getString("id"), payload.getJSONArray("targets").getJSONObject(0).getString("id"));
+        assertEquals(1, actionWrites.size());
+    }
+
+    public void testHomeRenameUsesExistingDialogAndRoutesSavedTitleToSource() throws Exception {
+        actionFixture("idle", false); openActionMenu("idle");
+        main(() -> actionMenu().panel.findViewWithTag("conversationAction:edit").performClick());
+        main(() -> {
+            android.widget.EditText input = (android.widget.EditText) dialogView("remoteRename");
+            assertEquals("Current server title", input.getText().toString()); input.setText("Renamed from Home");
+            dialogView(android.R.id.button1).performClick();
+        });
+        awaitAction(() -> !actionWrites.isEmpty());
+        assertEquals("rename", actionWrites.get(0).getString("action"));
+        assertEquals("Renamed from Home", actionWrites.get(0).getString("title"));
+    }
+
+    public void testHomeDeleteStillRequiresConfirmation() throws Exception {
+        actionFixture("idle", false); openActionMenu("idle");
+        main(() -> actionMenu().panel.findViewWithTag("conversationAction:delete").performClick());
+        main(() -> {
+            assertTrue(actionWrites.isEmpty());
+            dialogView(android.R.id.button2).performClick();
+            assertTrue(actionWrites.isEmpty());
+        });
+    }
+
+    public void testHomeForkUsesExistingTargetedCommand() throws Exception {
+        actionFixture("idle", false); openActionMenu("idle");
+        main(() -> actionMenu().panel.findViewWithTag("conversationAction:branch").performClick());
+        awaitAction(() -> !actionWrites.isEmpty());
+        JSONObject payload = actionWrites.get(0);
+        assertEquals("fork", payload.getString("action")); assertEquals(42, payload.getInt("expectedSeq"));
+        assertEquals("other-instance", payload.getString("instanceId"));
+        assertEquals("/v1/conversations/" + actionConversation.getString("id") + "/commands", payload.getString("testPath"));
+    }
+
+    public void testHomeArchiveUsesFreshSequence() throws Exception {
+        actionFixture("idle", false); openActionMenu("idle");
+        main(() -> actionMenu().panel.findViewWithTag("conversationAction:archive").performClick());
+        awaitAction(() -> !actionWrites.isEmpty());
+        JSONObject payload = actionWrites.get(0);
+        assertEquals("archive", payload.getString("action")); assertEquals(42, payload.getInt("expectedSeq"));
+        assertEquals(actionConversation.getString("id"), payload.getString("conversationId"));
+    }
+
+    public void testHomeTouchLongPressDoesNotAlsoOpenConversation() throws Exception {
+        actionFixture("running", false);
+        awaitAction(() -> {
+            View row = actionRow("running");
+            return row != null && row.isLaidOut() && row.isShown() && row.hasWindowFocus();
+        });
+        RenderedFrameFixture.awaitFrames(getInstrumentation(), activity.getWindow().getDecorView());
+        int[] at = new int[2];
+        main(() -> {
+            View row = actionRow("running");
+            android.graphics.Rect visible = new android.graphics.Rect();
+            assertTrue("The long-press row must be visible", row.getLocalVisibleRect(visible));
+            row.getLocationOnScreen(at); at[0] += visible.centerX(); at[1] += visible.centerY();
+        });
+        long down = android.os.SystemClock.uptimeMillis();
+        touch(down, android.view.MotionEvent.ACTION_DOWN, at[0], at[1]);
+        try { awaitAction(() -> actionMenu() != null && actionMenu().isShowing()); }
+        finally { touch(down, android.view.MotionEvent.ACTION_UP, at[0], at[1]); }
+        awaitAction(() -> actionMenu() != null && actionMenu().isShowing());
+        main(() -> { assertEquals("home", field("screen")); assertNull(field("conversationId")); assertTrue(actionWrites.isEmpty()); });
+    }
+
+    public void testHomeScrollingCancelsPendingLongPress() throws Exception {
+        actionFixture("running", false);
+        JSONArray values = new JSONArray().put(actionConversation);
+        for (int index = 0; index < 25; index++) values.put(row("scroll-fixture-" + index, "Running scroll fixture " + index, "running", 1));
+        cache.put(other, values, -1, new JSONArray(), false);
+        main(() -> { field("homeRunningExpanded", true); invoke("updateHomeConversations"); });
+        getInstrumentation().waitForIdleSync();
+        int[] at = new int[2];
+        main(() -> {
+            View row = actionRow("running"); row.getLocationOnScreen(at); at[0] += row.getWidth() / 2; at[1] += row.getHeight() / 2;
+            View parent = (View) row.getParent();
+            while (!(parent instanceof android.widget.ScrollView)) parent = (View) parent.getParent();
+            assertTrue("The gesture fixture must have scrollable content", parent.canScrollVertically(1));
+        });
+        long down = android.os.SystemClock.uptimeMillis();
+        touch(down, android.view.MotionEvent.ACTION_DOWN, at[0], at[1]);
+        touch(down, android.view.MotionEvent.ACTION_MOVE, at[0], at[1] - 120);
+        android.os.SystemClock.sleep(android.view.ViewConfiguration.getLongPressTimeout() + 100);
+        touch(down, android.view.MotionEvent.ACTION_UP, at[0], at[1] - 120);
+        main(() -> { assertNull(actionMenu()); assertTrue(actionReads.isEmpty()); assertEquals("home", field("screen")); });
+    }
+
+    private void touch(long down, int action, int x, int y) {
+        android.view.MotionEvent event = android.view.MotionEvent.obtain(down, android.os.SystemClock.uptimeMillis(), action, x, y, 0);
+        event.setSource(android.view.InputDevice.SOURCE_TOUCHSCREEN);
+        try { InputDeliveryFixture.deliver(getInstrumentation(), event); } finally { event.recycle(); }
+    }
+
+    public void testHomeMenuReadIsDiscardedAfterLeavingPage() throws Exception {
+        menuReadGate = new CountDownLatch(1); actionFixture("running", false);
+        main(() -> assertTrue(actionRow("running").performLongClick()));
+        awaitAction(() -> !actionReads.isEmpty());
+        main(() -> invoke("computersScreen")); menuReadGate.countDown();
+        getInstrumentation().waitForIdleSync(); android.os.SystemClock.sleep(150);
+        main(() -> { assertEquals("computers", field("screen")); assertNull(actionMenu()); assertTrue(actionWrites.isEmpty()); });
+    }
+
+    public void testHomeMenuReadCannotUseReplacedPairing() throws Exception {
+        menuReadGate = new CountDownLatch(1); actionFixture("running", false);
+        main(() -> assertTrue(actionRow("running").performLongClick()));
+        awaitAction(() -> !actionReads.isEmpty());
+        store.save(new JSONObject(other.toString()).put("token", "b".repeat(43))); store.save(hp);
+        menuReadGate.countDown(); awaitAction(() -> field("homeMenuClient") == null);
+        main(() -> { assertNull(actionMenu()); assertEquals(hp.optString("address"), store.load().optString("address")); assertTrue(actionWrites.isEmpty()); });
+    }
+
+    public void testHomeMenuDoesNotReuseSelectedComputersControlPermission() throws Exception {
+        actionFixture("running", false); actionInfo.put("permission", "read");
+        main(() -> { field("canManageConversations", true); assertTrue(actionRow("running").performLongClick()); });
+        awaitAction(() -> field("homeMenuClient") == null);
+        main(() -> {
+            assertNull(actionMenu()); assertEquals("home", field("screen")); assertTrue(actionWrites.isEmpty());
+            assertEquals(java.util.List.of("/v1/status"), actionReads);
+        });
+    }
 }

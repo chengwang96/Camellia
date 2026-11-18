@@ -25,6 +25,8 @@ body.cli-devices-standalone { margin: 0; }
 .cli-devices .group { margin: 18px 0; } .cli-devices .group-head { display: flex; align-items: center; justify-content: space-between; gap: 6px; font-weight: 600; overflow-wrap: anywhere; }
 .cli-devices .group-head button { padding: 2px 8px; } .cli-devices .conversation { width: 100%; text-align: left; border: 0; border-radius: 8px; margin-top: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; background: transparent; }
 .cli-devices .conversation[aria-current="true"] { background: var(--dsw-specific-sidebar-nav-item-active); }
+.cli-devices .remote-rename-input { min-width: 0; flex: 1; padding: 2px 6px; border: 1px solid var(--dsw-static-deepseek-400); border-radius: 6px; background: var(--dsw-alias-bg-layer-1); color: inherit; font: inherit; }
+.cli-devices .chat-head .remote-rename-input { max-width: min(420px, 70vw); }
 .cli-devices footer { display: block; min-height: 0; border-top: 1px solid var(--dsw-alias-border-l2); padding: 12px 0 0; }
 .cli-devices .conversation-row { display: flex; align-items: center; gap: 6px; min-width: 0; } .cli-devices .conversation-row input { width: 16px; flex-shrink: 0; }
 .cli-devices .attachment, .cli-devices .artifact, .cli-devices .transfer { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 10px; margin: 6px 0; border: 1px solid var(--dsw-alias-border-l2); border-radius: 10px; }

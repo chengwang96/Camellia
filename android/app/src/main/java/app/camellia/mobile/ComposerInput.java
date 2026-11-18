@@ -9,9 +9,8 @@ import android.view.ViewConfiguration;
 import android.view.inputmethod.EditorInfo;
 import android.view.inputmethod.InputConnection;
 import android.view.inputmethod.InputConnectionWrapper;
-import android.widget.EditText;
 
-final class ComposerInput extends EditText {
+final class ComposerInput extends EditorInput {
     private Runnable send;
     private boolean enterDown, held;
     private long enterDownAt;

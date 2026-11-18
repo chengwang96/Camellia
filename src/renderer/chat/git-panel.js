@@ -416,12 +416,14 @@ window.CamelliaGitPanel = { create({ context, getCwd, setStatus, fileViewer, clo
     }
   }
 
-  function openChanges() {
-    if (!getCwd()) { setStatus(t('No workspace folder is associated with this conversation.')); return; }
-    closeFilePreview();
+  async function openChanges(focusCommit = false) {
+    const cwd = getCwd();
+    if (!cwd) { setStatus(t('No workspace folder is associated with this conversation.')); return; }
+    if (!await closeFilePreview() || getCwd() !== cwd) return;
+    commitFocusPending = focusCommit;
     open = true; fileViewer.dataset.mode = 'git'; updatePreviewWidth(); closeWorkPanel(); void refresh();
   }
-  function openCommit() { commitFocusPending = true; openChanges(); }
+  function openCommit() { return openChanges(true); }
   function markClosed() { open = false; diffTicket++; diffLoading = false; }
   function close() { if (open) closeFilePreview(); else markClosed(); }
   function reset() {

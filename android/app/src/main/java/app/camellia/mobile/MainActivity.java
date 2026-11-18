@@ -121,9 +121,24 @@ public final class MainActivity extends Activity {
     private WorkbenchList homeConversations;
     private TextView homeHeading, homeEmptyHint;
     private ConversationSidebar detailSidebar;
+    private ConversationListPane tabletConversationList;
+    private RemoteApi tabletListClient;
+    private RemoteApi tabletArchiveClient;
+    private volatile int tabletListRequest;
     private int sidebarScrollRestore = -1;
+    private String sidebarStateAddress = "";
+    private final java.util.Map<String, Bundle> tabletSidebarStates = new java.util.LinkedHashMap<>();
     private boolean splitDetail;
+    private boolean tabletConversationFocus;
     private WorkbenchNavigation workbenchNavigation;
+    private boolean tabletShell;
+    private TabletComputerPane tabletComputerPane;
+    private String tabletComputerAddress = "";
+    private boolean tabletComputerExpanded;
+    private final java.util.Map<String, JSONObject> computerInformation = new java.util.LinkedHashMap<>();
+    private WorkbenchList tabletHomeRecent;
+    private ScrollView tabletHomeActiveScroll, tabletHomeRecentScroll;
+    private int tabletHomeActiveY, tabletHomeRecentY;
     private volatile boolean sidebarRefreshBusy;
     private long sidebarRefreshAt;
     private JSONArray discussionGroups = new JSONArray();
@@ -181,6 +196,7 @@ public final class MainActivity extends Activity {
     private LinearLayout automationBar;
     private JSONObject remoteGoal;
     private JSONArray remoteTasks = new JSONArray();
+    private final java.util.Set<String> expandedTaskDetails = new java.util.HashSet<>();
     private android.app.Dialog workDialog;
     private LinearLayout workApprovalSection;
     private String workApprovalSignature = "";
@@ -201,6 +217,7 @@ public final class MainActivity extends Activity {
     private android.app.AlertDialog remoteApprovalDialog;
     private String remoteApprovalKey = "";
     private VisualizationDialog visualizationDialog;
+    private boolean retainingDialogsForConfiguration;
     private boolean networkScreen;
     private android.app.Dialog computerDialog;
     private android.net.Uri cameraImageUri;
@@ -215,6 +232,10 @@ public final class MainActivity extends Activity {
     private android.app.AlertDialog codexResetDialog;
     private boolean canAttachments, canFileAttachments;
     private ConversationMenu conversationPopup;
+    private RemoteApi homeMenuClient;
+    private android.widget.Toast homeMenuNotice;
+    private JSONObject homeActionConversation;
+    private String homeActionScope = "";
     private ComputerPickerPopup computerPicker;
     private View remoteEmptyState;
     private boolean canManageConversations, selectingConversations;
@@ -236,7 +257,7 @@ public final class MainActivity extends Activity {
     private String screen = "home", networkReturn = "settings";
     private String preferenceSignature;
     private final ChatNotifications chatNotifications = new ChatNotifications();
-    private final Runnable searchRemote = () -> { if (screen.equals("list")) loadList(false); };
+    private final Runnable searchRemote = () -> { if (conversationListAvailable()) loadList(false); };
     private final LinkedHashMap<String, String> computerStates = new LinkedHashMap<>();
     private final LinkedHashMap<String, String> computerRoutes = new LinkedHashMap<>();
     private final java.util.Set<RemoteApi> statusClients = java.util.concurrent.ConcurrentHashMap.newKeySet();
@@ -299,6 +320,19 @@ public final class MainActivity extends Activity {
 
     @Override protected void onNewIntent(android.content.Intent intent) {
         super.onNewIntent(intent); setIntent(intent);
+        String destination = intent.getStringExtra("tabletDestination");
+        intent.removeExtra("tabletDestination");
+        if (destination != null) {
+            persistDraft();
+            switch (destination) {
+                case "home": navigateHome(); break;
+                case "sessions": navigateSessions(); break;
+                case "computers": navigateComputers(); break;
+                case "network": networkReturn = "settings"; screen = "network"; showNetwork(); break;
+                default: openSettingsPage();
+            }
+            return;
+        }
         openNotificationConversation();
     }
 
@@ -320,6 +354,7 @@ public final class MainActivity extends Activity {
 
     @Override public void onCreate(Bundle saved) {
         super.onCreate(saved);
+        if (saved != null) { tabletComputerAddress = saved.getString("tabletComputerAddress", ""); tabletComputerExpanded = saved.getBoolean("tabletComputerExpanded"); }
         MobileOrientation.lockPhonePortrait(this);
         composerAttachments = AttachmentMaintenance.protect(this);
         EmbeddedNetwork.initialize(getApplicationContext());
@@ -349,6 +384,11 @@ public final class MainActivity extends Activity {
         }
         String restored = saved == null ? "home" : saved.getString("screen", "home");
         if (saved != null) {
+            if (saved.containsKey(TabletScaffold.CATEGORY_SCROLL)) getIntent().putExtra(TabletScaffold.CATEGORY_SCROLL, saved.getInt(TabletScaffold.CATEGORY_SCROLL));
+            homeRecentExpanded = saved.getBoolean("homeRecentExpanded");
+            homeRunningExpanded = saved.getBoolean("homeRunningExpanded");
+            Bundle sidebarStates = saved.getBundle("tabletSidebarStates");
+            if (sidebarStates != null) for (String key : sidebarStates.keySet()) tabletSidebarStates.put(key, sidebarStates.getBundle(key));
             conversationListScroll.load(saved.getBundle("conversationListScroll"));
             pairingDraft = saved.getBundle("pairingDraft");
             pendingScannedPairing = saved.getBoolean("pendingScannedPairing");
@@ -361,7 +401,8 @@ public final class MainActivity extends Activity {
         else if (restored.equals("settings")) settingsScreen();
         else homeScreen();
         if (recovery != null) setStatusNotice(recovery);
-        openNotificationConversation();
+        if (getIntent().hasExtra("tabletDestination")) onNewIntent(getIntent());
+        else openNotificationConversation();
     }
 
     @Override protected void onStart() {
@@ -406,6 +447,7 @@ public final class MainActivity extends Activity {
 
     private void networkRouteChanged() {
         clearComputerRoutes();
+        computerInformation.clear();
         if (!networkActive()) return;
         if (EmbeddedNetwork.online()) resumePendingCommands();
         if (screen.equals("home")) { homeSync.stop(); refreshHomeConversations(); return; }
@@ -416,6 +458,10 @@ public final class MainActivity extends Activity {
         if (!screen.equals("computers") && !screen.equals("list") && !screen.equals("detail")) return;
         artifactDownloads.stop();
         if (!EmbeddedNetwork.online()) {
+            if (screen.equals("computers")) {
+                try { for (JSONObject computer : store.all()) updateComputerState(computer.optString("address"), tr("网络已断开", "Offline")); }
+                catch (Exception ignored) { /* keep existing device rows available */ }
+            }
             stopNetwork(); updateControls();
             connectionFailure(tr("网络已断开，联网后自动重连。未确认的消息不会重复发送。", "Offline. Reconnecting when the network returns; unconfirmed messages will not be resent."));
             return;
@@ -430,13 +476,35 @@ public final class MainActivity extends Activity {
     }
 
     @Override public void onConfigurationChanged(android.content.res.Configuration configuration) {
-        super.onConfigurationChanged(configuration);
-        if (screen.equals("detail")) {
-            rebuildDetailForConfiguration();
-        } else if (screen.equals("list") && scroll != null && content != null) {
-            renderConversations();
-        }
-        updateNavigationWidth();
+        VisualizationDialog card = visualizationDialog;
+        boolean retainCard = card != null && card.isShowing();
+        if (retainCard) card.preserveEditorForConfiguration();
+        android.view.Window focusWindow = EditorFocusState.focusedWindow(this, card, remoteApprovalDialog,
+            computerDialog, codexResetDialog, queueDialog, workDialog, subtaskPage);
+        EditorFocusState focus = EditorFocusState.capture(focusWindow);
+        retainingDialogsForConfiguration = true;
+        try {
+            super.onConfigurationChanged(configuration);
+            if (screen.equals("detail")) {
+                rebuildDetailForConfiguration();
+            } else if (screen.equals("home")) {
+                renderHomeContent(); if (foreground) refreshHomeConversations();
+            } else if (screen.equals("computers")) {
+                computersScreen(); if (foreground) refreshComputers();
+            } else if (screen.equals("settings")) {
+                settingsScreen();
+            } else if (screen.equals("network")) {
+                int y = TabletScaffold.savedCategoryScroll(this), bodyY = scroll == null ? 0 : scroll.getScrollY();
+                getIntent().putExtra(TabletScaffold.CATEGORY_SCROLL, y);
+                renderNetworkContent();
+                TabletScaffold.restoreScroll(scroll, bodyY);
+            } else if (screen.equals("list") && scroll != null && content != null) {
+                listScreen(); if (foreground && credentials.has("token")) loadList(false);
+            }
+            DialogWindows.requestLayout(this); focus.restore(focusWindow);
+            updateNavigationWidth();
+            if (retainCard && visualizationDialog == card) card.updateViewport();
+        } finally { retainingDialogsForConfiguration = false; }
     }
 
     @Override protected void onPause() {
@@ -461,6 +529,7 @@ public final class MainActivity extends Activity {
     }
 
     @Override protected void onStop() {
+        cancelTabletListRequest();
         closeVisualization();
         if (connectionTest != null) { connectionTest.close(); connectionTest = null; }
         persistDraft();
@@ -507,9 +576,18 @@ public final class MainActivity extends Activity {
 
     @Override protected void onSaveInstanceState(Bundle saved) {
         super.onSaveInstanceState(saved);
+        if (screen.equals("network")) saved.putInt(TabletScaffold.CATEGORY_SCROLL, TabletScaffold.savedCategoryScroll(this));
+        saved.putBoolean("homeRecentExpanded", homeRecentExpanded);
+        saved.putBoolean("homeRunningExpanded", homeRunningExpanded);
+        if (detailSidebar != null) tabletSidebarStates.put(sidebarStateAddress, detailSidebar.saveState());
+        Bundle sidebarStates = new Bundle();
+        for (var state : tabletSidebarStates.entrySet()) sidebarStates.putBundle(state.getKey(), state.getValue());
+        saved.putBundle("tabletSidebarStates", sidebarStates);
         rememberConversationListContext();
         saved.putBundle("conversationListScroll", conversationListScroll.save());
         artifactDownloads.save(saved);
+        saved.putString("tabletComputerAddress", tabletComputerAddress);
+        saved.putBoolean("tabletComputerExpanded", tabletComputerPane != null ? tabletComputerPane.expanded() : tabletComputerExpanded);
         saved.putString("screen", screen); saved.putString("networkReturn", networkReturn);
         saved.putString("detailReturn", detailReturn);
         if (screen.equals("pair")) rememberPairingDraft();
@@ -519,6 +597,7 @@ public final class MainActivity extends Activity {
     }
 
     private void stopNetwork() {
+        cancelHomeConversationMenu();
         homeSync.stop();
         conversationSync.stop();
         if (subtaskPage != null) { subtaskPage.dismiss(); subtaskPage = null; }
@@ -599,6 +678,7 @@ public final class MainActivity extends Activity {
 
     private void shell(String title, String subtitle) {
         releasePageViews();
+        tabletShell = MobileLayout.useTabletRail(getResources().getConfiguration());
         if (!screen.equals("detail")) composerAttachments.replace();
         reconnecting = false; connectionBlocked = false;
         boolean settingsPage = screen.equals("settings") || screen.equals("network") || screen.equals("pair");
@@ -608,7 +688,7 @@ public final class MainActivity extends Activity {
         final int pageBottomPadding = bottomPadding;
         SettingsStyle settingsStyle = new SettingsStyle(this);
         int pageBackground = settingsPage || screen.equals("computers") ? settingsStyle.background : background;
-        splitDetail = screen.equals("detail") && MobileLayout.useDetailSplit(getResources().getConfiguration());
+        splitDetail = screen.equals("detail") && (tabletShell || MobileLayout.useDetailSplit(getResources().getConfiguration()));
         root = column(); root.setBackground(Palette.of(this).pageBackground());
         root.setPadding(dp(ChatStyle.PAGE_SIDE_DP), dp(10), dp(ChatStyle.PAGE_SIDE_DP), bottomPadding);
         root.setBackgroundColor(pageBackground); getWindow().setStatusBarColor(pageBackground);
@@ -620,6 +700,24 @@ public final class MainActivity extends Activity {
         root.setClipToPadding(false);
         if (screen.equals("list") || screen.equals("detail")) { root.setFocusableInTouchMode(true); root.requestFocus(); }
         View page = root;
+        if (tabletShell && screen.equals("list")) {
+            ConversationListPane pane = tabletConversationList(false);
+            root = pane.root; scroll = pane.scroll; content = pane.content; status = pane.status; headerConnection = pane.connection;
+            searchInput = root.findViewWithTag("remoteSearchInput"); searchBar = root.findViewWithTag("remoteSearchBar");
+            pane.select("conversation:", "");
+            LinearLayout listSplit = new LinearLayout(this); listSplit.setTag("tabletSessionListSplit");
+            root.setVisibility(View.VISIBLE);
+            listSplit.addView(pane.takeView(), new LinearLayout.LayoutParams(dp(ConversationListPane.WIDTH_DP), -1));
+            android.widget.FrameLayout preview = new android.widget.FrameLayout(this);
+            LinearLayout empty = column(); empty.setPadding(dp(28), dp(28), dp(28), dp(28));
+            new SettingsStyle(this).emptyState(empty, credentials.has("token") ? tr("选择一个会话", "Select a conversation") : tr("连接电脑后继续", "Connect a computer to continue"),
+                tr("从左侧选择工作区与会话，在这里阅读和回复。", "Choose a workspace and conversation on the left to read and reply here."), "", null);
+            preview.addView(empty, new android.widget.FrameLayout.LayoutParams(-1, -2, Gravity.CENTER));
+            listSplit.addView(preview, new LinearLayout.LayoutParams(0, -1, 1));
+            page = TabletScaffold.wrap(this, listSplit, "sessions", this::navigateHome, this::navigateSessions, this::navigateComputers, this::openSettingsPage);
+            if (pages == null) pages = new PageTransitions(this);
+            pages.show(page, "list", 2, true); updateConnectionHeader(); page.requestApplyInsets(); return;
+        }
         LinearLayout split = null;
         if (splitDetail) {
             split = new LinearLayout(this);
@@ -628,6 +726,12 @@ public final class MainActivity extends Activity {
             split.setBackground(Palette.of(this).pageBackground());
             split.setClipChildren(false);
             split.setClipToPadding(false);
+            if (tabletShell) {
+                ConversationListPane pane = tabletConversationList(true);
+                pane.select("conversation:", conversationId);
+                split.addView(pane.takeView(), new LinearLayout.LayoutParams(dp(ConversationListPane.WIDTH_DP), -1));
+                pane.root.setVisibility(tabletConversationFocus ? View.GONE : View.VISIBLE);
+            } else {
             detailSidebar = new ConversationSidebar(this, chinese, detailSidebarItems(), new ConversationSidebar.Listener() {
                 @Override public void open(ConversationSidebar.Item item) { openSidebarConversation(item); }
                 @Override public void all() { navigateSessions(); }
@@ -635,23 +739,29 @@ public final class MainActivity extends Activity {
             });
             int restoreSidebarScroll = sidebarScrollRestore;
             sidebarScrollRestore = -1;
+            sidebarStateAddress = credentials.optString("address");
+            detailSidebar.restoreState(tabletSidebarStates.get(sidebarStateAddress));
             if (restoreSidebarScroll > 0) detailSidebar.restoreScroll(restoreSidebarScroll);
             int sidebarWidth = dp(MobileLayout.detailSidebarWidthDp(getResources().getConfiguration().screenWidthDp));
             split.addView(detailSidebar, new LinearLayout.LayoutParams(sidebarWidth, -1));
+            detailSidebar.setVisibility(tabletConversationFocus ? View.GONE : View.VISIBLE);
+            }
             View divider = new View(this);
             divider.setBackgroundColor(Palette.of(this).separator);
+            divider.setTag("tabletConversationDivider");
+            divider.setVisibility(tabletConversationFocus ? View.GONE : View.VISIBLE);
             split.addView(divider, new LinearLayout.LayoutParams(Math.max(1, dp(1)), -1));
             split.addView(root, new LinearLayout.LayoutParams(0, -1, 1));
             page = split;
         } else {
             sidebarScrollRestore = -1;
         }
-        if (showNavigation) {
+        if (showNavigation && !tabletShell) {
             // The dock installs destination insets after its scrolling stage exists.
             root.setPadding(dp(ChatStyle.PAGE_SIDE_DP), dp(settingsPage ? 6 : 10), dp(ChatStyle.PAGE_SIDE_DP), 0);
         }
         else if (settingsPage) settingsStyle.pagePadding(root, 20);
-        else if (splitDetail) {
+        else if (splitDetail && !tabletShell) {
             LinearLayout splitPage = split;
             ConversationSidebar sidebar = detailSidebar;
             LinearLayout pane = root;
@@ -667,73 +777,35 @@ public final class MainActivity extends Activity {
             view.setPadding(dp(ChatStyle.PAGE_SIDE_DP) + insets.getSystemWindowInsetLeft(), dp(10) + insets.getSystemWindowInsetTop(), dp(ChatStyle.PAGE_SIDE_DP) + insets.getSystemWindowInsetRight(), pageBottomPadding + insets.getSystemWindowInsetBottom());
             return insets;
         });
+        if (tabletShell) {
+            root.setOnApplyWindowInsetsListener(null);
+            root.setPadding(dp(screen.equals("list") ? 12 : 24), dp(10), dp(screen.equals("list") ? 12 : 24), screen.equals("detail") ? chatStyle.dockBottomPadding() : 0);
+            if (split != null) {
+                split.setOnApplyWindowInsetsListener(null);
+                if (detailSidebar != null) detailSidebar.setPadding(dp(8), dp(8), dp(8), dp(8));
+            }
+            if (screen.equals("network") && networkReturn.equals("settings")) {
+                page = TabletScaffold.settingsBody(this, page, "network", section -> {
+                    if (section.equals("network")) return;
+                    if (section.equals("usage")) openAccountUsage(null); else openSettingsSection(section);
+                });
+            }
+            page = TabletScaffold.wrap(this, page, screen.equals("detail") || screen.equals("list") ? "sessions" : screen.equals("network") ? "settings" : screen,
+                this::navigateHome, this::navigateSessions, this::navigateComputers, this::openSettingsPage);
+        }
         if (pages == null) pages = new PageTransitions(this);
         int depth = screen.equals("home") ? 0 : screen.equals("computers") || screen.equals("settings") ? 1
             : screen.equals("detail") || (screen.equals("network") && networkReturn.equals("pair")) ? 3 : 2;
-        pages.show(page, screen, depth, destinationSwitch); page.requestApplyInsets();
+        pages.show(page, screen, depth, destinationSwitch || tabletShell); page.requestApplyInsets();
         if (settingsPage) {
             root.addView(screen.equals("settings") ? settingsStyle.header(title)
                 : settingsStyle.header(title, tr("返回上一级", "Back"), this::onBackPressed));
-        } else if (screen.equals("computers")) {
+        } else if (screen.equals("computers") && !tabletShell) {
             LinearLayout header = settingsStyle.topLevelHeader(title);
             header.findViewWithTag("settingsTitle").setTag("remoteControlTitle"); root.addView(header);
         } else if (screen.equals("list") || screen.equals("detail")) {
-            LinearLayout header = new LinearLayout(this); chatStyle.pageHeader(header);
-            boolean detail = screen.equals("detail");
-            if (detail) {
-                header.addView(chatStyle.backButton(tr("返回上一级", "Back"), this::onBackPressed),
-                    new LinearLayout.LayoutParams(dp(48), dp(48)));
-            }
-            boolean paired = credentials.has("token");
-            LinearLayout titles = column(); titles.setPadding(detail ? dp(8) : 0, 0, 0, 0);
-            TextView pageTitle = text(detail ? conversationTitle : tr("会话", "Conversations"),
-                detail ? Palette.TEXT_CARD : Palette.TEXT_HERO, ink);
-            pageTitle.setTag("pageTitle"); pageTitle.setMaxLines(1); pageTitle.setEllipsize(android.text.TextUtils.TruncateAt.END);
-            pageTitle.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL)); titles.addView(pageTitle);
-            LinearLayout computer = new LinearLayout(this); computer.setGravity(Gravity.CENTER_VERTICAL);
-            ImageView icon = new ImageView(this);
-            icon.setImageDrawable(new LineIcon("computer", muted));
-            computer.addView(icon, new LinearLayout.LayoutParams(dp(14), dp(14)));
-            TextView name = text(paired ? computerName(credentials) : tr("尚未连接电脑", "No computer connected"),
-                Palette.TEXT_SMALL, muted);
-            name.setTag("headerComputerName"); name.setPadding(dp(6), 0, 0, 0);
-            name.setMaxLines(1); name.setEllipsize(android.text.TextUtils.TruncateAt.END);
-            computer.addView(name, new LinearLayout.LayoutParams(0, -2, 1));
-            if (paired) {
-                headerConnection = text("", Palette.TEXT_SMALL, muted); headerConnection.setTag("headerConnectionState");
-                headerConnection.setSingleLine(true); headerConnection.setMaxWidth(dp(112)); headerConnection.setEllipsize(android.text.TextUtils.TruncateAt.END);
-                headerConnection.setPadding(dp(6), 0, dp(6), 0); headerConnection.setVisibility(View.GONE);
-                computer.addView(headerConnection);
-            }
-            titles.addView(computer);
-            header.addView(titles, new LinearLayout.LayoutParams(0, -2, 1)); root.addView(header);
-            ImageButton search = null, switcher = null;
-            if (screen.equals("list") && paired) {
-                search = lineButton("search", tr("搜索会话", "Search conversations"), this::showConversationSearch);
-                search.setTag("remoteSearchButton");
-            }
-            if (paired || detail) {
-                switcher = lineButton("switch-computer", tr("切换电脑", "Switch computer"), () -> showComputerPicker());
-                switcher.setTag("remoteComputerPicker");
-            }
-            if (search != null && switcher != null) {
-                LinearLayout actions = new LinearLayout(this);
-                actions.setOrientation(LinearLayout.HORIZONTAL);
-                actions.setGravity(Gravity.CENTER_VERTICAL);
-                actions.setTag("remoteHeaderActions");
-                actions.setBackground(chatStyle.capsule(Palette.of(this).card));
-                actions.setClipToOutline(true);
-                actions.addView(search, new LinearLayout.LayoutParams(dp(48), dp(48)));
-                actions.addView(switcher, new LinearLayout.LayoutParams(dp(48), dp(48)));
-                header.addView(actions, new LinearLayout.LayoutParams(dp(96), dp(48)));
-            } else if (switcher != null) {
-                header.addView(switcher, new LinearLayout.LayoutParams(dp(48), dp(48)));
-            } else {
-                ImageButton manage = lineButton("computer", tr("管理电脑", "Manage computers"), this::navigateComputers);
-                manage.setTag("sessionsManageComputers");
-                header.addView(manage, new LinearLayout.LayoutParams(dp(48), dp(48)));
-            }
-        } else {
+            headerConnection = addConversationHeader(root, screen.equals("detail"));
+        } else if (!tabletShell) {
         LinearLayout brand = new LinearLayout(this); brand.setGravity(Gravity.CENTER_VERTICAL); brand.setPadding(0, dp(4), 0, dp(12));
         brand.setClipChildren(false); brand.setClipToPadding(false);
         ImageView logo = new ImageView(this); logo.setImageResource(R.drawable.desktop_logo); logo.setContentDescription("Camellia");
@@ -767,7 +839,7 @@ public final class MainActivity extends Activity {
             scroll.addOnLayoutChangeListener((view, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom) -> requestPrefetchViewport());
         }
         NavigationDockLayout navigationViewport = null;
-        if (showNavigation) {
+        if (showNavigation && !tabletShell) {
             navigationViewport = new NavigationDockLayout(this, scroll);
             navigationViewport.setTag(screen.equals("list") ? "remoteListViewport" : "workbenchViewport");
             root.addView(navigationViewport, new LinearLayout.LayoutParams(-1, 0, 1));
@@ -775,7 +847,7 @@ public final class MainActivity extends Activity {
         content = column(); content.setPadding(0, 0, 0, dp(16)); scroll.addView(content);
         if (settingsPage) { content.setPadding(0, dp(4), 0, dp(16)); scroll.setVerticalScrollBarEnabled(false); }
         if (!showNavigation) root.addView(status);
-        if (showNavigation) {
+        if (showNavigation && !tabletShell) {
             String navigationSelection = screen.equals("list") ? "sessions" : screen;
             workbenchNavigation = new WorkbenchNavigation(this, navigationSelection,
                 this::navigateHome, this::navigateSessions, this::navigateComputers, this::openSettingsPage);
@@ -791,6 +863,76 @@ public final class MainActivity extends Activity {
             dock.setInsets(root.getPaddingLeft(), root.getPaddingRight(), 0);
             root.requestApplyInsets();
         }
+    }
+
+    private TextView addConversationHeader(LinearLayout page, boolean detail) {
+        TextView connection = null;
+            LinearLayout header = new LinearLayout(this); chatStyle.pageHeader(header);
+            if (detail) {
+                header.addView(chatStyle.backButton(tr("返回上一级", "Back"), this::onBackPressed),
+                    new LinearLayout.LayoutParams(dp(48), dp(48)));
+            }
+            boolean paired = credentials.has("token");
+            LinearLayout titles = column(); titles.setPadding(detail ? dp(8) : 0, 0, 0, 0);
+            TextView pageTitle = text(detail ? conversationTitle : tr("会话", "Conversations"),
+                detail ? Palette.TEXT_CARD : tabletShell ? 20 : Palette.TEXT_HERO, ink);
+            pageTitle.setTag("pageTitle"); pageTitle.setMaxLines(1); pageTitle.setEllipsize(android.text.TextUtils.TruncateAt.END);
+            pageTitle.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL)); titles.addView(pageTitle);
+            LinearLayout computer = new LinearLayout(this); computer.setGravity(Gravity.CENTER_VERTICAL);
+            ImageView icon = new ImageView(this);
+            icon.setImageDrawable(new LineIcon("computer", muted));
+            computer.addView(icon, new LinearLayout.LayoutParams(dp(14), dp(14)));
+            TextView name = text(paired ? computerName(credentials) : tr("尚未连接电脑", "No computer connected"),
+                Palette.TEXT_SMALL, muted);
+            name.setTag("headerComputerName"); name.setPadding(dp(6), 0, 0, 0);
+            name.setMaxLines(1); name.setEllipsize(android.text.TextUtils.TruncateAt.END);
+            computer.addView(name, new LinearLayout.LayoutParams(0, -2, 1));
+            if (paired) {
+                connection = text("", Palette.TEXT_SMALL, muted); connection.setTag("headerConnectionState");
+                connection.setSingleLine(true); connection.setMaxWidth(dp(112)); connection.setEllipsize(android.text.TextUtils.TruncateAt.END);
+                connection.setPadding(dp(6), 0, dp(6), 0); connection.setVisibility(View.GONE);
+                computer.addView(connection);
+            }
+            titles.addView(computer);
+            header.addView(titles, new LinearLayout.LayoutParams(0, -2, 1)); page.addView(header, 0);
+            if (detail && splitDetail) {
+                ImageButton focus = lineButton("sidebar", tr("切换会话侧栏", "Toggle conversation sidebar"), () -> {
+                    tabletConversationFocus = !tabletConversationFocus;
+                    View sidebar = tabletConversationList == null ? detailSidebar : tabletConversationList.root;
+                    sidebar.setVisibility(tabletConversationFocus ? View.GONE : View.VISIBLE);
+                    View parent = (View) sidebar.getParent();
+                    View divider = parent.findViewWithTag("tabletConversationDivider");
+                    if (divider != null) divider.setVisibility(tabletConversationFocus ? View.GONE : View.VISIBLE);
+                });
+                focus.setTag("tabletToggleSidebar"); header.addView(focus, new LinearLayout.LayoutParams(dp(48), dp(48)));
+            }
+            ImageButton search = null, switcher = null;
+            if (!detail && paired) {
+                search = lineButton("search", tr("搜索会话", "Search conversations"), this::showConversationSearch);
+                search.setTag("remoteSearchButton");
+            }
+            if (paired || detail) {
+                switcher = lineButton("switch-computer", tr("切换电脑", "Switch computer"), () -> showComputerPicker());
+                switcher.setTag("remoteComputerPicker");
+            }
+            if (search != null && switcher != null) {
+                LinearLayout actions = new LinearLayout(this);
+                actions.setOrientation(LinearLayout.HORIZONTAL);
+                actions.setGravity(Gravity.CENTER_VERTICAL);
+                actions.setTag("remoteHeaderActions");
+                actions.setBackground(chatStyle.capsule(Palette.of(this).card));
+                actions.setClipToOutline(true);
+                actions.addView(search, new LinearLayout.LayoutParams(dp(48), dp(48)));
+                actions.addView(switcher, new LinearLayout.LayoutParams(dp(48), dp(48)));
+                header.addView(actions, new LinearLayout.LayoutParams(dp(96), dp(48)));
+            } else if (switcher != null) {
+                header.addView(switcher, new LinearLayout.LayoutParams(dp(48), dp(48)));
+            } else {
+                ImageButton manage = lineButton("computer", tr("管理电脑", "Manage computers"), this::navigateComputers);
+                manage.setTag("sessionsManageComputers");
+                header.addView(manage, new LinearLayout.LayoutParams(dp(48), dp(48)));
+            }
+        return connection;
     }
 
     private void updateNavigationWidth() {
@@ -835,7 +977,7 @@ public final class MainActivity extends Activity {
 
     private EditText input(LinearLayout parent, String label, String value, int type) {
         parent.addView(text(label, Palette.TEXT_SMALL, muted));
-        EditText input = new EditText(this); input.setSingleLine(true); input.setTextSize(Palette.TEXT_INPUT); input.setTextColor(ink); input.setHintTextColor(muted);
+        EditText input = new EditorInput(this); input.setSingleLine(true); input.setTextSize(Palette.TEXT_INPUT); input.setTextColor(ink); input.setHintTextColor(muted);
         input.setInputType(type); input.setText(value); input.setPadding(dp(18), dp(12), dp(18), dp(12)); input.setBackground(capsule(surface));
         input.setImportantForAutofill(View.IMPORTANT_FOR_AUTOFILL_NO); input.setContentDescription(label);
         parent.addView(new SettingsField(input), new LinearLayout.LayoutParams(-1, -2)); return input;
@@ -880,6 +1022,7 @@ public final class MainActivity extends Activity {
     }
 
     private void switchDestination(Runnable action) {
+        persistDraft();
         destinationSwitch = true;
         try { action.run(); }
         finally { destinationSwitch = false; }
@@ -900,6 +1043,7 @@ public final class MainActivity extends Activity {
             "Continue with local chat or a remote computer."), Palette.TEXT_BODY, muted);
         homeEmptyHint.setPadding(0, 0, 0, dp(14)); homeEmptyHint.setTag("homeEmptyHint");
         content.addView(homeEmptyHint);
+        if (tabletShell) { buildTabletHome(); updateHomeConversations(); return; }
         homeConversations = new WorkbenchList(this, scroll);
         content.addView(homeConversations, new LinearLayout.LayoutParams(-1, -2));
         updateHomeConversations();
@@ -914,9 +1058,36 @@ public final class MainActivity extends Activity {
         status.setVisibility(View.GONE);
     }
 
+    private void buildTabletHome() {
+        content.removeView(homeHeading); content.removeView(homeEmptyHint);
+        ((android.view.ViewGroup) scroll.getParent()).removeView(scroll);
+        homeHeading.setTextSize(26); root.addView(homeHeading); root.addView(homeEmptyHint);
+        LinearLayout columns = new LinearLayout(this); columns.setTag("tabletHomeColumns");
+        tabletHomeActiveScroll = new RefreshScrollView(this); tabletHomeRecentScroll = new RefreshScrollView(this);
+        for (ScrollView pane : new ScrollView[]{tabletHomeActiveScroll, tabletHomeRecentScroll}) {
+            pane.setVerticalScrollBarEnabled(false); pane.setFillViewport(true);
+            ((RefreshScrollView) pane).setRefreshIndicatorVisible(false);
+            ((RefreshScrollView) pane).setRefreshAction(() -> refreshHomeConversations(true), ready -> {});
+        }
+        homeConversations = new WorkbenchList(this, tabletHomeActiveScroll);
+        tabletHomeRecent = new WorkbenchList(this, tabletHomeRecentScroll); tabletHomeRecent.setTag("tabletHomeRecent");
+        tabletHomeActiveScroll.addView(homeConversations);
+        LinearLayout recent = column(); recent.addView(tabletHomeRecent); tabletHomeRecentScroll.addView(recent);
+        LinearLayout.LayoutParams first = new LinearLayout.LayoutParams(0, -1, 1.08f); first.setMarginEnd(dp(22));
+        columns.addView(tabletHomeActiveScroll, first); columns.addView(tabletHomeRecentScroll, new LinearLayout.LayoutParams(0, -1, 1));
+        root.addView(columns, new LinearLayout.LayoutParams(-1, 0, 1));
+        LinearLayout previousContent = content; content = recent; renderHomeShortcuts(); content = previousContent;
+        tabletHomeActiveScroll.post(() -> { if (tabletHomeActiveScroll != null) tabletHomeActiveScroll.scrollTo(0, tabletHomeActiveY); });
+        tabletHomeRecentScroll.post(() -> { if (tabletHomeRecentScroll != null) tabletHomeRecentScroll.scrollTo(0, tabletHomeRecentY); });
+        status.setVisibility(View.GONE);
+    }
+
     private void refreshHomeContent() {
         if (!screen.equals("home") || homeConversations == null) return;
-        ((ChatScrollView) scroll).whenScrollIdle(this::updateHomeConversations);
+        if (tabletHomeActiveScroll != null) ((ChatScrollView) tabletHomeActiveScroll).whenScrollIdle(() -> {
+            if (tabletHomeRecentScroll != null) ((ChatScrollView) tabletHomeRecentScroll).whenScrollIdle(this::updateHomeConversations);
+        });
+        else ((ChatScrollView) scroll).whenScrollIdle(this::updateHomeConversations);
     }
 
     private void updateHomeConversations() {
@@ -928,7 +1099,12 @@ public final class MainActivity extends Activity {
         java.util.Set<String> shown = new java.util.LinkedHashSet<>();
         ArrayList<WorkbenchList.Item> items = new ArrayList<>();
         renderHomeRunning(cached, shown, items);
-        renderHomeRecent(cached, shown, items);
+        if (tabletHomeRecent != null) {
+            ArrayList<WorkbenchList.Item> recent = new ArrayList<>();
+            renderHomeRecent(cached, shown, recent);
+            if (recent.isEmpty()) { recent.add(new WorkbenchList.Item("recent", "0", () -> homeRecentHeader(0))); recent.add(new WorkbenchList.Item("recentEmpty", "", () -> text(tr("暂无最近会话", "No recent conversations"), Palette.TEXT_BODY, muted))); }
+            tabletHomeRecent.show(recent);
+        } else renderHomeRecent(cached, shown, items);
         renderHomeUnavailable(items);
         homeConversations.show(items);
     }
@@ -1013,10 +1189,17 @@ public final class MainActivity extends Activity {
             JSONObject conversation = cached.optJSONObject(index);
             if (conversation != null && homeConversationActive(conversation)) active.add(conversation);
         }
+        if (active.isEmpty() && tabletShell) {
+            items.add(new WorkbenchList.Item("running", "0", () -> homeRunningHeader(0)));
+            items.add(new WorkbenchList.Item("activeEmpty", "", () -> text(tr("暂无进行中的任务", "No work in progress"), Palette.TEXT_BODY, muted))); return;
+        }
+        if (tabletShell) active.sort(java.util.Comparator.comparingInt(row -> {
+            String activity = row.optString("activity"); return activity.equals("permission") || activity.equals("question") ? 0 : 1;
+        }));
         if (active.isEmpty()) return;
         items.add(new WorkbenchList.Item("running", active.size() > 3 ? active.size() + ":" + homeRunningExpanded : "",
             () -> homeRunningHeader(active.size())));
-        int count = homeRunningExpanded ? active.size() : Math.min(3, active.size());
+        int count = tabletShell || homeRunningExpanded ? active.size() : Math.min(3, active.size());
         for (int index = 0; index < count; index++) {
             JSONObject conversation = active.get(index);
             String id = homeKey(conversation);
@@ -1030,10 +1213,12 @@ public final class MainActivity extends Activity {
         section.setTag("homeRunningSection");
         section.setGravity(Gravity.CENTER_VERTICAL);
         section.setPadding(0, dp(2), 0, dp(2));
-        TextView label = text(tr("运行中", "Running"), Palette.TEXT_CARD, ink);
+        section.setMinimumHeight(dp(52));
+        TextView label = text(tabletShell ? tr("进行中", "Running") : tr("运行中", "Running"), Palette.TEXT_CARD, ink);
+        label.setTag("homeRunningTitle");
         label.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
         section.addView(label, new LinearLayout.LayoutParams(0, -2, 1));
-        if (count > 3) {
+        if (count > 3 && !tabletShell) {
             TextView toggle = text(homeRunningExpanded ? tr("收起", "Collapse")
                     : tr("展开全部 " + count, "Show all " + count),
                 Palette.TEXT_SMALL, accent);
@@ -1075,7 +1260,8 @@ public final class MainActivity extends Activity {
         final int color = statusColor;
         return new WorkbenchList.Item(tag, presentation, () -> {
             ConversationRow row = new ConversationRow(this, chatStyle, false, engine,
-                title, meta, label, color, time, tag, statusTag, () -> openHomeConversation(conversation), () -> {});
+                title, meta, label, color, time, tag, statusTag, () -> openHomeConversation(conversation),
+                () -> homeConversationMenu(conversation, tag));
             row.setContentDescription(title + " · " + meta + (label.isEmpty() ? "" : " · " + label) + " · " + time);
             return row;
         });
@@ -1089,6 +1275,89 @@ public final class MainActivity extends Activity {
             ? tr("离线 · 上次运行中", "Offline · Previously running")
             : tr("离线 · 状态待确认", "Offline · Status unconfirmed");
         return state.equals("running") ? tr("上次运行中", "Previously running") : tr("状态待确认", "Status unconfirmed");
+    }
+
+    private void cancelHomeConversationMenu() {
+        RemoteApi client = homeMenuClient; homeMenuClient = null;
+        if (client != null) client.cancel();
+        if (homeMenuNotice != null) { homeMenuNotice.cancel(); homeMenuNotice = null; }
+    }
+
+    private JSONObject pairedHomeComputer(JSONObject computer) throws Exception {
+        for (JSONObject saved : store.all())
+            if (RemoteWorkbenchSync.identity(saved).equals(RemoteWorkbenchSync.identity(computer)) && saved.has("token")) return saved;
+        throw new IOException(tr("这台电脑的配对已变化，请刷新工作台。", "This computer's pairing changed. Refresh Home."));
+    }
+
+    private void homeConversationMenu(JSONObject summary, String tag) {
+        cancelHomeConversationMenu();
+        if (conversationPopup != null) { conversationPopup.dismiss(); conversationPopup = null; }
+        final JSONObject computer;
+        try { computer = pairedHomeComputer(conversationComputer(summary)); }
+        catch (Exception error) { homeConversationMenuFailure(error); return; }
+        RemoteApi client = homeClientFactory.apply(computer.optString("address")); homeMenuClient = client;
+        int ticket = generation;
+        handler.postDelayed(() -> {
+            if (homeMenuClient != client) return;
+            homeMenuNotice = android.widget.Toast.makeText(this, tr("正在获取会话操作…", "Loading conversation actions…"), android.widget.Toast.LENGTH_SHORT);
+            homeMenuNotice.show();
+        }, 400);
+        worker.submit(() -> {
+            try {
+                JSONObject info = client.json("/v1/status", computer.optString("token"), null);
+                String capabilities = String.valueOf(info.optJSONArray("capabilities"));
+                if (info.optInt("protocol") != 1 || !info.optString("permission").equals("control")
+                        || !capabilities.contains("\"conversation-actions\""))
+                    throw new IOException(tr("会话管理需要控制权限，并更新重启电脑端。", "Conversation actions require control permission and an updated, restarted desktop."));
+                // Home's lightweight summary intentionally omits pinned and seq. Fetch only
+                // the current metadata, without downloading messages or opening the chat.
+                JSONObject snapshot = client.json("/v1/conversations/" + summary.optString("id") + "?before=1", computer.optString("token"), null);
+                JSONObject conversation = snapshot.getJSONObject("conversation");
+                if (!summary.optString("id").equals(conversation.optString("id")) || !conversation.has("seq"))
+                    throw new IOException(tr("会话已变化，请刷新。", "Conversation changed; refresh first."));
+                boolean fork = capabilities.contains("\"create\"") && capabilities.contains("\"fork\"");
+                handler.post(() -> {
+                    if (homeMenuClient != client || ticket != generation || !foreground || !screen.equals("home")) return;
+                    cancelHomeConversationMenu();
+                    View anchor = root.findViewWithTag(tag);
+                    if (anchor == null || !anchor.isAttachedToWindow() || !anchor.getGlobalVisibleRect(new android.graphics.Rect())) return;
+                    try {
+                        pairedHomeComputer(computer);
+                        conversationPopup = conversationActionsMenu(anchor, conversation, fork,
+                            action -> openHomeConversationActions(computer, conversation, info, action));
+                    } catch (Exception error) { homeConversationMenuFailure(error); }
+                });
+            } catch (Exception error) {
+                handler.post(() -> {
+                    if (homeMenuClient != client || ticket != generation || !foreground || !screen.equals("home")) return;
+                    cancelHomeConversationMenu(); homeConversationMenuFailure(error);
+                });
+            } finally { client.cancel(); }
+        });
+    }
+
+    private void homeConversationMenuFailure(Exception error) {
+        new CamelliaDialog.Builder(this).setTitle(tr("无法打开会话操作", "Conversation actions unavailable"))
+            .setMessage(ErrorDetails.withSummary(tr("请检查对应电脑的连接及控制权限。", "Check this computer's connection and control permission."), error))
+            .setPositiveButton(tr("知道了", "OK"), null).show();
+    }
+
+    private void openHomeConversationActions(JSONObject computer, JSONObject conversation, JSONObject info, String action) {
+        if (!screen.equals("home")) return;
+        try {
+            JSONObject target = pairedHomeComputer(computer);
+            if (commandBusy || target.has("pendingCreate"))
+                throw new IOException(tr("请先在此电脑的会话页确认待处理操作。", "Resolve the pending action in this computer's Sessions page first."));
+            persistDraft(); stopNetwork(); store.save(target); credentials = store.load();
+            listScreen(); updateCapabilities(info); instance = info.optString("instanceId");
+            homeActionConversation = conversation; homeActionScope = RemoteWorkbenchSync.identity(credentials);
+            conversations.put(conversation.optString("id"), conversation);
+            renderConversations();
+            // Keep the selected Home row even when it falls outside the first list page.
+            nextOffset = 0;
+            if (foreground) loadList(true);
+            performConversationAction(conversation, action);
+        } catch (Exception error) { homeConversationMenuFailure(error); }
     }
 
     private JSONObject conversationComputer(JSONObject conversation) {
@@ -1112,16 +1381,18 @@ public final class MainActivity extends Activity {
     }
 
     private void renderHomeRecent(JSONArray cached, java.util.Set<String> shown, ArrayList<WorkbenchList.Item> items) {
-        boolean available = false;
+        int available = 0;
         for (int index = 0; index < cached.length(); index++) {
             JSONObject conversation = cached.optJSONObject(index);
             if (conversation != null && !homeConversationActive(conversation)
-                && !shown.contains(homeKey(conversation))) { available = true; break; }
+                && !shown.contains(homeKey(conversation))) available++;
         }
-        if (!available) return;
-        items.add(new WorkbenchList.Item("recent", "", this::homeRecentHeader));
+        if (available == 0) return;
+        final int count = Math.min(30, available);
+        items.add(new WorkbenchList.Item("recent", count + ":" + homeRecentExpanded, () -> homeRecentHeader(count)));
         int added = 0;
-        for (int index = 0; index < cached.length() && (homeRecentExpanded || added < 3); index++) {
+        int limit = homeRecentExpanded ? 30 : 3;
+        for (int index = 0; index < cached.length() && added < limit; index++) {
             JSONObject conversation = cached.optJSONObject(index);
             if (conversation == null) continue;
             String id = homeKey(conversation);
@@ -1131,17 +1402,24 @@ public final class MainActivity extends Activity {
         }
     }
 
-    private View homeRecentHeader() {
+    private View homeRecentHeader(int count) {
         LinearLayout section = new LinearLayout(this);
         section.setTag("homeRecentSection");
         section.setGravity(Gravity.CENTER_VERTICAL);
-        section.setPadding(0, dp(12), 0, dp(2));
+        section.setPadding(0, tabletShell ? dp(2) : dp(12), 0, dp(2));
+        section.setMinimumHeight(tabletShell ? dp(52) : dp(62));
         TextView label = text(tr("最近", "Recent"), Palette.TEXT_CARD, ink);
+        label.setTag("homeRecentTitle");
         label.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
         section.addView(label, new LinearLayout.LayoutParams(0, -2, 1));
-        TextView all = text(homeRecentExpanded ? tr("收起", "Collapse") : tr("查看全部", "View all"), Palette.TEXT_SMALL, accent);
+        if (count <= 3) return section;
+        TextView all = text(homeRecentExpanded ? tr("收起", "Collapse") : tr("展开更多", "Show more"), Palette.TEXT_SMALL, accent);
         all.setGravity(Gravity.CENTER); all.setMinHeight(dp(48)); all.setPadding(dp(12), 0, dp(2), 0); all.setTag("homeRecentAll");
-        all.setOnClickListener(view -> { homeRecentExpanded = !homeRecentExpanded; refreshHomeContent(); });
+        all.setOnClickListener(view -> {
+            homeRecentExpanded = !homeRecentExpanded;
+            homeSync.setRecentLimit(homeRecentExpanded ? 30 : 3);
+            refreshHomeContent();
+        });
         section.addView(all);
         return section;
     }
@@ -1165,8 +1443,7 @@ public final class MainActivity extends Activity {
 
         homeShortcut(group, "phone", tr("本地聊天", "Local chat"),
             tr("手机直连 · 本地工作区", "On this phone · local workspace"), "localChatEntry", () -> {
-                startActivity(new android.content.Intent(this, LocalChatActivity.class));
-                PageTransitions.openActivity(this);
+                PageTransitions.openActivity(this, new android.content.Intent(this, LocalChatActivity.class));
             });
         settingsShortcut(group, palette);
     }
@@ -1246,6 +1523,7 @@ public final class MainActivity extends Activity {
 
     private void refreshHomeConversations(boolean force) {
         if (!foreground || !screen.equals("home") || homeCache == null) return;
+        homeSync.setRecentLimit(homeRecentExpanded ? 30 : 3);
         readHomeComputers();
         if (!EmbeddedNetwork.online()) { homeSync.stop(); refreshHomeContent(); return; }
         int ticket = generation;
@@ -1263,6 +1541,7 @@ public final class MainActivity extends Activity {
     }
 
     private void settingsScreen() {
+        if (MobileLayout.useTabletRail(getResources().getConfiguration())) { openSettingsSection("general", true); return; }
         stopNetwork(); screen = "settings"; networkScreen = false; conversationId = null;
         shell(tr("设置", "Settings"), "");
         SettingsStyle settingsStyle = new SettingsStyle(this);
@@ -1299,14 +1578,21 @@ public final class MainActivity extends Activity {
     }
 
     private void openSettingsSection(String section) {
-        startActivity(new android.content.Intent(this, SettingsActivity.class).putExtra("section", section));
+        openSettingsSection(section, false);
+    }
+
+    private void openSettingsSection(String section, boolean destination) {
+        android.content.Intent intent = new android.content.Intent(this, SettingsActivity.class).putExtra("section", section);
+        if (destination || MobileLayout.useTabletRail(getResources().getConfiguration())) { TabletScaffold.openSettingsCategory(this, intent); return; }
+        startActivity(intent);
         PageTransitions.openActivity(this);
     }
 
     private void openAccountUsage(JSONObject computer) {
-        startActivity(new android.content.Intent(this, RemoteUsageActivity.class)
-            .putExtra("address", computer == null ? credentials.optString("address") : computer.optString("address")));
-        PageTransitions.openActivity(this);
+        android.content.Intent intent = new android.content.Intent(this, RemoteUsageActivity.class)
+            .putExtra("address", computer == null ? credentials.optString("address") : computer.optString("address"));
+        if (MobileLayout.useTabletRail(getResources().getConfiguration())) TabletScaffold.openSettingsCategory(this, intent);
+        else { startActivity(intent); PageTransitions.openActivity(this); }
     }
 
     /**
@@ -1353,7 +1639,7 @@ public final class MainActivity extends Activity {
         LinearLayout panel = computerDialogPanel(tr("本机名称", "This phone name"),
             tr("配对时默认提交这个名称，电脑端可以在授权时确认。最多 80 个字符。", "This name is submitted by default when pairing; the computer confirms it when authorizing. Up to 80 characters."), "phone");
         TextView label = text(tr("设备名称", "Device name"), Palette.TEXT_SMALL, muted); panel.addView(label);
-        EditText name = new EditText(this); name.setId(View.generateViewId()); label.setLabelFor(name.getId());
+        EditText name = new EditorInput(this); name.setId(View.generateViewId()); label.setLabelFor(name.getId());
         name.setSingleLine(true); name.setTextSize(Palette.TEXT_ROW); name.setTextColor(ink); name.setHintTextColor(muted);
         name.setText(MobilePreferences.deviceName(this)); name.setContentDescription(tr("设备名称", "Device name"));
         name.setTag("deviceNameInput"); name.setImportantForAutofill(View.IMPORTANT_FOR_AUTOFILL_NO);
@@ -1367,6 +1653,7 @@ public final class MainActivity extends Activity {
             String value = name.getText().toString().trim();
             if (value.isEmpty() || value.length() > 80) { ((SettingsField) name.getParent()).showError(tr("请输入 1–80 个字符的名称。", "Enter a name of 1–80 characters.")); return; }
             MobilePreferences.set(this, "deviceName", value);
+            EmbeddedNetwork.setNodeHostname(value);
             dialog.dismiss(); settingsScreen();
         });
         name.setImeOptions(android.view.inputmethod.EditorInfo.IME_ACTION_DONE);
@@ -1378,11 +1665,33 @@ public final class MainActivity extends Activity {
     }
 
     private void computersScreen() {
+        persistDraft();
         stopNetwork(); screen = "computers"; networkScreen = false; conversationId = null;
         clearHistory(); conversations.clear();
         shell(tr("电脑与连接", "Computers & connections"), "");
         root.setClipChildren(false);
         SettingsStyle style = new SettingsStyle(this);
+        if (tabletShell) {
+            try {
+                root.setPadding(0, 0, 0, 0);
+                root.removeAllViews();
+                tabletComputerPane = new TabletComputerPane(this, chinese, store.all(), tabletComputerAddress,
+                    computerStates, computerRoutes, computerInformation, tabletComputerExpanded, new TabletComputerPane.Listener() {
+                        public String name(JSONObject computer) { return computerName(computer); }
+                        public void selected(String address) { tabletComputerAddress = address; }
+                        public void open(JSONObject computer) { openComputer(computer); }
+                        public void test(JSONObject computer) { testComputerConnection(computer); }
+                        public void usage(JSONObject computer) { openAccountUsage(computer); }
+                        public void rename(JSONObject computer) { renameComputer(computer); }
+                        public void restart(JSONObject computer) { restartComputer(computer); }
+                        public void forget(JSONObject computer) { MainActivity.this.forget(computer); }
+                        public void add() { addComputer(); }
+                    });
+                root.addView(tabletComputerPane, new LinearLayout.LayoutParams(-1, -1));
+                ((RefreshScrollView) scroll).setRefreshAction(this::refreshComputers, ready -> {});
+            } catch (Exception error) { reportError("无法读取电脑列表，请重试。", "Could not load computers. Try again.", error); }
+            return;
+        }
         TextView introduction = text(tr("管理配对与连接；打开一台电脑会进入它的会话。",
             "Manage pairing and connections. Open a computer to see its conversations."), Palette.TEXT_BODY, style.secondary);
         introduction.setPadding(dp(2), dp(2), dp(2), dp(12)); content.addView(introduction);
@@ -1442,6 +1751,7 @@ public final class MainActivity extends Activity {
 
     private void updateComputerState(String address, String state) {
         computerStates.put(address, state);
+        if (tabletComputerPane != null) tabletComputerPane.update(address);
         View row = root.findViewWithTag("computer:" + address);
         if (row instanceof ComputerRow) {
             boolean online = state.equals(tr("已连接", "Connected"));
@@ -1583,7 +1893,7 @@ public final class MainActivity extends Activity {
         LinearLayout panel = computerDialogPanel(tr("重命名电脑", "Rename computer"),
             tr("取一个容易辨认的名字，仅在这台手机上显示。", "Choose a familiar name. It only changes on this phone."));
         TextView label = text(tr("电脑名称", "Computer name"), Palette.TEXT_SMALL, muted); panel.addView(label);
-        EditText name = new EditText(this); name.setTag("computerNameInput"); name.setId(View.generateViewId()); label.setLabelFor(name.getId());
+        EditText name = new EditorInput(this); name.setTag("computerNameInput"); name.setId(View.generateViewId()); label.setLabelFor(name.getId());
         name.setSingleLine(true); name.setTextSize(Palette.TEXT_ROW); name.setTextColor(ink); name.setHintTextColor(muted);
         name.setHint(tr("例如：工作电脑", "e.g. Work laptop")); name.setContentDescription(tr("电脑名称", "Computer name"));
         name.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_CAP_SENTENCES);
@@ -1655,8 +1965,10 @@ public final class MainActivity extends Activity {
                         result = RemoteApi.failureMessage(error, chinese);
                     }
                     String state = result;
+                    JSONObject metadata = info;
                     boolean unauthorized = revoked;
                     deliver(ticket, () -> {
+                        if (metadata == null) computerInformation.remove(address); else computerInformation.put(address, metadata);
                         if (unauthorized) { listCache.remove(computer); homeCache.remove(computer); prefetch.remove(computer, null); }
                         updateComputerState(address, state);
                         if (--remaining[0] == 0) {
@@ -1878,6 +2190,7 @@ public final class MainActivity extends Activity {
             View focus = getCurrentFocus();
             if (focus != null) ((android.view.inputmethod.InputMethodManager) getSystemService(INPUT_METHOD_SERVICE)).hideSoftInputFromWindow(focus.getWindowToken(), 0);
             MobilePreferences.set(this, "deviceName", name);
+            EmbeddedNetwork.setNodeHostname(name);
             String displayName = address.equals(credentials.optString("address")) ? credentials.optString("computerName") : "";
             credentials = new JSONObject().put("address", address).put("name", name);
             if (!displayName.isEmpty()) credentials.put("computerName", displayName);
@@ -1953,10 +2266,101 @@ public final class MainActivity extends Activity {
         });
     }
 
+    private String conversationListScope() {
+        return credentials.optString("address") + "/" + java.util.UUID.nameUUIDFromBytes(credentials.optString("token").getBytes(java.nio.charset.StandardCharsets.UTF_8));
+    }
+
+    private boolean conversationListAvailable() {
+        return screen.equals("list") || screen.equals("detail") && tabletShell && tabletConversationList != null;
+    }
+
+    private LinearLayout conversationListRoot() { return tabletConversationList == null ? root : tabletConversationList.root; }
+    private LinearLayout conversationListContent() { return tabletConversationList == null ? content : tabletConversationList.content; }
+
+    private ConversationListPane tabletConversationList(boolean initialize) {
+        if (tabletConversationList == null || !tabletConversationList.scope.equals(conversationListScope())) {
+            discardTabletConversationList();
+            tabletConversationList = ConversationListPane.create(this, chatStyle, conversationListScope(), 12);
+            tabletConversationList.connection = addConversationHeader(tabletConversationList.root, false);
+            ErrorDetails.bindStatus(this, tabletConversationList.status, chinese);
+        }
+        ConversationListPane pane = tabletConversationList;
+        if (initialize && !pane.initialized) initializeConversationList(pane.root, pane.scroll, pane.content, pane.status);
+        return pane;
+    }
+
+    private void discardTabletConversationList() {
+        if (tabletConversationList == null) return;
+        rememberConversationListContext(); conversationListScroll.detach();
+        tabletConversationList = null; cancelTabletListRequest();
+    }
+
+    private void cancelTabletListRequest() {
+        tabletListRequest++;
+        RemoteApi previous = tabletListClient; tabletListClient = null;
+        if (previous != null) new Thread(previous::cancel, "camellia-list-disconnect").start();
+        RemoteApi archive = tabletArchiveClient; tabletArchiveClient = null;
+        if (archive != null) { archivedLoading = false; new Thread(archive::cancel, "camellia-archive-disconnect").start(); }
+    }
+
+    private void openListConversation(String id, String title) {
+        if (screen.equals("detail") && id.equals(conversationId)) return;
+        persistDraft();
+        if (searchInput != null && searchInput.hasFocus()) {
+            ((android.view.inputmethod.InputMethodManager) getSystemService(INPUT_METHOD_SERVICE)).hideSoftInputFromWindow(searchInput.getWindowToken(), 0);
+            searchInput.clearFocus();
+        }
+        conversationId = id; conversationTitle = title; detailReturn = "list"; detailScreen(); connectEvents();
+    }
+
+    private void loadTabletConversationList(boolean append) {
+        if (!networkActive() || !credentials.has("token") || tabletConversationList == null || append && nextOffset < 0) return;
+        ConversationListPane pane = tabletConversationList;
+        int requestId = ++tabletListRequest;
+        RemoteApi previous = tabletListClient;
+        if (previous != null) new Thread(previous::cancel, "camellia-list-replace").start();
+        RemoteApi client = homeClientFactory.apply(credentials.optString("address")); tabletListClient = client;
+        String token = credentials.optString("token");
+        String query = searchInput == null ? "" : searchInput.getText().toString().trim().toLowerCase(Locale.ROOT);
+        boolean modern = canListQuery && capabilityAddress.equals(credentials.optString("address"));
+        int offset = append ? nextOffset : 0, limit = Math.max(100, conversations.size());
+        ((RefreshScrollView) pane.scroll).setRefreshing(true);
+        worker.submit(() -> {
+            try {
+                JSONObject page = client.json(conversationListPath(offset, Math.min(1000, limit), query, modern), token, null);
+                JSONObject info = listInfo(client, token, page);
+                JSONArray rows = page.optJSONArray("conversations"); if (rows == null) rows = new JSONArray();
+                int following = page.optInt("nextOffset", -1);
+                while (following >= 0 && requestId == tabletListRequest && (!modern && !query.isEmpty() || !append && rows.length() < limit)) {
+                    JSONObject next = client.json(conversationListPath(following, Math.min(1000, limit), query, modern), token, null);
+                    JSONArray entries = next.optJSONArray("conversations");
+                    for (int index = 0; entries != null && index < entries.length(); index++) rows.put(entries.optJSONObject(index));
+                    int after = next.optInt("nextOffset", -1); if (after == following) break; following = after;
+                }
+                page.put("conversations", rows).put("nextOffset", following < 0 ? JSONObject.NULL : following);
+                handler.post(() -> {
+                    if (!networkActive() || tabletConversationList != pane || requestId != tabletListRequest) return;
+                    updateCapabilities(info); remoteListQuery = modern ? page.optString("query") : "";
+                    applyConversationPage(page, append); cacheConversations();
+                });
+            } catch (Exception error) {
+                handler.post(() -> { if (tabletConversationList == pane && requestId == tabletListRequest && networkActive()) setStatusNotice(RemoteApi.failureMessage(error, chinese)); });
+            } finally {
+                client.cancel();
+                handler.post(() -> { if (tabletConversationList == pane && requestId == tabletListRequest) { tabletListClient = null; ((RefreshScrollView) pane.scroll).setRefreshing(false); } });
+            }
+        });
+    }
+
     private void listScreen() {
         screen = "list";
         networkScreen = false;
-        stopNetwork(); conversationId = null; clearHistory(); conversations.clear(); nextOffset = -1;
+        boolean reuse = MobileLayout.useTabletRail(getResources().getConfiguration()) && tabletConversationList != null
+            && tabletConversationList.scope.equals(conversationListScope());
+        stopNetwork(); conversationId = null; clearHistory();
+        if (reuse) { shell("", ""); return; }
+        if (!MobileLayout.useTabletRail(getResources().getConfiguration())) discardTabletConversationList();
+        conversations.clear(); nextOffset = -1;
         archivedConversations.clear(); archivedLoaded = false; archivedLoading = false; archivedNextOffset = -1;
         canCreate = false; canCreateWorkspace = false; canArchive = false; canManageConversations = false;
         canDiscussions = false;
@@ -1965,6 +2369,11 @@ public final class MainActivity extends Activity {
         listEventsUnavailable = false;
         listLoaded = false; listLoadFailed = false;
         shell("", "");
+        if (tabletConversationList == null || !tabletConversationList.initialized)
+            initializeConversationList(root, scroll, content, status);
+    }
+
+    private void initializeConversationList(LinearLayout root, ScrollView scroll, LinearLayout content, TextView status) {
         String pairing = java.util.UUID.nameUUIDFromBytes(credentials.optString("token")
             .getBytes(java.nio.charset.StandardCharsets.UTF_8)).toString();
         conversationListScroll.attach(credentials.optString("address") + "/" + pairing, scroll, content);
@@ -1996,7 +2405,7 @@ public final class MainActivity extends Activity {
         root.addView(searchBar, 1, searchParams);
         ImageView searchIcon = new ImageView(this); searchIcon.setImageDrawable(new LineIcon("search", ink)); searchIcon.setPadding(dp(10), dp(10), dp(10), dp(10));
         searchBar.addView(searchIcon, new LinearLayout.LayoutParams(dp(44), dp(44)));
-        searchInput = new EditText(this); searchInput.setSingleLine(true); searchInput.setTextSize(Palette.TEXT_ROW); searchInput.setTextColor(ink); searchInput.setHintTextColor(muted);
+        searchInput = new EditorInput(this); searchInput.setSingleLine(true); searchInput.setTextSize(Palette.TEXT_ROW); searchInput.setTextColor(ink); searchInput.setHintTextColor(muted);
         searchInput.setFilters(new android.text.InputFilter[]{new android.text.InputFilter.LengthFilter(200)});
         searchInput.setTag("remoteSearchInput"); searchInput.setImeOptions(android.view.inputmethod.EditorInfo.IME_ACTION_SEARCH);
         searchInput.setHint(tr("搜索会话", "Search conversations")); searchInput.setContentDescription(tr("搜索会话", "Search conversations")); searchInput.setBackgroundColor(Color.TRANSPARENT);
@@ -2010,7 +2419,7 @@ public final class MainActivity extends Activity {
         searchInput.setOnEditorActionListener((view, action, event) -> {
             if (action != android.view.inputmethod.EditorInfo.IME_ACTION_SEARCH) return false;
             ((android.view.inputmethod.InputMethodManager) getSystemService(INPUT_METHOD_SERVICE)).hideSoftInputFromWindow(view.getWindowToken(), 0);
-            root.requestFocus(); return true;
+            conversationListRoot().requestFocus(); return true;
         });
         searchInput.addTextChangedListener(new android.text.TextWatcher() {
             @Override public void beforeTextChanged(CharSequence value, int start, int count, int after) {}
@@ -2031,14 +2440,15 @@ public final class MainActivity extends Activity {
             applyConversationPage(cached, false);
             setStatusNotice(tr("显示上次缓存，正在同步…", "Showing cached conversations; syncing…"));
         } else renderConversations();
+        if (tabletConversationList != null) tabletConversationList.initialized = true;
     }
 
     private void showConversationSearch() {
-        if (!screen.equals("list") || searchBar == null || searchInput == null) return;
+        if (!conversationListAvailable() || searchBar == null || searchInput == null) return;
         searchBar.setVisibility(View.VISIBLE);
         EditText input = searchInput; input.requestFocus();
         input.post(() -> {
-            if (screen.equals("list") && searchInput == input && input.hasFocus())
+            if (conversationListAvailable() && searchInput == input && input.hasFocus())
                 ((android.view.inputmethod.InputMethodManager) getSystemService(INPUT_METHOD_SERVICE)).showSoftInput(input, android.view.inputmethod.InputMethodManager.SHOW_IMPLICIT);
         });
     }
@@ -2046,7 +2456,7 @@ public final class MainActivity extends Activity {
     private void closeConversationSearch() {
         if (searchBar == null || searchInput == null) return;
         ((android.view.inputmethod.InputMethodManager) getSystemService(INPUT_METHOD_SERVICE)).hideSoftInputFromWindow(searchInput.getWindowToken(), 0);
-        searchInput.setText(""); searchInput.clearFocus(); searchBar.setVisibility(View.GONE); root.requestFocus();
+        searchInput.setText(""); searchInput.clearFocus(); searchBar.setVisibility(View.GONE); conversationListRoot().requestFocus();
     }
 
     private void applyConversationPage(JSONObject page, boolean append) {
@@ -2057,6 +2467,12 @@ public final class MainActivity extends Activity {
             if (conversation != null && !conversation.optString("id").isEmpty()) conversations.put(conversation.optString("id"), conversation);
         }
         nextOffset = page.optInt("nextOffset", -1);
+        if (homeActionConversation != null && homeActionScope.equals(RemoteWorkbenchSync.identity(credentials))) {
+            String id = homeActionConversation.optString("id");
+            if (conversations.containsKey(id)) homeActionConversation = conversations.get(id);
+            else if (nextOffset >= 0) conversations.put(id, homeActionConversation);
+            else homeActionConversation = null;
+        }
         renderConversations();
     }
 
@@ -2124,6 +2540,7 @@ public final class MainActivity extends Activity {
     }
 
     private void addConversationFilters() {
+        LinearLayout content = conversationListContent();
         LinearLayout filters = new LinearLayout(this);
         filters.setOrientation(LinearLayout.VERTICAL);
         filters.setTag("conversationFilters");
@@ -2145,6 +2562,7 @@ public final class MainActivity extends Activity {
     }
 
     private void addConversationFilter(LinearLayout row, String value, String label) {
+        boolean compactList = tabletConversationList != null || tabletShell;
         boolean active = conversationFilter.equals(value);
         TextView chip = new TextView(this);
         chip.setText(label);
@@ -2154,7 +2572,8 @@ public final class MainActivity extends Activity {
         chip.setGravity(Gravity.CENTER);
         chip.setMinHeight(dp(48));
         chip.setMinimumWidth(dp(48));
-        chip.setPadding(dp(12), dp(8), dp(12), dp(8));
+        chip.setPadding(dp(compactList ? 4 : 12), dp(8), dp(compactList ? 4 : 12), dp(8));
+        if (compactList) { chip.setTextSize(11); chip.setMaxLines(2); }
         chip.setTag("sessionFilter:" + value);
         chip.setFocusable(true);
         GradientDrawable face = active
@@ -2170,12 +2589,13 @@ public final class MainActivity extends Activity {
                 renderConversations();
             }
         });
-        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-2, -2);
-        params.setMarginEnd(dp(4));
+        LinearLayout.LayoutParams params = compactList ? new LinearLayout.LayoutParams(0, -2, 1) : new LinearLayout.LayoutParams(-2, -2);
+        params.setMarginEnd(dp(compactList ? 2 : 4));
         row.addView(chip, params);
     }
 
     private void renderConversations() {
+        LinearLayout content = conversationListContent();
         if (conversationPopup != null) conversationPopup.dismiss();
         conversationListScroll.beforeRender();
         content.removeAllViews(); prefetchRows.clear();
@@ -2269,7 +2689,10 @@ public final class MainActivity extends Activity {
             for (int index = 0; index < availableWorkspaces.length(); index++) {
                 JSONObject item = availableWorkspaces.optJSONObject(index); if (item != null && item.optString("id").equals(workspace)) name = item.optString("name", workspace);
             }
-            if (!entries.isEmpty() && !workspace.isEmpty()) name = entries.get(0).optString("workspaceName", name);
+            if (!entries.isEmpty() && !workspace.isEmpty()) {
+                String supplied = entries.get(0).optString("workspaceName", "");
+                if (!supplied.isEmpty() && !supplied.equals("null")) name = supplied;
+            }
             String key = credentials.optString("address") + "/" + workspace;
             boolean collapsed = collapsedGroups.computeIfAbsent(key, value -> getPreferences(MODE_PRIVATE).getBoolean("collapsed:" + value, false));
             LinearLayout group = column();
@@ -2314,6 +2737,7 @@ public final class MainActivity extends Activity {
     }
 
     private void layoutConversationList(boolean centered) {
+        LinearLayout content = conversationListContent();
         content.setGravity(Gravity.TOP);
         if (centered) {
             // Keep filters and pending actions at the top; only the placeholder
@@ -2322,6 +2746,7 @@ public final class MainActivity extends Activity {
             View empty = content.findViewWithTag("chatEmptyState");
             empty.setLayoutParams(new LinearLayout.LayoutParams(-1, -2, 1));
         }
+        if (tabletConversationList != null) tabletConversationList.select("conversation:", screen.equals("detail") ? conversationId : "");
         conversationListScroll.afterRender(centered);
         if (!centered) requestPrefetchViewport();
     }
@@ -2335,6 +2760,7 @@ public final class MainActivity extends Activity {
     }
 
     private boolean renderDiscussionSection(String query) {
+        LinearLayout content = conversationListContent();
         if (!canDiscussions) return false;
         String key = credentials.optString("address") + "/discussions";
         boolean collapsed = collapsedGroups.computeIfAbsent(key, value -> getPreferences(MODE_PRIVATE).getBoolean("collapsed:" + value, false));
@@ -2406,7 +2832,7 @@ public final class MainActivity extends Activity {
                     if (!selectedConversations.add(id)) selectedConversations.remove(id);
                     renderConversations();
                 } else if (archived) restoreArchivedConversation(conversation);
-                else { conversationId = id; conversationTitle = title; detailReturn = "list"; detailScreen(); connectEvents(); }
+                else openListConversation(id, title);
             }, () -> { if (archived) restoreArchivedConversation(conversation); else conversationMenu(conversation); });
         card.setContentDescription(title + (meta.isEmpty() ? "" : " · " + meta) + " · " + activity(conversation)
             + (unread ? " · " + tr("新消息", "New reply") : ""));
@@ -2508,7 +2934,8 @@ public final class MainActivity extends Activity {
         if (title.isEmpty()) title = tr("未命名会话", "Untitled conversation");
         boolean unread = conversation.optLong("lastReplyAt", 0) > conversation.optLong("replyReadAt", 0);
         return new ConversationSidebar.Item(conversation.optString("id"), title,
-            conversationEngine(conversation), detail, color, selected, unread);
+            conversationEngine(conversation), detail, color, selected, unread,
+            conversation.optString("workspaceName", tr("独立会话", "Independent conversations")), conversation.optString("activity"));
     }
 
     private void openSidebarConversation(ConversationSidebar.Item item) {
@@ -2522,6 +2949,7 @@ public final class MainActivity extends Activity {
     }
 
     private void refreshDetailSidebar() {
+        if (tabletConversationList != null) return; // The existing list summary stream refreshes this pane.
         if (detailSidebar == null || !screen.equals("detail") || !foreground || sidebarRefreshBusy
                 || !credentials.has("token") || !EmbeddedNetwork.online() || listCache == null) return;
         long now = android.os.SystemClock.elapsedRealtime();
@@ -2572,6 +3000,7 @@ public final class MainActivity extends Activity {
     }
 
     private void restoreArchivedConversation(JSONObject conversation) {
+        if (screen.equals("detail") && tabletConversationList != null) { persistDraft(); listScreen(); }
         if (!canManageConversations || commandBusy || credentials.has("pendingCreate")) {
             setStatusNotice(tr("恢复归档需要控制权限，并等待当前操作完成。", "Restoring an archived conversation requires control permission and no pending action."));
             return;
@@ -2601,18 +3030,33 @@ public final class MainActivity extends Activity {
             return;
         }
         if (conversationPopup != null) conversationPopup.dismiss();
-        View anchor = root.findViewWithTag("conversation:" + conversation.optString("id"));
+        View anchor = conversationListRoot().findViewWithTag("conversation:" + conversation.optString("id"));
         if (anchor == null) return;
+        conversationPopup = conversationActionsMenu(anchor, conversation, canFork,
+            action -> performConversationAction(conversation, action));
+    }
+
+    private ConversationMenu conversationActionsMenu(View anchor, JSONObject conversation, boolean fork,
+            java.util.function.Consumer<String> action) {
+        return new ConversationMenu(anchor, chatStyle, chinese, conversation.optBoolean("pinned"),
+            () -> action.accept("rename"), () -> action.accept("select"), () -> action.accept("pin"),
+            () -> action.accept("archive"), () -> action.accept("delete"), fork ? () -> action.accept("fork") : null);
+    }
+
+    private void performConversationAction(JSONObject conversation, String action) {
         String id = conversation.optString("id");
-        conversationPopup = new ConversationMenu(anchor, chatStyle, chinese, conversation.optBoolean("pinned"),
-            () -> renameConversation(conversation), () -> {
-                selectingConversations = true; selectedConversations.add(id); renderConversations();
-            }, () -> manageConversations("pin", java.util.Set.of(id), "", !conversation.optBoolean("pinned")),
-            () -> archiveConversation(conversation), () -> confirmConversationDelete(java.util.Set.of(id)), canFork ? () -> forkConversation(conversation) : null);
+        switch (action) {
+            case "rename" -> renameConversation(conversation);
+            case "select" -> { selectingConversations = true; selectedConversations.add(id); renderConversations(); }
+            case "pin" -> manageConversations("pin", java.util.Set.of(id), "", !conversation.optBoolean("pinned"));
+            case "archive" -> archiveConversation(conversation);
+            case "delete" -> confirmConversationDelete(java.util.Set.of(id));
+            case "fork" -> forkConversation(conversation);
+        }
     }
 
     private void renameConversation(JSONObject conversation) {
-        EditText name = new EditText(this); name.setSingleLine(true); name.setText(conversation.optString("title")); name.setTag("remoteRename");
+        EditText name = new EditorInput(this); name.setSingleLine(true); name.setText(conversation.optString("title")); name.setTag("remoteRename");
         SettingsField field = new SettingsField(name);
         AlertDialog dialog = new CamelliaDialog.Builder(this).setTitle(tr("重命名", "Rename")).setView(field)
             .setNegativeButton(tr("取消", "Cancel"), null).setPositiveButton(tr("保存", "Save"), null).create();
@@ -2623,6 +3067,7 @@ public final class MainActivity extends Activity {
         })); dialog.show();
     }
     private void forkConversation(JSONObject conversation) {
+        if (screen.equals("detail") && tabletConversationList != null) { persistDraft(); listScreen(); }
         if (!canFork || commandBusy || credentials.has("pendingCreate")) return;
         try {
             JSONObject payload = command("fork").put("instanceId", listInstance).put("expectedSeq", conversation.optLong("seq")).put("moveSessionId", conversation.optString("id"));
@@ -2645,6 +3090,7 @@ public final class MainActivity extends Activity {
     }
 
     private void manageConversations(String action, java.util.Set<String> ids, String title, boolean pinned) {
+        if (screen.equals("detail") && tabletConversationList != null) { persistDraft(); listScreen(); }
         if (!canManageConversations || commandBusy || credentials.has("pendingCreate") || ids.isEmpty()) return;
         if (ids.size() > 100) { setStatusNotice(tr("每次最多选择 100 个会话。", "Select at most 100 chats at a time.")); return; }
         try {
@@ -2663,6 +3109,7 @@ public final class MainActivity extends Activity {
     }
 
     private void archiveConversation(JSONObject conversation) {
+        if (screen.equals("detail") && tabletConversationList != null) { persistDraft(); listScreen(); }
         if (!canArchive) {
             setStatusNotice(tr("这台电脑未开放归档，请更新电脑端并授予控制权限。", "This computer does not allow archiving. Update the desktop and grant control permission."));
             return;
@@ -2689,6 +3136,7 @@ public final class MainActivity extends Activity {
     }
 
     private void loadList(boolean append) {
+        if (screen.equals("detail") && tabletConversationList != null) { loadTabletConversationList(append); return; }
         if (!networkActive()) return;
         listLoadFailed = false;
         if (!listLoaded) renderConversations();
@@ -2742,7 +3190,9 @@ public final class MainActivity extends Activity {
         }
         archivedLoading = true;
         setStatusNotice(tr("正在读取已归档会话…", "Loading archived conversations…"));
-        RemoteApi client = api == null ? begin() : api;
+        ConversationListPane owner = screen.equals("detail") ? tabletConversationList : null;
+        RemoteApi client = owner == null ? api == null ? begin() : api : homeClientFactory.apply(credentials.optString("address"));
+        if (owner != null) tabletArchiveClient = client;
         int ticket = generation;
         String token = credentials.optString("token");
         int offset = append ? Math.max(0, archivedNextOffset) : 0;
@@ -2750,8 +3200,8 @@ public final class MainActivity extends Activity {
             try {
                 JSONObject page = client.json("/v1/archived?offset=" + offset, token, null);
                 JSONArray rows = page.optJSONArray("conversations");
-                if (ticket != generation) return;
-                deliver(ticket, () -> {
+                if (owner == null && ticket != generation) return;
+                deliverListResponse(ticket, owner, client, () -> {
                     archivedLoading = false;
                     archivedLoaded = true;
                     if (!append) archivedConversations.clear();
@@ -2765,12 +3215,21 @@ public final class MainActivity extends Activity {
                     renderConversations();
                 });
             } catch (Exception error) {
-                deliver(ticket, () -> {
+                deliverListResponse(ticket, owner, client, () -> {
                     archivedLoading = false;
                     archivedLoaded = true;
                     showFailure(error, true);
                     renderConversations();
                 });
+            } finally { if (owner != null) client.cancel(); }
+        });
+    }
+
+    private void deliverListResponse(int ticket, ConversationListPane owner, RemoteApi client, Runnable action) {
+        if (owner == null) deliver(ticket, action);
+        else handler.post(() -> {
+            if (networkActive() && tabletConversationList == owner && tabletArchiveClient == client) {
+                tabletArchiveClient = null; action.run();
             }
         });
     }
@@ -2793,7 +3252,7 @@ public final class MainActivity extends Activity {
     }
 
     private void updateCapabilities(JSONObject info) {
-        if (screen.equals("list")) { listLoaded = true; listLoadFailed = false; }
+        if (conversationListAvailable()) { listLoaded = true; listLoadFailed = false; }
         JSONArray engines = info.optJSONArray("engines");
         java.util.List<String> advertised = engines == null ? null : new ArrayList<>();
         if (engines != null) for (int index = 0; index < engines.length(); index++) advertised.add(engines.optString(index));
@@ -2824,6 +3283,7 @@ public final class MainActivity extends Activity {
     }
 
     private void createWorkspace() {
+        if (screen.equals("detail") && tabletConversationList != null) { persistDraft(); listScreen(); }
         if (!canCreateWorkspace) {
             setStatusNotice(tr("请更新电脑端，并授权控制所有工作区后再新建。", "Update the desktop and authorize control of all workspaces to create one.")); return;
         }
@@ -2852,6 +3312,7 @@ public final class MainActivity extends Activity {
     }
 
     private void createConversation(String workspace) {
+        if (screen.equals("detail") && tabletConversationList != null) { persistDraft(); listScreen(); }
         if (!canCreate || workspace == null && !allowIndependent) {
             setStatusNotice(tr("请更新电脑端，并授权控制及对应会话范围。", "Update the desktop and authorize control and this workspace scope.")); return;
         }
@@ -3307,6 +3768,7 @@ public final class MainActivity extends Activity {
     private void buildDetailContent(boolean preserveLiveState) {
         shell(conversationTitle, tr("电脑执行 · 手机查看", "Runs on your computer · Read on your phone"));
         ((ChatScrollView) scroll).setFollowBottomOnLayout(true);
+        ((ChatScrollView) scroll).setOnReading(this::clearMessageScroll);
         root.setClipChildren(false);
         scroll.setVerticalScrollBarEnabled(false);
         older = button(tr("加载更早消息", "Load earlier messages"), this::loadOlder, false); older.setEnabled(false);
@@ -3400,11 +3862,11 @@ public final class MainActivity extends Activity {
 
     private void rebuildDetailForConfiguration() {
         persistDraft();
-        boolean stayAtBottom = scroll != null && scroll.getChildCount() > 0
-            && scroll.getChildAt(0).getHeight() - scroll.getHeight() - scroll.getScrollY() < dp(120);
+        boolean stayAtBottom = scroll instanceof ChatScrollView && ((ChatScrollView) scroll).isFollowingOutput();
         int previousScroll = scroll == null ? 0 : scroll.getScrollY();
         initialMessageScroll = false;
         buildDetailContent(true);
+        if (!stayAtBottom) ((ChatScrollView) scroll).readHistory();
         positionMessages(stayAtBottom ? Integer.MAX_VALUE : previousScroll);
     }
 
@@ -3509,6 +3971,17 @@ public final class MainActivity extends Activity {
             if (cached != null && updated != null && cached.toString().equals(updated.toString())) return;
             if (screen.equals("home")) {
                 refreshHomeContent();
+            } else if (tabletConversationList != null) {
+                if (remoteListQuery.isEmpty()) {
+                    if (page.optInt("nextOffset", -1) < 0 || rows.length() >= conversations.size()) applyConversationPage(page, false);
+                    else {
+                        for (int index = 0; index < rows.length(); index++) {
+                            JSONObject row = rows.optJSONObject(index);
+                            if (row != null) conversations.put(row.optString("id"), row);
+                        }
+                        renderConversations();
+                    }
+                }
             } else if (detailSidebar != null) detailSidebar.update(detailSidebarItems());
         }));
     }
@@ -3620,7 +4093,7 @@ public final class MainActivity extends Activity {
         prefetch.put(credentials, snapshot);
         if (!server.equals(instance)) { queueVersion = -1; clearSubtasks(); }
         boolean following = !historyDetached && (initialMessageScroll || pendingScrollView == scroll && pendingScrollPosition == Integer.MAX_VALUE
-            || scroll.getChildCount() == 0 || scroll.getChildAt(0).getHeight() - scroll.getHeight() - scroll.getScrollY() < dp(120));
+            || scroll instanceof ChatScrollView && ((ChatScrollView) scroll).isFollowingOutput());
         instance = server; cursor = nextCursor;
         if (snapshot.optJSONArray("subagents") != null) remoteSubtasks = snapshot.optJSONArray("subagents");
         if (subtaskPage != null) subtaskPage.update(remoteSubtasks);
@@ -4170,7 +4643,7 @@ public final class MainActivity extends Activity {
             == android.content.res.Configuration.UI_MODE_NIGHT_YES;
         closeVisualization();
         VisualizationDialog dialog = new VisualizationDialog(this, title, chinese);
-        RemoteApi client = new RemoteApi(this, address);
+        RemoteApi client = remoteClientFactory.apply(address);
         dialog.setOnDismissListener(ignored -> {
             if (visualizationDialog == dialog) visualizationDialog = null;
             client.cancel();
@@ -4185,7 +4658,7 @@ public final class MainActivity extends Activity {
                 JSONObject loaded = response.optJSONObject("card");
                 String html = loaded == null ? "" : loaded.optString("html");
                 if (html.isEmpty()) throw new java.io.IOException("Visualization document is empty");
-                viewHandler.post(() -> {
+                handler.post(() -> {
                     if (ticket != generation || !ownerConversation.equals(conversationId) || !networkActive()) {
                         dialog.dismiss();
                     } else if (visualizationDialog == dialog) {
@@ -4193,7 +4666,7 @@ public final class MainActivity extends Activity {
                     }
                 });
             } catch (Exception error) {
-                viewHandler.post(() -> {
+                handler.post(() -> {
                     if (visualizationDialog != dialog) return;
                     dialog.dismiss();
                     if (ticket == generation && ownerConversation.equals(conversationId))
@@ -4217,9 +4690,22 @@ public final class MainActivity extends Activity {
     }
 
     private void releasePageViews() {
+        cancelHomeConversationMenu();
+        if (!screen.equals("list") || !homeActionScope.equals(RemoteWorkbenchSync.identity(credentials))) {
+            homeActionConversation = null; homeActionScope = "";
+        }
+        if (detailSidebar != null) tabletSidebarStates.put(sidebarStateAddress, detailSidebar.saveState());
+        if (tabletComputerPane != null) tabletComputerExpanded = tabletComputerPane.expanded();
+        tabletComputerPane = null;
+        if (tabletHomeActiveScroll != null) tabletHomeActiveY = tabletHomeActiveScroll.getScrollY();
+        if (tabletHomeRecentScroll != null) tabletHomeRecentY = tabletHomeRecentScroll.getScrollY();
+        tabletHomeRecent = null; tabletHomeActiveScroll = null; tabletHomeRecentScroll = null;
         rememberConversationListContext();
-        conversationListScroll.detach();
-        if (codexResetDialog != null) { codexResetDialog.dismiss(); codexResetDialog = null; }
+        boolean retainList = tabletConversationList != null && tabletConversationList.scope.equals(conversationListScope())
+            && (screen.equals("list") || screen.equals("detail"));
+        if (retainList) tabletConversationList.takeView(); // Do not retain the old transcript through its parent split.
+        else { conversationListScroll.detach(); discardTabletConversationList(); }
+        if (!retainingDialogsForConfiguration && codexResetDialog != null) { codexResetDialog.dismiss(); codexResetDialog = null; }
         // PageTransitions captures the outgoing hierarchy before detaching it.
         viewHandler.removeCallbacksAndMessages(null); clearMessageScroll();
         prefetchRows.clear(); disposeMessageViews();
@@ -4227,15 +4713,18 @@ public final class MainActivity extends Activity {
         if (conversationPopup != null) { conversationPopup.dismiss(); conversationPopup = null; }
         if (settingsPopup != null) { settingsPopup.dismiss(); settingsPopup = null; }
         if (computerPicker != null) { computerPicker.dismiss(); computerPicker = null; }
-        if (computerDialog != null) { computerDialog.dismiss(); computerDialog = null; }
-        if (queueDialog != null) { queueDialog.dismiss(); queueDialog = null; }
-        if (workDialog != null) { workDialog.dismiss(); workDialog = null; }
-        workApprovalSection = null;
-        workAutomationSection = null;
-        queueSheetPanel = null;
-        if (remoteApprovalDialog != null) { remoteApprovalDialog.dismiss(); remoteApprovalDialog = null; }
-        closeVisualization();
-        remoteApprovalKey = ""; locationConsent.cancel();
+        if (!retainingDialogsForConfiguration) {
+            if (computerDialog != null) { computerDialog.dismiss(); computerDialog = null; }
+            if (queueDialog != null) { queueDialog.dismiss(); queueDialog = null; }
+            if (workDialog != null) { workDialog.dismiss(); workDialog = null; }
+            workApprovalSection = null;
+            workAutomationSection = null;
+            queueSheetPanel = null;
+            if (remoteApprovalDialog != null) { remoteApprovalDialog.dismiss(); remoteApprovalDialog = null; }
+            closeVisualization(); remoteApprovalKey = "";
+            DialogWindows.dismiss(this);
+        }
+        locationConsent.cancel();
         messages = null; older = null; remoteEmptyState = null;
         archivedBar = null;
         composer = null; chatComposer = null; sendButton = null; stopButton = null;
@@ -4243,7 +4732,9 @@ public final class MainActivity extends Activity {
         backgroundWorkBar = null; backgroundWorkLabel = null; backgroundWorkStop = null;
         imageTray = null; imageStrip = null; attachButton = null; modelButton = null; permissionButton = null;
         addressInput = null; portInput = null; nameInput = null; codeInput = null; pairButton = null; scanButton = null;
-        handler.removeCallbacks(searchRemote); searchInput = null; searchBar = null;
+        handler.removeCallbacks(searchRemote);
+        searchInput = retainList ? tabletConversationList.root.findViewWithTag("remoteSearchInput") : null;
+        searchBar = retainList ? tabletConversationList.root.findViewWithTag("remoteSearchBar") : null;
         detailSidebar = null; splitDetail = false; workbenchNavigation = null;
         homeConversations = null; homeHeading = null; homeEmptyHint = null;
         root = null; content = null; scroll = null; status = null; headerConnection = null;
@@ -4334,8 +4825,7 @@ public final class MainActivity extends Activity {
                         updateOlderControl();
                         setStatusNotice(tr("会话已更新，请重新加载更早消息。", "Conversation updated. Load earlier messages again.")); return;
                     }
-                    boolean followBottom = automatic && (pendingScrollView == scroll && pendingScrollPosition == Integer.MAX_VALUE
-                        || !scroll.canScrollVertically(1));
+                    boolean followBottom = automatic && ((ChatScrollView) scroll).isFollowingOutput();
                     View anchor = null;
                     for (int index = 0; index < messages.getChildCount(); index++) {
                         View candidate = messages.getChildAt(index);
@@ -4495,6 +4985,9 @@ public final class MainActivity extends Activity {
         headerConnection.setText(connected ? tr("已连接", "Connected") : connectionBlocked || !EmbeddedNetwork.online() ? tr("离线", "Offline")
             : reconnecting ? tr("正在重连", "Reconnecting") : tr("正在连接", "Connecting"));
         headerConnection.setVisibility(View.VISIBLE);
+        if (tabletConversationList != null && tabletConversationList.connection != null && tabletConversationList.connection != headerConnection) {
+            tabletConversationList.connection.setText(headerConnection.getText()); tabletConversationList.connection.setVisibility(View.VISIBLE);
+        }
     }
 
     private void listConnected() {
@@ -4641,8 +5134,20 @@ public final class MainActivity extends Activity {
         if (!screen.equals("detail")) return;
         if (workDialog != null && workDialog.isShowing()) return;
         SettingsStyle style = new SettingsStyle(this);
-        android.app.Dialog dialog = new android.app.Dialog(this);
+        android.app.Dialog dialog = new android.app.Dialog(this) {
+            @Override public boolean onTouchEvent(android.view.MotionEvent event) {
+                // The sheet's 12dp side margin is smaller than Android's
+                // default outside-touch slop. Recognize the visible gap too.
+                View decor = getWindow().getDecorView();
+                if (event.getActionMasked() == android.view.MotionEvent.ACTION_DOWN
+                        && (event.getX() < 0 || event.getY() < 0 || event.getX() > decor.getWidth() || event.getY() > decor.getHeight())) {
+                    cancel(); return true;
+                }
+                return super.onTouchEvent(event);
+            }
+        };
         workDialog = dialog;
+        dialog.setCanceledOnTouchOutside(true);
         LinearLayout panel = column();
         style.sheetPanel(panel);
         panel.setTag("workSheet");
@@ -4716,7 +5221,7 @@ public final class MainActivity extends Activity {
         sheetScroll.addView(panel);
         dialog.setContentView(sheetScroll);
         dialog.setOnDismissListener(dismissed -> {
-            if (workDialog == dialog) { workDialog = null; workApprovalSection = null; workAutomationSection = null; }
+            if (workDialog == dialog) { workDialog = null; workApprovalSection = null; workAutomationSection = null; expandedTaskDetails.clear(); }
         });
         style.sheetWindow(dialog.getWindow(), sheetScroll);
         dialog.show();
@@ -4874,8 +5379,80 @@ public final class MainActivity extends Activity {
             View card = automationTask(task);
             expandAutomationText(card, "remoteTaskInstruction");
             enableAutomationControl(card, "remoteTaskToggle", enabled);
+            addTaskDetails((LinearLayout) card, task, enabled);
             workAutomationSection.addView(card);
         }
+    }
+
+    private void addTaskDetails(LinearLayout card, JSONObject task, boolean enabled) {
+        collapseTaskDetail(card, card.findViewWithTag("remoteTaskInstruction"), task.optString("id") + ":instruction");
+        addTaskDetail(card, taskScheduleText(task, false), "remoteTaskSchedule");
+        String notice = task.optString(chinese ? "noticeZh" : "notice");
+        if (!notice.isEmpty()) addTaskDetail(card, notice, "remoteTaskNotice");
+        if (task.has("maxRuns")) {
+            addTaskDetail(card, task.optInt("runs") + "/" + task.optInt("maxRuns") + tr(" 次检查", " checks")
+                + " · " + task.optInt("repairs") + "/" + task.optInt("maxRepairs") + tr(" 次恢复", " recoveries"), "remoteTaskCounts");
+        }
+        java.text.DateFormat format = java.text.DateFormat.getDateTimeInstance(java.text.DateFormat.SHORT,
+            java.text.DateFormat.SHORT, chinese ? java.util.Locale.SIMPLIFIED_CHINESE : java.util.Locale.ENGLISH);
+        if (task.optLong("nextRunAt") > 0) addTaskDetail(card, tr("下次检查：", "Next check: ")
+            + format.format(new java.util.Date(task.optLong("nextRunAt"))), "remoteTaskNextCheck");
+        if (task.optLong("expiresAt") > 0) addTaskDetail(card, tr("截止时间：", "Deadline: ")
+            + format.format(new java.util.Date(task.optLong("expiresAt"))), "remoteTaskDeadline");
+        if (!task.optString("lastResult").isEmpty()) {
+            addTaskDetail(card, task.optString("lastResult"), "remoteTaskResult");
+            collapseTaskDetail(card, card.findViewWithTag("remoteTaskResult"), task.optString("id") + ":result");
+        }
+        JSONArray history = task.optJSONArray("history");
+        if (history != null && history.length() > 0) {
+            LinearLayout records = column(); records.setVisibility(View.GONE); records.setTag("remoteTaskHistory");
+            for (int index = history.length() - 1; index >= 0; index--) {
+                JSONObject entry = history.optJSONObject(index); if (entry == null) continue;
+                addTaskDetail(records, format.format(new java.util.Date(entry.optLong("at"))) + "\n" + entry.optString("message"), null);
+            }
+            TextView expand = text(tr("最近记录", "Recent checks"), Palette.TEXT_NOTE, accent);
+            expand.setTag("remoteTaskHistoryToggle"); expand.setMinHeight(dp(48)); expand.setGravity(Gravity.CENTER_VERTICAL);
+            expand.setPadding(dp(12), dp(4), dp(12), dp(4)); expand.setFocusable(true);
+            expand.setOnClickListener(view -> { boolean show = records.getVisibility() != View.VISIBLE;
+                records.setVisibility(show ? View.VISIBLE : View.GONE);
+                expand.setText(show ? tr("收起记录", "Hide recent checks") : tr("最近记录", "Recent checks")); });
+            card.addView(expand); card.addView(records);
+        }
+        if (!task.optBoolean("stopping") && java.util.Arrays.asList("scheduled", "running", "paused").contains(task.optString("status"))) {
+            TextView cancel = text(tr("取消任务", "Cancel task"), Palette.TEXT_NOTE, accent);
+            cancel.setTag("remoteTaskCancel"); cancel.setMinHeight(dp(48)); cancel.setGravity(Gravity.CENTER_VERTICAL);
+            cancel.setPadding(dp(12), dp(4), dp(12), dp(4)); cancel.setFocusable(true);
+            cancel.setEnabled(enabled); cancel.setAlpha(enabled ? 1f : .45f);
+            String target = conversationId, server = instance, id = task.optString("id");
+            cancel.setOnClickListener(view -> new CamelliaDialog.Builder(this).setTitle(tr("取消任务？", "Cancel task?"))
+                .setMessage(tr("停止定时检查，保留记录。正在运行的实验不会停止。", "Stops scheduled checks and keeps their history. The experiment keeps running."))
+                .setNegativeButton(tr("返回", "Back"), null).setPositiveButton(tr("取消任务", "Cancel task"), (dialog, which) -> {
+                    if (target.equals(conversationId) && server.equals(instance)) submitAutomation("task-control", "cancel", id);
+                }).show());
+            card.addView(cancel);
+        }
+    }
+
+    private void collapseTaskDetail(LinearLayout card, TextView detail, String key) {
+        if (detail.getText().length() <= 300) return;
+        boolean expanded = expandedTaskDetails.contains(key);
+        detail.setMaxLines(expanded ? Integer.MAX_VALUE : 4);
+        detail.setEllipsize(expanded ? null : android.text.TextUtils.TruncateAt.END);
+        TextView toggle = text(expanded ? tr("收起", "Collapse") : tr("展开全文", "Show full text"), Palette.TEXT_NOTE, accent);
+        toggle.setTag(detail.getTag() + "Expand"); toggle.setMinHeight(dp(48)); toggle.setGravity(Gravity.CENTER_VERTICAL);
+        toggle.setPadding(dp(12), 0, dp(12), dp(8)); toggle.setFocusable(true);
+        toggle.setOnClickListener(view -> {
+            boolean show = !expandedTaskDetails.contains(key);
+            if (show) expandedTaskDetails.add(key); else expandedTaskDetails.remove(key);
+            detail.setMaxLines(show ? Integer.MAX_VALUE : 4); detail.setEllipsize(show ? null : android.text.TextUtils.TruncateAt.END);
+            toggle.setText(show ? tr("收起", "Collapse") : tr("展开全文", "Show full text"));
+        });
+        card.addView(toggle, card.indexOfChild(detail) + 1);
+    }
+
+    private void addTaskDetail(LinearLayout card, String value, String tag) {
+        TextView detail = text(value, Palette.TEXT_SMALL, muted); detail.setTag(tag); detail.setTextIsSelectable(true);
+        detail.setPadding(dp(12), 0, dp(12), dp(10)); card.addView(detail, new LinearLayout.LayoutParams(-1, -2));
     }
 
     private void expandAutomationText(View card, String tag) {
@@ -5319,7 +5896,7 @@ public final class MainActivity extends Activity {
     private void showQueueEditor(String id, String expectedText, String draft) {
         if (!connected || !controlAllowed || commandBusy || pendingCommand() != null) return;
         String target = conversationId, server = instance;
-        EditText editor = new EditText(this); editor.setTag("remoteQueueEditor");
+        EditText editor = new EditorInput(this); editor.setTag("remoteQueueEditor");
         editor.setText(draft); editor.setTextSize(Palette.TEXT_INPUT); editor.setTextColor(ink);
         editor.setGravity(Gravity.TOP); editor.setMinLines(3); editor.setMaxLines(10);
         editor.setInputType(android.text.InputType.TYPE_CLASS_TEXT | android.text.InputType.TYPE_TEXT_FLAG_MULTI_LINE | android.text.InputType.TYPE_TEXT_FLAG_CAP_SENTENCES);
@@ -5512,19 +6089,19 @@ public final class MainActivity extends Activity {
         LinearLayout row = new LinearLayout(this); row.setOrientation(LinearLayout.HORIZONTAL);
         row.setGravity(Gravity.CENTER_VERTICAL); row.setPadding(dp(12), dp(8), dp(12), dp(8));
         String status = task.optString("status", "");
-        String label = status.equals("running") ? tr("检查中", "Checking") : status.equals("paused") ? tr("已暂停", "Paused")
-            : status.equals("complete") ? tr("已完成", "Complete") : tr("等待", "Waiting");
+        String label = task.optBoolean("stopping") ? tr("停止中", "Stopping") : status.equals("running") ? tr("检查中", "Checking") : status.equals("paused") ? tr("已暂停", "Paused")
+            : status.equals("complete") ? tr("已完成", "Complete") : status.equals("cancelled") ? tr("已取消", "Cancelled") : tr("等待", "Waiting");
         TextView state = text(label, Palette.TEXT_SMALL, muted); state.setTag("remoteTaskState"); row.addView(state, new LinearLayout.LayoutParams(-2, -2));
         TextView instruction = text(task.optString("instruction", ""), Palette.TEXT_NOTE, ink);
         instruction.setPadding(dp(10), 0, dp(10), 0); instruction.setSingleLine(true);
         instruction.setEllipsize(android.text.TextUtils.TruncateAt.END); instruction.setTag("remoteTaskInstruction");
         row.addView(instruction, new LinearLayout.LayoutParams(0, -2, 1));
         int minutes = task.optInt("intervalMinutes", 0);
-        if (minutes > 0) {
-            TextView interval = text(tr("每 ", "every ") + minutes + tr(" 分钟", " min"), Palette.TEXT_SMALL, muted);
+        if (minutes > 0 || task.optJSONObject("schedule") != null) {
+            TextView interval = text(taskScheduleText(task, true), Palette.TEXT_SMALL, muted);
             interval.setPadding(dp(6), 0, dp(6), 0); row.addView(interval, new LinearLayout.LayoutParams(-2, -2));
         }
-        if (status.equals("scheduled") || status.equals("running") || status.equals("paused")) {
+        if (!task.optBoolean("stopping") && (status.equals("scheduled") || status.equals("running") || status.equals("paused"))) {
             boolean pause = !status.equals("paused");
             TextView toggle = text(pause ? tr("暂停", "Pause") : tr("恢复", "Resume"), Palette.TEXT_NOTE, accent);
             toggle.setTag("remoteTaskToggle"); toggle.setMinHeight(dp(48));
@@ -5536,6 +6113,15 @@ public final class MainActivity extends Activity {
             row.addView(toggle, new LinearLayout.LayoutParams(-2, -2));
         }
         card.addView(row); return card;
+    }
+
+    private String taskScheduleText(JSONObject task, boolean compact) {
+        JSONObject schedule = task.optJSONObject("schedule");
+        String type = schedule == null ? "interval" : schedule.optString("type", "interval");
+        if (type.equals("once")) return tr("执行一次", "One time");
+        if (type.equals("daily")) return tr("每天 ", "Daily ") + schedule.optString("time")
+            + (compact ? "" : " (" + schedule.optString("timeZone") + ")");
+        return tr("每 ", "Every ") + task.optInt("intervalMinutes") + tr(" 分钟", " min");
     }
 
     // Automation controls are existing commands, so the request/retry rules and
@@ -5625,12 +6211,16 @@ public final class MainActivity extends Activity {
         RemotePendingCommands.put(saved, pending, stop);
         store.save(saved); credentials = saved;
         if (payload.optString("action").equals("send") || payload.optString("action").equals("resend")) {
+            ((ChatScrollView) scroll).followOutput();
             outgoingMessage = pending;
             editingSeq = -1; editingText = "";
             composer.setText(""); selectedImages.clear(); selectedDocuments.clear(); renderImage();
             persistDraft();
             outgoingState("sending");
-            viewHandler.post(() -> scroll.fullScroll(View.FOCUS_DOWN));
+            ScrollView sentScroll = scroll;
+            viewHandler.post(() -> {
+                if (scroll == sentScroll && ((ChatScrollView) sentScroll).isFollowingOutput()) sentScroll.fullScroll(View.FOCUS_DOWN);
+            });
         }
         updateControls();
         commandCheckDeadline = android.os.SystemClock.elapsedRealtime() + COMMAND_CONFIRM_TIMEOUT_MS;
@@ -6111,6 +6701,10 @@ public final class MainActivity extends Activity {
         if (!screen.equals("network")) networkReturn = screen;
         screen = "network";
         stopNetwork(); networkScreen = true; loginLaunched = false;
+        renderNetworkContent();
+    }
+
+    private void renderNetworkContent() {
         shell(tr("手机访问", "Mobile access"), tr("网络连接 · 仅连接 Camellia，不接管其他 App 流量", "Network connection · Camellia only, no device-wide VPN"));
         SettingsStyle settingsStyle = new SettingsStyle(this);
         // The page opens on a question — is this phone on the network yet — and
@@ -6139,7 +6733,7 @@ public final class MainActivity extends Activity {
         settingsStyle.action(connection, tr("刷新网络状态", "Refresh network status"), "", "networkRefresh", false, () -> refreshNetwork(false));
         settingsStyle.note(content, tr("浏览器授权后返回此处刷新，再继续配对。关闭内置模式可使用外部 Tailscale；不会自动降级为未加密公网连接。", "After browser authorization, refresh here and continue pairing. Disable built-in mode to use external Tailscale; no unencrypted public-network fallback."));
         LinearLayout identity = settingsStyle.group(content, tr("网络与隐私", "Network & privacy"));
-        settingsStyle.info(identity, tr("独立网络身份", "Separate network identity"), tr("手机以 camellia-android 加入网络，仍受网络访问策略控制。", "This phone joins as camellia-android and follows your tailnet access rules."));
+        settingsStyle.info(identity, tr("独立网络身份", "Separate network identity"), tr("手机以本机名称加入网络；未设置时使用默认名称，仍受网络访问策略控制。", "This phone joins using its device name, or a default name when none is set, and follows your tailnet access rules."));
         settingsStyle.action(identity, tr("清除内置网络身份", "Forget embedded identity"), tr("清除后需要重新登录", "Requires signing in again"), "networkForget", true, () -> new CamelliaDialog.Builder(this)
             .setMessage(tr("将删除手机本地网络身份，之后需要重新登录。请另外在 Tailscale 管理后台撤销旧节点。", "Deletes the local node identity. Sign in again afterwards; also revoke the old node in the Tailscale admin console."))
             .setNegativeButton(tr("取消", "Cancel"), null).setPositiveButton(tr("清除", "Forget"), (dialog, which) -> {

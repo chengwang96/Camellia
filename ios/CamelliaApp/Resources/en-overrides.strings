@@ -140,7 +140,7 @@
 "扫描配对二维码" = "Scan pairing QR";
 "返回配对" = "Back to pairing";
 "这台手机已经配对上电脑，但当前没有选中哪一台。打开电脑列表选一台，就能查看和继续它的会话。" = "This phone is paired, but no computer is selected. Choose one from the computer list to view and continue its chats.";
-"这台手机以 camellia-ios 加入网络，遵循你的 tailnet 访问规则。" = "This phone joins as camellia-ios and follows your tailnet access rules.";
+"这台手机以本机名称加入网络；未设置时使用默认名称，遵循你的 tailnet 访问规则。" = "This phone joins using its device name, or a default name when none is set, and follows your tailnet access rules.";
 "这台电脑上还没有会话" = "No chats on this computer";
 "当前会话不可用。" = "This chat is unavailable.";
 "这台电脑未授予会话管理权限。" = "This computer has not granted chat-management permission.";
@@ -166,7 +166,7 @@
 "将删除平板上的凭据。若要撤销权限，还需在电脑端撤销此设备。" = "This deletes credentials on the iPad. Also revoke this device on the computer to remove its authorization.";
 "平板与电脑需登录同一个 Tailscale 网络。" = "Sign into the same Tailscale network on both devices.";
 "平板上显示的名字" = "Name shown on this iPad";
-"这台平板以 camellia-ios 加入网络，遵循你的 tailnet 访问规则。" = "This iPad joins as camellia-ios and follows your tailnet access rules.";
+"这台平板以本机名称加入网络；未设置时使用默认名称，遵循你的 tailnet 访问规则。" = "This iPad joins using its device name, or a default name when none is set, and follows your tailnet access rules.";
 "将删除平板本地网络身份，之后需要重新登录。还需在 Tailscale 管理后台撤销旧节点。" = "This removes the network identity from this iPad. You will need to sign in again. Revoke the old node in the Tailscale admin console too.";
 "这台平板已经配对上电脑，但当前没有选中哪一台。打开电脑列表选一台，就能查看和继续它的会话。" = "This iPad is paired, but no computer is selected. Choose one from the computer list to view and continue its chats.";
 "在电脑端的 Camellia 里生成配对码，然后用平板扫码或手动填写，即可在平板上查看和继续会话。" = "Generate a pairing code in Camellia on your computer, then scan it or enter it here to view and continue chats on this iPad.";
@@ -223,3 +223,4 @@
 "队列已暂停" = "Queue paused";
 "等待审批或回答问题" = "Waiting for approval or answers";
 "（重试同一请求，不会重复执行）" = " (retries the same request without duplicate execution)";
+"收起执行过程" = "Collapse execution process";

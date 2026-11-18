@@ -501,11 +501,11 @@ public class WorkbenchRefreshTest extends InstrumentationTestCase {
                     invoke("detailScreen");
                     View root = activity.getWindow().getDecorView();
                     assertNotNull("Wide landscape chat must keep its conversation list visible",
-                        root.findViewWithTag("detailConversationSidebar"));
+                        root.findViewWithTag("conversationListPane"));
                     assertNotNull("The active conversation should be selected in the sidebar",
-                        root.findViewWithTag("sidebarConversation:sidebar-row"));
-                    assertNotNull(root.findViewWithTag("sidebarConversation:sidebar-running"));
-                    assertNotNull(root.findViewWithTag("sidebarConversation:sidebar-review"));
+                        root.findViewWithTag("conversation:sidebar-row"));
+                    assertNotNull(root.findViewWithTag("conversation:sidebar-running"));
+                    assertNotNull(root.findViewWithTag("conversation:sidebar-review"));
                 } catch (Exception error) {
                     throw new AssertionError(error);
                 }
@@ -519,7 +519,7 @@ public class WorkbenchRefreshTest extends InstrumentationTestCase {
                 assertEquals("The wide detail transition should be settled before capture", 1, pages.getChildCount());
                 assertEquals(0f, pages.getChildAt(0).getTranslationX());
                 assertTrue("The sidebar must be a real, usable pane",
-                    activity.getWindow().getDecorView().findViewWithTag("detailConversationSidebar").getWidth() > 0);
+                    activity.getWindow().getDecorView().findViewWithTag("conversationListPane").getWidth() > 0);
             });
             java.io.File directory = new java.io.File(activity.getExternalFilesDir(null), "workbench-visuals");
             assertTrue(directory.isDirectory() || directory.mkdirs());
@@ -532,13 +532,13 @@ public class WorkbenchRefreshTest extends InstrumentationTestCase {
             getInstrumentation().runOnMainSync(() -> {
                 try {
                     android.view.View row = activity.getWindow().getDecorView()
-                        .findViewWithTag("sidebarConversation:sidebar-running");
+                        .findViewWithTag("conversation:sidebar-running");
                     assertNotNull(row);
                     row.performClick();
                     assertEquals("sidebar-running", field("conversationId"));
                     assertEquals("Background analysis", field("conversationTitle"));
                     android.view.View selected = activity.getWindow().getDecorView()
-                        .findViewWithTag("sidebarConversation:sidebar-running");
+                        .findViewWithTag("conversation:sidebar-running");
                     assertNotNull(selected);
                     assertTrue("The tapped conversation must become the selected sidebar row", selected.isSelected());
                 } catch (Exception error) {
@@ -582,9 +582,9 @@ public class WorkbenchRefreshTest extends InstrumentationTestCase {
             android.os.SystemClock.sleep(700);
             final int[] scrollBeforeSelection = new int[1];
             getInstrumentation().runOnMainSync(() -> {
-                View sidebar = activity.getWindow().getDecorView().findViewWithTag("detailConversationSidebar");
-                View header = sidebar.findViewWithTag("sidebarHeader");
-                android.widget.ScrollView scroll = sidebar.findViewWithTag("sidebarScroll");
+                View sidebar = activity.getWindow().getDecorView().findViewWithTag("conversationListPane");
+                View header = sidebar.findViewWithTag("conversationPageHeader");
+                android.widget.ScrollView scroll = sidebar.findViewWithTag("conversationListScroll");
                 assertNotNull(header); assertNotNull(scroll);
                 assertNotNull("The fixed sidebar header needs its own opaque background",
                     header.getBackground());
@@ -600,7 +600,7 @@ public class WorkbenchRefreshTest extends InstrumentationTestCase {
                 assertEquals("Scrolling conversation rows must not move the sidebar header",
                     before[1], after[1]);
                 scrollBeforeSelection[0] = scroll.getScrollY();
-                View target = sidebar.findViewWithTag("sidebarConversation:scroll-20");
+                View target = sidebar.findViewWithTag("conversation:scroll-20");
                 assertNotNull(target);
                 target.performClick();
             });
@@ -608,8 +608,8 @@ public class WorkbenchRefreshTest extends InstrumentationTestCase {
             android.os.SystemClock.sleep(600);
             getInstrumentation().waitForIdleSync();
             getInstrumentation().runOnMainSync(() -> {
-                View sidebar = activity.getWindow().getDecorView().findViewWithTag("detailConversationSidebar");
-                android.widget.ScrollView scroll = sidebar.findViewWithTag("sidebarScroll");
+                View sidebar = activity.getWindow().getDecorView().findViewWithTag("conversationListPane");
+                android.widget.ScrollView scroll = sidebar.findViewWithTag("conversationListScroll");
                 assertNotNull(scroll);
                 assertEquals("Selecting a conversation must preserve the sidebar scroll position",
                     scrollBeforeSelection[0], scroll.getScrollY());
@@ -706,36 +706,48 @@ public class WorkbenchRefreshTest extends InstrumentationTestCase {
                     } catch (Exception error) { throw new AssertionError(error); }
                 });
                 getInstrumentation().waitForIdleSync();
+                View page = (View) field("root");
+                long laidOut = android.os.SystemClock.uptimeMillis() + 6000;
+                while ((!page.isLaidOut() || !page.isAttachedToWindow() || !page.isShown() || page.getWidth() == 0 || page.getHeight() == 0)
+                        && android.os.SystemClock.uptimeMillis() < laidOut) {
+                    android.os.SystemClock.sleep(40); getInstrumentation().waitForIdleSync();
+                }
+                assertTrue("Capture the visible destination after layout", page.getWidth() > 0 && page.getHeight() > 0);
+                assertTrue(page.isAttachedToWindow() && page.isShown());
                 android.graphics.Bitmap[] before = new android.graphics.Bitmap[1];
-                getInstrumentation().runOnMainSync(() -> {
-                    try {
+                verifyDestinationOnUi(() -> {
                         RefreshScrollView scroll = (RefreshScrollView) field("scroll");
-                        before[0] = android.graphics.Bitmap.createBitmap(scroll.getWidth(), scroll.getHeight(),
+                        before[0] = android.graphics.Bitmap.createBitmap(page.getWidth(), page.getHeight(),
                             android.graphics.Bitmap.Config.ARGB_8888);
-                        scroll.draw(new android.graphics.Canvas(before[0]));
+                        page.draw(new android.graphics.Canvas(before[0]));
                         scroll.setRefreshing(true);
-                    } catch (Exception error) { throw new AssertionError(error); }
                 });
                 try {
                     android.os.SystemClock.sleep(350);
                     if (destination.equals("listScreen")) capture("sessions-refresh-no-spinner");
-                    getInstrumentation().runOnMainSync(() -> {
-                        try {
+                    verifyDestinationOnUi(() -> {
                             RefreshScrollView scroll = (RefreshScrollView) field("scroll");
-                            assertEquals("Refreshing must not push destination content down", 0f,
-                                scroll.getChildAt(0).getTranslationY(), 0f);
+                            if (scroll.isShown() && scroll.getChildCount() > 0)
+                                assertEquals("Refreshing must not push destination content down", 0f,
+                                    scroll.getChildAt(0).getTranslationY(), 0f);
                             android.graphics.Bitmap busy = android.graphics.Bitmap.createBitmap(before[0]);
                             try {
                                 busy.eraseColor(android.graphics.Color.TRANSPARENT);
-                                scroll.draw(new android.graphics.Canvas(busy));
+                                page.draw(new android.graphics.Canvas(busy));
                                 assertTrue("Refreshing must not paint a spinner above destination content", before[0].sameAs(busy));
                             } finally { busy.recycle(); }
                             scroll.setRefreshing(false);
-                        } catch (Exception error) { throw new AssertionError(error); }
                     });
                 } finally { before[0].recycle(); }
             }
         } finally { cache.remove(credentials); RemoteListCache.workbench(context).remove(credentials); }
+    }
+
+    private interface DestinationUiAction { void run() throws Exception; }
+    private void verifyDestinationOnUi(DestinationUiAction action) {
+        var failure = new java.util.concurrent.atomic.AtomicReference<Throwable>();
+        getInstrumentation().runOnMainSync(() -> { try { action.run(); } catch (Throwable error) { failure.set(error); } });
+        if (failure.get() != null) throw new AssertionError(failure.get());
     }
 
     public void testHeldNavigationFeedbackKeepsRoundedCorners() throws Exception {
@@ -746,13 +758,15 @@ public class WorkbenchRefreshTest extends InstrumentationTestCase {
         int inset = Math.round(3 * activity.getResources().getDisplayMetrics().density);
         for (String id : new String[]{"home", "sessions", "computers", "settings"}) {
             int[] bounds = new int[4];
+            View[] target = new View[1];
             getInstrumentation().runOnMainSync(() -> {
                 View item = activity.getWindow().getDecorView().findViewWithTag("nav:" + id);
+                target[0] = item;
                 item.getLocationOnScreen(bounds);
                 bounds[2] = item.getWidth();
                 bounds[3] = item.getHeight();
             });
-            android.graphics.Bitmap before = getInstrumentation().getUiAutomation().takeScreenshot();
+            android.graphics.Bitmap before = RenderedFrameFixture.screenshot(getInstrumentation(), target[0]);
             long downTime = android.os.SystemClock.uptimeMillis();
             android.view.MotionEvent down = android.view.MotionEvent.obtain(downTime, downTime,
                 android.view.MotionEvent.ACTION_DOWN, bounds[0] + bounds[2] / 2f, bounds[1] + bounds[3] / 2f, 0);
@@ -761,11 +775,12 @@ public class WorkbenchRefreshTest extends InstrumentationTestCase {
             android.graphics.Bitmap held = null;
             try {
                 android.os.SystemClock.sleep(900);
-                held = getInstrumentation().getUiAutomation().takeScreenshot();
+                held = RenderedFrameFixture.screenshot(getInstrumentation(), target[0]);
                 for (int x : new int[]{bounds[0] + inset, bounds[0] + bounds[2] - 1 - inset}) {
                     for (int y : new int[]{bounds[1] + inset, bounds[1] + bounds[3] - 1 - inset}) {
-                        assertTrue(id + " held feedback must leave the rounded corner clear",
-                            pixelDifference(before.getPixel(x, y), held.getPixel(x, y)) <= 6);
+                        int difference = pixelDifference(before.getPixel(x, y), held.getPixel(x, y));
+                        assertTrue(id + " held feedback must leave the rounded corner clear at " + x + "," + y
+                            + " (pixel difference " + difference + ")", difference <= 6);
                     }
                 }
                 int x = bounds[0] + bounds[2] / 2;

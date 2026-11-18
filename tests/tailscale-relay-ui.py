@@ -67,7 +67,6 @@ with sync_playwright() as playwright:
                 expect(node('relayDevice')).to_have_value('relay1')
                 # Edit in the same field; polling must not replace a draft.
                 node('relayRename').click()
-                expect(page.locator('dialog.device-rename')).to_have_count(0)
                 expect(node('relayDevice')).to_be_hidden()
                 expect(node('relayName')).to_have_value('izwz94tkwtju32rm6f4f9mz')
                 node('relayName').fill('draft-name')

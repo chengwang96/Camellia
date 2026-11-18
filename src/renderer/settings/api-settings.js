@@ -209,6 +209,10 @@ function setView(next, engine, focus) {
   $('pageTitle').textContent = titles[next];
   engineUI.setVisible(next === 'engines');
   window.mobileAccessUI.setVisible(next === 'mobile');
+  // The settings page and the standalone Mobile access window share the same
+  // stored name. Showing the page re-reads it, so a save made in the other
+  // window is not shadowed by the value loaded when this page opened.
+  if (next === 'mobile' && window.mobileAccessUI?.refresh) void window.mobileAccessUI.refresh();
   window.cliDevicesUI?.setVisible(next === 'devices');
   if (next === 'usage' && live) { fillUsageFilters(); renderUsage(); }
   if (next === 'providers' || next === 'usage') void loadProviderInsights();
@@ -515,7 +519,10 @@ function renderUsage() {
   const hasSubscriptions = rows.some(row => row.source === 'subscription');
   const countLabel = hasSubscriptions ? 'Successful requests / turns' : 'Successful requests';
   const countUnit = hasSubscriptions ? 'requests / turns' : 'requests';
-  $('usageSummary').innerHTML = [[countLabel, sum.requests, countUnit], ["Input tokens", sum.inputTokens, "Includes cache"], ["Output tokens", sum.outputTokens, "Reported by provider"], ["Failed / Canceled", sum.failures + sum.cancelled, countUnit]].map(([label,value,note]) => `<div><small data-i18n>${label}</small><strong>${compact(value)}</strong><small data-i18n>${note}</small></div>`).join('');
+  const totalTokens = sum.inputTokens + sum.outputTokens;
+  $('usageSummary').innerHTML = [["Total tokens", totalTokens, "Input + output"], [countLabel, sum.requests, countUnit],
+    ["Input tokens", sum.inputTokens, "Includes cache"], ["Output tokens", sum.outputTokens, "Reported by provider"]]
+    .map(([label,value,note]) => `<div><small data-i18n>${label}</small><strong>${compact(value)}</strong><small data-i18n>${note}</small></div>`).join('');
   const t = window.CamelliaI18n.t;
   const subscription = rows.filter(row => row.source === 'subscription').reduce(addStats, blankStats());
   const usd = value => new Intl.NumberFormat(window.CamelliaI18n.locale, { style: 'currency', currency: 'USD', minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(value);

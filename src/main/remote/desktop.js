@@ -19,8 +19,10 @@ function createRemoteDesktop({ app, BrowserWindow, ipcMain, nativeTheme, windowC
     safeStorage: require('electron').safeStorage, openExternal: url => require('electron').shell.openExternal(url),
     preferences: () => ({ closeToTray: loadConfig().closeToTray === true, theme: loadConfig().theme || 'system', language: loadConfig().language || 'zh-CN',
       computerName: computerName() }),
-    networkFactory: ({ onFailure }) => {
-      const options = { app, onFailure };
+    networkFactory: ({ onFailure, ...rest }) => {
+      // The service supplies the saved hostname; keep it for the default
+      // EmbeddedNetwork constructor instead of dropping it with extra options.
+      const options = { ...rest, app, onFailure };
       return networkFactory ? networkFactory(options) : new EmbeddedNetwork({ ...options,
         safeStorage: require('electron').safeStorage, openExternal: url => require('electron').shell.openExternal(url) });
     } });

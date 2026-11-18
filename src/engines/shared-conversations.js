@@ -304,11 +304,14 @@ class SharedConversations {
     const onLoadError = error => this.recordLoadError(error);
     this.tasks = new ScheduledTasks({ file: path.join(dir, 'tasks', 'state.json'), log,
       onLoadError,
-      busy: task => this.busy(task.sessionId),
+      busy: task => this.taskWaitReason(task.sessionId),
       interrupt: task => {
         const active = this.active.get(task.sessionId), recovery = this.recovering.get(task.sessionId);
-        if (recovery?.scheduledTaskId === task.id) { recovery.cancelled = true; if (active) { active.cancelled = true; active.session?.interrupt(); } }
-        else if (active?.scheduledTaskId === task.id) { active.cancelled = true; active.session?.interrupt(); }
+        const owner = recovery || active;
+        if (owner?.scheduledTaskId === task.id)
+          return this.cancel({ sessionId: task.sessionId, runId: owner.facade.gen, scheduledTaskId: task.id });
+        if (this.switching.get(task.sessionId)?.scheduledTaskId === task.id)
+          return this.cancel({ sessionId: task.sessionId, scheduledTaskId: task.id });
       },
       run: async task => {
         const conversation = this.get(task.sessionId);
@@ -429,6 +432,12 @@ class SharedConversations {
   }
   workInProgress(id) { return this.controlStarts.has(id) || this.active.has(id) || this.switching.has(id) || this.recovering.has(id) || Boolean(this.goals.get(id)?.armed); }
   busy(id) { return this.workInProgress(id) || this.stopping.has(id) || this.deleting.has(id); }
+  taskWaitReason(id) {
+    if (this.goals.get(id)?.armed) return 'goal';
+    if (this.switching.has(id) || this.recovering.has(id)) return 'compaction';
+    if (this.get(id).pendingTurnReview) return 'review';
+    return this.busy(id) ? 'conversation' : null;
+  }
   isBusy(engine) { return [...this.items.values()].some(c => (!engine || c.currentEngine === engine || this.active.get(c.id)?.engine === engine || this.switching.get(c.id)?.target === engine) && this.busy(c.id)); }
   activity(id) {
     const a = this.active.get(id);
@@ -1934,6 +1943,7 @@ class SharedConversations {
     }
     const assertAvailable = () => {
       controlStart?.validate?.();
+      if (scheduledTaskId && this.tasks.get(scheduledTaskId, c.id).status !== 'running') throw new Error('Scheduled check was stopped');
       if (continuation?.cancelled || continuation?.finished) throw new Error('Conversation continuation was stopped');
       if (this.stopping.has(c.id) || this.deleting.has(c.id)) throw new Error('This conversation is stopping or being deleted');
       if (controlStart && (controlStart.cancelled || this.goalToolsClosed || this.items.get(c.id) !== c || this.controlStarts.get(c.id) !== controlStart)) throw new Error('Child start was cancelled');
@@ -2014,7 +2024,7 @@ class SharedConversations {
       throw new Error('The new message and attachments exceed the selected model\'s input budget. Split the message or attachments, or select a larger-context model. Nothing was sent.');
     const compactBeforeSend = async trigger => {
       if (facade) facade.running = true;
-      try { await this.compact(c.id, { automatic: true, allowGoal: Boolean(facade), controlStart,
+      try { await this.compact(c.id, { automatic: true, allowGoal: Boolean(facade), controlStart, scheduledTaskId,
         destination: { engine, settings, pendingTokens, subscriptionSelection, subscriptionAttempts }, portable: true, trigger }); }
       finally { if (facade) facade.running = false; }
       const goal = this.goals.get(c.id);
@@ -2887,15 +2897,15 @@ class SharedConversations {
     this.publishActivity(id);
     // Begin interruption now, after publishing the in-flight promise. Goal
     // interruption can call cancel() again and will join this same stop.
-    this.stopConversation(id).then(resolveStop, rejectStop);
+    this.stopConversation(id, { scheduledTaskId: payload.scheduledTaskId }).then(resolveStop, rejectStop);
     try { return await pending; }
     finally {
       if (this.stopping.get(id) === pending) this.stopping.delete(id);
       if (this.items.has(id)) this.publishActivity(id);
     }
   }
-  async stopConversation(id) {
-    this.remoteQueue?.pause(id);
+  async stopConversation(id, { scheduledTaskId } = {}) {
+    if (!scheduledTaskId) this.remoteQueue?.pause(id);
     const reservation = this.controlStarts.get(id);
     if (reservation) {
       reservation.cancelled = true;
@@ -2903,7 +2913,7 @@ class SharedConversations {
       // owns this conversation, and send() checks cancelled before dispatch.
       this.controlStarts.delete(id);
     }
-    this.tasks.pauseSession(id);
+    if (!scheduledTaskId) this.tasks.pauseSession(id);
     const switching = this.switching.get(id); if (switching) {
       switching.cancelled = true;
       switching.stop?.(new Error('Compaction canceled'));
@@ -2911,7 +2921,7 @@ class SharedConversations {
       switching.abort?.abort();
       this.stopCompactionSummary(id, this.get(id).currentEngine, switching);
     }
-    const goal = this.goals.get(id); if (goal?.armed) goal.setPhase('paused');
+    const goal = this.goals.get(id); if (!scheduledTaskId && goal?.armed) goal.setPhase('paused');
     const recovery = this.recovering.get(id);
     const a = recovery || this.active.get(id);
     if (a && !a.cancelled) {
@@ -3345,7 +3355,7 @@ class SharedConversations {
     return { markdown: render(kept), omittedRows: count - retained.size,
       truncatedRows: kept.filter(row => row.text !== row.originalText).length };
   }
-  async compact(id, { automatic = false, recovery, allowGoal = false, controlStart, history, trigger, portable = false, destination, manualFallback = false, localOnly = false } = {}) {
+  async compact(id, { automatic = false, recovery, allowGoal = false, controlStart, scheduledTaskId, history, trigger, portable = false, destination, manualFallback = false, localOnly = false } = {}) {
     if (this.controlStarts.has(id) && this.controlStarts.get(id) !== controlStart && !recovery) throw new Error('Child response is starting');
     if (this.active.has(id) || this.switching.has(id) || this.recovering.has(id) && this.recovering.get(id) !== recovery
         || this.goals.get(id)?.armed && !allowGoal) throw new Error('Wait for this conversation to finish or stop it before compacting');
@@ -3403,7 +3413,7 @@ class SharedConversations {
             : !recovery && boundary > segment.cursor ? 'unsynchronized-history' : 'native-eligible';
     if (routeReason === 'unsynchronized-history') diagnostics.nativeCompaction = { ...diagnostics.nativeCompaction,
       eligible: false, reason: 'unsynchronized-history', boundary };
-    const switching = { target: engine, cancelled: false,
+    const switching = { target: engine, cancelled: false, scheduledTaskId,
       subscriptionAttempts: (targetEngine === engine && destination?.subscriptionAttempts) || recovery?.subscriptionAttempts || [] };
     const compactionSettings = pinnedSettings || this.settings(engine, id);
     if (compactionSettings.connection === 'subscription' && this.drivers[engine].subscriptionAccounts) {
@@ -4214,7 +4224,8 @@ class SharedConversations {
         // the broadcast can be delivered in either order).
         return { ok, ...(responseSeq !== undefined ? { responseSeq } : {}) };
       }
-      case 'task-list': return { ok: true, tasks: payload?.sessionId ? this.tasks.list(payload.sessionId) : [] };
+      case 'task-list': return { ok: true, tasks: payload?.sessionId ? this.tasks.list(payload.sessionId) : [],
+        waitingFor: payload?.sessionId ? this.taskWaitReason(payload.sessionId) : null };
       case 'task-cancel-all': {
         const conversation = this.get(payload.sessionId);
         for (const task of this.tasks.list(conversation.id)) {

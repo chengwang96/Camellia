@@ -22,7 +22,7 @@ with sync_playwright() as playwright:
             return {ok:false,error:'Device response timed out; verify state before retrying writes'};
           }
           const conversation = {id:'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',title:'Server conversation',seq:2,workspaceId:'project',activity:null};
-          const info = {instanceId:'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb',workspaces:[{id:'project',name:'Paper agent'}],capabilities:['create-workspace','delete-workspace','api-import','attachments','artifacts','restore','native-settings','server-management','move'],engines:['dsh','codex','grok'],nextOffset:null};
+          const info = {instanceId:'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb',workspaces:[{id:'project',name:'Paper agent'}],capabilities:['create-workspace','delete-workspace','rename-workspace','api-import','attachments','artifacts','restore','native-settings','server-management','move'],engines:['dsh','codex','grok'],nextOffset:null};
           if(action === 'server-manage') {
             const operation = payload.request.action;
             const results = {
@@ -274,6 +274,34 @@ with sync_playwright() as playwright:
     page.locator("#field-path").fill("/srv/project")
     page.locator("#submit").click()
     expect(page.locator("#dialog")).not_to_be_visible()
+    # Renaming a server workspace edits the tree title in place.
+    page.locator('.group-head .workspace-rename').first.click()
+    expect(page.locator("#dialog")).not_to_be_visible()
+    field = page.locator('.group-head .remote-rename-input')
+    expect(field).to_have_value('Paper agent')
+    field.fill('Paper agent renamed')
+    field.press('Enter')
+    page.wait_for_function("calls.some(call => call.action === 'command' && call.payload.command.action === 'rename-workspace')")
+    renamed_workspace = page.evaluate("calls.find(call => call.action === 'command' && call.payload.command.action === 'rename-workspace').payload.command")
+    assert renamed_workspace['name'] == 'Paper agent renamed'
+    assert renamed_workspace['expectedName'] == 'Paper agent'
+    # Renaming a conversation edits the chat title in place.
+    page.locator("#rename").click()
+    expect(page.locator("#dialog")).not_to_be_visible()
+    title_field = page.locator('.chat-head .remote-rename-input')
+    expect(title_field).to_have_value('Server conversation')
+    title_field.fill('Renamed conversation')
+    title_field.press('Enter')
+    page.wait_for_function("calls.some(call => call.action === 'command' && call.payload.command.action === 'rename')")
+    renamed_chat = page.evaluate("calls.find(call => call.action === 'command' && call.payload.command.action === 'rename').payload.command")
+    assert renamed_chat['title'] == 'Renamed conversation'
+    # Escape cancels without issuing a second write.
+    rename_count = page.evaluate("calls.filter(call => call.action === 'command' && call.payload.command.action === 'rename').length")
+    page.locator("#rename").click()
+    page.locator('.chat-head .remote-rename-input').fill('Not saved')
+    page.locator('.chat-head .remote-rename-input').press('Escape')
+    expect(page.locator('.chat-head .remote-rename-input')).to_have_count(0)
+    assert page.evaluate("calls.filter(call => call.action === 'command' && call.payload.command.action === 'rename').length") == rename_count
     page.evaluate("deviceEvent({type:'offline'})")
     expect(page.locator("#send")).to_be_disabled()
     expect(page.locator("#newWorkspace")).to_be_disabled()

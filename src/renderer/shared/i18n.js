@@ -48,7 +48,7 @@ window.CamelliaI18n = (() => {
   const observer = new MutationObserver(records => {
     for (const record of records) {
       const element = record.target.nodeType === Node.TEXT_NODE ? record.target.parentElement : record.target;
-      if (element?.matches(selector)) apply(element);
+      if (element?.nodeType === Node.ELEMENT_NODE && element.matches(selector)) apply(element);
       for (const node of record.addedNodes) if (node.nodeType === Node.ELEMENT_NODE) scan(node);
     }
   });

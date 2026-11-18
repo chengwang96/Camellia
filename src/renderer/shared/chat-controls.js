@@ -455,10 +455,37 @@
   // disclosure carries a second collapse control next to where the reader
   // ends up after scanning dozens of tool calls.
   const collapseChevron = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="m7 14 5-5 5 5"/></svg>';
+  function setExecutionProcessOpen(el, open, fromFooter = false) {
+    const header = el.closest('.turn')?.querySelector('.completion-label') || el.querySelector('summary');
+    const previousTop = header.getBoundingClientRect().top;
+    // Notify the owner before layout changes, including an already queued
+    // follow frame. A disclosure click is an explicit reading action.
+    el.dispatchEvent(new CustomEvent('camellia:process-reading', { bubbles: true }));
+    el.dataset.userExpanded = String(open);
+    el.open = open;
+    const scroll = el.closest('#chatScroll');
+    if (scroll) {
+      const viewport = scroll.getBoundingClientRect();
+      const rect = header.getBoundingClientRect();
+      const top = viewport.top + scroll.clientTop + 16;
+      const bottom = viewport.top + scroll.clientTop + scroll.clientHeight;
+      const preview = open ? Math.min(160, scroll.clientHeight * .35) : 0;
+      const target = previousTop >= top && previousTop + rect.height + preview <= bottom
+        ? previousTop : top;
+      // One synchronous layout and an instant scroll also handle thousands of
+      // process rows without painting an intermediate position at their end.
+      scroll.scrollTo({ top: scroll.scrollTop + rect.top - target, behavior: 'instant' });
+    }
+    if (fromFooter) header.focus({ preventScroll: true });
+  }
   function executionProcess() {
     const el = document.createElement('details');
     el.className = 'execution-process';
     el.innerHTML = '<summary><span data-i18n>Execution process</span><span class="execution-process-count" data-i18n></span></summary><div class="execution-process-body"></div>';
+    el.querySelector('summary').addEventListener('click', event => {
+      event.preventDefault();
+      setExecutionProcessOpen(el, !el.open);
+    });
     const collapse = document.createElement('button');
     collapse.type = 'button'; collapse.className = 'execution-process-collapse';
     collapse.innerHTML = collapseChevron + 'Collapse';
@@ -466,13 +493,7 @@
     collapse.setAttribute('aria-label', 'Collapse execution process');
     collapse.title = 'Collapse execution process';
     collapse.addEventListener('click', () => {
-      el.open = false;
-      // After folding, show the header again instead of leaving the viewport
-      // adrift in the content below, and keep keyboard focus on a visible
-      // control instead of letting the hidden button drop it on the body.
-      const header = el.closest('.turn')?.querySelector('.completion-label') || el.querySelector('summary');
-      header?.scrollIntoView({ block: 'nearest' });
-      header?.focus?.({ preventScroll: true });
+      setExecutionProcessOpen(el, false, true);
     });
     el.append(collapse);
     return el;
@@ -559,5 +580,5 @@
     }
     return fields;
   }
-  window.CamelliaChatControls = { isImagePath, attachmentGlyph, fileUrl, makeToolCard, executionProcess, renderAttachments, questionFields, resizeQuestionFields, webSearchView, webFetchView, sourceRegistry, sourceKey, renumberSources };
+  window.CamelliaChatControls = { isImagePath, attachmentGlyph, fileUrl, makeToolCard, executionProcess, setExecutionProcessOpen, renderAttachments, questionFields, resizeQuestionFields, webSearchView, webFetchView, sourceRegistry, sourceKey, renumberSources };
 })();

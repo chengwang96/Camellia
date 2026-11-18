@@ -8,6 +8,7 @@ const { RemoteGateway } = require('./gateway');
 const { RemoteCommands } = require('./commands');
 const { RemoteMessageQueue } = require('./message-queue');
 const { TailscaleAPI } = require('./tailscale-api');
+const { tailscaleHostname } = require('./embedded-network');
 
 function createRemoteService({ dataDir, manager, networkFactory, apiRoutes = null, apiImport = null, nativeSettings = null, management = null, desktopRestart = null, getDiscussions = null, accountUsage = null,
   preferences = () => ({}), setComputerName = () => '', safeStorage = null, openExternal = null }) {
@@ -69,7 +70,7 @@ function createRemoteService({ dataDir, manager, networkFactory, apiRoutes = nul
       recovering = gateway.stop();
       retryAt = Date.now() + retryDelay;
       scheduleMonitor();
-    } }); }
+    }, hostname: () => tailscaleHostname(preferences().computerName) }); }
     catch (error) { gateway = null; access = null; throw error; }
   }
   function state() {
@@ -233,7 +234,7 @@ function createRemoteService({ dataDir, manager, networkFactory, apiRoutes = nul
           // the management API accepts the display name when it is already a
           // valid DNS label and otherwise reports that control-plane sync was
           // skipped. The local name is never rolled back after a sync failure.
-          const hostname = requested.toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 63).replace(/-+$/g, '');
+          const hostname = tailscaleHostname(requested);
           let networkSync = { synced: false, reason: 'not-running' };
           if (hostname && network?.child) {
             try { networkSync = { synced: true, ...(await network.setHostname(hostname)) }; }

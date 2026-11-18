@@ -8,7 +8,7 @@ import java.util.concurrent.TimeUnit;
 
 /** Main-thread idleness does not mean the hardware renderer has submitted its frame. */
 final class RenderedFrameFixture {
-    static Bitmap screenshot(Instrumentation instrumentation, View view) throws Exception {
+    static void awaitFrames(Instrumentation instrumentation, View view) throws Exception {
         instrumentation.waitForIdleSync();
         // Submit a second frame so the first has advanced through the swap chain.
         // This also uploads mutable backdrop bitmaps before sampling screen pixels.
@@ -23,6 +23,10 @@ final class RenderedFrameFixture {
             if (!committed.await(5, TimeUnit.SECONDS))
                 throw new AssertionError("Hardware renderer did not commit the screenshot frame");
         }
+    }
+
+    static Bitmap screenshot(Instrumentation instrumentation, View view) throws Exception {
+        awaitFrames(instrumentation, view);
         Bitmap image = instrumentation.getUiAutomation().takeScreenshot();
         if (image == null) throw new AssertionError("Unable to capture the rendered screen");
         return image;

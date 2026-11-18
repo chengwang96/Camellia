@@ -118,7 +118,6 @@ with sync_playwright() as playwright:
         assert page.evaluate("window.tailscaleCalls.find(call => call.action === 'tailscale-save' && call.payload.clientSecret === 'mock-oauth-client-secret')")
         assert page.evaluate("window.tailscaleCalls.some(call => call.action === 'tailscale-apply-peer-relay' && call.payload.deviceId === 'relay' && call.payload.enabled === true)")
         page.locator('#mobile-relayRename').click()
-        expect(page.locator('dialog.device-rename')).to_have_count(0)
         page.locator('#mobile-relayName').fill('vps-relay')
         page.locator('#mobile-relayRenameSave').click()
         expect(page.locator('#mobile-relayName')).to_be_hidden()

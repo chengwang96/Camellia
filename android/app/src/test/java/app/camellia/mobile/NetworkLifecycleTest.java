@@ -43,6 +43,36 @@ public class NetworkLifecycleTest {
         assertEquals(1, backend.created);
     }
 
+    @Test public void renameDoesNotStartANodeAndRunsAfterPendingCreation() throws Exception {
+        List<Token> renamed = new CopyOnWriteArrayList<>();
+        lifecycle.useReadyNode(renamed::add).get(2, TimeUnit.SECONDS);
+        assertTrue(renamed.isEmpty());
+        assertEquals(0, backend.created);
+        backend.blockCreation();
+        CompletableFuture<Token> pending = lifecycle.node();
+        assertTrue(backend.createStarted.await(1, TimeUnit.SECONDS));
+        CompletableFuture<Void> rename = lifecycle.useReadyNode(renamed::add);
+        assertFalse(rename.isDone());
+        backend.createRelease.countDown();
+        rename.get(2, TimeUnit.SECONDS);
+        assertEquals(List.of(pending.get(2, TimeUnit.SECONDS)), renamed);
+    }
+
+    @Test public void queuedRenameSkipsInvalidatedNodeWithoutBlockingItsReplacement() throws Exception {
+        Token previous = lifecycle.node().get(2, TimeUnit.SECONDS);
+        blockQueue();
+        List<Token> renamed = new CopyOnWriteArrayList<>();
+        CompletableFuture<Void> rename = lifecycle.useReadyNode(renamed::add);
+        CompletableFuture<Void> close = lifecycle.close();
+        CompletableFuture<Token> replacement = lifecycle.node();
+        queueRelease.countDown();
+        rename.get(2, TimeUnit.SECONDS);
+        close.get(2, TimeUnit.SECONDS);
+        assertTrue(renamed.isEmpty());
+        assertTrue(previous.closed);
+        assertNotSame(previous, replacement.get(2, TimeUnit.SECONDS));
+    }
+
     @Test public void slowCreationDoesNotHoldUiStateLock() throws Exception {
         backend.blockCreation();
         CompletableFuture<Token> pending = lifecycle.node();

@@ -1075,6 +1075,7 @@ struct ConversationDetailView: View {
     /// reply streams. Android asks the same question with
     /// `content.bottom - viewport.bottom < dp(120)`.
     @State private var follow = ScrollFollowTracker()
+    @State private var processDisclosures = ProcessDisclosureStore()
     /// Set on open and on send, where Android scrolls to the end outright
     /// rather than only from the bottom. Cleared by the first follow.
     @State private var pendingFollow = true
@@ -1110,6 +1111,7 @@ struct ConversationDetailView: View {
                                             showArtifacts = true
                                         },
                                         images: model.inlineImageLoader(seq: row.id), chinese: model.usesChinese)
+                                .environment(\.processIdentity, "remote:\(model.transcript.messages.last(where: { $0.message.role == .user && $0.id < row.id })?.id ?? row.id)")
                                 .id(row.id)
                             if row.message.role == .user {
                                 let tasks = model.transcript.subagents.filter { $0.userSeq == row.id }
@@ -1122,6 +1124,7 @@ struct ConversationDetailView: View {
                         }
                         if !model.transcript.historyDetached, let live = model.transcript.live {
                             LiveView(live: live, process: model.transcript.liveProcess).id("live")
+                                .environment(\.processIdentity, "remote:\(live.userSeq)")
                             if live.showsDesktopApprovalNotice(
                                 canControl: model.transcript.permission == .control) {
                                 Text("有待处理授权，请回到电脑处理。")
@@ -1136,6 +1139,7 @@ struct ConversationDetailView: View {
                         } else if !model.transcript.historyDetached, !model.transcript.pendingProcess.isEmpty {
                             ProcessView(entries: model.transcript.pendingProcess)
                                 .id("pendingProcess")
+                                .environment(\.processIdentity, "remote:\(model.transcript.messages.last(where: { $0.message.role == .user })?.id ?? 0)")
                         }
                         if !model.transcript.historyDetached, let outgoing = model.outgoing,
                            model.detailAccessFailure == nil {
@@ -1154,6 +1158,13 @@ struct ConversationDetailView: View {
                     .padding(.vertical, 12)
                     .chatContentTailPadding()
                     .measuringContentBottom()
+                    .environment(\.processDisclosures, processDisclosures)
+                    .environment(\.revealProcessHeader, { anchor, frame, opening in
+                        follow.readHistory()
+                        pendingFollow = false
+                        guard !follow.keepsProcessHeader(frame, opening: opening) else { return }
+                        DispatchQueue.main.async { withTransaction(Transaction(animation: nil)) { proxy.scrollTo(anchor, anchor: .top) } }
+                    })
                 }
                 .measuringViewportBottom()
                 // Only a *newest* row moving scrolls to the bottom. Keying off
@@ -1180,6 +1191,7 @@ struct ConversationDetailView: View {
                 // is about to become the newest row.
                 .onChange(of: sendingNow) { sending in
                     guard sending else { return }
+                    follow.following()
                     pendingFollow = true
                     followIfNeeded(proxy, animated: true)
                 }
@@ -1467,7 +1479,8 @@ struct ConversationDetailView: View {
     private func followIfNeeded(_ proxy: ScrollViewProxy, animated: Bool) {
         guard !showsSubtaskPage, !model.transcript.historyDetached, !model.loadingOlder else { return }
         guard let target = bottomId else { return }
-        guard pendingFollow || follow.isAtBottom else { return }
+        if follow.isReading { pendingFollow = false; return }
+        guard pendingFollow || follow.shouldFollow else { return }
         pendingFollow = false
         follow.following()
         if animated {
@@ -2047,6 +2060,40 @@ struct RemoteFeedbackFixtureView: View {
 }
 #endif
 
+private struct ProcessHeaderRevealKey: EnvironmentKey {
+    static let defaultValue: (UUID, CGRect, Bool) -> Void = { _, _, _ in }
+}
+
+final class ProcessDisclosureStore: @unchecked Sendable {
+    var opened: [String: Bool] = [:]
+}
+private struct ProcessDisclosuresKey: EnvironmentKey {
+    static let defaultValue = ProcessDisclosureStore()
+}
+private struct ProcessIdentityKey: EnvironmentKey {
+    static let defaultValue: String? = nil
+}
+private struct ProcessHeaderFrameKey: PreferenceKey {
+    static var defaultValue: CGRect = .null
+    static func reduce(value: inout CGRect, nextValue: () -> CGRect) { value = nextValue() }
+}
+private final class ProcessHeaderGeometry { var frame: CGRect = .null }
+
+extension EnvironmentValues {
+    var revealProcessHeader: (UUID, CGRect, Bool) -> Void {
+        get { self[ProcessHeaderRevealKey.self] }
+        set { self[ProcessHeaderRevealKey.self] = newValue }
+    }
+    var processDisclosures: ProcessDisclosureStore {
+        get { self[ProcessDisclosuresKey.self] }
+        set { self[ProcessDisclosuresKey.self] = newValue }
+    }
+    var processIdentity: String? {
+        get { self[ProcessIdentityKey.self] }
+        set { self[ProcessIdentityKey.self] = newValue }
+    }
+}
+
 /// The same collapsed execution-process block Android places above a reply.
 /// Its tool rows expand separately, preserving their input and full output.
 struct ProcessView: View {
@@ -2054,6 +2101,12 @@ struct ProcessView: View {
     let live: Bool
     let details: TurnDetails?
     @State private var expanded = false
+    @State private var headerAnchor = UUID()
+    @State private var headerGeometry = ProcessHeaderGeometry()
+    @Environment(\.processDisclosures) private var disclosures
+    @Environment(\.processIdentity) private var processIdentity
+    @Environment(\.revealProcessHeader) private var revealHeader
+    @AccessibilityFocusState private var headerAccessibilityFocused: Bool
 
     init(entries: [RemoteProcessEntry], live: Bool = false, details: TurnDetails? = nil) {
         self.entries = entries
@@ -2072,10 +2125,19 @@ struct ProcessView: View {
 
     private var toolCount: Int { entries.filter { $0.type == "tool" }.count }
     private var completed: Bool { !live && details?.completed == true }
+    private var isExpanded: Bool {
+        processIdentity.flatMap { disclosures.opened[$0] } ?? expanded
+    }
+
+    private func setExpanded(_ value: Bool) {
+        if let processIdentity { disclosures.opened[processIdentity] = value }
+        expanded = value
+        revealHeader(headerAnchor, headerGeometry.frame, value)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            Button { expanded.toggle() } label: {
+            Button { setExpanded(!isExpanded) } label: {
                 HStack(spacing: 10) {
                     if !completed {
                         Text("◇").font(.system(size: 19))
@@ -2094,7 +2156,7 @@ struct ProcessView: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                     }
                     if !entries.isEmpty {
-                        Image(systemName: expanded ? "chevron.down" : "chevron.right")
+                        Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
                             .font(.system(size: 14))
                             .frame(width: 18, height: 18)
                     }
@@ -2108,8 +2170,14 @@ struct ProcessView: View {
             }
             .buttonStyle(.plain)
             .disabled(entries.isEmpty)
+            .id(headerAnchor)
+            .background(GeometryReader { geo in
+                Color.clear.preference(key: ProcessHeaderFrameKey.self, value: geo.frame(in: .global))
+            })
+            .onPreferenceChange(ProcessHeaderFrameKey.self) { headerGeometry.frame = $0 }
+            .accessibilityFocused($headerAccessibilityFocused)
             if completed { Rectangle().fill(Palette.separator).frame(height: 1) }
-            if expanded {
+            if isExpanded && !entries.isEmpty {
                 VStack(alignment: .leading, spacing: 0) {
                     ForEach(Array(entries.enumerated()), id: \.offset) { pair in
                         ProcessEntryView(entry: pair.element)
@@ -2118,6 +2186,20 @@ struct ProcessView: View {
                 .padding(.leading, 14)
                 .padding(.trailing, 14)
                 .padding(.bottom, 12)
+                Button {
+                    setExpanded(false)
+                    headerAccessibilityFocused = true
+                } label: {
+                    Label("收起", systemImage: "chevron.up")
+                        .font(.system(size: Palette.textSmall))
+                        .foregroundColor(Palette.muted)
+                        .frame(maxWidth: .infinity, minHeight: 48)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .overlay(alignment: .top) { Rectangle().fill(Palette.separator).frame(height: 1) }
+                .accessibilityLabel(Text("收起执行过程"))
+                .accessibilityIdentifier("processCollapse")
             }
         }
         .background(RoundedRectangle(cornerRadius: Palette.smallRadius, style: .continuous)

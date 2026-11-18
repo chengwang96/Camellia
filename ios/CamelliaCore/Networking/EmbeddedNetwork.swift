@@ -62,6 +62,24 @@ public final class EmbeddedNetwork {
     private var backgroundDeadline: Date?
     private var transfers = 0
     private var listener: (() -> Void)?
+    /// The user's chosen name, or the platform default when none is stored.
+    ///
+    /// Read when the node starts, so a rename made while the tunnel was down
+    /// is already in effect on the next connection. The lock makes a save from
+    /// the settings screen safe while a background route rebuild reads it.
+    private var configuredHostname = ""
+    public var hostname: String {
+        get {
+            lock.lock()
+            defer { lock.unlock() }
+            return configuredHostname
+        }
+        set {
+            lock.lock()
+            configuredHostname = newValue
+            lock.unlock()
+        }
+    }
 
     /// Whether the interface list is injected before the node starts.
     ///
@@ -240,7 +258,7 @@ public final class EmbeddedNetwork {
             let directory = try stateDirectory()
             let store = makeStore()
             var failure: NSError?
-            guard let created = TailnetNewNode(directory.path, store, &failure) else {
+            guard let created = TailnetNewNode(directory.path, nodeHostname(configuredHostname), store, &failure) else {
                 throw failure ?? Failure(code: .networkStartFailed, detail: nil)
             }
             node = created
@@ -268,6 +286,42 @@ public final class EmbeddedNetwork {
     /// Starts the interactive sign-in. The URL to open comes from `status()`.
     public func login() throws {
         try currentNode().login()
+    }
+
+    /// Renames this device without replacing its identity or closing streams.
+    ///
+    /// The saved label is used again on every later start, so a rename that
+    /// happens while the node is down is applied when it comes back.
+    public func setHostname(_ value: String) throws {
+        let converted = Self.nodeHostname(value)
+        let label = converted.isEmpty ? "camellia-ios" : converted
+        // Keep the choice for the next node even when the current one is down.
+        lock.lock()
+        configuredHostname = label
+        let running = node
+        lock.unlock()
+        guard let running else { return }
+        // gomobile keeps an explicit NSError for a non-null string result plus
+        // an error, just like `status`; it does not turn this call into throws.
+        var failure: NSError?
+        _ = running.setHostname(label, error: &failure)
+        if let failure { throw failure }
+    }
+
+    /// Tailscale registers a DNS label, while the settings field accepts up to
+    /// 80 display characters. Keep the platform fallback when the conversion
+    /// leaves nothing usable, rather than starting a node with an empty name.
+    public static func nodeHostname(_ value: String) -> String {
+        let allowed = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyz0123456789-")
+        let label = value.lowercased().unicodeScalars.map { allowed.contains($0) ? Character(String($0)) : "-" }
+        var text = String(label).trimmingCharacters(in: CharacterSet(charactersIn: "-"))
+        if text.count > 63 { text = String(text.prefix(63)).trimmingCharacters(in: CharacterSet(charactersIn: "-")) }
+        return text
+    }
+
+    private func nodeHostname(_ value: String) -> String {
+        let label = Self.nodeHostname(value)
+        return label.isEmpty ? "camellia-ios" : label
     }
 
     public func close() {

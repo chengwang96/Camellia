@@ -37,6 +37,47 @@ test('desktop IPC stops the displayed background task through its pooled native 
   h.finishTurn(proc);
 });
 
+test('Claude saves a native shell follow-up that has no notification user event', async context => {
+  const harness = createHarness(); context.after(() => harness.cleanup());
+  harness.configureApi();
+  harness.api.sharedConversations.prepare = async () => {};
+  harness.api.sharedConversations.generateTitle = async () => '';
+  const command = (action, payload) => harness.call('conversation-command', { engine: 'claude', action, payload });
+  const run = await command('send', { prompt: 'Run the verification in the background' });
+  assert.equal(run.ok, true, run.error);
+  const proc = harness.processes.findLast(item => item.messages.some(message => message.type === 'user'));
+  const emit = row => proc.stdout.emit('data', JSON.stringify({ session_id: proc.sid, ...row }) + '\n');
+  const task = { task_id: 'verification', run_id: 'verification-run' };
+  emit({ type: 'system', subtype: 'task_started', task_type: 'local_bash', ...task });
+  harness.finishTurn(proc);
+  const intervening = await command('send', { sessionId: run.sessionId, prompt: 'Answer an unrelated question' });
+  assert.equal(intervening.ok, true, intervening.error);
+  harness.finishTurn(proc);
+  const before = await command('load-session', run.sessionId);
+  emit({ type: 'system', subtype: 'task_updated', patch: { status: 'completed' }, ...task });
+  emit({ type: 'system', subtype: 'task_notification', status: 'completed', ...task });
+  emit({ type: 'system', subtype: 'background_tasks_changed', tasks: [] });
+  emit({ type: 'system', subtype: 'init' });
+  assert.equal(harness.api.sharedConversations.busy(run.sessionId), false);
+
+  emit({ type: 'stream_event', event: { type: 'message_start', message: { id: 'verification-report', content: [] } } });
+  assert.equal(harness.api.sharedConversations.busy(run.sessionId), true);
+  const report = 'The verification finished: the endpoint is healthy.';
+  emit({ type: 'assistant', message: { content: [{ type: 'text', text: report }] } });
+  emit({ type: 'result', subtype: 'success', origin: { kind: 'task-notification', producer: 'session-task', runId: task.run_id },
+    result: report, usage: { input_tokens: 8, output_tokens: 4 } });
+
+  const after = await command('load-session', run.sessionId);
+  assert.equal(harness.api.sharedConversations.busy(run.sessionId), false);
+  assert.equal(after.backgroundWork, null);
+  assert.deepEqual(after.messages.slice(0, -1), before.messages);
+  assert.equal(after.messages.at(-1).text, report);
+  assert.equal(after.messages.at(-1).userSeq, run.userSeq);
+  assert.equal(after.requestUsage[run.userSeq].background.turns, 1);
+  assert.equal(after.requestUsage[intervening.userSeq].background.turns, 0);
+  assert.equal(proc.messages.filter(message => message.type === 'user').length, 2);
+});
+
 test('desktop state settles background completion during compaction without replacing the parent reply', async t => {
   const h = createHarness(); t.after(() => h.cleanup());
   h.configureApi();

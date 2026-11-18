@@ -5,7 +5,7 @@ Camellia's desktop gateway lets an approved Android device read and control desk
 ## Pair a device
 
 1. On the desktop, open **Settings → Mobile access** and enable the embedded network. Sign in through the official Tailscale browser flow. The desktop shows its own Tailnet address, usually `100.x.x.x:43127`.
-2. Sign the Android client into the same Tailnet. The embedded phone and desktop nodes are distinct devices; Tailnet policy and device approval must allow their connection.
+2. Sign the Android client into the same Tailnet. The embedded phone and desktop nodes are distinct devices; Tailnet policy and device approval must allow their connection. Each node uses the saved **device name** (desktop: **This computer name**), or a platform default such as `camellia-desktop`, `camellia-android` or `camellia-ios` when no name has been set.
 3. Generate a pairing code on the desktop. Scan its QR code on Android or enter the displayed address and one-time code manually. The code expires after five minutes.
 4. Review the device name on the desktop and explicitly approve the request. New approvals cover current and future workspaces and standalone conversations. Archived conversations stay out of the ordinary list but remain readable, and only restorable, when a phone is already viewing one.
 

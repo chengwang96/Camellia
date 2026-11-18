@@ -102,13 +102,13 @@ type Node struct {
 	requests  map[*Response]context.CancelFunc
 }
 
-func NewNode(directory string, storage Storage) (*Node, error) {
+func NewNode(directory, hostname string, storage Storage) (*Node, error) {
 	if storage == nil || directory == "" {
 		return nil, errors.New("private state directory and encrypted storage are required")
 	}
 	prepareStateDirectory(directory)
 	quiet := func(string, ...any) {}
-	server := &tsnet.Server{Dir: directory, Hostname: nodeHostname(), Store: &stateStore{storage: storage}, Logf: quiet, UserLogf: quiet}
+	server := &tsnet.Server{Dir: directory, Hostname: nodeHostname(hostname), Store: &stateStore{storage: storage}, Logf: quiet, UserLogf: quiet}
 	if err := server.Start(); err != nil {
 		server.Close()
 		return nil, fmt.Errorf("embedded network could not start: %w", err)
@@ -121,6 +121,29 @@ func NewNode(directory string, storage Storage) (*Node, error) {
 		MaxResponseHeaderBytes: 16 * 1024, MaxIdleConns: 4, IdleConnTimeout: 30 * time.Second}
 	return &Node{server: server, transport: transport, requests: make(map[*Response]context.CancelFunc),
 		client: &http.Client{Transport: transport, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}, nil
+}
+
+// SetHostname renames this node without replacing its identity, encrypted
+// state, open transfers or active HTTP responses. The name is the DNS label
+// the control plane knows; callers pass a platform fallback when the user has
+// not chosen one. Empty input deliberately restores the platform fallback,
+// which is how clearing a custom name returns the node to the default.
+func (node *Node) SetHostname(hostname string) (string, error) {
+	if hostname == "" {
+		hostname = nodeHostname("")
+	} else {
+		hostname = strings.ToLower(hostname)
+	}
+	client, err := node.server.LocalClient()
+	if err != nil {
+		return "", errors.New("embedded network unavailable")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if _, err := client.EditPrefs(ctx, &ipn.MaskedPrefs{HostnameSet: true, Prefs: ipn.Prefs{Hostname: hostname}}); err != nil {
+		return "", err
+	}
+	return hostname, nil
 }
 
 func (node *Node) Status() (string, error) {

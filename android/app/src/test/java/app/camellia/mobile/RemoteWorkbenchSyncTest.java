@@ -36,6 +36,59 @@ public class RemoteWorkbenchSyncTest {
         @Override public void cancel() { closed.countDown(); }
     }
 
+    @Test public void expandingAnOlderTenRowSummaryReadsThirtyRecentRowsWithoutLosingActiveWork() throws Exception {
+        verifyExpandedRecent(false);
+    }
+
+    @Test public void startingWithRecentExpandedAlsoSupportsAnOlderTenRowSummary() throws Exception {
+        verifyExpandedRecent(true);
+    }
+
+    private void verifyExpandedRecent(boolean expandedBeforeStart) throws Exception {
+        JSONObject computer = computer(2);
+        JSONArray shortRows = new JSONArray(), allRows = new JSONArray();
+        for (int i = 0; i < 40; i++) {
+            JSONObject row = page("recent-" + i, "idle").getJSONArray("conversations").getJSONObject(0)
+                .put("updatedAt", i).put("filePreview", "PRIVATE");
+            allRows.put(row);
+            if (i >= 30) shortRows.put(row);
+        }
+        allRows.put(page("old-running", "running").getJSONArray("conversations").getJSONObject(0).put("updatedAt", -1));
+        JSONObject initial = new JSONObject().put("conversations", shortRows);
+        CountDownLatch shortDelivered = new CountDownLatch(1), expanded = new CountDownLatch(1);
+        AtomicReference<JSONObject> result = new AtomicReference<>(); AtomicInteger listStarts = new AtomicInteger();
+        try (RemoteWorkbenchSync sync = new RemoteWorkbenchSync(address -> new Api(initial) {
+            @Override void listEvents(String token, SnapshotListener listener, SseReader.HeartbeatListener heartbeat) throws IOException {
+                listStarts.incrementAndGet();
+                try {
+                    listener.onSnapshot(new JSONObject().put("conversationList", new JSONObject().put("conversations", allRows)));
+                    closed.await();
+                } catch (InterruptedException error) { Thread.currentThread().interrupt(); }
+                catch (org.json.JSONException error) { throw new IOException(error); }
+            }
+            @Override public JSONObject json(String path, String token, JSONObject payload) { throw new AssertionError("No extra page is needed"); }
+        })) {
+            if (expandedBeforeStart) sync.setRecentLimit(30);
+            sync.start(List.of(computer), update -> {
+                if (update.page == null) return;
+                int count = update.page.optJSONArray("conversations").length();
+                if (count == 10) shortDelivered.countDown();
+                if (count == 31) { result.set(update.page); expanded.countDown(); }
+            });
+            if (!expandedBeforeStart) {
+                assertTrue(shortDelivered.await(2, TimeUnit.SECONDS)); assertEquals(0, listStarts.get());
+                sync.setRecentLimit(30);
+            }
+            assertTrue(expanded.await(2, TimeUnit.SECONDS)); assertEquals(1, listStarts.get());
+            JSONArray rows = result.get().getJSONArray("conversations");
+            assertEquals("recent-39", rows.getJSONObject(0).getString("id"));
+            assertEquals("recent-10", rows.getJSONObject(29).getString("id"));
+            assertEquals("old-running", rows.getJSONObject(30).getString("id"));
+            assertFalse(result.get().toString().contains("PRIVATE"));
+            sync.setRecentLimit(3); assertEquals(RemoteWorkbenchSync.State.LIVE, sync.state(computer));
+        }
+    }
+
     @Test public void slowHostsCannotHoldFastHostsAndStartsAreCoalesced() throws Exception {
         JSONObject slowComputer = computer(2), fastComputer = computer(3);
         Api slow = new Api(null), fast = new Api(page("fast", "running"));

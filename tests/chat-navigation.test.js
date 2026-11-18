@@ -24,6 +24,8 @@ function fixture(prepare = async () => {}) {
     loadConfig: () => ({}), saveConfig: patch => saved.push(patch),
     log() {}, setMenu() {}, openSettingsWindow() {},
     loadMode: (...args) => loads.push(args),
+    filePreviewContents: () => null,
+    closeFilePreviewEditors() { assert.fail('A page without an editor should not request a save'); },
     mainWindow: { isDestroyed: () => false, setTitle: title => titles.push(title),
       webContents: { getURL: () => pathToFileURL(path.join(rendererRoot, 'chat/workbench.html')).href + '?harness=codex' } },
   };
@@ -114,4 +116,26 @@ test('ordinary navigation from other pages still loads the requested chat', asyn
   const { state, loads } = fixture();
   assert.equal((await state.switchMode('kimi', 'kimi-session')).ok, true);
   assert.deepEqual(loads, [['kimi', 'kimi-session', undefined]]);
+});
+
+test('navigation away from the workbench waits for pending file edits', async () => {
+  const { state, loads } = fixture();
+  const contents = state.mainWindow.webContents;
+  state.filePreviewContents = () => contents;
+  let finish;
+  state.closeFilePreviewEditors = owner => {
+    assert.equal(owner, contents);
+    return new Promise(resolve => { finish = resolve; });
+  };
+  const pending = state.switchMode('home');
+  assert.equal(state.currentMode, 'codex');
+  assert.deepEqual(loads, []);
+  finish(false);
+  assert.equal((await pending).canceled, true);
+  assert.equal(state.currentMode, 'codex');
+  assert.deepEqual(loads, []);
+
+  state.closeFilePreviewEditors = async () => true;
+  assert.equal((await state.switchMode('home')).ok, true);
+  assert.deepEqual(loads, [['home', undefined, undefined]]);
 });

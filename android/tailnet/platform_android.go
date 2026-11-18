@@ -4,10 +4,15 @@ package tailnet
 
 import "os"
 
-// nodeHostname is the device name the embedded node registers with the control
-// plane. It is platform-specific so a phone and a tablet never collide in the
-// same tailnet when the account owns several installations.
-func nodeHostname() string { return "camellia-android" }
+// nodeHostname uses the name the user chose, and falls back to the platform
+// default so a phone and a tablet never collide in the same tailnet when the
+// account owns several installations.
+func nodeHostname(hostname string) string {
+	if hostname != "" {
+		return hostname
+	}
+	return "camellia-android"
+}
 
 // prepareStateDirectory points the node's own paths at the app's private state
 // directory.

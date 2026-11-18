@@ -13,10 +13,13 @@ import org.json.JSONObject;
 public class RemoteAutomationTest extends InstrumentationTestCase {
     private MainActivity activity;
     private JSONObject credentials;
+    private String previousTheme;
 
     @Override protected void setUp() throws Exception {
         super.setUp();
         var context = getInstrumentation().getTargetContext();
+        previousTheme = MobilePreferences.get(context, "theme");
+        MobilePreferences.set(context, "theme", "system");
         context.getSharedPreferences("remote-status-test", 0).edit().clear().commit();
         credentials = new JSONObject().put("address", "http://100.64.0.1:43128").put("token", "test");
         activity = (MainActivity) getInstrumentation().startActivitySync(new Intent(context, MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
@@ -36,6 +39,7 @@ public class RemoteAutomationTest extends InstrumentationTestCase {
         long deadline = android.os.SystemClock.uptimeMillis() + 5000;
         while (!activity.isDestroyed() && android.os.SystemClock.uptimeMillis() < deadline) android.os.SystemClock.sleep(20);
         assertTrue("Automation fixture activity did not finish", activity.isDestroyed());
+        MobilePreferences.set(getInstrumentation().getTargetContext(), "theme", previousTheme);
         super.tearDown();
     }
 
@@ -337,6 +341,71 @@ public class RemoteAutomationTest extends InstrumentationTestCase {
             task.put("status", "complete"); render(automation);
             assertNull(bar().findViewWithTag("remoteTaskToggle"));
         });
+    }
+
+    public void testTaskSheetShowsFullEvidenceLimitsHistoryAndReadOnlyControls() {
+        ui(() -> {
+            String instruction = "检查完整日志与内存趋势，保留证据。".repeat(80);
+            String result = "记录检查结果，不推断没有证据的结论。".repeat(50);
+            JSONObject task = new JSONObject().put("id", "task-details").put("instruction", instruction)
+                .put("status", "scheduled").put("intervalMinutes", 10).put("runs", 2).put("maxRuns", 48)
+                .put("repairs", 0).put("maxRepairs", 0).put("nextRunAt", 1794909600000L).put("expiresAt", 1795082400000L)
+                .put("lastResult", result).put("history", new JSONArray().put(new JSONObject().put("at", 1794909000000L).put("message", "检查证据")));
+            JSONObject automation = new JSONObject().put("tasks", new JSONArray().put(task));
+            render(automation);
+            View sheet = openWorkSheet();
+            assertEquals(instruction, ((TextView) sheet.findViewWithTag("remoteTaskInstruction")).getText().toString());
+            assertEquals(4, ((TextView) sheet.findViewWithTag("remoteTaskInstruction")).getMaxLines());
+            sheet.findViewWithTag("remoteTaskInstructionExpand").performClick();
+            assertEquals(Integer.MAX_VALUE, ((TextView) sheet.findViewWithTag("remoteTaskInstruction")).getMaxLines());
+            assertEquals(result, ((TextView) sheet.findViewWithTag("remoteTaskResult")).getText().toString());
+            assertEquals("2/48 次检查 · 0/0 次恢复", ((TextView) sheet.findViewWithTag("remoteTaskCounts")).getText().toString());
+            assertTrue(((TextView) sheet.findViewWithTag("remoteTaskNextCheck")).getText().toString().startsWith("下次检查："));
+            assertNotNull(sheet.findViewWithTag("remoteTaskDeadline"));
+            assertEquals(View.GONE, sheet.findViewWithTag("remoteTaskHistory").getVisibility());
+            sheet.findViewWithTag("remoteTaskHistoryToggle").performClick();
+            assertEquals(View.VISIBLE, sheet.findViewWithTag("remoteTaskHistory").getVisibility());
+            assertTrue(sheet.findViewWithTag("remoteTaskCancel").hasOnClickListeners());
+            assertTrue(sheet.findViewWithTag("remoteTaskCancel").isEnabled());
+            field("chinese", false);
+            render(automation, new JSONArray(), null, "read");
+            assertEquals(Integer.MAX_VALUE, ((TextView) sheet.findViewWithTag("remoteTaskInstruction")).getMaxLines());
+            assertFalse(sheet.findViewWithTag("remoteTaskToggle").isEnabled());
+            assertFalse(sheet.findViewWithTag("remoteTaskCancel").isEnabled());
+            assertEquals("2/48 checks · 0/0 recoveries", ((TextView) sheet.findViewWithTag("remoteTaskCounts")).getText().toString());
+            task.put("status", "cancelled"); render(automation);
+            assertEquals("Cancelled", ((TextView) sheet.findViewWithTag("remoteTaskState")).getText().toString());
+            assertNull(sheet.findViewWithTag("remoteTaskCancel"));
+            assertNull(sheet.findViewWithTag("remoteTaskToggle"));
+        });
+    }
+
+    public void testTaskSheetVisualsAndOutsideDismissal() throws Exception {
+        ui(() -> {
+            JSONObject task = new JSONObject().put("id", "visual-task")
+                .put("instruction", "每小时检查进程内存、系统压力和日志增长，保留具体数值，不把单次峰值当作泄漏证据。".repeat(20))
+                .put("status", "scheduled").put("intervalMinutes", 60).put("runs", 1).put("maxRuns", 48)
+                .put("repairs", 0).put("maxRepairs", 0).put("nextRunAt", 1794909600000L).put("expiresAt", 1795082400000L)
+                .put("lastResult", "已采集 62 次样本，覆盖 61 分钟。主进程 164.4 MiB，渲染器 130.7 MiB。当前没有持续增长告警，继续观察。")
+                .put("history", new JSONArray().put(new JSONObject().put("at", 1794909000000L).put("message", "首轮检查已完成，等待下一轮检查。")));
+            render(new JSONObject().put("tasks", new JSONArray().put(task)));
+            openWorkSheet();
+        });
+        getInstrumentation().waitForIdleSync();
+        java.io.File directory = new java.io.File(activity.getExternalFilesDir(null), "workbench-visuals");
+        assertTrue(directory.isDirectory() || directory.mkdirs());
+        android.graphics.Bitmap screenshot = getInstrumentation().getUiAutomation().takeScreenshot();
+        try (var output = new java.io.FileOutputStream(new java.io.File(directory, "task-work-sheet.png"))) {
+            assertTrue(screenshot.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, output));
+        } finally { screenshot.recycle(); }
+        long at = android.os.SystemClock.uptimeMillis();
+        float y = activity.getResources().getDisplayMetrics().heightPixels / 2f;
+        android.view.MotionEvent down = android.view.MotionEvent.obtain(at, at, android.view.MotionEvent.ACTION_DOWN, 2, y, 0);
+        android.view.MotionEvent up = android.view.MotionEvent.obtain(at, at + 80, android.view.MotionEvent.ACTION_UP, 2, y, 0);
+        try { getInstrumentation().sendPointerSync(down); getInstrumentation().sendPointerSync(up); }
+        finally { down.recycle(); up.recycle(); }
+        getInstrumentation().waitForIdleSync();
+        ui(() -> assertNull("Tapping outside the work sheet dismisses it", workSheet()));
     }
 
     public void testScheduledTasksAreListedWithTheirIntervalAndControls() {

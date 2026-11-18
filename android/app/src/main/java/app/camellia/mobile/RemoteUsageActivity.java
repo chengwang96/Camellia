@@ -46,6 +46,7 @@ public final class RemoteUsageActivity extends Activity {
     @Override protected void attachBaseContext(Context context) { super.attachBaseContext(MobilePreferences.wrap(context)); }
     @Override protected void onCreate(Bundle saved) {
         super.onCreate(saved); MobileOrientation.lockPhonePortrait(this); PageTransitions.configureActivity(this);
+        if (saved != null) getIntent().putExtra(TabletScaffold.CATEGORY_SCROLL, saved.getInt(TabletScaffold.CATEGORY_SCROLL, 0));
         EmbeddedNetwork.initialize(getApplicationContext());
         chinese = getResources().getConfiguration().getLocales().get(0).getLanguage().equals("zh");
         countFormat = android.icu.text.CompactDecimalFormat.getInstance(chinese ? java.util.Locale.CHINA : java.util.Locale.US,
@@ -88,8 +89,30 @@ public final class RemoteUsageActivity extends Activity {
         tabs.addView(usageTab, new LinearLayout.LayoutParams(0, -1, 1));
         LinearLayout.LayoutParams tabsParams = new LinearLayout.LayoutParams(-1, -2); tabsParams.topMargin = dp(8); root.addView(tabs, tabsParams);
         scroll = ScrollViews.plain(this); scroll.setVerticalScrollBarEnabled(false); body = column(); body.setPadding(0, dp(12), 0, dp(16)); scroll.addView(body); root.addView(scroll, new LinearLayout.LayoutParams(-1, 0, 1));
-        setContentView(root);
+        View page = root;
+        if (MobileLayout.useTabletRail(getResources().getConfiguration())) {
+            root.setOnApplyWindowInsetsListener(null); root.setPadding(dp(24), dp(8), dp(24), dp(16));
+            View split = TabletScaffold.settingsBody(this, root, "usage", section -> {
+                if (section.equals("usage")) return;
+                if (section.equals("network")) { leaveTabletUsage("network"); return; }
+                TabletScaffold.openSettingsCategory(this, new android.content.Intent(this, SettingsActivity.class).putExtra("section", section)
+                    .addFlags(android.content.Intent.FLAG_ACTIVITY_CLEAR_TOP | android.content.Intent.FLAG_ACTIVITY_SINGLE_TOP));
+                PageTransitions.finishDestination(this);
+            });
+            page = TabletScaffold.wrap(this, split, "settings", () -> leaveTabletUsage("home"),
+                () -> leaveTabletUsage("sessions"), () -> leaveTabletUsage("computers"), () -> {});
+        }
+        setContentView(page); page.requestApplyInsets();
     }
+
+    private void leaveTabletUsage(String destination) {
+        android.content.Intent target = new android.content.Intent(this, MainActivity.class).putExtra("tabletDestination", destination)
+            .addFlags(android.content.Intent.FLAG_ACTIVITY_CLEAR_TOP | android.content.Intent.FLAG_ACTIVITY_SINGLE_TOP);
+        if (destination.equals("network")) TabletScaffold.openSettingsCategory(this, target);
+        else PageTransitions.openDestination(this, target);
+        PageTransitions.finishDestination(this);
+    }
+
     @Override protected void onStart() {
         super.onStart(); EmbeddedNetwork.foreground(); active = true; int ticket = ++generation;
         worker.execute(() -> {
@@ -110,7 +133,7 @@ public final class RemoteUsageActivity extends Activity {
     @Override protected void onStop() { if (choiceDropdown != null) choiceDropdown.dismiss(); if (computerPicker != null) computerPicker.dismiss(); active = false; generation++; handler.removeCallbacksAndMessages(null); if (client != null) client.cancel(); loading = false; EmbeddedNetwork.background(); super.onStop(); }
     @Override protected void onDestroy() { if (choiceDropdown != null) choiceDropdown.dismiss(); worker.shutdownNow(); super.onDestroy(); }
     @Override public void finish() { if (choiceDropdown != null) choiceDropdown.dismiss(); if (computerPicker != null) computerPicker.dismiss(); super.finish(); PageTransitions.closeActivity(this); }
-    @Override protected void onSaveInstanceState(Bundle saved) { super.onSaveInstanceState(saved); saved.putString("address", address); saved.putString("tab", tab); saved.putString("range", range); saved.putString("source", source); saved.putString("account", accountId); saved.putString("model", model); }
+    @Override protected void onSaveInstanceState(Bundle saved) { super.onSaveInstanceState(saved); saved.putString("address", address); saved.putString("tab", tab); saved.putString("range", range); saved.putString("source", source); saved.putString("account", accountId); saved.putString("model", model); saved.putInt(TabletScaffold.CATEGORY_SCROLL, TabletScaffold.savedCategoryScroll(this)); }
     private String tr(String zh, String en) { return chinese ? zh : en; }
     private int dp(int value) { return style.dp(value); }
     private TextView tabButton(String title, String id, String tag) {
@@ -386,14 +409,15 @@ public final class RemoteUsageActivity extends Activity {
         filterRow(filters, tr("模型", "Model"), modelNames.get(modelIds.indexOf(model)), "usageModel", () -> choose("usageModel", tr("模型", "Model"), modelNames.toArray(new String[0]), modelIds.indexOf(model), true, i -> { model = modelIds.get(i); render(); }));
         var rows = AccountUsage.rows(data, range, source, accountId, model);
         LinearLayout summary = contentCard(); summary.setTag("usageSummary");
-        summary.addView(style.label(tr("Token 总量", "Total tokens"), Palette.TEXT_NOTE, style.secondary));
-        double totalTokens = AccountUsage.sum(rows, "inputTokens", "cacheReadTokens", "cacheWriteTokens", "outputTokens");
-        TextView total = style.label(count(totalTokens), Palette.TEXT_HERO, style.ink); total.setTag("usageTotalTokens");
-        total.setContentDescription(tr("Token 总量：", "Total tokens: ") + number(totalTokens)); total.setTooltipText(number(totalTokens));
-        total.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL)); total.setFontFeatureSettings("tnum"); total.setPadding(0, dp(2), 0, dp(12)); summary.addView(total);
-        LinearLayout counts = new LinearLayout(this); counts.setGravity(Gravity.TOP);
-        stat(counts, tr("成功请求 / 轮次", "Successful requests / turns"), AccountUsage.sum(rows, "requests"));
-        stat(counts, tr("失败 / 取消", "Failed / canceled"), AccountUsage.sum(rows, "failures", "cancelled")); summary.addView(counts);
+        double totalTokens = AccountUsage.sum(rows, "inputTokens", "outputTokens");
+        LinearLayout first = new LinearLayout(this); first.setGravity(Gravity.TOP);
+        stat(first, tr("Token 总量", "Total tokens"), totalTokens, "usageTotalTokens", Palette.TEXT_TITLE);
+        stat(first, tr("成功请求 / 轮次", "Successful requests / turns"), AccountUsage.sum(rows, "requests"));
+        summary.addView(first);
+        LinearLayout second = new LinearLayout(this); second.setGravity(Gravity.TOP); second.setPadding(0, dp(14), 0, 0);
+        stat(second, tr("输入 Token", "Input tokens"), AccountUsage.sum(rows, "inputTokens"));
+        stat(second, tr("输出 Token", "Output tokens"), AccountUsage.sum(rows, "outputTokens"));
+        summary.addView(second);
         if (AccountUsage.sum(rows, "unreported") > 0) style.note(body, tr("部分请求未完整上报 Token，用量合计可能偏低。", "Some requests did not report complete token usage. Totals may be low."));
         if (data.optBoolean("usageFailed")) style.note(body, tr("电脑端订阅统计保存异常，请检查电脑端。", "Subscription usage could not be saved. Check the desktop."));
         for (JSONObject row : rows) {
@@ -420,9 +444,14 @@ public final class RemoteUsageActivity extends Activity {
         label.setContentDescription(exact); label.setTooltipText(exact); return label;
     }
     private void stat(LinearLayout group, String title, double value) {
+        stat(group, title, value, null, Palette.TEXT_ROW_STRONG);
+    }
+    private void stat(LinearLayout group, String title, double value, String tag, int size) {
         LinearLayout stat = column(); stat.setPadding(0, 0, dp(12), 0);
         stat.addView(style.label(title, Palette.TEXT_SMALL, style.secondary));
-        TextView number = style.label(count(value), Palette.TEXT_ROW_STRONG, style.ink); number.setFontFeatureSettings("tnum");
+        TextView number = style.label(count(value), size, style.ink); number.setFontFeatureSettings("tnum");
+        if (size > Palette.TEXT_ROW_STRONG) number.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        if (tag != null) number.setTag(tag);
         number.setContentDescription(title + ": " + number(value)); number.setTooltipText(number(value)); stat.addView(number);
         group.addView(stat, new LinearLayout.LayoutParams(0, -2, 1));
     }

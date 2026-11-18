@@ -59,8 +59,9 @@ const { pluginCacheMaintenanceStatus, requestPluginCacheMaintenance, cancelPlugi
 const { IdleSessionReaper } = require('../engines/idle-session-reaper');
 const { attachInputContextMenu } = require('./input-context-menu');
 const { attachImageContextMenu } = require('./image-context-menu');
+const { attachLinkContextMenu } = require('./link-context-menu');
 const { attachExternalNavigation } = require('./external-navigation');
-const { describePreview } = require('./file-preview');
+const { describePreview, savePreviewText } = require('./file-preview');
 const gitService = require('./git-service').createGitService();
 const { ENGINES: SUBSCRIPTION_MODEL_ENGINES } = require('../shared/subscription-models');
 const { revealInFileManager } = require('./reveal-file');
@@ -107,7 +108,10 @@ let remoteDesktop = null;
 // Mobile access and CLI devices share one embedded Tailscale node so the user
 // signs in once; each consumer registers its own failure handler.
 const sharedDesktopNetwork = require('./remote/shared-network').createSharedNetwork({ options: {
-  app, safeStorage: require('electron').safeStorage, openExternal: url => shell.openExternal(url) } });
+  app, safeStorage: require('electron').safeStorage, openExternal: url => shell.openExternal(url),
+  // Only an explicitly saved name renames the Tailscale node. With none, the
+  // helper keeps its platform default instead of adopting the OS hostname.
+  hostname: () => computerHostname(loadConfig().computerName) } });
 function publishChatEvent(engine, event) {
   try { if (discussionBoundary?.registry.capture(engine, event)) return; }
   catch (error) { log(`discussion event capture failed (${engine}): ${error?.message || error}`); return; }
@@ -123,6 +127,8 @@ function publishChatEvent(engine, event) {
 
 const APP_ROOT = path.resolve(__dirname, '../..');
 const RENDERER_ROOT = path.join(APP_ROOT, 'src/renderer');
+const EDITABLE_PREVIEW_PAGES = new Set(['chat/workbench.html', 'discussions/discussions.html']
+  .map(page => pathToFileURL(path.join(RENDERER_ROOT, page)).href));
 const APP_NAME = 'Camellia';
 const APP_NAME_CLAUDE = 'Claude Code';
 const windowChrome = require('./window-chrome').createWindowChrome({ ipcMain, Menu, nativeTheme, loadConfig, translate });
@@ -282,6 +288,12 @@ function normalizeComputerName(value) {
 }
 function computerName(config = loadConfig()) {
   return normalizeComputerName(config.computerName) || normalizeComputerName(os.hostname()) || 'Camellia desktop';
+}
+// Tailscale registers a DNS label, while the settings field accepts a display
+// name. An empty result tells the helper to use its own fallback instead.
+function computerHostname(value) {
+  return String(value || '').toLowerCase().replace(/[^a-z0-9-]+/g, '-')
+    .replace(/^-+|-+$/g, '').slice(0, 63).replace(/-+$/g, '');
 }
 function uiText(text) { return translate(text, normalizeLanguage(loadConfig().language)); }
 
@@ -1605,6 +1617,20 @@ function flushSettingsWindow() {
   return settingsFlush;
 }
 
+function filePreviewContents(window) {
+  const contents = liveWebContents(window);
+  return contents && !contents.isCrashed() && EDITABLE_PREVIEW_PAGES.has(contents.getURL().split(/[?#]/)[0]) ? contents : null;
+}
+
+function closeFilePreviewEditors(contents) {
+  return contents.executeJavaScript('window.CamelliaFilePreview?.closeTextEditors?.() ?? true')
+    .then(saved => saved === true)
+    .catch(error => {
+      log('Close file preview: ' + error.message);
+      return false;
+    });
+}
+
 async function setSettingsBackdrop(owner, visible) {
   // Prepare the native caption and wait for the matching renderer frame before
   // revealing Settings. Closing Settings also releases a recorder that ignored
@@ -1797,8 +1823,21 @@ function createMainWindow() {
   desktopZoom().attach(mainWindow.webContents);
   windowChrome.attach(mainWindow);
 
+  let previewClosePending = false, previewCloseReady = false;
   mainWindow.on('close', event => {
-    if (!appQuitting && loadConfig().closeToTray) { event.preventDefault(); mainWindow.hide(); }
+    if (appQuitting || previewCloseReady) return;
+    if (loadConfig().closeToTray) { event.preventDefault(); mainWindow.hide(); return; }
+    const owner = mainWindow, contents = filePreviewContents(owner);
+    if (!contents) return;
+    event.preventDefault();
+    if (previewClosePending) return;
+    previewClosePending = true;
+    void closeFilePreviewEditors(contents).then(saved => {
+      previewClosePending = false;
+      if (!saved || owner.isDestroyed()) return;
+      previewCloseReady = true;
+      owner.close();
+    });
   });
   mainWindow.on('closed', () => { mainWindow = null; });
   mainWindow.on('page-title-updated', event => event.preventDefault());
@@ -1821,6 +1860,10 @@ if (!gotSingleInstanceLock) {
   app.on('web-contents-created', (_event, contents) => {
     attachInputContextMenu(contents, { Menu, uiText });
     attachImageContextMenu(contents, { Menu, dialog, BrowserWindow, uiText });
+    attachLinkContextMenu(contents, {
+      Menu, clipboard, openExternal: url => shell.openExternal(url), uiText,
+      onError: error => log(`External link: ${error.message}`),
+    });
   });
 
   ipcMain.handle('dsh:get-state', () => {
@@ -2327,6 +2370,12 @@ if (!gotSingleInstanceLock) {
         }
       }
       saveConfig(patch);
+      if (patch.computerName !== undefined) {
+        const hostname = computerHostname(patch.computerName);
+        if (sharedDesktopNetwork.network.child) {
+          void sharedDesktopNetwork.network.setHostname(hostname).catch(error => log(`Embedded network name sync failed: ${error.message}`));
+        }
+      }
       if (patch.portableSkills !== undefined) sharedConversations?.setPortableSkills(patch.portableSkills);
       if (payload?.conversations) saveConfig({ conversations: conversationPreferences({ conversations: payload.conversations }) });
       const contentWidth = normalizeChatContentWidth(patch.chatContentWidth ?? previousContentWidth);
@@ -3102,9 +3151,29 @@ if (!gotSingleInstanceLock) {
     return result.canceled ? { canceled: true, paths: [] } : { canceled: false, paths: result.filePaths };
   });
 
-  ipcMain.handle('dsh:preview-file', async (_event, filePath) => {
+  const textPreviewEdits = new WeakMap();
+  function textPreviewFrame(event) {
+    const frame = event.senderFrame;
+    return frame && event.sender === mainWindow?.webContents && frame === event.sender.mainFrame
+      && EDITABLE_PREVIEW_PAGES.has(frame.url.split(/[?#]/)[0]) ? frame : null;
+  }
+  function canEditPreviewTarget(target) {
+    let profile;
+    try { profile = fs.realpathSync.native(app.getPath('userData')); } catch { return false; }
+    const relative = path.relative(profile, target);
+    const [area, folder] = relative.split(path.sep);
+    return path.isAbsolute(relative) || area === '..' || area === 'clipboard-attachments' || (area === 'discussions' && folder === 'work');
+  }
+
+  ipcMain.handle('dsh:preview-file', async (event, filePath) => {
     try {
-      const file = describePreview(filePath);
+      const frame = textPreviewFrame(event);
+      const file = describePreview(filePath, frame && (edit => {
+        if (!canEditPreviewTarget(edit.target)) return null;
+        const token = require('node:crypto').randomUUID();
+        textPreviewEdits.set(frame, { token, edit });
+        return token;
+      }));
       // The pre-2007 formats are `document`/`spreadsheet` OLE2 binaries rather
       // than ZIP archives, so they route to their own readers. An OLE container
       // that fails its format check falls through to the system-app message
@@ -3117,6 +3186,17 @@ if (!gotSingleInstanceLock) {
       return { ok: true, file };
     }
     catch (error) { return { ok: false, error: error?.message || String(error) }; }
+  });
+
+  ipcMain.handle('dsh:save-preview-text', (event, payload) => {
+    try {
+      const frame = textPreviewFrame(event);
+      const preview = frame && textPreviewEdits.get(frame);
+      if (!preview || preview.token !== payload?.token || !canEditPreviewTarget(preview.edit.target)) throw new Error('Reopen the file before editing it.');
+      const result = savePreviewText(preview.edit, payload.text);
+      preview.edit = result.edit;
+      return { ok: true, file: result.file };
+    } catch (error) { return { ok: false, error: error?.message || String(error) }; }
   });
 
   ipcMain.handle('dsh:git-status', async (_event, payload) => {
@@ -3336,6 +3416,7 @@ if (!gotSingleInstanceLock) {
     app.quit();
   });
 
+  let previewQuitPending = false, previewQuitReady = false;
   let kimiClosing = false, directoryClosing = false, directoryCloseReady = false, logClosing = false, logCloseReady = false;
   app.on('before-quit', event => {
     if (settingsWindow && !settingsWindow.isDestroyed() && !settingsCloseReady) {
@@ -3346,6 +3427,19 @@ if (!gotSingleInstanceLock) {
         settingsQuitPending = false;
         if (!saved) return;
         settingsCloseReady = true;
+        app.quit();
+      });
+      return;
+    }
+    const contents = filePreviewContents(mainWindow);
+    if (contents && !previewQuitReady) {
+      event.preventDefault();
+      if (previewQuitPending) return;
+      previewQuitPending = true;
+      void closeFilePreviewEditors(contents).then(saved => {
+        previewQuitPending = false;
+        if (!saved) return;
+        previewQuitReady = true;
         app.quit();
       });
       return;
@@ -3447,6 +3541,8 @@ if (!gotSingleInstanceLock) {
       || mainWindow.webContents.getURL().split(/[?#]/)[0] !== require('node:url').pathToFileURL(path.join(RENDERER_ROOT, 'chat/workbench.html')).href)) {
       return { ok: false, error: 'The chat page changed. Open the conversation again.' };
     }
+    const contents = !inPlace && filePreviewContents(mainWindow);
+    if (contents && (!await closeFilePreviewEditors(contents) || request !== modeRequest)) return { ok: true, canceled: true };
     if (!['home', 'discussions'].includes(next)) saveConfig({ mode: next });
     currentMode = next;
     log(`switch mode → ${next}`);

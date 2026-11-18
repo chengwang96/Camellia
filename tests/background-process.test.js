@@ -6,10 +6,30 @@ const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
 const { EventEmitter } = require('node:events');
-const { execFileSync, spawnSync } = require('node:child_process');
+const { spawn } = require('node:child_process');
 const { startBackgroundProcess } = require('../src/engines/background-process.cjs');
 const { windowsExecutionInstructions } = require('../src/engines/windows-execution');
 const { removeTree } = require('./test-fs.cjs');
+
+async function runLauncher(launcher, specFile) {
+  const output = `${specFile}.stdout`, errors = `${specFile}.stderr`;
+  const descriptors = [];
+  const { code, signal } = await new Promise((resolve, reject) => {
+    try {
+      descriptors.push(fs.openSync(output, 'w'));
+      descriptors.push(fs.openSync(errors, 'w'));
+      const child = spawn(process.execPath, [launcher, specFile], {
+        shell: false, windowsHide: true, signal: AbortSignal.timeout(10000), stdio: ['ignore', ...descriptors],
+      });
+      child.once('error', reject);
+      child.once('exit', (code, signal) => resolve({ code, signal }));
+    } finally {
+      for (const descriptor of descriptors) fs.closeSync(descriptor);
+    }
+  });
+  assert.equal(signal, null);
+  return { code, stdout: fs.readFileSync(output, 'utf8'), stderr: fs.readFileSync(errors, 'utf8') };
+}
 
 function fixture(t) {
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'camellia launch 中文 & % '));
@@ -110,14 +130,13 @@ test('native creation errors are returned once, close logs, and never fall back 
   assert.throws(() => fs.fstatSync(fd), { code: 'EBADF' });
 });
 
-test('the real Windows CLI reports missing and invalid executables as text', { skip: process.platform !== 'win32' }, t => {
+test('the real Windows CLI reports missing and invalid executables as text', { skip: process.platform !== 'win32' }, async t => {
   const spec = fixture(t), launcher = path.resolve(__dirname, '../src/engines/background-process.cjs');
   const specFile = path.join(spec.cwd, 'launch.json');
   for (const file of [path.join(spec.cwd, 'missing.exe'), spec.file]) {
     fs.writeFileSync(specFile, JSON.stringify({ ...spec, file }));
-    const result = spawnSync(process.execPath, [launcher, specFile], { windowsHide: true, encoding: 'utf8', timeout: 10000 });
-    assert.equal(result.error, undefined);
-    assert.equal(result.status, 1);
+    const result = await runLauncher(launcher, specFile);
+    assert.equal(result.code, 1);
     assert.match(result.stderr, /Background process failed:/);
     assert.equal(result.stdout, '');
   }
@@ -131,7 +150,9 @@ test('real background process receives exact argv, writes both log streams and e
   Object.assign(spec, { file: process.execPath, args: [script, resultFile, ...args] });
   const specFile = path.join(spec.cwd, 'launch.json');
   fs.writeFileSync(specFile, JSON.stringify(spec));
-  const result = JSON.parse(execFileSync(process.execPath, [launcher, specFile], { windowsHide: true, encoding: 'utf8', timeout: 10000 }));
+  const { code, stdout, stderr } = await runLauncher(launcher, specFile);
+  assert.equal(code, 0, stderr);
+  const result = JSON.parse(stdout);
   assert.ok(result.pid > 0);
   const deadline = Date.now() + 5000;
   while (Date.now() < deadline) {
@@ -162,16 +183,20 @@ test('real Windows grandchildren share a hidden console after the caller exits a
   // Ordinary grandchildren do not request windowsHide. Waiting until the
   // caller has exited also catches a target attached to a short-lived console.
   fs.writeFileSync(script, `setTimeout(() => {
-    const { execFileSync } = require('node:child_process');
-    const probe = JSON.parse(execFileSync(${JSON.stringify(powershell)}, ${JSON.stringify(args)},
-      { encoding: 'utf8', windowsHide: false, timeout: 10000 }));
-    require('node:fs').writeFileSync(process.argv[2], JSON.stringify({ ...probe, pid: process.pid, workerPid: process.ppid }));
-    console.log('grandchild completed');
+    const { execFile } = require('node:child_process');
+    execFile(${JSON.stringify(powershell)}, ${JSON.stringify(args)}, { encoding: 'utf8', windowsHide: false, timeout: 10000 }, (error, stdout) => {
+      if (error) { console.error(error); process.exitCode = 1; return; }
+      const probe = JSON.parse(stdout);
+      require('node:fs').writeFileSync(process.argv[2], JSON.stringify({ ...probe, pid: process.pid, workerPid: process.ppid }));
+      console.log('grandchild completed');
+    });
   }, 500);`);
   Object.assign(spec, { file: process.execPath, args: [script, resultFile] });
   const specFile = path.join(spec.cwd, 'launch.json'); fs.writeFileSync(specFile, JSON.stringify(spec));
   const launcher = path.resolve(__dirname, '../src/engines/background-process.cjs');
-  const launched = JSON.parse(execFileSync(process.execPath, [launcher, specFile], { windowsHide: true, encoding: 'utf8', timeout: 10000 }));
+  const { code, stdout, stderr } = await runLauncher(launcher, specFile);
+  assert.equal(code, 0, stderr);
+  const launched = JSON.parse(stdout);
   let result, stopped = false;
   const deadline = Date.now() + 15000;
   while (Date.now() < deadline) {

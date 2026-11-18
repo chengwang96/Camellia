@@ -111,13 +111,15 @@ final class SettingsStyle {
         Runnable resize = () -> {
             View decor = window.peekDecorView();
             if (decor == null || decor.getWindowToken() == null) return;
+            int currentWidth = sheetWidth();
             android.graphics.Rect visible = new android.graphics.Rect(); decor.getWindowVisibleDisplayFrame(visible);
             int available = visible.height() > 0 ? visible.height() : context.getResources().getDisplayMetrics().heightPixels;
             int limit = Math.max(dp(160), available - dp(32));
-            panel.measure(View.MeasureSpec.makeMeasureSpec(width, View.MeasureSpec.EXACTLY), View.MeasureSpec.makeMeasureSpec(limit, View.MeasureSpec.AT_MOST));
+            panel.measure(View.MeasureSpec.makeMeasureSpec(currentWidth, View.MeasureSpec.EXACTLY), View.MeasureSpec.makeMeasureSpec(limit, View.MeasureSpec.AT_MOST));
             int height = Math.min(limit, panel.getMeasuredHeight());
             var updated = window.getAttributes();
-            if (updated.height != height) {
+            if (updated.height != height || updated.width != currentWidth) {
+                updated.width = currentWidth;
                 updated.height = height;
                 window.setAttributes(updated);
             }
@@ -439,6 +441,12 @@ final class SettingsStyle {
         current.setTextSize(Palette.TEXT_BODY); current.setPadding(0, dp(2), dp(8), 0);
         current.setTag(ROW_VALUE);
         labels.addView(current);
+        if (MobileLayout.useTabletRail(context.getResources().getConfiguration()) && choice.length() <= 32) {
+            labels.setOrientation(LinearLayout.HORIZONTAL); labels.setGravity(Gravity.CENTER_VERTICAL);
+            heading.setLayoutParams(new LinearLayout.LayoutParams(0, -2, 1)); heading.setTextSize(16);
+            current.setLayoutParams(new LinearLayout.LayoutParams(-2, -2));
+            current.setTextSize(14); current.setPadding(dp(12), 0, dp(8), 0);
+        }
         row.addView(labels, new LinearLayout.LayoutParams(0, -2, 1));
         ImageView arrow = new ImageView(context); arrow.setImageDrawable(new LineIcon("right", secondary));
         arrow.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);

@@ -154,6 +154,35 @@ public class VisualizationDialogTest extends InstrumentationTestCase {
         ui(() -> assertReleased(browser[0]));
     }
 
+    public void testActivityRotationKeepsLoadedCardOpen() throws Exception {
+        if (activity.getResources().getConfiguration().smallestScreenWidthDp < 600) return;
+        ui(() -> {
+            var foreground = MainActivity.class.getDeclaredField("foreground"); foreground.setAccessible(true); foreground.set(activity, false);
+            activity.setRequestedOrientation(android.content.pm.ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE);
+        });
+        awaitOrientation(android.content.res.Configuration.ORIENTATION_LANDSCAPE);
+        ui(() -> {
+            dialog = new VisualizationDialog(activity, "Card rotation", false);
+            dialog.show(); ownDialog();
+            dialog.load("<!doctype html><meta name='viewport' content='width=device-width'><button id='choice' onclick='this.textContent=\"Selected\"'>Choose</button>");
+        });
+        clickLoadedChoice(); WebView browser = (WebView) field(dialog, "webView");
+        ui(() -> activity.setRequestedOrientation(android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT));
+        awaitOrientation(android.content.res.Configuration.ORIENTATION_PORTRAIT);
+        assertTrue("Rotation must keep the current interactive card open", dialog.isShowing());
+        assertSame("Keep its live document rather than recreate the browser", browser, field(dialog, "webView"));
+        ui(() -> activity.setRequestedOrientation(android.content.pm.ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE));
+        awaitOrientation(android.content.res.Configuration.ORIENTATION_LANDSCAPE);
+        assertTrue(dialog.isShowing()); assertSame(browser, field(dialog, "webView"));
+    }
+
+    private void awaitOrientation(int orientation) throws Exception {
+        long deadline = android.os.SystemClock.uptimeMillis() + 6000;
+        while (activity.getResources().getConfiguration().orientation != orientation && android.os.SystemClock.uptimeMillis() < deadline) Thread.sleep(60);
+        getInstrumentation().waitForIdleSync();
+        assertEquals(orientation, activity.getResources().getConfiguration().orientation);
+    }
+
     public void testWorkerDismissReleasesBrowserOnUiThread() {
         WebView[] browser = {null};
         ui(() -> {

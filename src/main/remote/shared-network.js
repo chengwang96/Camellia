@@ -8,7 +8,13 @@ const { EmbeddedNetwork } = require('./embedded-network');
 // must be reported to every consumer.
 function createSharedNetwork({ options, create = value => new EmbeddedNetwork(value) }) {
   const listeners = new Set();
-  const network = create({ ...options, onFailure: () => { for (const listener of [...listeners]) { try { listener(); } catch { /* consumer is closing */ } } } });
+  // The name is a getter, so a save made after this module loads is still read
+  // by the next start. Keeping it a string here would freeze the boot name.
+  const hostname = typeof options.hostname === 'string' && options.hostname
+    ? () => options.hostname
+    : typeof options.hostname === 'function' ? options.hostname : undefined;
+  const network = create({ ...options, hostname,
+    onFailure: () => { for (const listener of [...listeners]) { try { listener(); } catch { /* consumer is closing */ } } } });
   return {
     network,
     factory: ({ onFailure = () => {} } = {}) => { listeners.add(onFailure); return network; },

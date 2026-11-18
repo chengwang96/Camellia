@@ -150,8 +150,37 @@ public final class EmbeddedNetwork {
             };
             java.io.File directory = new java.io.File(context.getNoBackupFilesDir(), "tailnet");
             if (!directory.exists() && !directory.mkdirs()) throw new IOException("Cannot create private network directory");
-            return Tailnet.newNode(directory.getAbsolutePath(), encrypted);
+            // An empty saved name lets the bridge preserve its platform
+            // fallback; the label is the user's choice when one exists.
+            return Tailnet.newNode(directory.getAbsolutePath(), nodeHostname(), encrypted);
         } catch (Exception error) { throw ConnectionFailure.failure(ConnectionFailure.Code.NETWORK_START_FAILED, error); }
+    }
+
+    /**
+     * The saved name is a display name; Tailscale accepts a DNS label. The
+     * bridge still receives a real value, because an empty string means the
+     * Go side should use its platform fallback.
+     */
+    static String nodeHostname() {
+        return hostnameLabel(MobilePreferences.savedDeviceName(context));
+    }
+
+    /**
+     * Applies a renamed device while the node stays open. Rebuilds triggered by
+     * a route change read the same preference, so the name is not lost.
+     */
+    public static CompletableFuture<Void> setNodeHostname(String name) {
+        String label = hostnameLabel(name);
+        return lifecycle == null ? CompletableFuture.completedFuture(null)
+            : lifecycle.useReadyNode(node -> node.setHostname(label));
+    }
+
+    private static String hostnameLabel(String name) {
+        if (name == null) return "";
+        String label = name.toLowerCase(java.util.Locale.ROOT).replaceAll("[^a-z0-9-]+", "-")
+            .replaceAll("^-+", "").replaceAll("-+$", "");
+        if (label.length() > 63) label = label.substring(0, 63).replaceAll("-+$", "");
+        return label;
     }
 
     public static void registerInterfaces() {

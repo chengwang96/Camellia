@@ -86,6 +86,17 @@ test('right-clicking an image leaves its context menu to the image handler', () 
   assert.equal(harness.popups.length, 0);
 });
 
+test('right-clicking a web link leaves its context menu to the link handler', () => {
+  const harness = createHarness();
+  harness.contents.emit('context-menu', {}, {
+    isEditable: false, mediaType: 'none', linkURL: 'https://pubpeer.com/',
+    selectionText: 'PubPeer 页面',
+    editFlags: { canCopy: true, canSelectAll: true },
+  });
+  assert.equal(harness.templates.length, 0);
+  assert.equal(harness.popups.length, 0);
+});
+
 test('unavailable actions are disabled and labels follow the current language', () => {
   const harness = createHarness();
   const params = {

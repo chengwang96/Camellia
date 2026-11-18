@@ -19,10 +19,18 @@ final class MobilePreferences {
     }
 
     static String deviceName(Context context) {
-        String value = context.getSharedPreferences("mobile-preferences", Context.MODE_PRIVATE).getString("deviceName", null);
-        if (value != null && !value.trim().isEmpty()) return value.trim();
+        String saved = savedDeviceName(context);
+        if (!saved.isEmpty()) return saved;
         String model = android.os.Build.MODEL;
         return model == null || model.trim().isEmpty() ? "Android" : model.trim();
+    }
+
+    /** Only the name the user chose; empty means the platform default. */
+    static String savedDeviceName(Context context) {
+        if (context == null) return "";
+        String value = context.getSharedPreferences("mobile-preferences", Context.MODE_PRIVATE).getString("deviceName", "");
+        if (value != null && !value.trim().isEmpty()) return value.trim();
+        return "";
     }
 
     static float chatTextSize(Context context, float base) {

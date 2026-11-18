@@ -79,6 +79,14 @@ private enum ComposerCheck {
         let verdict = failures.isEmpty ? "PASS" : "FAIL"
         let details = failures.isEmpty ? "none" : failures.joined(separator: ", ")
         let result = "[composer-check] verdict=\(verdict) failures=\(details)\n"
+        do {
+            let documents = try FileManager.default.url(for: .documentDirectory, in: .userDomainMask,
+                                                        appropriateFor: nil, create: true)
+            try result.write(to: documents.appendingPathComponent("composer-verdict.txt"), atomically: true, encoding: .utf8)
+        } catch {
+            print("[composer-check] cannot save verdict: \(error)")
+            exit(1)
+        }
         // Flush the result to the console consumed by check-composer.sh before exiting.
         FileHandle.standardOutput.write(Data(result.utf8))
         exit(failures.isEmpty ? 0 : 1)

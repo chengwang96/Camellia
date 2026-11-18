@@ -429,8 +429,16 @@ final class AppModel: ObservableObject {
     func setDeviceName(_ value: String) {
         let trimmed = ComposerText.androidTrim(value)
         guard !trimmed.isEmpty, ComposerText.utf16Length(trimmed) <= 80 else { return }
-        guard preferences.deviceName != trimmed else { return }
+        guard preferences.savedDeviceName != trimmed else { return }
         preferences.deviceName = trimmed
+        EmbeddedNetwork.shared.hostname = trimmed
+        // A rename is a preference change, not a new identity: apply it to the
+        // running node on a worker so a slow control-plane call never holds the
+        // settings screen.
+        DispatchQueue.global(qos: .utility).async {
+            do { try EmbeddedNetwork.shared.setHostname(trimmed) }
+            catch { /* The saved name is used by the next node start. */ }
+        }
         objectWillChange.send()
     }
 
@@ -439,6 +447,7 @@ final class AppModel: ObservableObject {
     func boot() {
         restartRemoteEntry()
         EmbeddedNetwork.shared.makeStore = { AppStores.nodeStore() }
+        EmbeddedNetwork.shared.hostname = preferences.savedDeviceName
         EmbeddedNetwork.shared.start()
         watchNetwork()
         reload()
@@ -3446,11 +3455,16 @@ final class AppModel: ObservableObject {
 
     /// Pauses or resumes one scheduled task.
     func controlTask(_ taskId: String, pause: Bool) {
+        controlTask(taskId, operation: pause ? "pause" : "resume")
+    }
+
+    func controlTask(_ taskId: String, operation: String) {
         guard canDrive, !commandBusy, !hasPendingDetailOperation,
+              ["pause", "resume", "cancel"].contains(operation),
               let session, let id = openId else { return }
         deliver(session: session, action: "task-control", conversationId: id, payload: [
             "instanceId": transcript.instanceId,
-            "operation": pause ? "pause" : "resume",
+            "operation": operation,
             "taskId": taskId,
         ], outcome: { [weak self] in self?.report($0) })
     }

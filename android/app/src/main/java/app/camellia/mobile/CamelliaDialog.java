@@ -49,7 +49,7 @@ final class CamelliaDialog extends AlertDialog {
 
     @Override protected void onCreate(Bundle saved) {
         super.onCreate(saved);
-        LinearLayout panel = column(); panel.setTag("camelliaDialog"); style.sheetPanel(panel);
+        LinearLayout panel = new EditorLayout(getContext()); panel.setTag("camelliaDialog"); style.sheetPanel(panel);
         ScrollView scroll = ScrollViews.plain(getContext()); scroll.setFillViewport(false);
         LinearLayout body = column(); body.setTag("camelliaDialogBody"); scroll.addView(body);
         if (options.title != null && options.title.length() > 0) {
@@ -98,6 +98,9 @@ final class CamelliaDialog extends AlertDialog {
     }
 
     @Override public Button getButton(int which) { return buttons.get(which); }
+
+    @Override protected void onStart() { super.onStart(); DialogWindows.shown(getContext(), this); }
+    @Override protected void onStop() { DialogWindows.hidden(getContext(), this); super.onStop(); }
 
     static final class Builder extends AlertDialog.Builder {
         private CharSequence title, message, positive, negative, neutral;

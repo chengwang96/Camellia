@@ -205,11 +205,12 @@ public class RemoteUsageTest extends InstrumentationTestCase {
                 assertTrue("Money must retain its precision", text(root).contains("12,345,678.25 CNY"));
                 root.findViewWithTag("usageTabHistory").performClick();
                 TextView total = root.findViewWithTag("usageTotalTokens");
-                assertEquals(chinese ? "366.3亿" : "36.6B", total.getText().toString());
-                assertTrue(total.getContentDescription().toString().contains("36,630,025,931"));
-                assertEquals("36,630,025,931", total.getTooltipText());
+                assertEquals(chinese ? "318.9亿" : "31.9B", total.getText().toString());
+                assertTrue(total.getContentDescription().toString().contains("31,889,043,665"));
+                assertEquals("31,889,043,665", total.getTooltipText());
                 String all = text(root);
-                for (String value : chinese ? new String[]{"48.2亿", "47.4亿", "1289.6万", "4.6万", "1.3万"} : new String[]{"4.8B", "4.7B", "12.9M", "46.2K", "13.1K"}) assertTrue(value, all.contains(value));
+                assertTrue("Input and output must be shown separately", all.contains(chinese ? "输入 Token\n318.8亿\n输出 Token\n1289.6万" : "Input tokens\n31.9B\nOutput tokens\n12.9M"));
+                for (String value : chinese ? new String[]{"48.2亿", "47.4亿", "4.6万", "失败/取消 1.1万"} : new String[]{"4.8B", "4.7B", "46.2K", "Failed/canceled 11.5K"}) assertTrue(value, all.contains(value));
                 try {
                     var count = RemoteUsageActivity.class.getDeclaredMethod("count", double.class); count.setAccessible(true);
                     double[] values = {0, 999, 10000, 99999999, 100000000, 1000000000000d};
@@ -233,7 +234,7 @@ public class RemoteUsageTest extends InstrumentationTestCase {
             choose(current, "usageRange", 3);
             getInstrumentation().runOnMainSync(() -> {
                 View root = current.getWindow().getDecorView();
-                assertEquals(chinese ? "366.3亿" : "36.6B", ((TextView) root.findViewWithTag("usageTotalTokens")).getText().toString());
+                assertEquals(chinese ? "318.9亿" : "31.9B", ((TextView) root.findViewWithTag("usageTotalTokens")).getText().toString());
                 root.findViewWithTag("usageFiltersToggle").performClick();
                 assertTrue(root.findViewWithTag("usageFiltersToggle").isSelected());
                 root.findViewWithTag("usageSource").performClick();
@@ -245,7 +246,7 @@ public class RemoteUsageTest extends InstrumentationTestCase {
                     ChoiceDropdown chooser = (ChoiceDropdown) field.get(current);
                     assertNotNull(chooser.panel.findViewWithTag("choiceDropdown"));
                     chooser.dismiss();
-                    assertEquals(chinese ? "366.3亿" : "36.6B", ((TextView) current.getWindow().getDecorView().findViewWithTag("usageTotalTokens")).getText().toString());
+                    assertEquals(chinese ? "318.9亿" : "31.9B", ((TextView) current.getWindow().getDecorView().findViewWithTag("usageTotalTokens")).getText().toString());
                 } catch (Exception e) { throw new AssertionError(e); }
             });
             choose(current, "usageSource", 1);

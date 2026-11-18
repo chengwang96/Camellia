@@ -702,6 +702,7 @@ struct LocalChatDetailView: View {
     /// answer streams. Android asks the same question with
     /// `content.bottom - viewport.bottom < dp(120)`.
     @State private var follow = ScrollFollowTracker()
+    @State private var processDisclosures = ProcessDisclosureStore()
     @State private var showingModelPicker = false
     @State private var showingAttachments = false
     @State private var showingTools = false
@@ -728,6 +729,7 @@ struct LocalChatDetailView: View {
                                     message: message,
                                     editable: isLastUser(message),
                                     onEdit: { model.beginEdit(message.id) })
+                                    .environment(\.processIdentity, "local:\(conversation.id):\(message.id)")
                                     .id(message.id)
                             }
                         }
@@ -735,16 +737,26 @@ struct LocalChatDetailView: View {
                         .padding(.vertical, 12)
                         .chatContentTailPadding()
                         .measuringContentBottom()
+                        .environment(\.processDisclosures, processDisclosures)
+                        .environment(\.revealProcessHeader, { anchor, frame, opening in
+                            follow.readHistory()
+                            guard !follow.keepsProcessHeader(frame, opening: opening) else { return }
+                            DispatchQueue.main.async { withTransaction(Transaction(animation: nil)) { proxy.scrollTo(anchor, anchor: .top) } }
+                        })
                     }
                     .measuringViewportBottom()
                     // Opening a conversation and sending a message both land at
                     // the end; a reader who scrolls up stays where they are.
                     .onChange(of: model.messages.count) { _ in
+                        guard follow.shouldFollow else { return }
+                        proxy.scrollTo(bottomId, anchor: .bottom)
+                    }
+                    .onChange(of: model.messages.last(where: { $0.isUser })?.id) { _ in
                         follow.following()
-                        withAnimation { proxy.scrollTo(bottomId, anchor: .bottom) }
+                        proxy.scrollTo(bottomId, anchor: .bottom)
                     }
                     .onChange(of: model.liveText) { _ in
-                        guard follow.isAtBottom else { return }
+                        guard follow.shouldFollow else { return }
                         proxy.scrollTo(bottomId, anchor: .bottom)
                     }
                 }
@@ -936,8 +948,6 @@ private struct LocalChatMessageRow: View {
     let editable: Bool
     let onEdit: () -> Void
 
-    @State private var showProcess = false
-
     var body: some View {
         VStack(alignment: message.isUser ? .trailing : .leading, spacing: 6) {
             if !message.process.isEmpty || message.turnDetails?.completed == true { processDisclosure }
@@ -954,34 +964,8 @@ private struct LocalChatMessageRow: View {
 
     @ViewBuilder
     private var processDisclosure: some View {
-        if let details = message.turnDetails, details.completed {
-            Button { showProcess.toggle() } label: {
-                HStack {
-                    TurnCompletionLabel(details: details)
-                    Spacer(minLength: 0)
-                    if !message.process.isEmpty {
-                        MobileLineIcon(name: showProcess ? "down" : "right", size: 18)
-                            .foregroundColor(Palette.faint)
-                    }
-                }
-            }
-            .buttonStyle(.plain)
-            .disabled(message.process.isEmpty)
-            Rectangle().fill(Palette.separator).frame(height: 1)
-        } else {
-            Button { showProcess.toggle() } label: {
-                HStack(spacing: 6) {
-                    Image(systemName: showProcess ? "chevron.down" : "chevron.right").font(.caption2)
-                    Text("\(message.process.count) 个步骤").font(.caption)
-                }
-                .foregroundColor(Palette.muted)
-            }
-            .buttonStyle(.plain)
-        }
-        if showProcess {
-            LocalChatProcessView(entries: message.process)
-                .frame(maxWidth: .infinity, alignment: .leading)
-        }
+        LocalChatProcessView(entries: message.process, details: message.turnDetails)
+            .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     @ViewBuilder
@@ -1101,37 +1085,16 @@ private struct StoredThumbnail: View {
 /// only the labels differ.
 struct LocalChatProcessView: View {
     let entries: [[String: Any]]
+    var details: TurnDetails? = nil
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            ForEach(Array(entries.enumerated()), id: \.offset) { _, entry in
-                HStack(alignment: .top, spacing: 8) {
-                    Image(systemName: icon(entry))
-                        .font(.caption2)
-                        .foregroundColor(Palette.muted)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(title(entry)).font(.caption).foregroundColor(Palette.ink)
-                        if let text = entry["text"] as? String, !text.isEmpty {
-                            Text(text).font(.caption2).foregroundColor(Palette.muted).lineLimit(4)
-                        }
-                    }
-                }
+        ProcessView(entries: entries.map { entry in
+            var normalized = entry
+            if (entry["title"] as? String ?? "").isEmpty {
+                normalized["title"] = entry["name"] as? String ?? ""
             }
-        }
-        .padding(10)
-        .background(RoundedRectangle(cornerRadius: Palette.smallRadius, style: .continuous)
-            .fill(Palette.surface))
-    }
-
-    private func icon(_ entry: [String: Any]) -> String {
-        (entry["type"] as? String) == "thinking" ? "brain" : "chevron.right.circle"
-    }
-
-    private func title(_ entry: [String: Any]) -> String {
-        if (entry["type"] as? String) == "thinking" { return "思考" }
-        return (entry["title"] as? String).flatMap { $0.isEmpty ? nil : $0 }
-            ?? (entry["name"] as? String)
-            ?? "工具"
+            return RemoteProcessEntry(JSONObject(dictionary: normalized))
+        }, details: details)
     }
 }
 

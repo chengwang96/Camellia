@@ -8,4 +8,6 @@ Android 11+ denies Go netlink interface discovery. `SetInterfaces` registers Jav
 
 The bridge validates Tailnet destination addresses and ports, disallows redirects, streams bytes across JNI, and cancels open requests when the node closes. Native response bodies are never routed through a localhost HTTP proxy. Java separately enforces the gateway endpoint allowlist, body limits, request deduplication and remote permission checks.
 
+The saved device name is used as the node's Tailscale hostname; without one, the platform fallback remains `camellia-android` or `camellia-ios`. `NewNode` receives the label at start-up, and `SetHostname` applies a later rename through `EditPrefs` without replacing the node identity or dropping active connections.
+
 Tests: `go test ./...`; Android `EmbeddedNetworkTest` for native startup, Android interface enumeration, encrypted storage and login URL validation. Its optional `onlineLogin=true` test contacts the official control service only to obtain a browser authorization URL; it does not authorize a node or access user conversations. Actual authenticated Tailnet dialing and phone/desktop interoperability need the user's login and device test.

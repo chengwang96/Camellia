@@ -139,6 +139,7 @@ contextBridge.exposeInMainWorld('dshDesktop', {
   saveClipboardImage: (payload) => ipcRenderer.invoke('dsh:save-clipboard-image', payload),
   savePastedText: (payload) => ipcRenderer.invoke('dsh:save-pasted-text', payload),
   previewFile: (filePath) => ipcRenderer.invoke('dsh:preview-file', filePath),
+  savePreviewText: (token, text) => ipcRenderer.invoke('dsh:save-preview-text', { token, text }),
   gitStatus: payload => ipcRenderer.invoke('dsh:git-status', payload),
   gitDiff: payload => ipcRenderer.invoke('dsh:git-diff', payload),
   gitUntracked: payload => ipcRenderer.invoke('dsh:git-untracked', payload),
