@@ -90,7 +90,6 @@ window.dshDesktop=new Proxy({}, {get:(_,method)=>method.startsWith('on')?fn=>{ac
  }
  return window.testRpc(method,args[0]);
 }});
-window.camelliaDevices={onEvent:()=>()=>{},onTransfer:()=>()=>{},call:async()=>({ok:true,result:{}})};
 """
 
 def assert_card_layout(cards):

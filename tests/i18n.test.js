@@ -25,7 +25,6 @@ test('command, navigation and preview copy is localized in both languages', () =
   const copy = {
     'Find files on this computer and download them': '查找此电脑上的文件并下载',
     'Context usage': '上下文用量',
-    'CLI servers': 'CLI 服务器',
     'Conversations': '会话',
     'Worksheet': '工作表',
     'Present': '演示',

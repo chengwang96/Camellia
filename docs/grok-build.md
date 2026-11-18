@@ -31,7 +31,7 @@ Subscription usage statistics are separate from provider balance queries. Any AP
 
 ## Remote and discussion behavior
 
-Headless servers expose the same dual connections and account operations. Mobile clients receive only public engine, model, session, and quota metadata; OAuth credentials never enter the remote protocol or data export.
+Mobile clients receive only public engine, model, session, and quota metadata; OAuth credentials never enter the remote protocol or data export.
 
 Discussion members can use shared API routes or a verified Grok subscription. Each member uses an isolated home. Camellia copies only the current access credential required for that member and removes it during cleanup; shared refresh credentials are not copied between members. Connection verification is required before native-tools dispatch.
 

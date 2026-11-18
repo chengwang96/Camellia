@@ -67,6 +67,37 @@ public class RemoteKeepAliveTest extends InstrumentationTestCase {
         field("credentials", owner); field("conversationId", "keep-alive-test"); invoke("detailScreen");
         field("api", new RemoteApi(owner.getString("address")));
         field("connected", true);
+        long now = android.os.SystemClock.elapsedRealtime();
+        RemoteStreamHealth health = new RemoteStreamHealth(now);
+        health.snapshot(now);
+        field("streamHealth", health);
+    }
+
+    private void prepareList() throws Exception {
+        JSONObject owner = new JSONObject().put("address", "http://100.64.0.1:43128").put("token", "a".repeat(43));
+        credentials.save(owner);
+        MobilePreferences.set(activity, "remoteKeepAlive", "enabled");
+        field("credentials", owner); invoke("listScreen");
+        field("api", new RemoteApi(owner.getString("address")));
+        field("connected", true);
+        field("listLastFrameAt", android.os.SystemClock.elapsedRealtime());
+    }
+
+    private void useUnavailableClient() throws Exception {
+        field("remoteClientFactory", (java.util.function.Function<String, RemoteApi>) address -> new RemoteApi(address) {
+            @Override public JSONObject json(String path, String token, JSONObject payload) throws java.io.IOException {
+                try {
+                    return new JSONObject().put("protocol", 1).put("permission", "control")
+                        .put("conversations", new JSONArray()).put("nextOffset", JSONObject.NULL);
+                } catch (org.json.JSONException error) { throw new java.io.IOException(error); }
+            }
+            @Override void events(String id, String token, SnapshotListener listener, SseReader.HeartbeatListener heartbeat) throws java.io.IOException {
+                throw new java.io.IOException("Test stream unavailable");
+            }
+            @Override public void listEvents(String token, SnapshotListener listener) throws java.io.IOException {
+                throw new java.io.IOException("Test stream unavailable");
+            }
+        });
     }
 
     public void testNoComputerOrDisabledSettingNeverStarts() {
@@ -112,6 +143,98 @@ public class RemoteKeepAliveTest extends InstrumentationTestCase {
             assertFalse(read.unread((JSONObject) field("credentials"), conversation));
         });
     }
+
+    public void testPendingRetryIsBypassedWhenReturningToDetail() throws Exception {
+        ui(() -> {
+            prepareRemote();
+            Object previous = field("api");
+            field("streamHealth", null); field("streamRetryPending", true);
+            useUnavailableClient();
+            invoke("onPause"); invoke("onStop"); invoke("onStart");
+            assertNotSame("Foreground recovery must not wait for the old retry timer", previous, field("api"));
+            assertFalse((boolean) field("connected"));
+            RemoteStreamHealth recovery = (RemoteStreamHealth) field("streamHealth");
+            long remaining = recovery.remaining(android.os.SystemClock.elapsedRealtime());
+            assertTrue(remaining > 0 && remaining <= RemoteStreamHealth.RECOVERY_INITIAL_TIMEOUT_MS);
+        });
+    }
+
+    public void testForegroundGraceReplacesStaleStreamBeforeIdleTimeout() throws Exception {
+        ui(() -> {
+            prepareRemote();
+            Object previous = field("api");
+            long now = android.os.SystemClock.elapsedRealtime();
+            RemoteStreamHealth stale = new RemoteStreamHealth(now - 6_000);
+            stale.snapshot(now - 5_001);
+            assertTrue(stale.remaining(now) > 0);
+            field("streamHealth", stale); useUnavailableClient();
+            invoke("onPause"); invoke("onStop"); invoke("onStart");
+            assertNotSame("The five-second foreground grace must not wait for the idle timeout", previous, field("api"));
+        });
+    }
+
+    public void testRetainedDetailKeepsItsVisibleHistoryDuringRecovery() throws Exception {
+        ui(() -> {
+            prepareRemote();
+            JSONObject conversation = new JSONObject().put("id", "keep-alive-test").put("seq", 2);
+            JSONObject snapshot = new JSONObject().put("conversation", conversation).put("instanceId", "test").put("cursor", 1)
+                .put("messages", new JSONArray().put(new JSONObject().put("seq", 2).put("role", "assistant").put("text", "Visible history")));
+            var apply = MainActivity.class.getDeclaredMethod("applySnapshot", JSONObject.class); apply.setAccessible(true); apply.invoke(activity, snapshot);
+            Object previous = field("api"), currentScroll = field("scroll"), currentMessages = field("messages");
+            long now = android.os.SystemClock.elapsedRealtime();
+            RemoteStreamHealth stale = new RemoteStreamHealth(now - 6_000); stale.snapshot(now - 5_001);
+            field("streamHealth", stale); useUnavailableClient();
+            invoke("onPause"); invoke("onStop"); invoke("onStart");
+            assertNotSame(previous, field("api"));
+            assertSame("Recovery must not rebuild the chat viewport", currentScroll, field("scroll"));
+            assertSame("Recovery must not rebuild the message container", currentMessages, field("messages"));
+            var history = (java.util.TreeMap<Long, JSONObject>) field("history");
+            assertEquals("Visible history", history.get(2L).optString("text"));
+        });
+    }
+
+    public void testEmptyRetainedHistoryUsesPrefetchBeforeFreshSnapshot() throws Exception {
+        ui(() -> {
+            prepareRemote();
+            JSONObject conversation = new JSONObject().put("id", "keep-alive-test").put("seq", 3);
+            JSONObject snapshot = new JSONObject().put("conversation", conversation).put("instanceId", "test").put("cursor", 1)
+                .put("messages", new JSONArray().put(new JSONObject().put("seq", 3).put("role", "assistant").put("text", "Prefetched history")));
+            var apply = MainActivity.class.getDeclaredMethod("applySnapshot", JSONObject.class); apply.setAccessible(true); apply.invoke(activity, snapshot);
+            invoke("clearHistory");
+            assertTrue(((java.util.TreeMap<Long, JSONObject>) field("history")).isEmpty());
+            long now = android.os.SystemClock.elapsedRealtime();
+            RemoteStreamHealth stale = new RemoteStreamHealth(now - 6_000); stale.snapshot(now - 5_001);
+            field("streamHealth", stale); useUnavailableClient();
+            invoke("onPause"); invoke("onStop"); invoke("onStart");
+            var history = (java.util.TreeMap<Long, JSONObject>) field("history");
+            assertEquals("Prefetched history", history.get(3L).optString("text"));
+        });
+    }
+
+    public void testFreshListConnectionSurvivesBackgroundWithoutReload() throws Exception {
+        ui(() -> {
+            prepareList();
+            Object previous = field("api"); int generation = (int) field("generation");
+            invoke("onPause"); invoke("onStop"); invoke("onStart");
+            assertSame(previous, field("api"));
+            assertEquals(generation, field("generation"));
+        });
+    }
+
+    private void assertListReconnects(boolean retryPending) throws Exception {
+        ui(() -> {
+            prepareList();
+            Object previous = field("api");
+            if (retryPending) field("listRetryPending", true);
+            else field("listLastFrameAt", android.os.SystemClock.elapsedRealtime() - 5_001);
+            useUnavailableClient();
+            invoke("onPause"); invoke("onStop"); invoke("onStart");
+            assertNotSame("A stale list must refresh immediately with a new client", previous, field("api"));
+        });
+    }
+
+    public void testListRetryIsBypassedWhenReturning() throws Exception { assertListReconnects(true); }
+    public void testStaleListRefreshesWhenReturning() throws Exception { assertListReconnects(false); }
 
     public void testExpiryDisconnectsAndCannotRenewInBackground() {
         ui(() -> {

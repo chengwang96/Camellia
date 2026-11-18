@@ -65,7 +65,7 @@ for (const file of [isMac ? 'camellia-tailnet' : 'camellia-tailnet.exe', 'TAILNE
 const tailnetInfo = JSON.parse(fs.readFileSync(path.join(resources, 'runtime/tailnet-version.json')));
 assert.equal(tailnetInfo.platform, runtimeInfo.platform);
 assert.equal(tailnetInfo.arch, runtimeInfo.arch);
-assert.equal(tailnetInfo.tailscale, 'v1.98.6');
+assert.equal(tailnetInfo.tailscale, 'v1.104.7');
 assert.ok(asar.listPackage(archive).some(file => file.includes('smol-toml')));
 
 const sdkDir = path.join(resources, 'runtimes/antigravity');

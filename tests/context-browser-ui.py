@@ -161,16 +161,34 @@ bridge = r"""(() => {
         manyGraph = MANY_GRAPH, blocks = BLOCKS;
   const loadById = id => id === second.id ? second : id === many.id ? many : fixture;
   let reviewConsent = {id:'consent-1', reviewerEngine:'claude', mode:'adversarial', focus:'data loss'};
+  window.previousContextHeld = 0;
+  window.holdPreviousContext = false;
+  window.failSecondContext = false;
+  window.holdSecondLoad = false;
   window.dshDesktop = {
     sharedConversations: true,
     conversationCommand: async ({action, payload}) => {
       if (action === 'list-sessions') return {ok:true,sessions:[{...fixture,mtimeMs:Date.now()},{...second,mtimeMs:Date.now()-60000},{...many,mtimeMs:Date.now()-120000}],workspaces:[],pagination:{}};
       if (action === 'get-live') return {ok:true,live:null};
-      if (action === 'load-session') return {ok:true,...loadById(payload),preferences:{mode:'direct'},settings:{model:'fixture-model',connection:'api'}};
+      if (action === 'load-session') {
+        if (window.holdSecondLoad && payload?.sessionId === second.id) {
+          return new Promise(resolve => {
+            window.releaseSecondLoad = () => resolve({ok:true,...loadById(payload),preferences:{mode:'direct'},settings:{model:'fixture-model',connection:'api'}});
+          });
+        }
+        return {ok:true,...loadById(payload),preferences:{mode:'direct'},settings:{model:'fixture-model',connection:'api'}};
+      }
       if (action === 'get-settings') return {model:'fixture-model',connection:'api'};
       if (action === 'context-snapshot') {
         if (payload?.sessionId === many.id) return {ok:true,snapshot:manySnapshot};
-        if (payload?.sessionId === second.id) return {ok:true,snapshot:secondSnapshot};
+        if (payload?.sessionId === second.id) return window.failSecondContext
+          ? {ok:false,error:'Second context unavailable'} : {ok:true,snapshot:secondSnapshot};
+        if (window.holdPreviousContext) {
+          previousContextHeld++;
+          return new Promise(resolve => {
+            window.releasePreviousContext = () => resolve({ok:true,snapshot:payload?.turnSeq === 1 ? previous : snapshot});
+          });
+        }
         return {ok:true,snapshot: payload?.turnSeq === 1 ? previous : snapshot};
       }
       if (action === 'agent-graph') return {ok:true,graph: payload?.sessionId === many.id ? manyGraph
@@ -315,6 +333,38 @@ with sync_playwright() as p:
     expect(page.locator('#contextPanelBody')).to_contain_text('vs previous turn')
     expect(page.locator('.ctx-agents')).to_contain_text('Observed context')
     assert 'Opaque context' not in page.locator('.ctx-agents').inner_text()
+
+    # A delayed "previous turn" request from the first conversation must not
+    # repopulate the panel after a switch, even while the incoming session is
+    # still loading.
+    page.evaluate("""() => {
+      window.holdPreviousContext = true;
+      const refresh = [...document.querySelectorAll('#contextPanelBody button')]
+        .find(button => button.textContent === 'Refresh');
+      refresh.click();
+    }""")
+    page.wait_for_function('window.previousContextHeld > 0')
+    page.evaluate('window.failSecondContext = true')
+    page.evaluate('window.holdSecondLoad = true')
+    page.evaluate("""() => {
+      document.querySelector('[data-sid="context-second"]')
+        .dispatchEvent(new MouseEvent('click', {bubbles: true}));
+    }""")
+    page.evaluate('window.releasePreviousContext()')
+    page.wait_for_timeout(300)
+    body = page.locator('#contextPanelBody').inner_text()
+    assert 'Composition' not in body and 'Inspect this request.' not in body, body
+    page.evaluate("""() => {
+      window.holdPreviousContext = false;
+      window.failSecondContext = false;
+      window.holdSecondLoad = false;
+    }""")
+    if page.evaluate('typeof window.releaseSecondLoad === "function"'):
+        page.evaluate('window.releaseSecondLoad()')
+    page.locator('[data-sid="context-fixture"]').click()
+    expect(page.locator('#chat')).to_contain_text('Context is ready.')
+    expect(page.locator('#contextPanelBody')).to_contain_text('Composition')
+
     close_state = page.evaluate("""() => {
       const panel = document.querySelector('#contextPanel');
       document.querySelector('#contextPanelClose').click();

@@ -17,15 +17,15 @@ type diagnosticClient interface {
 }
 
 type pathProbe struct {
-	CheckedAt      int64    `json:"checkedAt"`
-	PeerAddress    string   `json:"peerAddress"`
-	Path           string   `json:"path"`
-	LatencyMs      *float64 `json:"latencyMs"`
-	Endpoint       string   `json:"endpoint,omitempty"`
-	PeerRelay      string   `json:"peerRelay,omitempty"`
-	DERPRegionID   int      `json:"derpRegionId,omitempty"`
-	DERPRegionCode string   `json:"derpRegionCode,omitempty"`
-	DERPRegionName string   `json:"derpRegionName,omitempty"`
+	CheckedAt      int64                `json:"checkedAt"`
+	PeerAddress    string               `json:"peerAddress"`
+	Path           string               `json:"path"`
+	LatencyMs      *float64             `json:"latencyMs"`
+	Endpoint       string               `json:"endpoint,omitempty"`
+	PeerRelay      string               `json:"peerRelay,omitempty"`
+	DERPRegionID   tailcfg.DERPRegionID `json:"derpRegionId,omitempty"`
+	DERPRegionCode string               `json:"derpRegionCode,omitempty"`
+	DERPRegionName string               `json:"derpRegionName,omitempty"`
 }
 
 // Use a disco ping result, rather than a peer's home DERP region: peers retain

@@ -50,34 +50,16 @@ if ((Split-Path $env:CAMELLIA_ANDROID_KEYSTORE -Leaf) -ieq 'debug.keystore') { t
 if (-not $env:ANDROID_HOME -or -not $env:JAVA_HOME) { throw 'Set ANDROID_HOME and JAVA_HOME (JDK 17) first.' }
 
 if (-not $SkipTailnet) {
-    $goCommand = Get-Command go -ErrorAction SilentlyContinue
-    $pinnedGo = $null
-    if ($goCommand) {
-        $goVersion = (& $goCommand.Source version 2>$null)
-        if ($goVersion -notmatch '^go version go1\.26\.3 ') { $goCommand = $null }
-    }
-    if (-not $goCommand) {
-        $pinnedGo = Get-ChildItem -Path (Join-Path $env:USERPROFILE 'go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.3.windows-amd64/bin/go.exe') -ErrorAction SilentlyContinue |
-            Select-Object -First 1
-        if (-not $pinnedGo) {
-            $pinnedGo = Get-Item -LiteralPath 'C:\Program Files\Go\bin\go.exe' -ErrorAction SilentlyContinue
-        }
-        if ($pinnedGo) {
-            $goVersion = (& $pinnedGo.FullName version 2>$null)
-            if ($goVersion -notmatch '^go version go1\.26\.3 ') { $pinnedGo = $null }
-        }
-    }
-    if ($pinnedGo) {
-        $env:PATH = (Split-Path $pinnedGo.FullName -Parent) + ';' + $env:PATH
-        $env:GOTOOLCHAIN = 'local'
-    } elseif (-not $goCommand) {
+    if (-not (Get-Command go -ErrorAction SilentlyContinue)) {
         $localGoBin = Join-Path $repoRoot 'dist/android-tools/go/bin'
         if (-not (Test-Path -LiteralPath (Join-Path $localGoBin 'go.exe') -PathType Leaf)) {
-            throw 'Go is required to rebuild Tailnet. Install Go or provide the local dist/android-tools/go toolchain.'
+            throw 'Go is required to rebuild embedded Tailscale.'
         }
         $env:PATH = $localGoBin + ';' + $env:PATH
         $env:GOPATH = Join-Path $repoRoot 'dist/android-tools/gopath'
     }
+    # Resolve the toolchain from android/tailnet/go.mod on clean runners too.
+    $env:GOTOOLCHAIN = 'auto'
     & (Join-Path $androidDir 'build-tailnet.ps1')
     if ($LASTEXITCODE -ne 0) { throw 'Tailnet build failed.' }
 }
@@ -115,6 +97,9 @@ foreach ($element in $metadata.elements) {
     $audit = & (Join-Path $PSScriptRoot 'measure-android-apk.ps1') -Path $source
     if ($audit.unreferencedBytes -lt 0 -or $audit.unreferencedBytes -gt 1MB) { throw 'Release APK contains unexpected unused ZIP payloads.' }
     if (@($audit.nativeLibraries | Where-Object compression -ne 0).Count) { throw 'Native libraries must remain uncompressed for direct loading.' }
+    if (@($audit.nativeLibraries | Where-Object { $_.elfLoadAlignment -lt 16384 }).Count) {
+        throw 'Native libraries do not meet the 16 KiB ELF LOAD alignment requirement.'
+    }
     $filterAbis = @($element.filters | Where-Object filterType -eq 'ABI' | ForEach-Object value)
     $abi = if ($SizeBaseline) { 'universal' } elseif ($filterAbis.Count -eq 1 -and $filterAbis[0] -in $Abis) { $filterAbis[0] } else { throw 'Unexpected release ABI output.' }
     $nativeAbis = @($audit.nativeLibraries.name | ForEach-Object { ($_ -split '/')[1] } | Sort-Object -Unique)

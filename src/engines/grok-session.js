@@ -166,7 +166,8 @@ class GrokSession extends AcpSession {
     this.sessionId = result.newSessionId || result.sessionId || sourceId;
     if (!validSessionId(this.sessionId)) throw new Error('Grok returned an invalid session ID');
     if (this.opts.fork) {
-      await this.request('session/load', { sessionId: this.sessionId, cwd: this.cwd, mcpServers });
+      await this.request('session/load', { sessionId: this.sessionId, cwd: this.cwd, mcpServers,
+        ...(Object.keys(meta).length ? { _meta: meta } : {}) });
       const source = this.history.find(sourceId);
       if (source && this.opts.targetPromptIndex === undefined) fs.copyFileSync(source, this.historyFile());
     }
@@ -174,7 +175,11 @@ class GrokSession extends AcpSession {
       modelId: this.spec.modelValue || this.settings.model }) : result;
     if (this.settings.thinkingBudget && this.spec.applyThinking !== false) config = await this.request('session/set_config_option', {
       sessionId: this.sessionId, configId: 'reasoning_effort', value: this.settings.thinkingBudget });
-    if (this.settings.permissionMode) await this.request('session/set_mode', { sessionId: this.sessionId, modeId: mode });
+    // Grok 1.0.89 removed auto and bypassPermissions from session/set_mode.
+    // Those two modes travel in _meta instead; only the ACP-visible modes can
+    // be switched here without turning a valid session creation into an error.
+    if (this.settings.permissionMode && ['default', 'ask', 'plan'].includes(mode))
+      await this.request('session/set_mode', { sessionId: this.sessionId, modeId: mode });
     this.onSessionId(this.sessionId);
     this.emit({ type: 'gui:config', options: config.configOptions || result.configOptions || [] });
   }

@@ -3,6 +3,7 @@ node_modules/
 
 # Build artifacts
 dist/
+build/
 build-*.txt
 *.log
 
@@ -34,6 +35,9 @@ __pycache__/
 # temporary screenshots. They are not inputs to any build or test.
 .ci-logs/
 .tmp-*
+work/
+test-output.txt
+nul
 
 # Per-machine UI test captures (screenshots and transcripts written by the
 # device and subscription-card UI tests). Not inputs to any build or test.

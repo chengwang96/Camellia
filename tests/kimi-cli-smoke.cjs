@@ -10,6 +10,7 @@ const path = require('node:path');
 const http = require('node:http');
 const { spawn, spawnSync } = require('node:child_process');
 const { KimiSession, kimiSpawnSpec } = require('../src/engines/kimi-session');
+const { SharedConversations } = require('../src/engines/shared-conversations');
 const { ClaudeHistory } = require('../src/engines/claude-history');
 const { startApiRouter } = require('../src/api/api-router');
 const { normalizeConfig, writeConfig } = require('../src/api/api-router-config');
@@ -72,13 +73,21 @@ async function run() {
       await new Promise(resolve => { finishSteerRequest = resolve; });
     }
     const hasTool = body.messages.slice(lastUser).some(m => m.role === 'tool');
-    if (prompt.includes('SMOKE background') && hasTool) {
+    const handoffWait = prompt.includes('SMOKE background handoff') && hasTool && !backgroundParentReplied;
+    if (handoffWait) backgroundParentReplied = true;
+    if (prompt.includes('SMOKE background') && hasTool && !handoffWait) {
       if (backgroundParentReplied) {
         backgroundStarted?.();
         await new Promise(resolve => { finishBackground = resolve; });
       } else backgroundParentReplied = true;
     }
     let tool;
+    if (handoffWait) {
+      const taskId = transcript.match(/task_id(?:\\?"|[^a-z])*([a-z]+-[a-z0-9]+)/i)?.[1];
+      assert.ok(taskId, 'The background tool result must expose its task id');
+      tool = { name: 'WaitFor', arguments: JSON.stringify({ task_id: taskId, timeout: 90 }) };
+      setTimeout(() => fs.writeFileSync(path.join(cwd, 'release-bg.txt'), 'release'), 100);
+    }
     if (!hasTool) {
       if (prompt.includes('SMOKE read') || prompt.includes('SMOKE steer start')) tool = { name: 'Read', arguments: JSON.stringify({ path: marker }) };
       if (prompt.includes('SMOKE write')) tool = { name: 'Write', arguments: JSON.stringify({ path: written, content: 'kimi-wrote-7391' }) };
@@ -115,7 +124,7 @@ async function run() {
   const history = new ClaudeHistory(path.join(root, 'display-history'));
   const metering = require('../src/api/subscription-usage').createSubscriptionUsage({ file: path.join(root, 'subscription-usage.json') });
   const meteredTurns = [];
-  let session, gen = 0, done, permissionCount = 0, allow = true;
+  let session, shared, sharedConversationId, gen = 0, done, permissionCount = 0, allow = true;
   async function create(opts = {}, route = { baseUrl: router.url, authToken: 'proxy-managed' }) {
     await session?.shutdown();
     const settings = { cwd, model: 'kimi-k2.5', permissionMode: 'default' };
@@ -129,6 +138,7 @@ async function run() {
       log: msg => logs.push(msg), onSessionId() {}, onResult: event => done?.(event),
       onEvent: event => {
         events.push(event);
+        shared?.capture('kimi', { ...event, conversationId: sharedConversationId });
         if (event.type === 'gui:permission') {
           permissionCount++;
           assert.ok(event.options.length);
@@ -210,38 +220,47 @@ async function run() {
     assert.equal((await history.list()).length, 2);
     assert.equal((await turn('SMOKE image attachment', [{ path: image, isImage: true }])).subtype, 'success');
     assert.match(JSON.stringify(requests.at(-1).body.messages), /data:image\/png;base64/);
-    // Task completion must become a visible run without a user status check.
+    // Task completion must become a visible, persisted reply without a user status check.
     {
       fs.rmSync(path.join(cwd, 'release-bg.txt'), { force: true });
       backgroundParentReplied = false;
       const backgroundReached = new Promise(resolve => { backgroundStarted = resolve; });
-      assert.equal((await turn('SMOKE background')).subtype, 'success');
-      assert.ok(events.some(event => event.type === 'gui:background-work'
-        && event.tasks.some(task => task.description === 'Wait for the loopback background fixture')));
-      // Persist the foreground completion before launching its background
-      // follow-up, which otherwise hides that boundary from the usage meter.
-      await session.usageMeter.flush();
-      fs.writeFileSync(path.join(cwd, 'release-bg.txt'), 'release');
+      const sharedEvents = [];
+      shared = new SharedConversations({ dir: path.join(root, 'shared-history'), loadConfig: () => ({}), saveConfig() {},
+        onEvent: event => sharedEvents.push(event), drivers: { kimi: {
+          settings: () => ({ cwd, model: 'kimi-k2.5' }), saveConfig() {}, saveSettings: value => value,
+          sessions: { get: () => session, touch() {}, pendingRelease: () => null }, ensure: () => session,
+        } } });
+      const handoffIndex = events.length;
+      const foreground = await shared.send('kimi', { prompt: 'SMOKE background handoff' });
+      sharedConversationId = foreground.sessionId;
       let reachedTimer;
       try {
         await Promise.race([backgroundReached, new Promise((_, reject) => {
           reachedTimer = setTimeout(() => reject(new Error('Kimi background follow-up did not start')), 15000);
         })]);
       } finally { clearTimeout(reachedTimer); }
+      assert.ok(events.some(event => event.type === 'gui:background-work'
+        && event.tasks.some(task => task.description === 'Wait for the loopback background fixture')));
       const updateIndex = events.length;
-      assert.equal(session.running, true, 'The native follow-up is now a visible run');
-      assert.ok(events.some(event => event.type === 'gui:background-turn'));
+      assert.equal(session.running, true, 'The native follow-up remains inside the visible run');
+      assert.equal(shared.busy(sharedConversationId), true);
+      assert.equal(events.slice(handoffIndex).some(event => event.type === 'gui:background-turn'), false);
       assert.equal(session.sendUserMessage('Do not overwrite background verification'), false);
       let resultTimer;
-      const completed = new Promise((resolve, reject) => {
-        done = event => { clearTimeout(resultTimer); resolve(event); };
+      const completed = Promise.race([foreground.done, new Promise((_, reject) => {
         resultTimer = setTimeout(() => reject(new Error('Background reply did not finish')), 15000);
-      });
+      })]).finally(() => clearTimeout(resultTimer));
       finishBackground(); finishBackground = undefined;
       const backgroundResult = await completed;
       assert.equal(backgroundResult.subtype, 'success');
       assert.match(backgroundResult.result, /Kimi smoke reply/);
       assert.ok(events.slice(updateIndex).some(event => event.event?.delta?.type === 'text_delta'));
+      const rows = shared.rows(shared.get(sharedConversationId));
+      assert.equal(rows.at(-1).text, backgroundResult.result);
+      assert.equal(rows.filter(row => row.role === 'assistant').length, 1);
+      assert.equal(sharedEvents.some(event => event.type === 'conversation:started' && event.background), false);
+      shared.pauseGoals(); shared = undefined; sharedConversationId = undefined;
       assert.equal((await turn('SMOKE after background reply')).subtype, 'success');
     }
     assert.equal(requests.some(r => r.key === 'Bearer never-use'), false);

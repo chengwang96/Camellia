@@ -65,32 +65,6 @@ async function main() {
       try { fs.appendFileSync(diagFile, message + '\n'); } catch { /* diagnostics must never fail the run */ }
       console.log(message);
     };
-    // `DeviceClient.load()` gates on safeStorage, and on macOS those calls go
-    // to the Keychain. Wrap them so a synchronous block there is visible
-    // instead of looking like an idle main loop.
-    const safeStorage = testElectron.safeStorage;
-    for (const method of ['isEncryptionAvailable', 'getSelectedStorageBackend', 'encryptString', 'decryptString']) {
-      if (typeof safeStorage?.[method] !== 'function') continue;
-      const original = safeStorage[method].bind(safeStorage);
-      safeStorage[method] = (...args) => {
-        diag('DIAG safeStorage enter: ' + method);
-        const result = original(...args);
-        diag('DIAG safeStorage exit: ' + method);
-        return result;
-      };
-    }
-    // `camellia:list-servers` is the call that stops responding, so time its
-    // own steps: initialize() and the DeviceClient reads it performs.
-    const { DeviceClient } = require('../src/main/remote/device-client');
-    for (const method of ['load', 'list']) {
-      const original = DeviceClient.prototype[method];
-      DeviceClient.prototype[method] = function (...args) {
-        diag('DIAG DeviceClient enter: ' + method);
-        const result = original.apply(this, args);
-        diag('DIAG DeviceClient exit: ' + method);
-        return result;
-      };
-    }
     const firstRun = !JSON.parse(fs.readFileSync(path.join(root, 'app', 'desktop-config.json'))).firstRunComplete;
     diag('DIAG child boot: firstRun=' + firstRun + ' pid=' + process.pid);
     // A blocked main loop stops this heartbeat too, which distinguishes a JS
@@ -210,7 +184,7 @@ async function main() {
     diag('DIAG home window ready');
     assert.equal(await home.webContents.executeJavaScript('document.documentElement.lang'), 'en');
     assert.equal(home.getTitle(), 'Camellia');
-    assert.deepEqual(await home.webContents.executeJavaScript("[...document.querySelectorAll('.home-tools .config-title')].map(el => el.textContent)"), ['Agent discussions (beta)', 'Mobile access', 'Server connections', 'Settings']);
+    assert.deepEqual(await home.webContents.executeJavaScript("[...document.querySelectorAll('.home-tools .config-title')].map(el => el.textContent)"), ['Agent discussions (beta)', 'Mobile access', 'Settings']);
     assert.equal(await home.webContents.executeJavaScript("document.querySelector('.home-brand').textContent"), 'Camellia');
     assert.deepEqual(await home.webContents.executeJavaScript("[...document.querySelectorAll('[data-mode]')].map(el => el.dataset.mode)"), ['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'grok']);
     const mobileMenu = electron.Menu.getApplicationMenu().items[0].submenu.items.find(item => item.label === 'Mobile access…');
@@ -280,7 +254,7 @@ async function main() {
     assert.ok(await home.webContents.executeJavaScript("document.querySelector('#enterDsh') !== null"));
     await closeWindow(startupSettings);
     assert.equal(home.getTitle(), 'Camellia');
-    assert.deepEqual(await home.webContents.executeJavaScript("[...document.querySelectorAll('.home-tools .config-title')].map(el => el.textContent)"), ['Agent discussions (beta)', 'Mobile access', 'Server connections', 'Settings']);
+    assert.deepEqual(await home.webContents.executeJavaScript("[...document.querySelectorAll('.home-tools .config-title')].map(el => el.textContent)"), ['Agent discussions (beta)', 'Mobile access', 'Settings']);
     await home.webContents.executeJavaScript("document.querySelector('#enterClaude').click()");
     const claude = await waitWindow("document.querySelector('#engineSwitch')");
     assert.equal(await claude.webContents.executeJavaScript("getComputedStyle(document.querySelector('#selPermission')).appearance"), 'base-select');

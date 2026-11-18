@@ -8,7 +8,6 @@ const path = require('node:path');
 const { RemoteAccess } = require('../src/main/remote/access');
 const { RemoteReadModel } = require('../src/main/remote/read-model');
 const { RemoteGateway } = require('../src/main/remote/gateway');
-const { endpointPath } = require('../src/main/remote/device-transport');
 const { SharedConversations, ENGINES } = require('../src/engines/shared-conversations');
 const { removeTree } = require('./test-fs.cjs');
 
@@ -64,10 +63,6 @@ test('workbench includes all authorized activity beyond the first page and thirt
 test('workbench streams publish lightweight snapshots, observe scope changes and reject invalid routes', async context => {
   const h = await fixture(context);
   const row = h.manager.create('codex', 'visible', 'A task');
-  assert.equal(endpointPath('/v1/workbench', 'GET'), '/v1/workbench');
-  assert.equal(endpointPath('/v1/workbench/events', 'GET'), '/v1/workbench/events');
-  assert.throws(() => endpointPath('/v1/workbench', 'POST'));
-  assert.throws(() => endpointPath('/v1/workbench?offset=0', 'GET'));
   assert.equal((await h.request('/v1/workbench?offset=0')).status, 400);
   assert.equal((await h.request('/v1/workbench', { method: 'POST' })).status, 405);
   const missing = await fetch(h.gateway.url + '/v1/workbench'); assert.equal(missing.status, 401);

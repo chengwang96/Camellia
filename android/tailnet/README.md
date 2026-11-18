@@ -1,6 +1,6 @@
 # Embedded Tailnet bridge
 
-Pins Tailscale `v1.98.6`, Go `1.26.3` and gomobile `v0.0.0-20260908204917-8b95e45f8d3e`. No patches to upstream source. `build-tailnet.ps1` produces ARM64 + x86_64 JNI AAR, then regenerates bundled third-party notices from the verified module cache. Go sum verification remains enabled.
+Pins Tailscale `v1.104.7`, Go `1.27.4` and gomobile `v0.0.0-20260908204917-8b95e45f8d3e`. No patches to upstream source. `build-tailnet.ps1` produces ARM64 + x86_64 JNI AAR, then regenerates bundled third-party notices from the verified module cache. Go sum verification remains enabled.
 
 `Storage` delegates state reads/writes to Java Keystore-encrypted preferences. Missing state and unreadable state are distinct: decryption failure is fatal, not a silent new identity. tsnet uses an app-private no-backup directory for auxiliary files. Log uploads are disabled. Authentication URLs are opened only by an explicit login action, in the system browser, and restricted to HTTPS `login.tailscale.com`; no auth key is bundled. Users authorize their own nodes.
 

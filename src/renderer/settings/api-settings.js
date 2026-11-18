@@ -40,7 +40,6 @@ const titles = {
   network: "Network",
   archived: "Archived",
   mobile: "Mobile access",
-  devices: "CLI devices",
   engines: "Engine Settings",
   models: "Model Settings",
 };
@@ -213,7 +212,6 @@ function setView(next, engine, focus) {
   // stored name. Showing the page re-reads it, so a save made in the other
   // window is not shadowed by the value loaded when this page opened.
   if (next === 'mobile' && window.mobileAccessUI?.refresh) void window.mobileAccessUI.refresh();
-  window.cliDevicesUI?.setVisible(next === 'devices');
   if (next === 'usage' && live) { fillUsageFilters(); renderUsage(); }
   if (next === 'providers' || next === 'usage') void loadProviderInsights();
   if (next === 'providers' && live) renderBalances();

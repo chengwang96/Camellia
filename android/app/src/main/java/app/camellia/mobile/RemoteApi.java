@@ -47,8 +47,11 @@ public class RemoteApi {
     private final Set<HttpURLConnection> connections = ConcurrentHashMap.newKeySet();
     private volatile boolean cancelled;
     private volatile boolean incremental;
+    private volatile String historyVersion = "";
     void incremental(boolean enabled) { incremental = enabled; }
     boolean incremental() { return incremental; }
+    void historyVersion(String version) { historyVersion = version == null ? "" : version; }
+    String historyVersion() { return historyVersion; }
     boolean embeddedCapable() { return context != null; }
     private final Set<tailnet.Response> embeddedResponses = ConcurrentHashMap.newKeySet();
 
@@ -261,7 +264,9 @@ public class RemoteApi {
     }
 
     void events(String id, String token, SnapshotListener listener, SseReader.HeartbeatListener heartbeat) throws IOException {
-        eventsAt("/v1/conversations/" + id + "/events" + (incremental ? "?incremental=1" : ""), token, listener, heartbeat);
+        String version = historyVersion;
+        String query = incremental ? "?incremental=1" + (version.isEmpty() ? "" : "&historyVersion=" + version) : "";
+        eventsAt("/v1/conversations/" + id + "/events" + query, token, listener, heartbeat);
     }
 
     public void listEvents(String token, SnapshotListener listener) throws IOException {

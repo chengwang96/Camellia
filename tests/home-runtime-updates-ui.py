@@ -21,7 +21,6 @@ with sync_playwright() as playwright:
         onRuntimeState(fn) { window.runtimeChanged = fn; },
         onNetworkHealth() {}, onLanguageChanged() {},
         async workbenchSettings() { return {ok: true, language: 'zh-CN'}; },
-        async listCliServers() { return {ok: true, devices: [], language: 'zh-CN'}; },
         async runtimeState() { return {ok: true, engines: structuredClone(rows)}; },
         async runtimeCheckUpdates() {
           calls.checks++;

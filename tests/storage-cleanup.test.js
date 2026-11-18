@@ -155,6 +155,70 @@ test('queue changes during verification stop an automatic sweep before deleting 
   assert.ok(fs.existsSync(remote));
 });
 
+test('worker cleanup verifies the latest files and stops if main-process references changed', async t => {
+  const h = setup(t), kept = remoteAttachment(h), orphan = remoteAttachment(h);
+  const queue = h.write('remote/message-queue.json', '[]');
+  h.cleaner.offload = true;
+  let revision = 0;
+  h.cleaner.revision = () => revision;
+
+  const preview = await h.cleaner.scan();
+  let snapshots = 0;
+  h.cleaner.references = async () => {
+    if (++snapshots === 2) fs.writeFileSync(queue, JSON.stringify([{ path: kept }]));
+    return [];
+  };
+  await assert.rejects(h.cleaner.clean(preview.token), /Reference files changed/);
+  assert.ok(fs.existsSync(kept));
+  assert.ok(fs.existsSync(orphan));
+
+  snapshots = 0;
+  h.cleaner.references = async () => {
+    if (++snapshots === 3) fs.writeFileSync(queue, JSON.stringify([{ path: orphan }]));
+    return [];
+  };
+  await assert.rejects(h.cleaner.sweepAttachments(), /Reference files changed/);
+  assert.ok(fs.existsSync(orphan));
+  fs.writeFileSync(queue, JSON.stringify([{ path: kept }]));
+  h.cleaner.references = async () => [];
+
+  const inspect = h.cleaner.inspect.bind(h.cleaner);
+  h.cleaner.inspect = (operation, references, options, use) => inspect(operation, references, options, (result, verify) => use(result, () => {
+    const checked = verify();
+    revision++;
+    return checked;
+  }));
+  await assert.rejects(h.cleaner.sweepAttachments(), /Reference files changed/);
+  assert.ok(fs.existsSync(orphan));
+
+  h.cleaner.references = async () => [];
+  h.cleaner.inspect = (operation, references, options, use) => inspect(operation, references, options, (result, verify) => use(result, () => {
+    const checked = verify();
+    h.cleaner.references = async () => [{ draft: orphan }];
+    return checked;
+  }));
+  await assert.rejects(h.cleaner.sweepAttachments(), /Reference files changed/);
+  assert.ok(fs.existsSync(orphan));
+
+  h.cleaner.references = async () => [];
+  h.cleaner.inspect = inspect;
+  assert.equal((await h.cleaner.sweepRetention()).files, 1);
+  assert.ok(fs.existsSync(kept));
+  assert.equal(fs.existsSync(orphan), false);
+});
+
+test('aborting a worker scan releases the operation without publishing a preview', async t => {
+  const h = setup(t), orphan = remoteAttachment(h), controller = new AbortController();
+  h.cleaner.offload = true;
+  h.cleaner.signal = controller.signal;
+  const pending = h.cleaner.scan();
+  setImmediate(() => controller.abort(new Error('fixture cancel')));
+  await assert.rejects(pending, /fixture cancel/);
+  assert.equal(h.cleaner.preview, null);
+  assert.equal(h.cleaner.running, false);
+  assert.ok(fs.existsSync(orphan));
+});
+
 test('mutating a live draft array during manual revalidation cannot authorize removal', async t => {
   const h = setup(t), remote = remoteAttachment(h), refs = [];
   h.refs(refs);

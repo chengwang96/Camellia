@@ -13,7 +13,8 @@ bridge = """(() => {
     if (name === 'remoteControl') return async () => ({ ok: true, result: {
       running: true, enabled: true, address: '100.80.1.2:43127', computerName: 'Test computer',
       devices: [], pending: [], workspaces: [], closeToTray: false, language: 'en', theme: 'light',
-      tailscale: { configured: true, state: 'connected', devices: [], acl: { present: true, hasRelayGrant: true } }
+      tailscale: { configured: true, state: 'connected', devices: [], acl: { present: true, hasRelayGrant: true } },
+      tailnetUpdate: { supported: true, current: 'v1.104.7' }
     } });
     if (name === 'workbenchSettings') return async () => ({ ...empty,
       version: '1.0.0', dataPath: '/test-profile/camellia', language: 'en', theme: 'light', portableSkills: true });
@@ -21,18 +22,12 @@ bridge = """(() => {
     if (name === 'providerInsights') return async () => ({ ok: true, providers: {}, keys: {} });
     if (name === 'networkTest') return async () => ({ ok: true, results: [],
       summary: { total: 0, direct: 0, proxy: 0, unreachable: [] } });
-    if (name === 'camelliaDevices') return { onEvent() {}, onTransfer() {}, async call(action) {
-      if (action === 'state') return { ok: true, result: { language: 'en', theme: 'light', devices: [], network: { state: 'Running' } } };
-      if (action === 'conversations') return { ok: true, result: { instanceId: 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb',
-        workspaces: [], capabilities: [], engines: ['dsh'], conversations: [], nextOffset: null } };
-      return { ok: true, result: {} };
-    } };
     return () => Promise.resolve({ ...empty });
   } });
 })();"""
 
 views = ['subscriptions', 'providers', 'usage', 'general', 'shortcuts', 'engines',
-         'models', 'network', 'mobile', 'devices', 'data', 'archived']
+         'models', 'network', 'mobile', 'data', 'archived']
 
 measure = """view => {
   const scroller = document.querySelector('.scroll-content');

@@ -63,6 +63,18 @@ async function main() {
     await wait(() => view.getBounds().y === shiftedY, 'native position after runtime resize', 15000);
     await settings.webContents.executeJavaScript("document.querySelector('#runtimeCards').style.paddingTop=''");
     await wait(() => view.getBounds().y === originalY, 'restored native position', 15000);
+    await settings.webContents.executeJavaScript("document.querySelector('[data-uninstall=dsh]').click()");
+    await wait(() => settings.webContents.executeJavaScript("document.querySelector('#runtimeUninstallDialog').matches(':modal')"),
+      'DSH uninstall confirmation', 5000);
+    await wait(() => !view.getVisible(), 'Native view hidden during uninstall confirmation', 5000);
+    await settings.webContents.executeJavaScript(`(async () => {
+      window.dispatchEvent(new Event('resize'));
+      await new Promise(requestAnimationFrame);
+      await window.dshDesktop.workbenchSettings();
+    })()`);
+    assert.equal(view.getVisible(), false, 'Repositioning the native view must respect the confirmation');
+    await settings.webContents.executeJavaScript("document.querySelector('#runtimeUninstallDialog [autofocus]').click()");
+    await wait(() => view.getVisible() && view.getBounds().y === originalY, 'Native view restored after canceling uninstall', 5000);
     const dropdowns = '.workbench-native-content button[aria-haspopup="menu"]';
     // 0.2.0 adds busy-send behavior; 0.2.1 adds work-detail collapse timing.
     // 0.2.2 adds the folded-replies preference.

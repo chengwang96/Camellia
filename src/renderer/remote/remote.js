@@ -27,9 +27,9 @@ const copy = {
     expires: 'Pairing code expires at: ', expired: 'The pairing code expired. Generate another.' },
 };
 const element = id => document.getElementById(embedded ? `mobile-${id}` : id);
-Object.assign(copy.zh, { login: '登录 Tailscale', openLogin: '打开浏览器授权', logout: '退出 Tailscale 登录', confirmLogout: '退出共用内置网络的登录？手机访问和 CLI 设备会同时断开，下次需要重新授权；已有 Camellia 设备权限保留。',
+Object.assign(copy.zh, { login: '登录 Tailscale', openLogin: '打开浏览器授权', logout: '退出 Tailscale 登录', confirmLogout: '退出内置 Tailscale 登录？手机会断开连接。下次使用时需重新登录 Tailscale。',
   connecting: '正在连接内置网络…', needsLogin: '请登录 Tailscale', needsApproval: '请在 Tailscale 管理后台批准此设备', networkError: '内置网络已断开，请重新开启', networkReady: '内置网络已连接', networkOff: '内置网络已关闭', renameSaving: '正在保存名称…' });
-Object.assign(copy.en, { login: 'Sign in to Tailscale', openLogin: 'Authorize in browser', logout: 'Sign out of Tailscale', confirmLogout: 'Sign out of the shared embedded network? Mobile access and CLI device connections will both disconnect. You will need to authorize again. Camellia device permissions are retained.',
+Object.assign(copy.en, { login: 'Sign in to Tailscale', openLogin: 'Authorize in browser', logout: 'Sign out of Tailscale', confirmLogout: 'Sign out of embedded Tailscale? Mobile devices will disconnect. Sign in to Tailscale again to reconnect.',
   connecting: 'Connecting to embedded network…', needsLogin: 'Sign in to Tailscale', needsApproval: 'Approve this device in the Tailscale admin console', networkError: 'Embedded network disconnected. Enable it again.', networkReady: 'Embedded network connected', networkOff: 'Embedded network off', renameSaving: 'Saving name…' });
 Object.assign(copy.zh, { deviceName: '本机名称', deviceNameHint: '此名称会同步到 Tailscale。', deviceNameSave: '保存名称', deviceNameSaved: '已保存本机名称：', deviceNameSynced: '已同步到 Tailscale。', deviceNameLocalSynced: '已更新内置网络；控制台名称未同步。', deviceNameSyncSkipped: '已保存；Tailscale 名称需要字母、数字或连字符，未同步。', deviceNameSyncOffline: '已保存；连接 Tailscale 后再同步。', deviceNameSyncFailed: '已保存；Tailscale 同步失败：', scanHint: '用手机扫码填入地址和配对码，也可手动输入。', qrLabel: '配对二维码', refreshCode: '刷新二维码', copyAddress: '复制地址', addressCopied: '连接地址已复制', pairWaiting: '等待电脑授权', pairApproved: '电脑已授权，等待手机完成', pairSuccess: '配对成功', continuePair: '继续配对', pairFailed: '配对请求已结束，请重新生成二维码。', lastConnected: '最近连接：', justNow: '刚刚', minutesAgo: '{0} 分钟前', hoursAgo: '{0} 小时前', daysAgo: '{0} 天前', rename: '重命名', renameName: '移动设备名称', renameSave: '保存', renameCancel: '取消', nameInvalid: '请输入 1–80 个字符的名称。' });
 Object.assign(copy.en, { deviceName: 'This computer name', deviceNameHint: 'Also updates the Tailscale device name.', deviceNameSave: 'Save name', deviceNameSaved: 'Computer name saved: ', deviceNameSynced: 'Synced to Tailscale.', deviceNameLocalSynced: 'Embedded network updated; the console name was not synced.', deviceNameSyncSkipped: 'Saved; Tailscale names allow letters, digits and hyphens only, so it was not synced.', deviceNameSyncOffline: 'Saved; connect to Tailscale to sync it.', deviceNameSyncFailed: 'Saved; Tailscale sync failed: ', scanHint: 'Scan with your phone to fill in the address and code, or enter them manually.', qrLabel: 'Pairing QR code', refreshCode: 'Refresh QR code', copyAddress: 'Copy address', addressCopied: 'Connection address copied', pairWaiting: 'Waiting for computer approval', pairApproved: 'Computer approved; waiting for the phone', pairSuccess: 'Paired successfully', continuePair: 'Pair another device', pairFailed: 'The pairing request ended. Generate a new code.', lastConnected: 'Last connected: ', justNow: 'Just now', minutesAgo: '{0} min ago', hoursAgo: '{0} hr ago', daysAgo: '{0} days ago', rename: 'Rename', renameName: 'Mobile device name', renameSave: 'Save', renameCancel: 'Cancel', nameInvalid: 'Enter a name of 1–80 characters.' });
@@ -98,6 +98,19 @@ Object.assign(copy.en, { pathTitle: 'Network path', pathHint: 'Off selects paths
   tailscaleReady: 'Admin API connected', tailscaleNeedsSetup: 'Admin API not configured',
   tailscaleUnlock: 'Secure system storage is unavailable. Unlock your system keychain first.' });
 let state = null, language = 'zh', working = false, invitationExpiry = 0, invitationDeviceIds = new Set(), pairingRequestId = '', pairingRequestSeen = false, pairedDeviceId = '', relayError = '';
+Object.assign(copy.zh, {
+  tailnetUpdateTitle: '内置 Tailscale', tailnetCheck: '检查更新', tailnetInstall: '升级至 {0}', tailnetApply: '重试启用',
+  tailnetChecking: '正在检查更新…', tailnetInstalling: '正在下载、校验并启用…', tailnetApplying: '正在重启手机访问组件…', tailnetCurrent: '已是最新版本。',
+  tailnetUpdated: '{0} 已启用。', tailnetUpdateReconnected: '{0} 已启用，手机访问已恢复。', tailnetUnpublished: '尚无适用于本机的组件更新。', tailnetPending: '{0} 已下载并校验。点击“重试启用”完成升级。',
+  tailnetFailed: '更新失败。', tailnetHint: '通过 Camellia 官方发布升级。更新只会短暂断开并重连手机访问，不影响正在进行的回复。',
+});
+Object.assign(copy.en, {
+  tailnetUpdateTitle: 'Embedded Tailscale', tailnetCheck: 'Check for updates', tailnetInstall: 'Upgrade to {0}', tailnetApply: 'Retry activation',
+  tailnetChecking: 'Checking for updates…', tailnetInstalling: 'Downloading, verifying and activating…', tailnetApplying: 'Restarting the mobile access component…', tailnetCurrent: 'Up to date.',
+  tailnetUpdated: '{0} is active.', tailnetUpdateReconnected: '{0} is active and mobile access has been restored.', tailnetUnpublished: 'No component update is published for this computer yet.', tailnetPending: '{0} is downloaded and verified. Select Retry activation to finish.',
+  tailnetFailed: 'Update failed.', tailnetHint: 'Updates come from official Camellia releases. Only mobile access briefly reconnects; active replies are not interrupted.',
+});
+let tailnetUpdateAction = '', tailnetUpdateNotice = '', tailnetUpdateError = '';
 let renameEditor = null;
 let relayRenameDraft = null, relayRenameSaving = false, relayFeedback = '';
 const translate = key => copy[language][key];
@@ -154,6 +167,26 @@ function renderCopy() {
   language = (embedded ? window.CamelliaI18n?.language || document.documentElement.lang : state?.language || document.documentElement.lang) === 'en' ? 'en' : 'zh';
   for (const node of root.querySelectorAll('[data-copy]')) node.textContent = translate(node.dataset.copy);
 }
+function renderTailnetUpdate() {
+  const button = element('tailnetUpdate');
+  if (!button) return;
+  const info = state?.tailnetUpdate;
+  element('tailnetUpdateTitle').closest('section').hidden = !info;
+  if (!info) return;
+  element('tailnetVersion').textContent = info.current || '';
+  button.hidden = !info.supported;
+  button.disabled = Boolean(info.busy || tailnetUpdateAction);
+  button.textContent = info.pending ? translate('tailnetApply')
+    : info.available ? translate('tailnetInstall').replace('{0}', info.available) : translate('tailnetCheck');
+  const feedback = element('tailnetUpdateStatus');
+  feedback.classList.toggle('error', Boolean(tailnetUpdateError));
+  if (tailnetUpdateAction) feedback.textContent = translate(tailnetUpdateAction);
+  else if (info.updated) feedback.textContent = translate(info.reconnected ? 'tailnetUpdateReconnected' : 'tailnetUpdated').replace('{0}', info.updated);
+  else if (info.busy) feedback.textContent = translate(info.available ? 'tailnetInstalling' : 'tailnetChecking');
+  else if (tailnetUpdateError) feedback.textContent = translate('tailnetFailed') + ' ' + tailnetUpdateError;
+  else if (info.pending) feedback.textContent = translate('tailnetPending').replace('{0}', info.pending);
+  else feedback.textContent = translate(info.available ? 'tailnetHint' : tailnetUpdateNotice || 'tailnetHint');
+}
 function showError(error) {
   const legacy = embedded && error.message === 'Local remote-access window required';
   element('error').textContent = legacy ? translate('restart') : error.message === 'Mobile access is unavailable' ? translate('loadFailed') : error.message;
@@ -188,6 +221,7 @@ function renderUnavailable(error) {
   if (element('relayConfig')) element('relayConfig').hidden = true;
   relayError = '';
   renderTailscale();
+  renderTailnetUpdate();
   invitationExpiry = 0;
   disablePageControls();
   element('retry').disabled = false;
@@ -679,6 +713,7 @@ function render() {
   renderDevices(element('devices'), state.devices, false);
   renderTailscale();
   renderRelayPath();
+  renderTailnetUpdate();
 }
 async function refresh() { state = await call('state'); render(); }
 async function run(operation, onError = showError) {
@@ -704,6 +739,21 @@ async function run(operation, onError = showError) {
   }
 }
 element('retry').addEventListener('click', () => run(async () => {}));
+element('tailnetUpdate')?.addEventListener('click', async () => {
+  const info = state?.tailnetUpdate;
+  if (!info?.supported || info.busy || tailnetUpdateAction) return;
+  const install = Boolean(info.available || info.pending);
+  tailnetUpdateAction = info.pending ? 'tailnetApplying' : install ? 'tailnetInstalling' : 'tailnetChecking';
+  tailnetUpdateError = '';
+  tailnetUpdateNotice = '';
+  renderTailnetUpdate();
+  try {
+    const next = await call(install ? 'tailnet-update-install' : 'tailnet-update-check');
+    if (state) state.tailnetUpdate = next;
+    if (!next.available && !next.pending) tailnetUpdateNotice = next.unpublished ? 'tailnetUnpublished' : 'tailnetCurrent';
+  } catch (error) { tailnetUpdateError = error.message; }
+  finally { tailnetUpdateAction = ''; renderTailnetUpdate(); }
+});
 if (embedded) element('openPanel').addEventListener('click', async () => {
   try {
     const response = await window.dshDesktop.openMobileAccess();

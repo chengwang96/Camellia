@@ -128,7 +128,7 @@ test('settings separates general, data, engine and model preferences and starts 
   const html = fs.readFileSync(path.join(__dirname, '../src/renderer/settings/api-settings.html'), 'utf8');
   const categories = [...html.matchAll(/<button data-view="([^"]+)"/g)].map(match => match[1]);
   assert.deepEqual(categories, ['subscriptions', 'providers', 'usage', 'general', 'shortcuts', 'engines', 'models',
-    'network', 'mobile', 'devices', 'data', 'archived']);
+    'network', 'mobile', 'data', 'archived']);
   assert.match(html, /<button data-view="general" class="active" aria-current="page"/);
   assert.match(html, /<section id="generalPage" class="page">/);
   assert.match(html, /<section id="shortcutsPage" class="page" hidden>/);
@@ -140,7 +140,7 @@ test('data directory, transfer and cleanup controls live only on the data page',
   const html = fs.readFileSync(path.join(__dirname, '../src/renderer/settings/api-settings.html'), 'utf8');
   const general = html.slice(html.indexOf('<section id="generalPage"'), html.indexOf('<section id="dataPage"'));
   const data = html.slice(html.indexOf('<section id="dataPage"'), html.indexOf('<section id="modelsPage"'));
-  const archived = html.slice(html.indexOf('<section id="archivedPage"'), html.indexOf('<section id="devicesPage"'));
+  const archived = html.slice(html.indexOf('<section id="archivedPage"'), html.indexOf('<section id="mobilePage"'));
   for (const id of ['dataPath', 'migrateDataDirectory', 'openLogs', 'exportData', 'importData', 'storageSection', 'scanStorage', 'cleanStorage']) {
     assert.ok(data.includes(`id="${id}"`), id + ' belongs to Data & backups');
     assert.ok(!general.includes(`id="${id}"`), id + ' does not belong to General');

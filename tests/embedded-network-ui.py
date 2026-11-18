@@ -6,10 +6,25 @@ from playwright.sync_api import sync_playwright, expect
 repo = Path(__file__).resolve().parents[1]
 bridge = """(() => {
   const state = { running: false, enabled: false, address: null, devices: [], pending: [], workspaces: [],
-    closeToTray: true, language: 'zh-CN', theme: 'system', network: { state: 'Stopped' } };
+    closeToTray: true, language: 'zh-CN', theme: 'system', network: { state: 'Stopped' },
+    tailnetUpdate: { supported: true, current: 'v1.98.6', available: null, pending: null, busy: false } };
   window.remoteTest = state;
   const control = async action => {
     window.lastAction = action;
+    if (action === 'tailnet-update-check') {
+      state.tailnetUpdate.available = 'v1.104.7';
+      return { ok: true, result: structuredClone(state.tailnetUpdate) };
+    }
+    if (action === 'tailnet-update-install') {
+      if (!window.retryInstall) {
+        window.retryInstall = true;
+        return { ok: false, error: 'Update file failed verification' };
+      }
+      state.tailnetUpdate.available = null;
+      state.tailnetUpdate.pending = null;
+      state.tailnetUpdate.current = 'v1.104.7';
+      return { ok: true, result: { ...structuredClone(state.tailnetUpdate), updated: 'v1.104.7' } };
+    }
     if (action === 'open-login') window.openedLogin = true;
     if (action === 'start') { state.enabled = true; state.network = { state: 'NeedsLogin', loginUrl: 'https://login.tailscale.com/a/test' }; }
     if (action === 'stop' || action === 'logout') { state.enabled = false; state.running = false; state.address = null; state.network = { state: 'Stopped' }; }
@@ -60,16 +75,45 @@ with sync_playwright() as playwright:
             page.locator(prefix + 'retry').dispatch_event('click')
             expect(page.locator(prefix + 'address')).to_have_text('http://100.80.1.2:43127')
             expect(page.locator(prefix + 'invite')).to_be_enabled()
-            page.on('dialog', lambda dialog: dialog.accept())
             # Sign-out lives in the collapsible connection help, so open it first.
             page.locator('summary[data-copy=connectionHelp]').click()
             page.locator(prefix + 'logout').click()
+            page.locator('dialog.mobile-logout button[value=logout]').click()
             expect(page.locator(prefix + 'networkState')).to_have_text('内置网络已关闭')
             expect(page.locator(prefix + 'invite')).to_be_disabled()
+            if embedded:
+                button = page.locator('#mobile-tailnetUpdate')
+                expect(page.locator('#mobile-tailnetVersion')).to_have_text('v1.98.6')
+                expect(page.locator('#mobile-tailnetUpdateStatus')).to_contain_text('不影响正在进行的回复')
+                expect(button).to_have_text('检查更新')
+                button.click()
+                expect(button).to_have_text('升级至 v1.104.7')
+                button.click()
+                expect(page.locator('#mobile-tailnetUpdateStatus')).to_contain_text('更新失败')
+                expect(button).to_be_enabled()
+                button.click()
+                expect(page.locator('#mobile-tailnetUpdateStatus')).to_contain_text('v1.104.7 已启用。')
+                expect(button).to_be_enabled()
+                expect(button).to_have_text('检查更新')
+                expect(page.locator('#mobile-tailnetVersion')).to_have_text('v1.104.7')
+                expect(page.locator('[data-view=devices], #devicesPage')).to_have_count(0)
+                page.evaluate("remoteTest.language = 'en'; document.documentElement.lang = 'en'")
+                page.evaluate("mobileAccessUI.refresh()")
+                expect(page.locator('#mobile-tailnetUpdateStatus')).to_contain_text('Up to date')
+                page.evaluate("remoteTest.tailnetUpdate = { supported: true, current: 'v1.98.6', available: null, pending: 'v1.104.7', busy: false }")
+                page.evaluate("mobileAccessUI.refresh()")
+                expect(button).to_have_text('Retry activation')
+                button.click()
+                assert page.evaluate('window.lastAction') == 'tailnet-update-install'
+                expect(page.locator('#mobile-tailnetUpdateStatus')).to_contain_text('v1.104.7 is active.')
+                page.set_viewport_size({'width': 390, 'height': 650})
+                assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
+            else:
+                expect(page.locator('#tailnetUpdate')).to_have_count(0)
             page.set_viewport_size({'width': 480, 'height': 650})
             assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
             assert not errors, errors
             page.close()
-        print('PASS: embedded login, approval, online, logout and narrow layout states')
+        print('PASS: embedded login, approval, online, logout, upgrade and narrow layout states')
     finally:
         browser.close()

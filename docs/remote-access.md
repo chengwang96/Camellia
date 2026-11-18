@@ -11,7 +11,9 @@ Camellia's desktop gateway lets an approved Android device read and control desk
 
 The QR code contains a versioned JSON object with `v`, `type`, `address`, and `code`. It does not carry the computer name or a device token. Existing restricted devices keep their scope until explicitly upgraded or paired again. Revoke a device in Mobile access to close its streams and reject future requests. Closing the settings panel does not close the gateway; fully quitting Camellia or sleeping the computer interrupts access. If trusted devices remain, the desktop may restore the gateway at startup with its saved login, without opening a browser or creating a new approval.
 
-Mobile access and **CLI devices** share the desktop embedded node. Signing out or stopping that network also disconnects CLI devices. Neither side installs a system VPN or changes firewall rules, MagicDNS, or sleep settings. If a page reports `Local remote-access window required` after a source update, fully quit the old desktop process, including the tray instance, and restart it.
+## Update the embedded component
+
+Open **Settings → Mobile access → Embedded Tailscale** on Windows x64 or Apple Silicon. Check for updates and select the offered version. After downloading and verifying the component, Camellia temporarily disconnects mobile access, stops only the old helper, starts the verified replacement, and restores mobile access. The desktop application and active conversation replies keep running. If the replacement fails to start, Camellia attempts to restore the previous helper and keeps the verified download available so the same button can retry activation without downloading again. The existing Tailscale identity and pairing data are retained. Android and iOS receive the embedded library when the mobile app is updated.
 
 ## Choose a network path
 
@@ -29,11 +31,11 @@ An OAuth client is optional for this step. Create it from the Tailscale Trust cr
 
 ## Security and data boundaries
 
-A full-device control pairing can use **Remote control → computer menu → Restart desktop Camellia** on Android and iOS. Confirming saves desktop settings and relaunches the application through its normal shutdown. Running replies stop; Goals and scheduled checks pause. The connection briefly disconnects; pull to refresh after startup. Pairing and conversations remain saved. Update and restart the desktop once to enable this feature. CLI hosts do not advertise it.
+A full-device control pairing can use **Remote control → computer menu → Restart desktop Camellia** on Android and iOS. Confirming saves desktop settings and relaunches the application through its normal shutdown. Running replies stop; Goals and scheduled checks pause. The connection briefly disconnects; pull to refresh after startup. Pairing and conversations remain saved. Update and restart the desktop once to enable this feature.
 
 The desktop advertises `desktop-restart` only to full-device control devices. `POST /v1/desktop/restart` requires `confirmed: true`, a UUID `requestId`, and the current status `instanceId`. The receipt is persisted before acknowledgment, and restart starts after the acknowledgment is written. Repeating that same request after reconnecting returns its receipt without restarting again. The endpoint is unavailable to read-only and workspace-scoped pairings.
 
-- The packaged Go helper uses pinned `tsnet` 1.98.6. The Node gateway listens only on a random `127.0.0.1` port; the helper authenticates to it with a fresh 256-bit transport secret. There is no LAN or public HTTP listener.
+- The packaged Go helper uses pinned `tsnet` 1.104.7. The Node gateway listens only on a random `127.0.0.1` port; the helper authenticates to it with a fresh 256-bit transport secret. There is no LAN or public HTTP listener.
 - Node identity is encrypted with AES-256-GCM and a key protected by Electron `safeStorage`. The gateway refuses to start if secure storage is unavailable. Device tokens are 256-bit random values, stored as SHA-256 digests on the desktop and encrypted with Android Keystore on the phone.
 - Application HTTP travels inside the Tailscale tunnel. The Android client accepts only an explicit Tailnet IPv4 address and port, does not follow redirects, and does not send its token through a system HTTP proxy. Host and Origin checks block cross-origin browser use.
 - Authorized devices can read conversation text and referenced artifact bytes. Secrets written in a message body are part of that body; Camellia does not redact them. API keys are absent from ordinary status and history responses.
@@ -49,7 +51,7 @@ The desktop embedded Tailscale node sends ten discovery probes, one second apart
 
 The target is learned from an authenticated phone request through the embedded helper; the diagnostic command accepts an authorized device ID, not a caller-supplied address. If no phone connection has been observed since the gateway started, open this computer on the phone first. Closing the dialog or stopping the test prevents subsequent probes. The current in-flight probe may take up to three seconds to finish. Device revocation or a changed connection invalidates an in-flight result.
 
-Clash `DIRECT` means a connection bypasses the upstream proxy; it does not establish UDP peer-to-peer connectivity. System `tailscale status` or `tailscale ping` also describes a separate node, not Camellia's embedded node. After updating from a helper without diagnostics, fully quit Camellia, including the tray, and restart it to load the updated helper.
+Clash `DIRECT` means a connection bypasses the upstream proxy; it does not establish UDP peer-to-peer connectivity. System `tailscale status` or `tailscale ping` also describes a separate node, not Camellia's embedded node. Updating from a helper without diagnostics activates the replacement in place and briefly reconnects mobile access; the desktop application does not restart.
 
 ## Protocol v1
 
@@ -165,7 +167,7 @@ Android and iOS use a turn card and a separate child page, with no desktop float
 
 ### Agent discussions (beta)
 
-A Windows or macOS desktop that advertises `discussions` and `discussion-rich` exposes discussion groups to an all-access control device. The ordinary conversation list may include `discussionGroups`, `discussionsNextOffset`, and `discussionVersion`; older capable gateways provide `/v1/discussions`. Restricted devices and Linux servers do not gain discussion access from this capability.
+A Windows or macOS desktop that advertises `discussions` and `discussion-rich` exposes discussion groups to an all-access control device. The ordinary conversation list may include `discussionGroups`, `discussionsNextOffset`, and `discussionVersion`; older capable gateways provide `/v1/discussions`. Restricted devices do not gain discussion access from this capability.
 
 | Method | Path | Purpose |
 | --- | --- | --- |
@@ -181,17 +183,20 @@ Groups have at most four members. Discussion sends can target selected participa
 
 ## Build and verify
 
-Building the desktop Tailnet helper from source requires Go 1.26.3 or a Go installation able to fetch that toolchain:
+Building the desktop Tailnet helper from source requires Go 1.27.4 or a Go installation able to fetch that toolchain:
 
 ```sh
 npm run build:tailnet
 ```
 
-Packaged Windows x64 and macOS arm64 builds include the helper and notices; end users do not need Go. Local checks:
+Packaged Windows x64 and macOS arm64 builds include the helper and notices. To make an in-app update available, attach the matching `.bin` and `.txt` files from `dist/tailnet-updates/` in the accepted desktop artifacts to the same stable GitHub release.
+
+Local checks include both the updater and the helper:
 
 ```sh
-node --test tests/embedded-network.test.js tests/remote-desktop.test.js tests/remote-access.test.js
+node --test tests/embedded-network.test.js tests/remote-desktop.test.js tests/remote-access.test.js tests/tailnet-updates.test.js
 node tests/embedded-network-electron.cjs
+node tests/tailnet-update-restart-electron.cjs
 node tests/electron-smoke.cjs
 ```
 

@@ -32,9 +32,8 @@ type command struct {
 }
 
 type helper struct {
-	node     *tsnet.Server
-	proxy    *http.Server
-	outbound map[string]*outboundConnection
+	node  *tsnet.Server
+	proxy *http.Server
 }
 
 func proxyHandler(target, token string) (http.Handler, error) {
@@ -102,16 +101,6 @@ func (service *helper) execute(request command) (any, error) {
 	if service.node == nil {
 		return nil, errors.New("network not initialized")
 	}
-	if request.Action == "connect" {
-		return service.connect(request.Target, request.Token)
-	}
-	if request.Action == "disconnect" {
-		if connection := service.outbound[request.Token]; connection != nil {
-			connection.close()
-			delete(service.outbound, request.Token)
-		}
-		return nil, nil
-	}
 	client, err := service.node.LocalClient()
 	if err != nil {
 		return nil, err
@@ -151,7 +140,6 @@ func (service *helper) execute(request command) (any, error) {
 	case "login":
 		return nil, client.StartLoginInteractive(ctx)
 	case "logout":
-		service.disconnectAll()
 		return nil, client.Logout(ctx)
 	case "listen":
 		handler, err := proxyHandler(request.Target, request.Token)
@@ -185,7 +173,6 @@ func main() {
 	os.Setenv("TS_NO_LOGS_NO_SUPPORT", "true")
 	service := &helper{}
 	defer func() {
-		service.disconnectAll()
 		if service.proxy != nil {
 			service.proxy.Close()
 		}

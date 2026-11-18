@@ -37,9 +37,6 @@ bridge = """(() => {
     if (String(name).startsWith('on')) return () => () => {};
     if (name === 'remoteControl') return control;
     if (name === 'workbenchSettings') return async () => ({ ...empty, language: state.language, theme: state.theme });
-    if (name === 'camelliaDevices') return { onEvent() {}, onTransfer() {}, async call() {
-      return { ok: true, result: { language: state.language, devices: [], network: { state: 'Stopped' } } };
-    } };
     return async () => ({ ...empty });
   } });
 })();"""
@@ -176,7 +173,7 @@ with sync_playwright() as playwright:
                 logout_dialog = page.locator('dialog.mobile-logout')
                 logout.click()
                 expect(logout_dialog).to_be_visible()
-                expect(logout_dialog).to_contain_text('CLI 设备' if chinese else 'CLI device')
+                expect(logout_dialog).to_contain_text('手机会断开连接' if chinese else 'Mobile devices will disconnect')
                 logout_cancel = logout_dialog.get_by_role('button', name='取消' if chinese else 'Cancel', exact=True)
                 expect(logout_cancel).to_be_focused()
                 poll(page)

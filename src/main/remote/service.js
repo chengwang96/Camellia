@@ -10,7 +10,7 @@ const { RemoteMessageQueue } = require('./message-queue');
 const { TailscaleAPI } = require('./tailscale-api');
 const { tailscaleHostname } = require('./embedded-network');
 
-function createRemoteService({ dataDir, manager, networkFactory, apiRoutes = null, apiImport = null, nativeSettings = null, management = null, desktopRestart = null, getDiscussions = null, accountUsage = null,
+function createRemoteService({ dataDir, manager, networkFactory, apiRoutes = null, desktopRestart = null, getDiscussions = null, accountUsage = null,
   preferences = () => ({}), setComputerName = () => '', safeStorage = null, openExternal = null }) {
   let gateway = null, access = null, network = null, busy = false, enabled = false, closed = false;
   let startupChecked = false, monitor = null, attachmentMaintenance = null, retryDelay = 1000, retryAt = 0;
@@ -64,7 +64,7 @@ function createRemoteService({ dataDir, manager, networkFactory, apiRoutes = nul
     const discussions = getDiscussions ? new (require('./discussions').RemoteDiscussions)({
       file: path.join(dataDir, 'remote', 'discussion-commands.json'), getService: getDiscussions, access,
       publish: () => { gateway?.publish(); attachmentMaintenance?.markDirty(); } }) : null;
-    gateway = new RemoteGateway({ access, reader, commands, apiRoutes, apiImport, nativeSettings, management, desktopRestart, discussions, accountUsage });
+    gateway = new RemoteGateway({ access, reader, commands, apiRoutes, desktopRestart, discussions, accountUsage });
     try { network = networkFactory({ onFailure: () => {
       if (closed || !enabled) return;
       recovering = gateway.stop();
@@ -142,6 +142,40 @@ function createRemoteService({ dataDir, manager, networkFactory, apiRoutes = nul
       scheduleMonitor();
     }, enabled && !gateway?.server ? Math.max(250, retryAt - Date.now()) : 5000);
     monitor.unref();
+  }
+  async function restartNetwork(executable, activate) {
+    if (closed) throw new Error('Camellia is closing');
+    if (busy || diagnosing) throw new Error('Please wait for the current mobile access operation');
+    if (typeof executable !== 'string' || !executable) throw new Error('Updated embedded network helper is missing');
+    busy = true;
+    clearTimeout(monitor);
+    let previous;
+    try {
+      initialize();
+      previous = network.executable || null;
+      await gateway.stop();
+      await network.stop();
+      network.executable = executable;
+      retryAt = 0;
+      retryDelay = 1000;
+      if (enabled) await startAccess(false);
+      if (closed) throw new Error('Camellia is closing');
+      return activate(state());
+    } catch (error) {
+      let rollbackError = null;
+      try {
+        await gateway?.stop();
+        await network?.stop();
+        if (network) network.executable = previous || null;
+        retryAt = 0;
+        if (enabled && !closed && network) await startAccess(false);
+      } catch (restoreError) { rollbackError = restoreError; }
+      if (rollbackError) throw new Error(error.message + '; restoring the previous helper also failed: ' + rollbackError.message);
+      throw error;
+    } finally {
+      busy = false;
+      scheduleMonitor();
+    }
   }
   return {
     setSourceDeviceId,
@@ -278,7 +312,10 @@ function createRemoteService({ dataDir, manager, networkFactory, apiRoutes = nul
         await startAccess(false);
       } finally { busy = false; scheduleMonitor(); }
     },
+    updateHostname: async hostname => network?.setHostname(hostname),
+    restartNetwork,
     attachmentReferences,
+    attachmentRevision: () => attachmentMaintenance?.version ?? 0,
     attachmentsChanged() { attachmentMaintenance?.markDirty(); },
     maintainAttachments(cleanup, log, isBlocked = () => false) {
       if (attachmentMaintenance || closed) return;

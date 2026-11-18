@@ -55,6 +55,20 @@ async function images(node, context) {
     const source = target && await context.image(target);
     if (source) result.push(`<img src="${source}" alt="">`);
   }
+  // Word writes pictures from a legacy .doc conversion as VML (`v:imagedata`)
+  // rather than DrawingML (`a:blip`). Both resolve through the same document
+  // relationships, and the size lives in the parent shape's CSS style.
+  for (const data of descendants(node, 'imagedata').slice(0, 100)) {
+    const target = context.relations.get(attr(data, 'r:id'));
+    const source = target && await context.image(target);
+    if (!source) continue;
+    const shape = data.parentNode;
+    const style = String(shape?.getAttribute('style') || '');
+    const width = /width:\s*([\d.]+)pt/i.exec(style)?.[1];
+    const height = /height:\s*([\d.]+)pt/i.exec(style)?.[1];
+    const size = width && height ? ` style="width:${Number(width) / 0.75}px;height:${Number(height) / 0.75}px;object-fit:contain"` : '';
+    result.push(`<img src="${source}" alt=""${size}>`);
+  }
   return result.join('');
 }
 
@@ -86,7 +100,7 @@ function renderDocumentHtml(body) {
     .paper{max-width:850px;min-height:100vh;margin:auto;padding:48px;background:white;box-shadow:0 2px 12px #0001}
     p{white-space:pre-wrap;margin:0 0 10px;overflow-wrap:anywhere}h1,h2,h3{line-height:1.25}img{max-width:100%;height:auto}
     table{border-collapse:collapse;background:white}td,th{border:1px solid #cdd2d8;padding:6px 10px;vertical-align:top}td p:last-child{margin:0}
-    .sheet{margin-bottom:24px;overflow:auto;max-height:calc(100vh - 40px)}.sheet td{white-space:pre-wrap;overflow:hidden}.sheet th{background:#f2f4f6;font-weight:400}.sheet thead{position:sticky;top:0;z-index:4;height:32px}.sheet h2{font-size:16px}.sheet table{border-collapse:separate;border-spacing:0}
+    .sheet{margin-bottom:24px;overflow:auto;max-height:calc(100vh - 40px)}.sheet td{white-space:pre-wrap;overflow:hidden}.sheet th{background:#f2f4f6;font-weight:400}.sheet thead{position:sticky;top:0;z-index:4;height:32px}.sheet tbody th{position:sticky;left:0;z-index:1}.sheet h2{font-size:16px}.sheet table{border-collapse:separate;border-spacing:0}
     .slide-page{margin:0 auto 24px;max-width:1100px}.slide-page h2{font:13px Arial;color:#525962}.slide{position:relative;overflow:hidden;box-shadow:0 2px 12px #0002;container-type:inline-size}
     .shape,.group,.picture,.connector,.chart{position:absolute}.shape p,.slide td p{line-height:1.25;margin:0}.group>.shape,.group>.picture,.group>.connector,.group>.chart,.group>.group{position:absolute}
     .picture{overflow:hidden}.picture img{display:block;width:100%;height:100%;object-fit:contain}.picture.missing{display:flex;align-items:center;justify-content:center;background:#f2f4f6;border:1px dashed #c3c9d0;color:#525962;font:11px Arial;overflow:hidden}

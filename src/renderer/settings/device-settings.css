@@ -25,6 +25,8 @@
 .device-settings .device-address { font: var(--f-code); overflow-wrap: anywhere; }
 .device-settings .device-toolbar > .device-address { flex: 1 1 220px; min-width: 0; margin: 0; }
 .device-settings .device-toolbar > [role="status"]:empty { display: none; }
+.device-settings .device-toolbar > #mobile-tailnetUpdateStatus { flex: 1 1 200px; min-width: 0; margin: 0; overflow-wrap: anywhere; }
+.device-settings .device-toolbar > #mobile-tailnetUpdate { margin-inline-start: auto; }
 .device-settings button { min-height: 34px; padding: 6px 14px; border-radius: 18px; background: transparent; white-space: nowrap; }
 .device-settings button.primary { background: var(--dsw-static-deepseek-500); color: #fff; border-color: transparent; }
 .device-settings button:hover { background: var(--dsw-alias-interactive-bg-hover); }

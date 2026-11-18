@@ -9,6 +9,8 @@ const vm = require('node:vm');
 const { settingsWindowSize, settingsWindowBounds, createSettingsWindowSizeCache } = require('../src/main/settings-window-size');
 
 const main = fs.readFileSync(path.join(__dirname, '../src/main/main.js'), 'utf8').replace(/\r\n/g, '\n');
+const settingsHtml = fs.readFileSync(path.join(__dirname, '../src/renderer/settings/api-settings.html'), 'utf8');
+const settingsFrame = fs.readFileSync(path.join(__dirname, '../src/renderer/settings/settings-frame.js'), 'utf8');
 const openSettings = /function openSettingsWindow\(target = \{\}\) \{([\s\S]*?)\n\}\n\nfunction createMainWindow/.exec(main)[1];
 
 test('settings opens hidden as a frameless child panel with an interactive owner and is positioned before it is shown', () => {
@@ -41,6 +43,17 @@ test('macOS settings has no native rounded frame behind the CSS outline', () => 
     assert.equal(options.backgroundColor, '#00000000');
     assert.equal(options.parent, owner);
   }
+});
+
+test('the native settings material is active before the first stylesheet', () => {
+  const boot = '<script src="./settings-frame.js"></script>';
+  const script = settingsHtml.indexOf(boot), stylesheet = settingsHtml.indexOf('<link rel="stylesheet"');
+  assert.ok(script >= 0 && script < stylesheet, 'window mode must be set by a blocking script before CSS');
+  assert.doesNotMatch(settingsHtml, /settings-frame\.js" defer/);
+  const material = settingsFrame.indexOf("document.documentElement.dataset.settingsWindow = ''");
+  const domWiring = settingsFrame.indexOf("document.getElementById('closeSettings')");
+  assert.ok(material >= 0 && material < domWiring, 'the transparent rounded material must precede DOM setup');
+  assert.match(settingsFrame, /document\.readyState === 'loading'\) document\.addEventListener\('DOMContentLoaded', initialize/);
 });
 
 test('the floating panel stays centered inside small and secondary-monitor workbenches', () => {

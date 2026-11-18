@@ -29,7 +29,7 @@ func (client *fakeDiagnosticClient) Ping(ctx context.Context, address netip.Addr
 }
 
 func (client *fakeDiagnosticClient) CurrentDERPMap(context.Context) (*tailcfg.DERPMap, error) {
-	return &tailcfg.DERPMap{Regions: map[int]*tailcfg.DERPRegion{17: {RegionName: "Los Angeles"}}}, nil
+	return &tailcfg.DERPMap{Regions: map[tailcfg.DERPRegionID]*tailcfg.DERPRegion{17: {RegionName: "Los Angeles"}}}, nil
 }
 
 func TestDiagnosticPathsComeFromDiscoResults(t *testing.T) {

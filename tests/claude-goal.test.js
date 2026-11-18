@@ -53,6 +53,18 @@ test('waiting honors a later expected completion time and immediate user instruc
   h.result({ goalReport: { status: 'waiting', reason: 'Still running' } }); assert.equal(h.delay(), 60000);
 });
 
+test('an oversized waiting request is clamped and never schedules a millisecond retry loop', t => {
+  const h = setup(t); h.goal.start({ objective: 'Finish' }); h.tick();
+  h.result({ goalReport: { status: 'waiting', reason: 'Next checkpoint in thirty days', wait_seconds: 30 * 86400 } });
+  assert.equal(h.delay(), 3600000);
+  assert.ok(h.delay() > 1000);
+  assert.equal(h.goal.view().waiting.until, h.options.now() + 3600000);
+  h.advance(30 * 86400000);
+  h.tick();
+  assert.ok(h.delay() >= 3600000 - 1000);
+  assert.ok(h.delay() > 1000);
+});
+
 test('stopping or revising a waiting goal cancels its pending check and clears backoff', t => {
   for (const action of ['pause', 'complete', 'clear', 'block', 'revise']) {
     const h = setup(t); h.goal.start({ objective: 'Finish' }); h.tick();

@@ -104,6 +104,7 @@ public class RemoteFeedbackTest extends InstrumentationTestCase {
         encrypted = new CredentialStore(context, "remote-feedback-test"); encrypted.clear();
         cacheStorage = new CredentialStore(context, "remote-feedback-cache-test"); cacheStorage.clear();
         cache = new RemoteListCache(cacheStorage);
+        RemoteConversationCache.get(context).remove(new JSONObject().put("address", "http://100.64.0.1:43128").put("token", "a".repeat(43)), null);
         activity = (MainActivity) getInstrumentation().startActivitySync(new Intent(context, MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
         ui(() -> {
             invoke("stopNetwork");

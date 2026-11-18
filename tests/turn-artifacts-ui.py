@@ -222,6 +222,53 @@ with sync_playwright() as playwright:
         article.get_by_role('heading', name='Documentation', exact=True).scroll_into_view_if_needed()
         page.screenshot(path=str(preview / f'markdown-readme-{theme}.png'), animations='disabled')
         page.evaluate("""() => {
+          const markdown = ['# Big report', '', ...Array(5000).fill('Paragraph with **bold** text.').flatMap(text => [text, ''])].join(String.fromCharCode(10));
+          window.dshDesktop.previewFile = async path => ({ok:true,file:{
+            name:'big.md',path,url:'file:///' + path,kind:'text',extension:'MD',text:markdown,size:markdown.length
+          }});
+        }""")
+        page.evaluate("async () => { await openFilePreview('C:/project/big.md'); }")
+        expect(page.locator('.file-preview-markdown h1')).to_have_text('Big report')
+        expect(page.locator('.file-preview-markdown p')).to_have_count(5000, timeout=30000)
+        page.locator('#fileViewerClose').click()
+        page.evaluate("""() => {
+          window.dshDesktop.previewFile = async path => ({ok:true,file:{
+            name:'media.md',path,url:'file:///' + path,kind:'text',extension:'MD',
+            text:'![Clip](media/clip.mp4)\\n\\n[Contact](mailto:person@example.com)\\n\\nREADME.md\\n\\n[Other](other.md#Install)',
+            size:128
+          }});
+          window.dshDesktop.previewFile = (original => async (path) => {
+            if (path.endsWith('other.md')) return {ok:true,file:{name:'other.md',path,url:'file:///' + path,kind:'text',extension:'MD',
+              text:'# Intro\\n\\n' + ('Filler paragraph.\\n\\n'.repeat(200)) + '# Install\\n\\nTarget section.',size:4096}};
+            return original(path);
+          })(window.dshDesktop.previewFile);
+        }""")
+        page.evaluate("async () => { await openFilePreview('C:/project/media.md'); }")
+        expect(page.locator('.file-preview-video')).to_have_attribute('src', 'file:///C:/project/media/clip.mp4')
+        assert page.get_by_role('link', name='Contact').get_attribute('href') == 'mailto:person@example.com'
+        expect(page.get_by_role('link', name='README.md')).to_have_count(0)
+        page.get_by_role('link', name='Other').click()
+        expect(page.locator('#fileViewerTitle')).to_have_text('other.md')
+        expect(page.locator('.file-preview-markdown h1').last).to_be_in_viewport()
+        page.locator('#fileViewerClose').click()
+        page.evaluate("""() => {
+          const markdown = '# Intro\\n\\n' + ('Filler paragraph.\\n\\n'.repeat(400)) + '## Target\\n\\nDestination.';
+          window.dshDesktop.previewFile = async path => ({ok:true,file:{
+            name:'anchor.md',path,url:'file:///' + path,kind:'text',extension:'MD',text:markdown,
+            editToken:'anchor-edit',size:markdown.length
+          }});
+          window.dshDesktop.savePreviewText = async (_, text) => ({ok:true,file:{text,size:text.length}});
+        }""")
+        page.evaluate("async () => { await openFilePreview('C:/project/anchor.md', {anchor:'Target'}); }")
+        expect(page.get_by_role('heading', name='Target', exact=True)).to_be_in_viewport()
+        page.locator('#fileViewerEdit').click()
+        expect(page.locator('.file-preview-editor')).to_be_visible(timeout=30000)
+        page.locator('.file-preview-editor .file-preview-editor-actions .btn-primary').click()
+        expect(page.get_by_role('heading', name='Target', exact=True)).to_be_in_viewport()
+        page.evaluate("async () => { await openFilePreview('C:/project/anchor.md'); }")
+        expect(page.locator('.file-preview-markdown h1')).to_be_in_viewport()
+        page.locator('#fileViewerClose').click()
+        page.evaluate("""() => {
           window.dshDesktop.previewFile = async path => ({ok:true,file:{name:'Autosave.txt',path,kind:'text',text:'Original',editToken:'test-token'}});
           window.savedSnapshots = [];
           window.dshDesktop.savePreviewText = (_, text) => new Promise(resolve => {

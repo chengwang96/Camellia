@@ -1,9 +1,10 @@
 'use strict';
 
-function webURL(value) {
+function externalURL(value) {
   try {
     const url = new URL(value);
     if (url.protocol === 'http:' || url.protocol === 'https:') return url.href;
+    if (url.protocol === 'mailto:' && !url.username && !url.password) return url.href;
   } catch {}
   return null;
 }
@@ -13,7 +14,7 @@ function webURL(value) {
 // Application navigation uses loadFile/loadURL, which do not emit these events.
 function attachExternalNavigation(contents, { openExternal, onError = () => {} }) {
   function open(value) {
-    const url = webURL(value);
+    const url = externalURL(value);
     if (!url) return;
     try { Promise.resolve(openExternal(url)).catch(onError); }
     catch (error) { onError(error); }
@@ -31,10 +32,10 @@ function attachExternalNavigation(contents, { openExternal, onError = () => {} }
     // Main-frame attempts also emit will-navigate. Handle them only there so
     // one click does not open the browser twice. Local PDF/srcdoc loads and
     // in-document anchors must remain inside the preview.
-    if (event.isMainFrame !== false || !webURL(event.url)) return;
+    if (event.isMainFrame !== false || !externalURL(event.url)) return;
     event.preventDefault();
     open(event.url);
   });
 }
 
-module.exports = { attachExternalNavigation };
+module.exports = { attachExternalNavigation, externalURL };

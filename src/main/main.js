@@ -62,6 +62,7 @@ const { attachImageContextMenu } = require('./image-context-menu');
 const { attachLinkContextMenu } = require('./link-context-menu');
 const { attachExternalNavigation } = require('./external-navigation');
 const { describePreview, savePreviewText } = require('./file-preview');
+const { isDocx, readDocxEdit, saveDocxEdit } = require('./docx-edit');
 const gitService = require('./git-service').createGitService();
 const { ENGINES: SUBSCRIPTION_MODEL_ENGINES } = require('../shared/subscription-models');
 const { revealInFileManager } = require('./reveal-file');
@@ -70,6 +71,7 @@ const { resolveArtifacts } = require('./turn-artifacts');
 const { readOfficePreview } = require('./office-preview');
 const { isOleWorkbook, readXlsPreview } = require('./xls-preview');
 const { isWordDocument, readDocPreview } = require('./doc-preview');
+const { wordBridgeAvailable, readDocSnapshot, exactDocParagraphs, saveDocEdit, convertDocToDocx, clearConvertedDocuments } = require('./doc-edit');
 const { isLegacyPresentation, readPptPreview } = require('./ppt-preview');
 const { createConversationTitles, createTitleRequester, titleCandidates } = require('./conversation-title.js');
 let sharedConversations = null;
@@ -105,13 +107,7 @@ function discussions() {
   return discussionService;
 }
 let remoteDesktop = null;
-// Mobile access and CLI devices share one embedded Tailscale node so the user
-// signs in once; each consumer registers its own failure handler.
-const sharedDesktopNetwork = require('./remote/shared-network').createSharedNetwork({ options: {
-  app, safeStorage: require('electron').safeStorage, openExternal: url => shell.openExternal(url),
-  // Only an explicitly saved name renames the Tailscale node. With none, the
-  // helper keeps its platform default instead of adopting the OS hostname.
-  hostname: () => computerHostname(loadConfig().computerName) } });
+let storageConfigRevision = 0;
 function publishChatEvent(engine, event) {
   try { if (discussionBoundary?.registry.capture(engine, event)) return; }
   catch (error) { log(`discussion event capture failed (${engine}): ${error?.message || error}`); return; }
@@ -275,6 +271,7 @@ function saveConfig(patch) {
   // Do not overwrite an unreadable existing configuration with defaults.
   const next = { ...loadConfig(true), ...patch };
   writeJson(configPath(), next);
+  storageConfigRevision++;
   return next;
 }
 function resolvedShortcuts(config = loadConfig()) {
@@ -722,7 +719,7 @@ function apiRouterState() {
       presets: routerConfig.PRESETS, configPath: ollamaProxyConfigPath(), subscriptionUsage: subscriptionUsageState() };
   } catch (e) { return { ok: false, error: e.message }; }
 }
-// Paired CLI devices receive the portable provider pool, never this
+// Paired mobile devices receive the portable provider pool, never this
 // installation's router port, enablement or routing policy.
 function apiRoutesBundle(config = readOllamaProxyConfig()) {
   return { format: 'camellia-api-routes', version: 2, exportedAt: new Date().toISOString(),
@@ -1440,7 +1437,7 @@ remoteDesktop = require('./remote/desktop').createRemoteDesktop({ app, BrowserWi
   prepareRestart: async () => {
     const available = () => {
       if (appQuitting || migrationBusy || migrationBlocksEngines || runtimeManager?.busy || anyRuntimeUpdating()
-          || appUpdatesService?.state().installing)
+          || appUpdatesService?.state().installing || remoteDesktop?.updatingTailnet())
         throw new Error('Wait for Camellia downloads, updates and data transfers to finish before restarting');
     };
     available();
@@ -1448,16 +1445,13 @@ remoteDesktop = require('./remote/desktop').createRemoteDesktop({ app, BrowserWi
     available();
   }, log,
   manager: sharedConversations, rendererRoot: RENDERER_ROOT, loadConfig, getSettingsWindow: () => settingsWindow, apiRoutes: apiRoutesBundle,
-  networkFactory: sharedDesktopNetwork.factory, computerName,
+  computerName, networkHostname: () => computerHostname(loadConfig().computerName),
+  downloadConnection: () => require('./download-network').createDownloadConnection(loadConfig().downloadProxy),
+  assertTailnetUpdateAllowed: () => {
+    if (appQuitting || migrationBusy || appUpdatesService?.state().installing)
+      throw new Error('Wait for the current transfer or Camellia update before updating embedded Tailscale');
+  },
   saveComputerName: name => normalizeComputerName(saveConfig({ computerName: normalizeComputerName(name) }).computerName) });
-const cliDevices = require('./remote/devices-desktop').createDevicesDesktop({ app, ipcMain, BrowserWindow, windowChrome,
-  safeStorage: require('electron').safeStorage, shell, dialog, nativeImage: require('electron').nativeImage,
-  getSurfaces: () => [settingsWindow, nativeSettingsView].map(liveWebContents).filter(Boolean),
-  getSettingsWindow: () => settingsWindow, openSettings: target => openSettingsWindow(target),
-  authorizedSender: webContents => Boolean(mainWindow && !mainWindow.isDestroyed() && webContents === mainWindow.webContents),
-  networkFactory: sharedDesktopNetwork.factory,
-  loadConfig, apiSource: readOllamaProxyConfig });
-
 // ---------------------------------------------------------------------------
 // dsh detection
 // ---------------------------------------------------------------------------
@@ -1772,7 +1766,6 @@ function openSettingsWindow(target = {}) {
       const nativeContents = liveWebContents(nativeSettingsView);
       settingsWindow = null; settingsShowReady = false;
       nativeSettingsView = null; nativeSettingsLoad = null;
-      cliDevices.detach([settingsContents, nativeContents]);
       if (nativeContents && !nativeContents.isDestroyed()) nativeContents.close();
       void setSettingsBackdrop(owner, false);
       // Windows can leave an owner minimized when its owned Settings window
@@ -2067,6 +2060,7 @@ if (!gotSingleInstanceLock) {
       });
       if (response !== 1) return { ok: true, canceled: true };
       if (anyRuntimeUpdating()) throw new Error('Wait for runtime updates to finish before updating Camellia');
+      if (remoteDesktop?.updatingTailnet()) throw new Error('Wait for the embedded network update to finish before updating Camellia');
       return appUpdates().install(send, available);
     },
     'runtime-update': async ({ engine }) => {
@@ -2372,9 +2366,7 @@ if (!gotSingleInstanceLock) {
       saveConfig(patch);
       if (patch.computerName !== undefined) {
         const hostname = computerHostname(patch.computerName);
-        if (sharedDesktopNetwork.network.child) {
-          void sharedDesktopNetwork.network.setHostname(hostname).catch(error => log(`Embedded network name sync failed: ${error.message}`));
-        }
+        void remoteDesktop.updateHostname(hostname).catch(error => log(`Embedded network name sync failed: ${error.message}`));
       }
       if (patch.portableSkills !== undefined) sharedConversations?.setPortableSkills(patch.portableSkills);
       if (payload?.conversations) saveConfig({ conversations: conversationPreferences({ conversations: payload.conversations }) });
@@ -2788,6 +2780,7 @@ if (!gotSingleInstanceLock) {
   const storageActivity = () => migrationBusy || cleanupActivity();
   const storageCleanup = new StorageCleanup({
     dataDir: app.getPath('userData'), conversations: sharedConversations,
+    offload: true, revision: () => storageConfigRevision + (remoteDesktop?.attachmentRevision() ?? 0),
     isActive: storageActivity,
     histories: [claudeHistory, kimiHistory, codex.history, antigravity.history, dshChat.history, grokChat.history],
     liveOwners: () => sessionPools()
@@ -2865,7 +2858,7 @@ if (!gotSingleInstanceLock) {
   const assertMigrationIdle = () => {
     if (cleanupActivity()) throw new Error('Stop the current response or goal before moving your data');
     if (discussionService?.active) throw new Error('Stop the discussion before moving your data');
-    if (runtimeManager?.busy || anyRuntimeUpdating() || appUpdatesService?.state().installing) {
+    if (runtimeManager?.busy || anyRuntimeUpdating() || appUpdatesService?.state().installing || remoteDesktop?.updatingTailnet()) {
       throw new Error('Wait for downloads and updates to finish before moving your data');
     }
   };
@@ -3152,6 +3145,8 @@ if (!gotSingleInstanceLock) {
   });
 
   const textPreviewEdits = new WeakMap();
+  const wordPreviewEdits = new WeakMap();
+  const docPreviewEdits = new WeakMap();
   function textPreviewFrame(event) {
     const frame = event.senderFrame;
     return frame && event.sender === mainWindow?.webContents && frame === event.sender.mainFrame
@@ -3180,9 +3175,51 @@ if (!gotSingleInstanceLock) {
       // instead of failing the whole preview request.
       const isLegacy = file.kind === 'document';
       if (file.kind === 'spreadsheet' && isOleWorkbook(file.path)) file.office = readXlsPreview(file.path);
-      else if (isLegacy && isWordDocument(file.path)) file.office = readDocPreview(file.path);
+      else if (isLegacy && isWordDocument(file.path)) {
+        file.office = readDocPreview(file.path);
+        // Word can produce a faithful OOXML copy for the same renderer used by
+        // DOCX, which restores pictures, tables and theme styling that the
+        // bounded text reader cannot reproduce. If Word is unavailable the
+        // text preview above still works.
+        if (wordBridgeAvailable()) {
+          try {
+            const converted = convertDocToDocx(file.path);
+            const rich = await readOfficePreview(converted, 'word', normalizeLanguage(loadConfig().language));
+            if (rich.wordHtml) file.office.wordHtml = rich.wordHtml;
+            if (rich.sections?.length) file.office.sections = rich.sections;
+            file.office.rich = Boolean(rich.wordHtml);
+          } catch (error) {
+            file.office.richError = error.message || String(error);
+            log('Rich .doc preview is unavailable for ' + file.path + ': ' + error.message);
+          }
+        }
+        if (frame && wordBridgeAvailable()) {
+          try {
+            const snapshot = readDocSnapshot(file.path);
+            const token = require('node:crypto').randomUUID();
+            docPreviewEdits.set(frame, { token, snapshot });
+            file.wordEditToken = token;
+            file.wordFormat = 'doc';
+            file.paragraphs = snapshot.paragraphs;
+          } catch (error) { log('Legacy Word editing is unavailable for ' + file.path + ': ' + error.message); }
+        }
+      }
       else if (isLegacy && isLegacyPresentation(file.path)) file.office = readPptPreview(file.path);
       else if (['word', 'presentation', 'spreadsheet'].includes(file.kind)) file.office = await readOfficePreview(file.path, file.kind, normalizeLanguage(loadConfig().language));
+      if (file.kind === 'word' && isDocx(file.path)) {
+        try {
+          const snapshot = await readDocxEdit(file.path);
+          if (frame) {
+            const token = require('node:crypto').randomUUID();
+            wordPreviewEdits.set(frame, { token, snapshot });
+            file.wordEditToken = token;
+          }
+          file.paragraphs = snapshot.blocks;
+          file.paragraphEditability = snapshot.editability;
+          file.wordFormat = 'docx';
+          file.officeTruncated = Boolean(snapshot.truncated);
+        } catch (error) { log('Word editing is unavailable for ' + file.path + ': ' + error.message); }
+      }
       return { ok: true, file };
     }
     catch (error) { return { ok: false, error: error?.message || String(error) }; }
@@ -3196,6 +3233,44 @@ if (!gotSingleInstanceLock) {
       const result = savePreviewText(preview.edit, payload.text);
       preview.edit = result.edit;
       return { ok: true, file: result.file };
+    } catch (error) { return { ok: false, error: error?.message || String(error) }; }
+  });
+
+  ipcMain.handle('dsh:save-preview-word', async (event, payload) => {
+    try {
+      const frame = textPreviewFrame(event);
+      const preview = frame && wordPreviewEdits.get(frame);
+      if (!preview || preview.token !== payload?.token) throw new Error('Reopen the document before editing it.');
+      if (!canEditPreviewTarget(preview.snapshot.path)) throw new Error('Reopen the document before editing it.');
+      const result = await saveDocxEdit(preview.snapshot, payload.paragraphs);
+      preview.snapshot = result.snapshot;
+      return { ok: true, file: result.file, paragraphs: result.snapshot.blocks, editable: result.snapshot.editability };
+    } catch (error) { return { ok: false, error: error?.message || String(error) }; }
+  });
+
+  ipcMain.handle('dsh:save-preview-doc', (event, payload) => {
+    try {
+      const frame = textPreviewFrame(event);
+      const preview = frame && docPreviewEdits.get(frame);
+      if (!preview || preview.token !== payload?.token) throw new Error('Reopen the document before editing it.');
+      if (!canEditPreviewTarget(preview.snapshot.path)) throw new Error('Reopen the document before editing it.');
+      const result = saveDocEdit(preview.snapshot, payload.paragraphs);
+      preview.snapshot = result.snapshot;
+      return { ok: true, file: result.file, paragraphs: result.paragraphs };
+    } catch (error) { return { ok: false, error: error?.message || String(error) }; }
+  });
+
+  // Listing Word's Paragraphs collection starts a hidden Word process, so it
+  // happens when the user chooses Edit rather than while the preview loads.
+  // The editor shows that list, and a save reconfirms it before writing.
+  ipcMain.handle('dsh:preview-word-paragraphs', (event, token) => {
+    try {
+      const frame = textPreviewFrame(event);
+      const preview = frame && docPreviewEdits.get(frame);
+      if (!preview || preview.token !== token) throw new Error('Reopen the document before editing it.');
+      const paragraphs = exactDocParagraphs(preview.snapshot);
+      preview.snapshot.paragraphs = paragraphs;
+      return { ok: true, paragraphs, editable: preview.snapshot.paragraphEditability || [] };
     } catch (error) { return { ok: false, error: error?.message || String(error) }; }
   });
 
@@ -3447,7 +3522,7 @@ if (!gotSingleInstanceLock) {
     if (dataDirectoryRestart && directoryClosing && !directoryCloseReady) { event.preventDefault(); return; }
     appQuitting = true;
     idleSessionReaper.stop();
-    if (!dataDirectoryRestart) { void remoteDesktop?.close(); void cliDevices.close(); }
+    if (!dataDirectoryRestart) void remoteDesktop?.close();
     clearTimeout(balanceRefreshTimer);
     for (const goal of [goalDriver, kimiGoalDriver, antigravity.goal, codex.goal]) {
       if (goal.armed) goal.setPhase('paused');
@@ -3459,7 +3534,7 @@ if (!gotSingleInstanceLock) {
       event.preventDefault();
       directoryClosing = true;
       kimiClosing = true;
-      void Promise.allSettled([remoteDesktop?.close(), cliDevices.close(), backend.stopAndWait(), stopOllamaProxyHandle(),
+      void Promise.allSettled([remoteDesktop?.close(), backend.stopAndWait(), stopOllamaProxyHandle(),
         discussionService?.shutdown(), claudeSessions.shutdown(), codex.shutdown(), kimiAccount.shutdown(), grokChat.shutdown(),
         dshChat.shutdown(), kimiSessions.shutdown(), antigravity.shutdown()]).then(results => {
         if (results.some(result => result.status === 'rejected')) {
@@ -3492,6 +3567,7 @@ if (!gotSingleInstanceLock) {
   });
 
   app.on('will-quit', () => {
+    clearConvertedDocuments();
     networkSettingsService?.close();
     accountConnection?.close();
     stopBackend();
@@ -3608,6 +3684,7 @@ if (!gotSingleInstanceLock) {
         defaultId: 1, cancelId: 0,
       });
       if (response !== 1) return;
+      if (remoteDesktop?.updatingTailnet()) throw new Error('Wait for the embedded network update to finish before updating Camellia');
       const progress = state => {
         if (!mainWindow || mainWindow.isDestroyed()) return;
         if (state.status === 'downloading' && Number.isFinite(state.percent)) mainWindow.setProgressBar(state.percent / 100);

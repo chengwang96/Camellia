@@ -4,6 +4,20 @@
 // and maps most failed turns to end_turn. Wait for the submitted prompt and
 // forward failures over ACP's error channel, leaving native scheduling intact.
 function patchKimiAcpTurns(source) {
+  const endedMarker = 'const driver = this.driverFor(event.turnId);\n\t\t\tif (driver === void 0) return;\n\t\t\tconst error = event.error;';
+  const endedCount = source.split(endedMarker).length - 1;
+  if (endedCount !== 1) return null;
+  source = source.replace(endedMarker, endedMarker.replace('const error = event.error;',
+    `if (event.reason === "completed" && (driver.camelliaSteers?.size > 0 || driver.camelliaTaskPrompts?.size > 0)) {
+        driver.camelliaAwaitingTask = driver.camelliaTaskPrompts?.size > 0;
+        return;
+      }
+      const error = event.error;`));
+  const commentAnchor = '/** The active driver, but only for events of ITS turn. */';
+  const methodAnchor = '\t\tdriverFor(turnId) {';
+  const promptAnchor = source.split(commentAnchor).length === 2 ? commentAnchor
+    : source.split(methodAnchor).length === 2 ? methodAnchor : null;
+  if (!promptAnchor) return null;
   const replacements = [
     ['return this.driveLaunch(this.agent.prompt({ input }));', `const promptId = globalThis.crypto.randomUUID();
       return this.driveLaunch(this.agent.prompt({ input, promptId }), promptId);`],
@@ -32,14 +46,36 @@ function patchKimiAcpTurns(source) {
         "task.started": { kind: "stream", name: "events", type: "task.started",
           schema: looseObject({ type: literal("task.started"), agentId: string(), info: looseObject({}) }) },
         "task.terminated": { kind: "stream", name: "events", type: "task.terminated",
-          schema: looseObject({ type: literal("task.terminated"), agentId: string(), info: looseObject({}) }) }
+          schema: looseObject({ type: literal("task.terminated"), agentId: string(), info: looseObject({}) }) },
+        "prompt.steered": { kind: "stream", name: "events", type: "prompt.steered",
+          schema: looseObject({ type: literal("prompt.steered"), agentId: string(), activePromptId: string() }) }
       });
       const forwardBackgroundTask = (event, terminated) => {
         const info = event.info;
         this.emit({ sessionId: this.sessionId, update: { sessionUpdate: "camellia_background_task", terminated,
           task: { id: info.taskId, description: info.description, kind: info.kind, status: info.status } } });
       };
-      this.subscriptions.push(events.on("turn.started", event => {
+      this.subscriptions.push(events.on("prompt.steered", event => {
+        // A batch can open several native turns, including empty ones. Only
+        // attach the exact notifications steered into this ACP prompt.
+        const driver = this.driver;
+        if (!driver || driver.settled || this.camelliaBackgroundDriver
+            || (driver.camelliaActivePromptId ?? driver.promptId) !== event.activePromptId
+            || !Array.isArray(event.promptIds)) return;
+        for (const id of event.promptIds) {
+          if (typeof id === "string" && id.startsWith("task:")) (driver.camelliaTaskPrompts ||= new Set()).add(id);
+        }
+      }), events.on("turn.started", event => {
+        const driver = this.driver;
+        if (driver && !driver.settled && (driver.camelliaTaskPrompts?.delete(event.promptId)
+            || driver.camelliaSteers?.delete(event.promptId)
+            || (driver.promptId !== void 0 && driver.promptId === event.promptId))) {
+          driver.turnId = event.turnId;
+          driver.camelliaActivePromptId = event.promptId;
+          driver.camelliaAwaitingTask = false;
+          if (driver.cancelRequested) this.agent.cancel({ turnId: event.turnId }).catch(() => {});
+          return;
+        }
         if (["task", "background_task"].includes(event.origin?.kind)) {
           const finish = result => {
             this.camelliaBackgroundDriver = undefined;
@@ -50,17 +86,7 @@ function patchKimiAcpTurns(source) {
             resolve: finish, reject: error => finish({ stopReason: "error", error: error.message }) };
           this.emit({ sessionId: this.sessionId, update: { sessionUpdate: "camellia_background_turn",
             state: "started", turnId: event.turnId } });
-          return;
         }
-        const driver = this.driver;
-        if (driver?.camelliaSteers?.delete(event.promptId)) {
-          driver.turnId = event.turnId;
-          if (driver.cancelRequested) this.agent.cancel({ turnId: event.turnId }).catch(() => {});
-          return;
-        }
-        if (driver?.promptId === void 0 || driver.promptId !== event.promptId || driver.settled) return;
-        driver.turnId = event.turnId;
-        if (driver.cancelRequested) this.agent.cancel({ turnId: event.turnId }).catch(() => {});
       }), events.on("prompt.completed", event => this.camelliaPromptEnded(event, false)),
         events.on("prompt.aborted", event => this.camelliaPromptEnded(event, true)),
         events.on("task.started", event => forwardBackgroundTask(event, false)),
@@ -74,8 +100,19 @@ function patchKimiAcpTurns(source) {
       if (this.camelliaBackgroundDriver?.turnId === turnId) { dispatch(); return; }`],
     ['for (const pending of this.pendingPromptAborts) pending.aborted = true;', `for (const pending of this.pendingPromptAborts) pending.aborted = true;
       if (this.camelliaBackgroundDriver) this.agent.cancel({ turnId: this.camelliaBackgroundDriver.turnId }).catch(() => {});`],
-    ['/** The active driver, but only for events of ITS turn. */', `camelliaPromptEnded(event, aborted) {
+    [promptAnchor, `camelliaPromptEnded(event, aborted) {
       const driver = this.driver;
+      if (driver?.camelliaTaskPrompts?.delete(event.promptId)) {
+        if (!driver.camelliaAwaitingTask || driver.camelliaTaskPrompts.size || driver.camelliaSteers?.size) return;
+        this.settleDriver(driver, () => {
+          if (aborted || driver.cancelRequested) driver.resolve({ stopReason: "cancelled" });
+          else if (event.reason === "blocked") driver.resolve({ stopReason: "refusal" });
+          else if (event.reason === "failed") driver.reject(RequestError$1.internalError(void 0, "Kimi task follow-up failed before launching a turn"));
+          else driver.resolve({ stopReason: "end_turn" });
+        });
+        this.emitUsageUpdate();
+        return;
+      }
       if (driver?.camelliaSteers?.delete(event.promptId)) {
         this.settleDriver(driver, () => {
           if (aborted || driver.cancelRequested) driver.resolve({ stopReason: "cancelled" });
@@ -91,7 +128,17 @@ function patchKimiAcpTurns(source) {
         else driver.reject(RequestError$1.internalError(void 0, "Kimi prompt ended without launching a turn"));
       });
     }
-    /** The active driver, but only for events of ITS turn. */`],
+    ${promptAnchor === commentAnchor ? commentAnchor : 'driverFor(turnId) {'}`],
+    ['const turnId = driver.turnId;\n\t\t\tif (turnId === void 0) {', `if (driver.camelliaAwaitingTask) {
+        driver.cancelRequested = true;
+        for (const id of [...driver.camelliaTaskPrompts, ...(driver.camelliaSteers || [])]) {
+          try { this.camelliaCancelPrompt(id); } catch {}
+        }
+        this.settleDriver(driver, () => driver.resolve({ stopReason: "cancelled" }));
+        return;
+      }
+      const turnId = driver.turnId;
+      if (turnId === void 0) {`],
     ['driver.cancelRequested = true;\n\t\t\t\tthis.agent.cancel()', `driver.cancelRequested = true;
         if (driver.promptId !== void 0) {
           // Submission may still be updating metadata; retry cancellation when
@@ -118,10 +165,6 @@ function patchKimiAcpTurns(source) {
     if (source.split(before).length !== 2) return null;
     source = source.replace(before, after);
   }
-  const ended = 'const driver = this.driverFor(event.turnId);\n\t\t\tif (driver === void 0) return;\n\t\t\tconst error = event.error;';
-  if (source.split(ended).length !== 2) return null;
-  source = source.replace(ended, ended.replace('const error = event.error;',
-    'if (event.reason === "completed" && driver.camelliaSteers?.size > 0) return;\n\t\t\tconst error = event.error;'));
   const legacyPrompt = 'getServer().prompt(ctx.params, ctx.signal)';
   const asyncPrompt = '(await getServer()).prompt(ctx.params, ctx.signal)';
   const legacy = source.split(legacyPrompt).length === 2, modern = source.split(asyncPrompt).length === 2;

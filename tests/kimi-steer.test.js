@@ -5,7 +5,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { patchKimiSteer, prepareKimiRuntime } = require('../src/engines/kimi-steer');
-const { patchKimiHistory } = require('../src/engines/kimi-native-history');
+const { patchKimiHistory, prepareKimiHistory, kimiAcpFingerprint, kimiAcpVerificationFile } = require('../src/engines/kimi-native-history');
 const { KimiSession } = require('../src/engines/kimi-session');
 const { removeTree } = require('./test-fs.cjs');
 
@@ -155,6 +155,8 @@ const pinnedRuntime = path.resolve(process.env.CAMELLIA_TEST_KIMI_RUNTIME
 test('the selected Kimi runtime supports independent and composed steer bridges', { skip: !fs.existsSync(pinnedRuntime) }, () => {
   const native = fs.readFileSync(pinnedRuntime, 'utf8');
   assert.ok(patchKimiSteer(native));
+  assert.ok(patchKimiSteer(native.replace('/** The active driver, but only for events of ITS turn. */', '')),
+    'Removing a 2.7 comment must not disable an otherwise matching ACP contract');
   if (native.includes('activeTurnId: loop?.state.turn?.id ?? active?.id')) {
     assert.match(patchKimiSteer(native), /camelliaPromptEnded\(event, aborted\)/);
     assert.equal(patchKimiSteer(native.replace('driveLaunch(launch) {', 'driveLaunch(changed) {')), null,
@@ -171,7 +173,7 @@ test('verified Kimi upgrades load queue, error, history and steer adapters throu
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kimi-verified-runtime-'));
   t.after(() => removeTree(root));
   const native = fs.readFileSync(pinnedRuntime, 'utf8');
-  for (const version of ['2.4.0', '2.4.1', '2.5.1', '2.5.2', '2.6.2']) {
+  for (const version of ['2.4.0', '2.4.1', '2.5.1', '2.5.2', '2.6.2', '2.6.3', '2.7.0']) {
     const directory = path.join(root, version);
     fs.mkdirSync(path.join(directory, 'dist'), { recursive: true });
     fs.writeFileSync(path.join(directory, 'package.json'), JSON.stringify({ name: '@moonshot-ai/kimi-code', version }));
@@ -189,4 +191,22 @@ test('verified Kimi upgrades load queue, error, history and steer adapters throu
     assert.match(patched, /session\/camellia_fork_undo/);
     assert.equal(fs.readFileSync(runtime, 'utf8'), native);
   }
+});
+
+test('a verification marker enables a new Kimi release only for the checked source', { skip: !fs.existsSync(pinnedRuntime) }, t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kimi-new-runtime-'));
+  t.after(() => removeTree(root));
+  const native = fs.readFileSync(pinnedRuntime, 'utf8');
+  const metadata = { name: '@moonshot-ai/kimi-code', version: '2.99.0' };
+  fs.writeFileSync(path.join(root, 'package.json'), JSON.stringify(metadata));
+  const runtime = path.join(root, 'dist/main.mjs');
+  fs.mkdirSync(path.dirname(runtime));
+  fs.writeFileSync(runtime, native);
+  assert.equal(prepareKimiRuntime(runtime).file, runtime);
+  fs.writeFileSync(kimiAcpVerificationFile(runtime), kimiAcpFingerprint(metadata, native));
+  assert.equal(prepareKimiRuntime(runtime).nativeBackgroundTasks, true);
+  assert.ok(prepareKimiHistory(runtime));
+  fs.appendFileSync(runtime, '\n// updated');
+  assert.equal(prepareKimiRuntime(runtime).file, runtime);
+  assert.equal(prepareKimiHistory(runtime), null);
 });

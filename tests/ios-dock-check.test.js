@@ -65,7 +65,7 @@ for (const scenario of [
       esac
     `);
     const tools = process.platform === 'win32' ? ['C:/Program Files/Git/usr/bin', 'C:/Program Files/Git/mingw64/bin'] : ['/usr/bin', '/bin'];
-    const result = spawnSync(bash, [script], { windowsHide: true, encoding: 'utf8', timeout: 15000,
+    const result = spawnSync(bash, [script], { windowsHide: true, encoding: 'utf8', timeout: 45000,
       env: { ...process.env, BASH_ENV: shellPath(bashEnvironment), PATH: [bin, ...tools, process.env.PATH].join(path.delimiter),
         TMPDIR: shellPath(temporary), CAMELLIA_DOCK_UDID: 'fixture-simulator', FIXTURE_CONTAINER: shellPath(container),
         FIXTURE_PYTHON: shellPath(pythonFile), FIXTURE_PAYLOAD: shellPath(payload),

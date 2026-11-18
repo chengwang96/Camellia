@@ -2,7 +2,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { nativeHistoryModule } = require('./native-history-module');
-const { patchKimiHistory } = require('./kimi-native-history');
+const { patchKimiHistory, supportsKimiAcp } = require('./kimi-native-history');
 const { patchKimiBackground } = require('./kimi-background');
 const { patchKimiAcpTurns } = require('./kimi-acp-turns');
 
@@ -77,23 +77,22 @@ function patchKimiSteer(source) {
 }
 
 const cache = new Map();
+function patchKimiRuntime(source) {
+  const history = patchKimiHistory(source);
+  const steered = patchKimiSteer(history || source);
+  const background = history && patchKimiBackground(steered || history);
+  return { patched: background || steered || history, nativeHistory: Boolean(history), nativeSteer: Boolean(steered),
+    ...(background ? { nativeBackgroundTasks: true } : {}) };
+}
 function prepareKimiRuntime(runtime) {
   try {
     const metadata = JSON.parse(fs.readFileSync(path.resolve(path.dirname(runtime), '../package.json'), 'utf8'));
-    const supported = metadata.name === '@moonshot-ai/kimi-code' && ['2.4.0', '2.4.1', '2.5.1', '2.5.2', '2.6.2'].includes(metadata.version);
-    const stat = fs.statSync(runtime), key = runtime + ':' + stat.size + ':' + stat.mtimeMs;
+    const stat = fs.statSync(runtime), key = runtime + ':' + metadata.version + ':' + stat.size + ':' + stat.mtimeMs;
     if (cache.has(key) && fs.existsSync(cache.get(key).file)) return cache.get(key);
     const source = fs.readFileSync(runtime, 'utf8');
-    const history = supported ? patchKimiHistory(source) : null;
-    const steered = supported ? patchKimiSteer(history || source) : null;
-    const background = supported && history ? patchKimiBackground(steered || history) : null;
-    const patched = background || steered || history;
-    const result = {
-      file: patched ? nativeHistoryModule(runtime, patched) : runtime,
-      nativeHistory: Boolean(history),
-      nativeSteer: Boolean(steered),
-      ...(background ? { nativeBackgroundTasks: true } : {}),
-    };
+    if (!supportsKimiAcp(metadata, runtime, source)) return { file: runtime, nativeHistory: false, nativeSteer: false };
+    const { patched, ...capabilities } = patchKimiRuntime(source);
+    const result = { file: patched ? nativeHistoryModule(runtime, patched) : runtime, ...capabilities };
     cache.set(key, result);
     return result;
   } catch (error) {
@@ -103,4 +102,4 @@ function prepareKimiRuntime(runtime) {
   }
 }
 
-module.exports = { patchKimiSteer, prepareKimiRuntime };
+module.exports = { patchKimiSteer, patchKimiRuntime, prepareKimiRuntime };

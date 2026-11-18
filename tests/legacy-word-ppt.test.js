@@ -151,6 +151,8 @@ test('a real Word 97-2003 document decodes text and table cells', t => {
   assert.ok(preview.paragraphs.includes('正文段落'));
   assert.match(preview.html, /<td>王诚<\/td>/);
   assert.ok(extractDocText(file).includes('王诚'));
+  // The editor indexes paragraphs through Word's own collection, because a
+  // piece-table decode cannot reproduce Word's table and text-box edges.
 });
 
 test('a non-Word OLE file is not misidentified as a document', t => {

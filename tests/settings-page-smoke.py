@@ -8,7 +8,7 @@ with sync_playwright() as playwright:
     errors = []
     page.on("pageerror", lambda error: errors.append(str(error)))
     bridge = """
-      window.deviceCalls = []; window.savedPreferences = {}; window.hiddenModels = {};
+      window.savedPreferences = {}; window.hiddenModels = {};
       const empty = { ok: true, result: {}, engines: [], providers: [], models: [], config: { providers: [], usage: {}, active: {} }, state: {} };
       window.dshDesktop = new Proxy({}, { get: (_target, name) => {
         if (String(name).startsWith('on')) return () => () => {};
@@ -40,14 +40,6 @@ with sync_playwright() as playwright:
           ];
           return {ok:true,results,summary:{total:5,direct:2,proxy:5,unreachable:[]}};
         };
-        if (name === 'camelliaDevices') return {
-          onEvent() {}, onTransfer() {},
-          async call(action) {
-            window.deviceCalls.push(action);
-            if (action === 'state') return { ok: true, result: { language: 'zh-CN', theme: 'light', devices: [{ id: 'server-a', name: 'GPU server', address: 'http://100.80.1.2:43127' }], network: { state: 'Running' } } };
-            if (action === 'conversations') return { ok: true, result: { instanceId: 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb', workspaces: [], capabilities: [], engines: ['dsh'], conversations: [], nextOffset: null } };
-            return { ok: true, result: {} };
-          } };
         return () => Promise.resolve({ ...empty });
       } });
     """
@@ -145,7 +137,7 @@ with sync_playwright() as playwright:
     views = page.locator(".settings-nav nav [data-view]").evaluate_all(
         "els => els.map(el => el.dataset.view)")
     assert views == ["subscriptions", "providers", "usage", "general", "shortcuts", "engines", "models", "network",
-                     "mobile", "devices", "data", "archived"], views
+                     "mobile", "data", "archived"], views
     nav = page.locator(".settings-nav nav")
     page.set_viewport_size({"width": 1180, "height": 520})
     assert nav.evaluate("el => el.scrollHeight > el.clientHeight")
@@ -210,20 +202,10 @@ with sync_playwright() as playwright:
         page.screenshot(path=str(output / f"models-{scheme}.png"))
     page.emulate_media(color_scheme='light')
     page.evaluate("CamelliaI18n.setLanguage('en')")
-    page.locator('.settings-nav nav [data-view="devices"]').click()
-    expect(page.locator("#pageTitle")).to_have_text("CLI devices")
-    expect(page.locator("#devicesPage")).to_be_visible()
-    page.wait_for_function("deviceCalls.includes('state')")
-    # The embedded page renders the connection view (not the standalone
-    # workbench); its paired servers come from the settings bridge above.
-    expect(page.locator("#cli-servers")).to_contain_text("GPU server")
-    assert page.locator("#cli-tree, #cli-chat, #cli-prompt").count() == 0
-
-    # Settings pages keep working after visiting the device page.
     page.locator('.settings-nav nav [data-view="mobile"]').click()
     expect(page.locator("#pageTitle")).to_have_text("Mobile access")
     expect(page.locator("#mobilePage")).to_be_visible()
-    expect(page.locator("#devicesPage")).to_be_hidden()
+    expect(page.locator("#devicesPage, [data-view=devices]")).to_have_count(0)
     page.locator('.settings-nav nav [data-view="general"]').click()
     expect(page.locator("#pageTitle")).to_have_text("General")
     # Network is its own page: the connection choice and the one-click
@@ -279,11 +261,6 @@ with sync_playwright() as playwright:
     page.locator("#portableSkills").scroll_into_view_if_needed()
     page.screenshot(path=str(output / "general-actions.png"))
     page.evaluate("CamelliaI18n.setLanguage('en')")
-    page.locator('.settings-nav nav [data-view="devices"]').click()
-    expect(page.locator("#devicesPage")).to_be_visible()
-
-    # Embedded device controls use the same metrics as the other settings controls.
-    assert page.evaluate("getComputedStyle(document.getElementById('cli-refresh')).borderRadius") == "10px"
     page.locator('[data-view=general]').click()
     for language in ['en', 'zh-CN']:
         page.locator('#language').select_option(language)
@@ -353,6 +330,44 @@ with sync_playwright() as playwright:
     expect(startup.locator('#generalPage')).to_be_visible()
     expect(startup.locator('#dataPath')).to_have_text('/test-profile/camellia')
     startup.close()
+
+    # Hold the parser at the final application script. The native material must
+    # already be active when the saved-language barrier lifts, before DOMContentLoaded.
+    first_paint = browser.new_page(viewport={"width": 1180, "height": 820})
+    first_paint.on("pageerror", lambda error: errors.append(str(error)))
+    first_paint.add_init_script(bridge + """
+      const settingsBridge = window.dshDesktop;
+      window.dshDesktop = new Proxy(settingsBridge, { get: (target, name) =>
+        name === 'settingsWindow' ? true : target[name] });
+    """)
+    held_scripts = []
+    first_paint.route("**/api-settings.js", lambda route: held_scripts.append(route))
+    try:
+        first_paint.goto((root / "src/renderer/settings/api-settings.html").as_uri(), wait_until="commit")
+        first_paint.wait_for_function("""() => window.CamelliaI18n
+          && !document.documentElement.hasAttribute('data-i18n-pending')""")
+        for _ in range(100):
+            if held_scripts:
+                break
+            first_paint.wait_for_timeout(10)
+        assert held_scripts, 'the final application script must hold parsing open'
+        initial = first_paint.evaluate("""() => ({
+          readyState: document.readyState,
+          marked: document.documentElement.hasAttribute('data-settings-window'),
+          bodyBackground: getComputedStyle(document.body).backgroundColor,
+          shellDisplay: getComputedStyle(document.querySelector('.settings-shell')).display,
+          shellRadius: getComputedStyle(document.querySelector('.settings-shell')).borderTopLeftRadius
+        })""")
+        assert initial == {
+            'readyState': 'loading', 'marked': True, 'bodyBackground': 'rgba(0, 0, 0, 0)',
+            'shellDisplay': 'flex', 'shellRadius': '24px'}, initial
+        held_scripts.pop().continue_()
+        first_paint.wait_for_load_state("networkidle")
+        expect(first_paint.locator('#closeSettings')).to_be_visible()
+    finally:
+        if held_scripts:
+            held_scripts.pop().continue_()
+        first_paint.close()
     assert not errors, errors
     browser.close()
-print("Settings page: model and general groups, quick-switch saves, bilingual responsive layout and CLI device navigation passed")
+print("Settings page: model and general groups, quick-switch saves, bilingual responsive layout and mobile access navigation passed")

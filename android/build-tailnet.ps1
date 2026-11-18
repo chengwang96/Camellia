@@ -9,10 +9,12 @@ $env:PATH = (Join-Path $env:JAVA_HOME 'bin') + ';' + $env:PATH
 $module = Join-Path $PSScriptRoot 'tailnet'
 $library = Join-Path $PSScriptRoot 'app/libs/tailnet.aar'
 New-Item -ItemType Directory -Force (Split-Path $library) | Out-Null
+$originalCgoLdflags = $env:CGO_LDFLAGS
 Push-Location $module
 try {
+    $env:CGO_LDFLAGS = '-Wl,-z,max-page-size=16384 -Wl,-z,common-page-size=16384'
     $toolchain = go env GOROOT
-    if ($LASTEXITCODE) { throw 'Go 1.26.3 toolchain is required' }
+    if ($LASTEXITCODE) { throw 'Could not resolve the Go toolchain required by android/tailnet/go.mod' }
     $env:PATH = (Join-Path $toolchain 'bin') + ';' + $env:PATH
     go install golang.org/x/mobile/cmd/gomobile@v0.0.0-20260908204917-8b95e45f8d3e
     if ($LASTEXITCODE) { throw 'gomobile install failed' }
@@ -25,4 +27,8 @@ try {
     & (Join-Path $goBin 'gomobile') bind "-target=$Targets" -androidapi 26 -ldflags '-s -w' -o $library .
     if ($LASTEXITCODE) { throw 'Embedded network build failed' }
     & (Join-Path $module 'notices.ps1')
-} finally { Pop-Location }
+} finally {
+    if ($null -eq $originalCgoLdflags) { Remove-Item Env:CGO_LDFLAGS -ErrorAction SilentlyContinue }
+    else { $env:CGO_LDFLAGS = $originalCgoLdflags }
+    Pop-Location
+}

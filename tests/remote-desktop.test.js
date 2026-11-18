@@ -6,7 +6,9 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { EventEmitter } = require('node:events');
+const { createHash } = require('node:crypto');
 const { createRemoteDesktop } = require('../src/main/remote/desktop');
+const { assetStem, createTailnetUpdates } = require('../src/main/remote/tailnet-updates');
 const { removeTree } = require('./test-fs.cjs');
 
 function startupHarness(context, devices = [], initialState = 'Running') {
@@ -341,4 +343,98 @@ test('manual stop during slow startup never opens a listener after startup finis
   const starting = controller.startTrustedDevices();
   assert.equal((await command('stop')).ok, true); release(); await starting;
   assert.equal(calls.listen, 0); assert.equal((await command('state')).result.enabled, false);
+});
+
+test('settings updates restart only the mobile helper, restore the old helper on failure and retry without downloading', async context => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'remote-tailnet-hot-update-'));
+  context.after(() => removeTree(root));
+  const file = path.join(root, 'remote', 'devices.json');
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, JSON.stringify({ devices: [trustedPhone()] }));
+  const version = 'v999.999.999';
+  const platform = 'win32', arch = 'x64';
+  const stem = assetStem(platform, arch, version);
+  const binary = Buffer.from('updated helper'), notices = Buffer.from('updated notices');
+  const assets = [['bin', binary], ['txt', notices]].map(([extension, bytes]) => {
+    const name = stem + '.' + extension;
+    return { name, browser_download_url: 'https://github.com/chengwang96/Camellia/releases/download/v1.1.0/' + name,
+      size: bytes.length, digest: 'sha256:' + createHash('sha256').update(bytes).digest('hex') };
+  });
+  const calls = [];
+  let failUpdated = true, downloads = 0;
+  const replacementStarted = Promise.withResolvers(), finishFailedStart = Promise.withResolvers();
+  const network = {
+    executable: null,
+    snapshot: { state: 'Stopped' },
+    async start() {
+      const selected = this.executable || 'bundled';
+      calls.push('start:' + selected);
+      if (failUpdated && this.executable) {
+        failUpdated = false;
+        replacementStarted.resolve();
+        await finishFailedStart.promise;
+        throw new Error('Updated helper failed');
+      }
+      this.snapshot = { state: 'Running', address: '100.80.1.2' };
+    },
+    async status() { return this.snapshot; },
+    async listen() {},
+    async stop() { calls.push('stop'); this.snapshot = { state: 'Stopped' }; },
+  };
+  const handlers = new Map();
+  const settings = { webContents: { mainFrame: {} }, isDestroyed: () => false };
+  const controller = createRemoteDesktop({
+    app: { getPath: () => root, relaunch: () => assert.fail('Application must not relaunch'), quit: () => assert.fail('Application must not quit') },
+    ipcMain: { handle: (channel, callback) => handlers.set(channel, callback) },
+    manager: { workspaces: { sessionMeta: () => ({ workspaces: [] }) } }, loadConfig: () => ({}),
+    getSettingsWindow: () => settings,
+    networkFactory: options => { network.executable = options.executable; return network; },
+    createUpdates: options => createTailnetUpdates({ ...options, platform, arch }),
+    prepareRestart: async () => assert.fail('Conversation restart preparation must not run'),
+    downloadConnection: () => ({
+      async fetch(url) {
+        if (url.endsWith('/releases/latest')) return Response.json({ tag_name: 'v1.1.0', assets });
+        const asset = assets.find(item => item.browser_download_url === url);
+        if (!asset) throw new Error('Unexpected download URL');
+        downloads++;
+        return new Response(asset.name.endsWith('.bin') ? binary : notices);
+      },
+      close() {},
+    }),
+  });
+  context.after(() => controller.close());
+  const event = { sender: settings.webContents, senderFrame: settings.webContents.mainFrame };
+  const command = action => handlers.get('dsh:remote-control')(event, { action });
+  await controller.startTrustedDevices();
+  const initial = await command('state');
+  const originalVersion = initial.result.tailnetUpdate.current;
+  assert.equal(initial.result.running, true);
+  assert.equal((await command('tailnet-update-check')).result.available, version);
+  const installing = command('tailnet-update-install');
+  await Promise.race([replacementStarted.promise, installing]);
+  try {
+    assert.equal(controller.updatingTailnet(), true);
+    assert.equal((await command('state')).result.tailnetUpdate.busy, true);
+    assert.equal((await command('tailnet-update-check')).ok, false);
+  } finally { finishFailedStart.resolve(); }
+  const failed = await installing;
+  assert.equal(failed.ok, false);
+  assert.match(failed.error, /Updated helper failed/);
+  const pending = await command('state');
+  assert.equal(pending.result.tailnetUpdate.pending, version);
+  assert.equal(pending.result.tailnetUpdate.current, originalVersion);
+  assert.equal(pending.result.enabled, true);
+  assert.equal(pending.result.running, true);
+  assert.equal(network.executable, null);
+  assert.equal(calls.filter(call => call === 'start:bundled').length, 2);
+  calls.length = 0;
+  const applied = await command('tailnet-update-install');
+  assert.equal(applied.ok, true);
+  assert.equal(applied.result.current, version);
+  assert.equal(applied.result.updated, version);
+  assert.equal(applied.result.reconnected, true);
+  assert.equal(applied.result.pending, null);
+  assert.ok(network.executable.endsWith(path.join(version, 'camellia-tailnet.exe')));
+  assert.deepEqual(calls, ['stop', 'start:' + network.executable]);
+  assert.equal(downloads, 2);
 });

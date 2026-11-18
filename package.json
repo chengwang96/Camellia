@@ -16,9 +16,6 @@
     "test": "node --test tests/*.test.js",
     "dev": "electron .",
     "dev:hot": "electron . --hot-reload",
-    "preview:cli": "node scripts/cli-settings-preview.cjs",
-    "server": "node scripts/camellia-server.cjs",
-    "pack:server": "node scripts/pack-server.cjs",
     "start": "electron .",
     "pack": "electron-builder --dir",
     "dist": "electron-builder",
@@ -199,7 +196,8 @@
       "src/engines/discussions/dsh-text-policy.mjs",
       "src/engines/goal-tools.js",
       "src/engines/task-tools.js",
-      "src/engines/conversation-tools.js"
+      "src/engines/conversation-tools.js",
+      "src/main/word-com-edit.py"
     ]
   },
   "dependencies": {

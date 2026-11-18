@@ -34,4 +34,23 @@ public class RemoteStreamHealthTest {
         health.snapshot(100); health.heartbeat(10_000);
         assertEquals(0, health.remaining(300_000));
     }
+
+    @Test public void foregroundReuseRequiresARecentUsableFrame() {
+        var health = new RemoteStreamHealth(0);
+        health.heartbeat(100);
+        assertFalse(health.fresh(100, 5_000));
+        health.snapshot(100);
+        assertTrue(health.fresh(5_100, 5_000));
+        assertFalse(health.fresh(5_101, 5_000));
+        health.heartbeat(5_200);
+        assertTrue(health.fresh(10_200, 5_000));
+    }
+
+    @Test public void foregroundRecoveryCanUseAShortInitialDeadline() {
+        var health = new RemoteStreamHealth(1_000, RemoteStreamHealth.RECOVERY_INITIAL_TIMEOUT_MS);
+        health.heartbeat(20_000);
+        assertEquals(1, health.remaining(8_999));
+        assertEquals(0, health.remaining(9_000));
+        assertEquals(30_000, new RemoteStreamHealth(1_000).remaining(1_000));
+    }
 }

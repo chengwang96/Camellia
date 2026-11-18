@@ -238,7 +238,8 @@ async function main() {
   assert.equal(await run("document.querySelector('#mobile-error').textContent"), '');
   assert.equal(await run("document.querySelector('#mobile-toggle').textContent"), '开启手机访问');
   assert.equal(await run("document.querySelector('#mobile-invite').disabled"), true);
-  assert.equal(await run("document.querySelectorAll('#mobilePage input[type=checkbox]').length"), 0);
+  assert.equal(await run("document.querySelectorAll('#mobilePage input[type=checkbox]:not([role=switch])').length"), 0);
+  assert.equal(await run("document.querySelector('#mobile-relayUse').getAttribute('role')"), 'switch');
   assert.equal(await run("document.querySelector('#mobile-openPanel').hidden"), true);
   assert.equal(BrowserWindow.getAllWindows().some(window => window.webContents.getURL().endsWith('/remote/remote.html')), false);
 

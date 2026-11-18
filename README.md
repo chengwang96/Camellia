@@ -6,16 +6,16 @@
 
 <p align="center"><strong>English</strong> · <a href="README.zh-CN.md">简体中文</a></p>
 
-Camellia brings **Claude Code, Codex CLI, DeepSeek Harness, Kimi Code, Antigravity, and Grok Build** into a shared desktop workbench. Use a provider API key or a supported subscription, switch engines within a conversation, and keep settings, usage, and account visibility in one place. A paired Android client and a headless Linux server extend the same workflow beyond the desktop.
+Camellia brings **Claude Code, Codex CLI, DeepSeek Harness, Kimi Code, Antigravity, and Grok Build** into a shared desktop workbench. Use a provider API key or a supported subscription, switch engines within a conversation, and keep settings, usage, and account visibility in one place. A paired mobile client extends the same workflow beyond the desktop.
 
-![Current Camellia home screen showing six engines and the discussion, mobile access, server, and settings entries](docs/images/home.png)
+![Current Camellia home screen showing six engines and the discussion, mobile access, and settings entries](docs/images/home.png)
 
 ## What makes Camellia useful
 
 - **Shared conversations.** Move between engines in one workspace and conversation. Choose a direct continuation or a Markdown handoff when context needs to cross engines. Native histories remain tied to their engines.
 - **Agent discussions (beta).** Invite up to four configured agents, assign roles, and choose who replies. Discussion messages, member state, tool activity, and approvals stay together in the desktop or paired Android view.
 - **One routing and account view.** Manage API providers, multiple keys, supported subscription sign-ins, same-model failover, usage, balances, and optional engine runtimes in the app.
-- **Remote work.** Pair a headless Linux server as another workbench, or approve an Android device to read and control selected desktop conversations over the embedded Tailscale connection.
+- **Remote work.** Approve a mobile device to read and control selected desktop conversations over the embedded Tailscale connection.
 - **Inline media.** Explicit `![alt](path)` Markdown shows images and videos inside the conversation on desktop and paired phones; ordinary file links stay artifacts.
 - **Long-running work.** Goals, scheduled checks, queued messages, and next-turn model changes help manage work that outlasts one reply. A [work panel](docs/conversation-work-panel.md) gathers subtasks and artifacts on desktop; mobile uses turn cards and child pages with independent controls.
 
@@ -36,7 +36,7 @@ Install the Windows setup package, or launch the portable executable. Desktop do
 
 On desktop, choose an engine on the home screen and install it when prompted. Then configure an API provider under **Settings → Providers & Keys**, or connect a supported subscription in **Settings → Engine Settings**. Camellia downloads only the runtimes you choose. Connection validation sends a short model request and may incur provider usage.
 
-For Android installation and desktop pairing, see the [Android guide](android/README.md) and [remote access guide](docs/remote-access.md). For iOS sideloading, see the [iOS guide](ios/README.md). For a headless host, see the [Linux server guide](docs/linux-server-preview.md).
+For Android installation and desktop pairing, see the [Android guide](android/README.md) and [remote access guide](docs/remote-access.md). For iOS sideloading, see the [iOS guide](ios/README.md).
 
 ### Run from source
 

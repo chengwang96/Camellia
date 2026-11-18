@@ -29,7 +29,7 @@ function queuedRuns(manager, id) {
   return { sent, finish };
 }
 
-function fixture(context, { apiRoutes = null, apiImport = null, nativeSettings = null, management = null, desktopRestart = null, accountUsage = null } = {}) {
+function fixture(context, { apiRoutes = null, desktopRestart = null, accountUsage = null } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'camellia-remote-'));
   assert.equal(path.dirname(path.resolve(root)), path.resolve(os.tmpdir()));
   let clock = 1000, config = { sharedMeta: { workspaces: [{ id: 'allowed', name: 'Allowed', path: root }, { id: 'private', name: 'Private', path: root }] } }, gateway, reader;
@@ -41,7 +41,7 @@ function fixture(context, { apiRoutes = null, apiImport = null, nativeSettings =
   const access = new RemoteAccess({ file: path.join(root, 'devices.json'), now: () => clock, onRevoke: id => gateway?.revoke(id) });
   reader = new RemoteReadModel(manager);
   const commands = new RemoteCommands({ file: path.join(root, 'commands.json'), access, reader, publish: () => gateway.publish() });
-  gateway = new RemoteGateway({ access, reader, commands, apiRoutes, apiImport, nativeSettings, management, desktopRestart, accountUsage, validateHost: host => host === '127.0.0.1' });
+  gateway = new RemoteGateway({ access, reader, commands, apiRoutes, desktopRestart, accountUsage, validateHost: host => host === '127.0.0.1' });
   const start = gateway.start.bind(gateway);
   gateway.start = async (host, port, transport) => {
     for (let attempt = 0; attempt < 32; attempt++) {
@@ -1184,14 +1184,6 @@ test('a phone send carries the goal and task tools, and its own words authorize 
   assert.match(promptText, /Camellia goal run token/);
 });
 
-test('workspace-scoped control cannot install runtimes or read management results', async context => {
-  const management = { submit: () => assert.fail('Scoped device cannot manage server'), get: () => assert.fail('Scoped device cannot read operations') };
-  const { gateway, pair } = fixture(context, { management });
-  const { token } = pair(); await gateway.start('127.0.0.1', 0);
-  const requestId = require('node:crypto').randomUUID();
-  assert.equal((await request(gateway, '/v1/server-management', { token, method: 'POST', payload: { requestId, action: 'runtime-install', payload: { engine: 'codex', confirmed: true } } })).status, 403);
-  assert.equal((await request(gateway, '/v1/server-management/' + requestId, { token })).status, 403);
-});
 
 test('desktop restart requires full-device control and writes its response before dispatching relaunch', async context => {
   const calls = [];
@@ -1662,9 +1654,9 @@ test('every artifact the phone is offered can actually be downloaded', async con
   }
 });
 
-async function stream(gateway, conversationId, token, headers = {}) {
+async function stream(gateway, conversationId, token, headers = {}, query = '') {
   const controller = new AbortController();
-  const endpoint = conversationId ? `/v1/conversations/${conversationId}/events` : '/v1/conversations/events';
+  const endpoint = (conversationId ? `/v1/conversations/${conversationId}/events` : '/v1/conversations/events') + query;
   const base = gateway.transport ? `http://127.0.0.1:${gateway.server.address().port}` : gateway.url;
   // Fetch rewrites Host to its URL; the helper intentionally uses a different
   // authority on its authenticated loopback hop.
@@ -2716,42 +2708,7 @@ test('mobile conversation actions rename, pin and delete with scoped deduplicate
   assert.equal((await send(deletion)).status, 403);
 });
 
-test('native settings endpoints require full control, matching engine and explicit service validation', async context => {
-  const calls = [];
-  const { gateway, access, pair } = fixture(context, { nativeSettings: { get: engine => ({ engine, files: [] }), save: payload => { calls.push(payload); return { ok: true }; } } });
-  const credential = pair(); await gateway.start('127.0.0.1', 0);
-  assert.equal((await request(gateway, '/v1/native-settings/claude', { token: credential.token })).status, 403);
-  access.setScope(credential.deviceId, [], { allWorkspaces: true });
-  assert.equal((await request(gateway, '/v1/native-settings/claude', { token: credential.token })).body.engine, 'claude');
-  assert.ok((await request(gateway, '/v1/status', { token: credential.token })).body.capabilities.includes('native-settings'));
-  assert.equal((await request(gateway, '/v1/native-settings/claude', { token: credential.token, method: 'POST', payload: { engine: 'codex' } })).status, 400);
-  assert.equal((await request(gateway, '/v1/native-settings/claude', { token: credential.token, method: 'POST', payload: { engine: 'claude', confirmed: true } })).body.ok, true);
-  // Every engine the status endpoint advertises must also be routable here;
-  // Grok was listed in /v1/status but rejected by this allow-list.
-  for (const engine of (await request(gateway, '/v1/status', { token: credential.token })).body.engines) {
-    assert.equal((await request(gateway, `/v1/native-settings/${engine}`, { token: credential.token })).body.engine, engine, engine);
-  }
-  access.revoke(credential.deviceId);
-  assert.equal((await request(gateway, '/v1/native-settings/claude', { token: credential.token, method: 'POST', payload: { engine: 'claude' } })).status, 401);
-  assert.equal(calls.length, 1);
-});
 
-test('API import HTTP endpoints require full-device control and do not expose raw keys', async context => {
-  let applied = 0;
-  const { gateway, access, pair } = fixture(context, { apiImport: { state: () => ({ revision: 'a'.repeat(64), policy: 'keep-server' }), apply: () => { applied++; return { ok: true }; } } });
-  const credential = pair();
-  await gateway.start('127.0.0.1', 0);
-  assert.equal((await request(gateway, '/v1/api-import', { token: credential.token })).status, 403);
-  assert.equal((await request(gateway, '/v1/api-import', { token: credential.token, method: 'POST', payload: {} })).status, 403);
-  access.setScope(credential.deviceId, [], { allWorkspaces: true, includeUnassigned: true });
-  assert.equal((await request(gateway, '/v1/api-import', { token: credential.token })).body.policy, 'keep-server');
-  assert.ok((await request(gateway, '/v1/status', { token: credential.token })).body.capabilities.includes('api-import'));
-  assert.equal((await request(gateway, '/v1/api-import', { token: credential.token, method: 'POST', payload: {} })).body.ok, true);
-  assert.equal((await request(gateway, '/v1/api-import?secret=x', { token: credential.token })).status, 400);
-  access.revoke(credential.deviceId);
-  assert.equal((await request(gateway, '/v1/api-import', { token: credential.token, method: 'POST', payload: {} })).status, 401);
-  assert.equal(applied, 1);
-});
 
 test('remote workspace removal requires full control, checks busy state, retains files and deduplicates', async context => {
   const { gateway, manager, access, visible, pair, root } = fixture(context);
@@ -3175,6 +3132,7 @@ test('incremental snapshots omit stable history and send replacements after hist
   const { gateway, manager, reader, visible, pair, access } = fixture(context);
   const device = access.authenticate(pair().token);
   const first = reader.snapshot(device, visible.id);
+  assert.equal(reader.snapshot(device, visible.id, undefined, null).messages, undefined, 'command receipts intentionally request state without transcript history');
   manager.active.set(visible.id, { facade: { gen: 7 }, eventSeq: 1, text: 'streaming', assistant: [], permissions: new Map() });
   const delta = reader.snapshot(device, visible.id, undefined, first.historyVersion);
   assert.equal(delta.messages, undefined); assert.equal(delta.nextBefore, undefined);
@@ -3190,6 +3148,34 @@ test('incremental snapshots omit stable history and send replacements after hist
   gateway.writeSnapshot(stream, gateway.streamSnapshot(stream));
   assert.ok(JSON.parse(frames[0].split('data: ')[1]).messages);
   assert.equal(JSON.parse(frames[1].split('data: ')[1]).messages, undefined);
+});
+
+test('incremental SSE resumes with a metadata-only first frame and continues after history changes', { timeout: 8000 }, async context => {
+  const { gateway, manager, reader, visible, pair, access } = fixture(context);
+  const credential = pair(), device = access.authenticate(credential.token);
+  await gateway.start('127.0.0.1', 0);
+  const full = reader.snapshot(device, visible.id);
+  manager.active.set(visible.id, { facade: { gen: 7 }, eventSeq: 1, text: 'streaming', assistant: [], permissions: new Map() });
+  const resumed = await stream(gateway, visible.id, credential.token, {}, '?incremental=1&historyVersion=' + full.historyVersion);
+  context.after(() => resumed.close());
+  const initial = await resumed.next();
+  assert.equal(initial.messages, undefined); assert.equal(initial.historyVersion, full.historyVersion);
+  assert.equal(initial.live.text, 'streaming');
+  manager.append(visible, { role: 'assistant', text: 'written while reconnecting' }); gateway.publish();
+  const changed = await resumed.next();
+  assert.ok(changed.messages.some(row => row.text === 'written while reconnecting'));
+  assert.notEqual(changed.historyVersion, full.historyVersion); resumed.close();
+
+  const missingVersion = await stream(gateway, visible.id, credential.token, {}, '?incremental=1');
+  context.after(() => missingVersion.close());
+  assert.ok((await missingVersion.next()).messages, 'incremental mode without a previous version must start with a full snapshot');
+  missingVersion.close();
+  const staleVersion = await stream(gateway, visible.id, credential.token, {}, '?incremental=1&historyVersion=' + '0'.repeat(64));
+  context.after(() => staleVersion.close());
+  assert.ok((await staleVersion.next()).messages, 'a version mismatch must return replacement history');
+  staleVersion.close();
+  const invalid = await request(gateway, `/v1/conversations/${visible.id}/events?incremental=1&historyVersion=invalid`, { token: credential.token });
+  assert.equal(invalid.status, 400);
 });
 
 test('startup can be cancelled by its own ID without cancelling a later startup', async context => {

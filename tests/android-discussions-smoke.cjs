@@ -77,10 +77,13 @@ async function main() {
         '-e', 'discussionTheme', process.env.DISCUSSION_THEME || 'light', '-e', 'discussionLanguage', process.env.DISCUSSION_LANGUAGE || 'en',
         '-e', 'discussionIntegration', 'true', 'app.camellia.mobile.test/android.test.InstrumentationTestRunner'], { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
       let output = ''; child.stdout.on('data', chunk => output += chunk); child.stderr.on('data', chunk => output += chunk);
-      const timer = setTimeout(() => child.kill(), 150000);
-      child.on('error', reject); child.on('exit', code => { clearTimeout(timer); resolve({ code, output }); });
+      let timedOut = false;
+      const timer = setTimeout(() => { timedOut = true; child.kill(); }, 240000);
+      child.on('error', reject);
+      child.on('exit', (code, signal) => { clearTimeout(timer); resolve({ code, signal, timedOut, output }); });
     });
     console.log(result.output);
+    assert.equal(result.timedOut, false, 'RemoteDiscussionsTest exceeded its 240-second budget');
     assert.equal(result.code, 0); assert.match(result.output, /OK \(18 tests\)/);
     assert.equal(calls.length, 3); assert.match(calls[0].prompt, /You are a scientist/); assert.doesNotMatch(calls[1].prompt, /You are a scientist/); assert.equal(richAnswers.length, 1);
     assert.equal(droppedReply, true, 'Creation acknowledgement was deliberately lost and recovered by receipt lookup');

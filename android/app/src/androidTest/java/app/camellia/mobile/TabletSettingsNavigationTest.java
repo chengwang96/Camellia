@@ -43,7 +43,7 @@ public class TabletSettingsNavigationTest extends InstrumentationTestCase {
         SettingsActivity settings = open(main, "nav:settings", SettingsActivity.class);
         awaitSection(settings, "general");
         RemoteUsageActivity usage = open(settings, "tabletSettings:usage", RemoteUsageActivity.class);
-        assertImmediateActivity(usage);
+        awaitSection(usage, "usage"); assertImmediateActivity(usage);
         ui(() -> find(usage, "tabletSettings:providers").performClick());
         awaitSection(settings, "providers"); assertImmediateActivity(settings);
         ui(() -> find(settings, "tabletSettings:network").performClick());
@@ -53,7 +53,7 @@ public class TabletSettingsNavigationTest extends InstrumentationTestCase {
         ui(() -> find(reading, "tabletSettings:network").performClick());
         awaitSection(main, "network");
         RemoteUsageActivity fromNetwork = open(main, "tabletSettings:usage", RemoteUsageActivity.class);
-        assertImmediateActivity(fromNetwork);
+        awaitSection(fromNetwork, "usage"); assertImmediateActivity(fromNetwork);
         SettingsActivity providers = open(fromNetwork, "tabletSettings:providers", SettingsActivity.class);
         awaitSection(providers, "providers"); assertImmediateActivity(providers);
         assertTaskBounded();
@@ -122,6 +122,7 @@ public class TabletSettingsNavigationTest extends InstrumentationTestCase {
         ui(() -> main.setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_PORTRAIT));
         await(() -> main.getResources().getConfiguration().orientation == android.content.res.Configuration.ORIENTATION_PORTRAIT
             && find(main, "tabletNavigation") == null && find(main, "networkMode") != null, "Portrait must rebuild Mobile access without the wide shell");
+        assertNotNull("Mobile access needs a header back button in the single-pane layout", find(main, "settingsBack"));
         assertEquals(owner, generation.getInt(main)); assertTrue(login.getBoolean(main));
         ui(() -> main.setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE)); awaitSection(main, "network");
         assertNotNull(find(main, "tabletNavigation")); assertEquals(owner, generation.getInt(main)); assertTrue(login.getBoolean(main));
@@ -170,7 +171,8 @@ public class TabletSettingsNavigationTest extends InstrumentationTestCase {
                 + ", destroyed=" + settings.isDestroyed());
         }
         assertEquals("Draft for rotation", provider.getText().toString()); assertEquals(2, provider.getSelectionStart()); assertEquals(5, provider.getSelectionEnd());
-        getInstrumentation().sendStringSync("x"); android.os.SystemClock.sleep(150); getInstrumentation().waitForIdleSync();
+        RenderedFrameFixture.awaitFrames(getInstrumentation(), dialog.getWindow().getDecorView());
+        InputDeliveryFixture.type(getInstrumentation(), "x");
         assertEquals("Drx for rotation", provider.getText().toString());
         ui(() -> dialog.getButton(android.content.DialogInterface.BUTTON_NEGATIVE).performClick());
         assertEquals(before, new LocalChatFixture(settings).config().toString());
@@ -190,6 +192,8 @@ public class TabletSettingsNavigationTest extends InstrumentationTestCase {
             View selected = find(activity, "tabletSettings:" + section);
             return selected != null && selected.isSelected() && activity.hasWindowFocus();
         }, "The existing owner must display " + section);
+        assertNotNull("Settings detail must still have a title", find(activity, "settingsTitle"));
+        assertNull("The category sidebar replaces the header back button for " + section, find(activity, "settingsBack"));
     }
     private void assertImmediateActivity(Activity activity) {
         assertTrue("Settings category Activities must disable the platform page transition",

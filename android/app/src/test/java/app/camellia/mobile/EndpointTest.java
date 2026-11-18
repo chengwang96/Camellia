@@ -102,6 +102,12 @@ public class EndpointTest {
         Endpoint endpoint = new Endpoint("http://100.64.0.1:43127");
         String events = "/v1/conversations/12345678-1234-1234-1234-123456789abc/events";
         assertEquals(endpoint.origin() + events + "?incremental=1", endpoint.uri(events + "?incremental=1").toString());
+        String versioned = events + "?incremental=1&historyVersion=" + "a".repeat(64);
+        assertEquals(endpoint.origin() + versioned, endpoint.uri(versioned).toString());
+        for (String suffix : new String[]{"?incremental=1&historyVersion=short", "?incremental=1&historyVersion=" + "A".repeat(64),
+                "?historyVersion=" + "a".repeat(64), "?incremental=1&historyVersion=" + "a".repeat(64) + "&token=secret"}) {
+            assertThrows(suffix, IllegalArgumentException.class, () -> endpoint.uri(events + suffix));
+        }
         for (String suffix : new String[]{"?incremental=0", "?incremental=", "?incremental=11", "?incremental=1&token=secret", "?incremental=1&incremental=1", "/extra?incremental=1"}) {
             assertThrows(suffix, IllegalArgumentException.class, () -> endpoint.uri(events + suffix));
         }

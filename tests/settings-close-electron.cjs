@@ -69,16 +69,17 @@ async function main() {
   }
   const ownerFocusListeners = home.listenerCount('focus');
   for (let attempt = 0; attempt < 3; attempt++) {
-    await home.webContents.executeJavaScript("window.dshDesktop.openSettingsWindow({ page: 'devices' })");
+    await home.webContents.executeJavaScript("window.dshDesktop.openSettingsWindow({ page: 'mobile' })");
     const settings = await waitFor(async () => {
       for (const window of BrowserWindow.getAllWindows()) {
-        if (window !== home && !window.webContents.isLoading() && await window.webContents.executeJavaScript('!!window.cliDevicesUI')) return window;
+        if (window !== home && !window.webContents.isLoading() && await window.webContents.executeJavaScript('!!window.mobileAccessUI')) return window;
       }
     });
-    await waitFor(() => settings.webContents.executeJavaScript('!document.getElementById("cli-refresh").disabled'));
-    const state = await settings.webContents.executeJavaScript("window.dshDesktop.camelliaDevices.call('state')");
-    assert.equal(state.ok, true, state.error);
     const contents = settings.webContents;
+    const mobile = await contents.executeJavaScript("window.dshDesktop.remoteControl('state')");
+    assert.equal(mobile.ok, true, mobile.error);
+    assert.equal(typeof mobile.result.tailnetUpdate.supported, 'boolean');
+    assert.equal(await contents.executeJavaScript('document.querySelector("[data-view=devices]") === null && !window.dshDesktop.camelliaDevices'), true);
     assert.equal(settings.isModal(), false, 'the backdrop owner can receive clicks');
     assert.equal(home.isEnabled(), true);
     // Controls and focus loss to another app/dialog must leave Settings open.
@@ -102,8 +103,6 @@ async function main() {
     assert.equal(home.isMinimized(), false, 'dismissing Settings must not minimize the workbench');
     await waitFor(() => home.webContents.executeJavaScript('!!document.querySelector(".settings-window-backdrop[hidden]")'));
     assert.equal(home.listenerCount('focus'), ownerFocusListeners, 'dismissal listener is removed on close');
-    const servers = await home.webContents.executeJavaScript('window.dshDesktop.listCliServers()');
-    assert.equal(servers.ok, true, servers.error);
   }
   await home.webContents.executeJavaScript("window.dshDesktop.openSettingsWindow({ page: 'data' })");
   const dataSettings = await waitFor(async () => {

@@ -30,8 +30,6 @@ html[data-desktop-chrome] .desktop-titlebar button:focus-visible { outline: 2px 
 html[data-desktop-chrome] body > .app,
 html[data-desktop-chrome] .file-viewer { height: calc(100dvh - var(--desktop-chrome-height)); }
 html[data-desktop-chrome] body:has(> .home-panel) { padding-top: calc(40px + var(--desktop-chrome-height)); }
-html[data-desktop-chrome] .cli-devices.standalone,
-html[data-desktop-chrome] .cli-devices.standalone main { height: calc(100dvh - var(--desktop-chrome-height)); }
 @media (max-width: 760px) {
   html[data-desktop-chrome] body > .app > .sidebar,
   html[data-desktop-chrome] .workbench-sidebar-backdrop { top: var(--desktop-chrome-height); }

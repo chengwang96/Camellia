@@ -29,7 +29,6 @@ def wait_for(check, message='Timed out waiting for the automatic save'):
 
 
 bridge = """window.calls=[]; window.accountListeners = {};
-window.camelliaDevices = { onEvent: () => () => {}, onTransfer: () => () => {}, call: async () => ({ok:true,result:{}}) };
 window.dshDesktop = new Proxy({}, {get: (_, method) => method.startsWith('on') ? fn => { accountListeners[method] = fn; return () => {}; } : async payload => {
   calls.push({method, payload});
   if (method === 'kimiSignIn') return {ok:true,installed:true,models:[],account:null,loginPending:true,

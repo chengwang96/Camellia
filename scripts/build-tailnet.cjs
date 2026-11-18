@@ -30,5 +30,18 @@ function buildTailnet({ root = path.resolve(__dirname, '..'), platform = process
   return executable;
 }
 
-if (require.main === module) console.log(buildTailnet());
-module.exports = { buildTailnet };
+function exportTailnetUpdate({ source, output }) {
+  const { platform, arch, tailscale } = JSON.parse(fs.readFileSync(path.join(source, 'tailnet-version.json'), 'utf8'));
+  const { assetStem } = require('../src/main/remote/tailnet-updates');
+  const stem = assetStem(platform, arch, tailscale);
+  fs.mkdirSync(output, { recursive: true });
+  fs.copyFileSync(path.join(source, platform === 'win32' ? 'camellia-tailnet.exe' : 'camellia-tailnet'), path.join(output, stem + '.bin'));
+  fs.copyFileSync(path.join(source, 'TAILNET-NOTICES.txt'), path.join(output, stem + '.txt'));
+}
+
+if (require.main === module) {
+  const root = path.resolve(__dirname, '..');
+  if (process.argv.includes('--release-assets')) exportTailnetUpdate({ source: path.join(root, 'build/runtime-assets'), output: path.join(root, 'dist/tailnet-updates') });
+  else console.log(buildTailnet());
+}
+module.exports = { buildTailnet, exportTailnetUpdate };

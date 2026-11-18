@@ -47,7 +47,7 @@ The entry point is `src/main/main.js`; `src/main/preload.js` exposes the rendere
 | DSH | `@deepseek-ai/dsh@0.2.2-rc.1` | Local web backend and embedded UI; ACP with native Host fork bridge |
 | Kimi Code | `@moonshot-ai/kimi-code@2.4.0` | ACP over stdin/stdout with native undo and mid-turn steering bridges |
 | Antigravity | CLI 1.2.3 on desktop; `google-antigravity==0.1.20`, Python 3.13.14, uv 0.12.15 | CLI connection for Google subscriptions; Python SDK for API routing |
-| Grok Build | `@xai-official/grok@1.0.77` | ACP over stdin/stdout; OAuth subscription or shared API routes |
+| Grok Build | `@xai-official/grok@1.0.89` | ACP over stdin/stdout; OAuth subscription or shared API routes |
 | DSH plugin package manager | `pnpm@11.7.0` | Runtime tooling |
 
 The per-engine manifests and lockfiles are authoritative. The patched DSH settings, client-modules and locale packages are pinned to `0.2.2-rc.1`; review patch compatibility before changing upstream pins. [Native conversation history](design/native-conversation-history.md) records editing/fork support and local runtime verification.
@@ -82,7 +82,7 @@ Discussions run on Windows and macOS. Windows uses the native Job Object helper;
 
 The macOS helper launches a separate process session for each activity and tracks its process group and descendants using a private inherited marker. CLI stdin/stdout/stderr remain byte streams; separate control and evidence pipes are closed on engine execution. Stopping, root exit, or loss of the application control pipe drains observed descendants before acknowledging completion. After supervisor loss, an independent recovery helper seals the launch journal and checks native ownership before stopping any remaining processes. Windows and macOS launch journals both retain their runtime ownership and cleanup protection.
 
-The desktop CI builds the helper before running `discussion-unix-job.test.js` on macOS, then exercises real Codex discussion verification, multiple members, continuation, parallel replies, and stop against a loopback API fixture. After packaging, it reruns the lifecycle tests with the helper copied into the application bundle. These checks use temporary profiles and no paid model calls. Unix lifecycle tests can also run on Linux with a Linux helper; that does not enable discussions in the Linux server or replace macOS validation.
+The desktop CI builds the helper before running `discussion-unix-job.test.js` on macOS, then exercises real Codex discussion verification, multiple members, continuation, parallel replies, and stop against a loopback API fixture. After packaging, it reruns the lifecycle tests with the helper copied into the application bundle. These checks use temporary profiles and no paid model calls. Unix lifecycle tests can also run on Linux with a Linux helper.
 
 ## Testing
 
@@ -178,7 +178,9 @@ Build on the operating system and architecture you are targeting; the packaging 
 
 Verified distribution archives are cached in generated `build/node-cache/`, separately by version, platform and architecture. Each build checks the cached archive's SHA-256 before extraction; a valid cache requires no download, and a corrupt cache is downloaded again. Cache archives are excluded from the application bundle. The packaging hook and package verifier run the actual bundled Node.js/SQLite and npm and reject a version that differs from `.node-version`.
 
-To upgrade Node.js deliberately, change only `.node-version`, run the applicable runtime tests, and build and verify both native desktop packages before release. CI reads the same file. The Linux server packager copies the host's Node.js and requires that host version to match this pin. Electron's own embedded Node.js follows the Electron dependency version independently.
+To upgrade Node.js deliberately, change only `.node-version`, run the applicable runtime tests, and build and verify both native desktop packages before release. CI reads the same file. Electron's own embedded Node.js follows the Electron dependency version independently.
+
+The desktop workflow exports a `camellia-tailnet-ipc1-<platform>-<arch>-<version>.bin` helper and a matching `.txt` license notice with each accepted desktop build. Attach both files unmodified to the latest stable Camellia GitHub release to make a component update available in Settings. Keep the IPC version in the asset name in sync with the desktop helper protocol.
 
 On Windows x64:
 

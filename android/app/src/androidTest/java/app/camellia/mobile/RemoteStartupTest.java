@@ -23,6 +23,7 @@ public class RemoteStartupTest extends InstrumentationTestCase {
         var context = getInstrumentation().getTargetContext();
         EmbeddedNetwork.initialize(context); EmbeddedNetwork.setEnabled(false);
         new CredentialStore(context).clear();
+        RemoteConversationCache.get(context).remove(new JSONObject().put("address", address).put("token", token), null);
         activity = getInstrumentation().startActivitySync(new Intent(context, MainActivity.class)
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
     }
@@ -180,6 +181,8 @@ public class RemoteStartupTest extends InstrumentationTestCase {
                 if (initiallySynced) expired.snapshot(now - RemoteStreamHealth.IDLE_TIMEOUT_MS - 1);
                 field("streamHealth", expired); call("inspectStream");
                 assertFalse("Recovery must wait for a fresh snapshot before enabling controls", (boolean) field("connected"));
+                long replacementTimeout = ((RemoteStreamHealth) field("streamHealth")).remaining(now);
+                assertTrue("Only the immediate foreground probe uses the short deadline", replacementTimeout > RemoteStreamHealth.RECOVERY_INITIAL_TIMEOUT_MS);
             } catch (Exception error) { throw new AssertionError(error); }
         });
         assertTrue("The stalled client should be cancelled", cancelled.await(3, TimeUnit.SECONDS));
@@ -217,6 +220,82 @@ public class RemoteStartupTest extends InstrumentationTestCase {
 
     public void testInitialSnapshotTimeoutRestartsWithoutWaitingForTheOldSocket() throws Exception { stalledStream(false); }
     public void testLostHeartbeatRestartsAndRejectsLateFrames() throws Exception { stalledStream(true); }
+
+    public void testProcessRecreationRestoresEncryptedHistoryAndResumesIncrementally() throws Exception {
+        String id = "00000000-0000-0000-0000-000000000001", version = "a".repeat(64);
+        JSONObject owner = new JSONObject().put("address", address).put("token", token);
+        JSONObject full = new JSONObject().put("instanceId", "server").put("cursor", 7).put("historyVersion", version).put("permission", "control")
+            .put("conversation", new JSONObject().put("id", id).put("title", "Cold recovery").put("seq", 7))
+            .put("messages", new JSONArray().put(new JSONObject().put("seq", 7).put("role", "assistant").put("text", "Persisted encrypted reply")))
+            .put("nextBefore", JSONObject.NULL);
+        CountDownLatch opened = new CountDownLatch(1), closed = new CountDownLatch(1);
+        var resumed = new java.util.concurrent.atomic.AtomicReference<RemoteApi>();
+        var shared = RemoteConversationCache.class.getDeclaredField("shared"); shared.setAccessible(true);
+        Object original = shared.get(null);
+        var monitor = getInstrumentation().addMonitor(MainActivity.class.getName(), null, false);
+        try {
+            getInstrumentation().runOnMainSync(() -> {
+                try {
+                    field("foreground", false); field("credentials", owner); field("conversationId", id); field("conversationTitle", "Cold recovery");
+                    call("detailScreen");
+                    RemoteConversationCache cache = (RemoteConversationCache) field("conversationCache"); cache.remove(owner, null);
+                    var apply = MainActivity.class.getDeclaredMethod("applySnapshot", JSONObject.class); apply.setAccessible(true); apply.invoke(activity, full);
+                    field("foreground", true);
+                } catch (Exception error) { throw new AssertionError(error); }
+            });
+            RemoteConversationCache cache = (RemoteConversationCache) field("conversationCache");
+            cache.flush().get(5, TimeUnit.SECONDS);
+            assertNotNull(cache.get(owner, id));
+            shared.set(null, null);
+            getInstrumentation().runOnMainSync(() -> {
+                MobilePreferences.set(activity, "remoteKeepAlive", "disabled"); activity.recreate();
+            });
+            Activity recreated = monitor.waitForActivityWithTimeout(5000);
+            assertNotNull("Android must recreate the conversation activity", recreated); activity = recreated;
+            getInstrumentation().runOnMainSync(() -> {
+                try {
+                    call("stopNetwork");
+                    var history = (java.util.TreeMap<Long, JSONObject>) field("history");
+                    assertEquals("Persisted encrypted reply", history.get(7L).optString("text"));
+                    assertEquals(version, field("historyVersion")); assertEquals("server", field("historyInstance"));
+                    assertFalse((boolean) field("connected")); assertFalse((boolean) field("controlAllowed"));
+                    assertNotSame(cache, field("conversationCache"));
+                    field("remoteClientFactory", (Function<String, RemoteApi>) target -> new RemoteApi(target) {
+                        @Override public JSONObject json(String path, String credential, JSONObject payload) throws IOException {
+                            try { return new JSONObject().put("protocol", 1).put("permission", "control")
+                                .put("capabilities", new JSONArray().put("incremental-snapshots")); }
+                            catch (Exception error) { throw new IOException(error); }
+                        }
+                        @Override void events(String conversation, String credential, SnapshotListener listener, SseReader.HeartbeatListener heartbeat) throws IOException {
+                            resumed.set(this);
+                            try {
+                                JSONObject delta = new JSONObject(full.toString()).put("cursor", 8); delta.remove("messages");
+                                listener.onSnapshot(delta); opened.countDown(); closed.await();
+                            } catch (InterruptedException error) { Thread.currentThread().interrupt(); throw new IOException(error); }
+                            catch (org.json.JSONException error) { throw new IOException(error); }
+                        }
+                        @Override public void cancel() { closed.countDown(); }
+                    });
+                    if ((boolean) field("foreground")) call("connectEvents");
+                } catch (Exception error) { throw new AssertionError(error); }
+            });
+            assertTrue("The recreated conversation must open its restored stream", opened.await(3, TimeUnit.SECONDS));
+            assertTrue(resumed.get().incremental()); assertEquals(version, resumed.get().historyVersion());
+            awaitConnected();
+            getInstrumentation().runOnMainSync(() -> {
+                try {
+                    var history = (java.util.TreeMap<Long, JSONObject>) field("history");
+                    assertEquals("Persisted encrypted reply", history.get(7L).optString("text"));
+                    assertEquals(8, (long) field("cursor"));
+                } catch (Exception error) { throw new AssertionError(error); }
+            });
+        } finally {
+            getInstrumentation().runOnMainSync(() -> { try { call("stopNetwork"); } catch (Exception error) { throw new AssertionError(error); } });
+            RemoteConversationCache current = RemoteConversationCache.get(getInstrumentation().getTargetContext());
+            current.remove(owner, null); current.flush().get(5, TimeUnit.SECONDS);
+            shared.set(null, original); getInstrumentation().removeMonitor(monitor);
+        }
+    }
 
     public void testLatePostedOldRefreshCannotConsumeTheReplacementSnapshot() throws Exception {
         var error = new java.util.concurrent.atomic.AtomicReference<Throwable>();

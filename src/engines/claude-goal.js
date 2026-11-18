@@ -3,6 +3,11 @@
 const fs = require('node:fs');
 const { readRecoverableJson, writeJson } = require('../shared/json-store');
 
+// A goal may wait for an external job, but an unchecked model-provided value
+// must never exceed Node's timer range or turn into a one-millisecond loop.
+const MAX_WAIT_MS = 60 * 60 * 1000;
+const MAX_TIMER_MS = 0x7fffffff;
+
 // One driver owns its saved goal, continuation timer and in-flight turn.
 // Loading a saved goal never grants permission to continue automatically.
 class ClaudeGoal {
@@ -86,7 +91,10 @@ class ClaudeGoal {
 
   schedule(delay, action = () => this.drive()) {
     this.cancelTimer();
-    if (this.armed && this.goal?.phase === 'active') this.timer = this.setTimer(action, delay);
+    if (this.armed && this.goal?.phase === 'active') {
+      const wait = Math.max(1, Math.min(Number.isFinite(delay) ? delay : MAX_WAIT_MS, MAX_WAIT_MS));
+      this.timer = this.setTimer(action, Math.min(wait, MAX_TIMER_MS));
+    }
   }
 
   start(payload, { adoptSession } = {}) {
@@ -267,7 +275,9 @@ class ClaudeGoal {
     const signal = event.goalReport ? { type: event.goalReport.status, reason: event.goalReport.reason } : event.ignoreGoalMarkers ? null : goalSignal(event.result);
     if (signal?.type === 'waiting') {
       const streak = (this.goal.waitStreak || 0) + 1;
-      const seconds = Math.max(event.goalReport?.wait_seconds || 60, Math.min(900, 60 * 2 ** Math.min(streak - 1, 4)));
+      const requested = Number(event.goalReport?.wait_seconds);
+      const seconds = Math.max(Number.isFinite(requested) ? Math.min(requested, 3600) : 60,
+        Math.min(900, 60 * 2 ** Math.min(streak - 1, 4)));
       const reason = signal.reason || 'Work is still in progress';
       if (!this.touch({ waiting: { reason, until: this.now() + seconds * 1000 }, waitStreak: streak, lastWait: reason,
         blockerStreak: 0, lastBlocker: null, errorStreak: 0, lastErrorSubtype: null })) return;

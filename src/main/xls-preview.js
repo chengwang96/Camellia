@@ -387,13 +387,18 @@ function renderSheetHtml(model, state) {
     }
   }
   let html = `<section class="sheet"><h2>${escape(model.name)}</h2><table style="table-layout:fixed"><colgroup><col style="width:48px">`;
-  html += widths.map((width, column) => `<col style="width:${width}px;${model.hiddenColumns.has(column) ? 'display:none' : ''}">`).join('') + '</colgroup><thead><tr><th></th>';
-  html += widths.map((width, column) => `<th style="min-width:${width}px;${model.hiddenColumns.has(column) ? 'display:none' : ''}">${columnName(column)}</th>`).join('') + '</tr></thead><tbody>';
+  html += widths.map((width, column) => `<col style="width:${width}px;${model.hiddenColumns.has(column) ? 'display:none' : ''}">`).join('') + '</colgroup><thead><tr><th style="position:sticky;left:0;z-index:2"></th>';
+  let columnLeft = 48;
+  html += widths.map((width, column) => {
+    const sticky = column < model.frozenColumns ? `position:sticky;left:${columnLeft}px;z-index:1;` : '';
+    if (!model.hiddenColumns.has(column)) columnLeft += width;
+    return `<th style="min-width:${width}px;${model.hiddenColumns.has(column) ? 'display:none;' : ''}${sticky}">${columnName(column)}</th>`;
+  }).join('') + '</tr></thead><tbody>';
   let top = 32;
   for (let row = 0; row < rowCount; row++) {
     const height = Math.max(24, Math.min(600, (model.rowHeights.get(row) ?? 270) / 20 * 4 / 3));
     const hiddenRow = model.hiddenRows.has(row);
-    html += `<tr style="height:${height}px;${hiddenRow ? 'display:none' : ''}"><th scope="row">${row + 1}</th>`;
+    html += `<tr style="height:${height}px;${hiddenRow ? 'display:none' : ''}"><th scope="row"${row < model.frozenRows ? ` style="position:sticky;left:0;z-index:4;top:${top}px"` : ''}>${row + 1}</th>`;
     let left = 48;
     for (let column = 0; column < columnCount; column++) {
       const key = row + ':' + column;
@@ -408,7 +413,11 @@ function renderSheetHtml(model, state) {
         [1, 2, 3, 5, 6, 7].includes(xf?.horizontal) ? 'text-align:' + ({ 1: 'left', 2: 'center', 3: 'right', 5: 'justify', 6: 'center', 7: 'justify' })[xf.horizontal] : '',
         [1, 2].includes(xf?.vertical) ? 'vertical-align:' + ({ 1: 'middle', 2: 'bottom' })[xf.vertical] : '',
         xf?.wrapped ? 'white-space:pre-wrap' : '', model.hiddenColumns.has(column) ? 'display:none' : ''];
-      if (row < model.frozenRows || column < model.frozenColumns) css.push('position:sticky', 'z-index:2', row < model.frozenRows ? `top:${top}px` : '', column < model.frozenColumns ? `left:${left}px` : '');
+      const frozenRow = row < model.frozenRows, frozenColumn = column < model.frozenColumns;
+      if (frozenRow || frozenColumn) {
+        const zIndex = frozenRow && frozenColumn ? 4 : frozenRow ? 3 : 2;
+        css.push('position:sticky', `z-index:${zIndex}`, frozenRow ? `top:${top}px` : '', frozenColumn ? `left:${left}px` : '');
+      }
       let value = cell ? cell.value : '';
       if (cell && cell.type === 'number') value = formatNumber(cell.value, xf, state);
       const merge = anchors.get(key);

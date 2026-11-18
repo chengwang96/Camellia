@@ -115,6 +115,56 @@ public class RemoteControlRecoveryTest extends RemoteFeedbackTest {
         waitUntil(() -> { ui(() -> applied.set(((java.util.Map<?, ?>) get("history")).size() == 1 && (long) get("cursor") == 3)); return applied.get(); });
         ui(() -> { assertEquals(1, ((java.util.Map<?, ?>) get("history")).size()); assertEquals(3, (long) get("cursor")); });
     }
+    public void testMatchingIncrementalFirstFrameKeepsHistoryAndUpdatesLiveState() throws Exception {
+        JSONObject full = new JSONObject().put("instanceId", "server").put("cursor", 2).put("historyVersion", "one").put("permission", "control")
+            .put("conversation", new JSONObject().put("id", ID).put("seq", 11)).put("messages", new JSONArray().put(new JSONObject().put("seq", 11).put("role", "user").put("text", "retained history")));
+        JSONObject delta = new JSONObject(full.toString()).put("cursor", 3).put("live", new JSONObject().put("runId", 9).put("text", "fresh live state"));
+        delta.remove("messages");
+        RemoteApi fake = new RemoteApi("http://100.64.0.1:43128") {
+            @Override void events(String id, String token, SnapshotListener listener, SseReader.HeartbeatListener heartbeat) throws IOException {
+                listener.onSnapshot(delta); throw new IOException("Test stream complete");
+            }
+        };
+        fake.incremental(true);
+        ui(() -> {
+            call("applySnapshot", new Class<?>[]{JSONObject.class}, full); set("connected", false);
+            set("eventWorker", Executors.newSingleThreadExecutor());
+            call("stream", new Class<?>[]{RemoteApi.class, int.class, int.class}, fake, (int) get("generation"), 0);
+            assertEquals("one", fake.historyVersion());
+        });
+        var recovered = new java.util.concurrent.atomic.AtomicBoolean();
+        waitUntil(() -> { ui(() -> recovered.set((long) get("cursor") == 3 && (boolean) get("connected"))); return recovered.get(); });
+        ui(() -> {
+            var history = (java.util.TreeMap<Long, JSONObject>) get("history");
+            assertEquals("retained history", history.get(11L).optString("text"));
+            assertEquals("fresh live state", ((JSONObject) get("lastLive")).optString("text"));
+            assertEquals("one", get("historyVersion"));
+        });
+    }
+
+    public void testMismatchedIncrementalFirstFrameCannotReplaceHistory() throws Exception {
+        JSONObject full = new JSONObject().put("instanceId", "server").put("cursor", 2).put("historyVersion", "one").put("permission", "control")
+            .put("conversation", new JSONObject().put("id", ID).put("seq", 11)).put("messages", new JSONArray().put(new JSONObject().put("seq", 11).put("role", "user").put("text", "retained history")));
+        JSONObject invalid = new JSONObject(full.toString()).put("cursor", 3).put("historyVersion", "two"); invalid.remove("messages");
+        RemoteApi fake = new RemoteApi("http://100.64.0.1:43128") {
+            @Override void events(String id, String token, SnapshotListener listener, SseReader.HeartbeatListener heartbeat) throws IOException { listener.onSnapshot(invalid); }
+        };
+        fake.incremental(true);
+        ui(() -> {
+            call("applySnapshot", new Class<?>[]{JSONObject.class}, full); set("connected", false);
+            set("eventWorker", Executors.newSingleThreadExecutor());
+            call("stream", new Class<?>[]{RemoteApi.class, int.class, int.class}, fake, (int) get("generation"), 0);
+        });
+        var retrying = new java.util.concurrent.atomic.AtomicBoolean();
+        waitUntil(() -> { ui(() -> retrying.set((boolean) get("streamRetryPending"))); return retrying.get(); });
+        ui(() -> {
+            var history = (java.util.TreeMap<Long, JSONObject>) get("history");
+            assertEquals("retained history", history.get(11L).optString("text"));
+            assertEquals(2, (long) get("cursor")); assertNull(get("lastLive"));
+            assertEquals("one", fake.historyVersion());
+        });
+    }
+
     public void testStaleSnapshotCannotChangeTheCurrentPermissionOrSequence() throws Exception {
         ui(() -> {
             set("instance", "server"); set("cursor", 10L); set("conversationSeq", 20L); set("controlAllowed", true);

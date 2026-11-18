@@ -13,6 +13,7 @@ const { collectNativeOwners } = require('../engines/discussions/native-ownership
 const { jobRecordIdentity } = require('../engines/discussions/windows-job-journal');
 const { backupInventory, MARKER } = require('./backup-retention');
 const { logFiles } = require('./rotating-log');
+const { inspectInWorker } = require('./storage-cleanup-worker');
 
 const PROTECTION_MS = 24 * 60 * 60 * 1000;
 const READ_CHUNK_BYTES = 64 * 1024;
@@ -29,8 +30,9 @@ const normalize = value => {
 };
 
 class StorageCleanup {
-  constructor({ dataDir, histories = [], conversations, references, liveOwners = () => [], isActive = () => false, now = Date.now, maxVisited = MAX_VISITED_ENTRIES, signal }) {
-    Object.assign(this, { dataDir: path.resolve(dataDir), histories, conversations, references, liveOwners, isActive, now, maxVisited, signal });
+  constructor({ dataDir, histories = [], conversations, references, liveOwners = () => [], isActive = () => false,
+    now = Date.now, maxVisited = MAX_VISITED_ENTRIES, signal, offload = false, revision = () => 0 }) {
+    Object.assign(this, { dataDir: path.resolve(dataDir), histories, conversations, references, liveOwners, isActive, now, maxVisited, signal, offload, revision });
     this.preview = null;
     this.running = false;
   }
@@ -475,6 +477,37 @@ class StorageCleanup {
     }
   }
 
+  async inspect(operation, references, options, use) {
+    this.signal?.throwIfAborted();
+    if (this.offload) {
+      return inspectInWorker({
+        operation, references, options, dataDir: this.dataDir, histories: this.histories.map(({ root }) => ({ root })),
+        conversations: [...this.conversations.items], liveOwners: this.liveOwners(), active: Boolean(this.isActive()),
+        now: this.now(), maxVisited: this.maxVisited,
+      }, this.signal, use);
+    }
+    const { verification, ...result } = operation === 'retention'
+      ? await this.retentionInventory() : await this.inventory(references, options);
+    return use(result, () => this.verify(verification || []));
+  }
+
+  async confirmReferences(identity, revision, verify) {
+    const confirm = async () => {
+      if (JSON.stringify(await this.references()) !== identity || revision !== this.revision())
+        throw new Error('Reference files changed; scan again');
+    };
+    await confirm();
+    await verify();
+    // Draft text can acquire a path while the worker is checking files.
+    if (this.offload) {
+      await confirm();
+      // The renderer round trip above can overlap a persisted history write.
+      await verify();
+    }
+    this.signal?.throwIfAborted();
+    if (revision !== this.revision()) throw new Error('Reference files changed; scan again');
+  }
+
   async scan() {
     if (this.running) throw new Error('Space cleanup is already running');
     this.running = true;
@@ -482,12 +515,13 @@ class StorageCleanup {
     clearTimeout(this.previewTimer);
     try {
       const references = await this.references();
-      const { verification, nextSweepAt, ...inventory } = await this.inventory(references);
-      const token = randomUUID();
-      this.preview = { ...inventory, token, createdAt: this.now() };
-      this.previewTimer = setTimeout(() => { this.preview = null; }, 30 * 60 * 1000);
-      this.previewTimer.unref?.();
-      return { token, skipped: inventory.skipped, active: inventory.active, backups: inventory.backups, candidates: inventory.candidates.map(({ files, directories, links, caches, ...entry }) => entry) };
+      return await this.inspect('inventory', references, {}, ({ nextSweepAt, ...inventory }) => {
+        const token = randomUUID();
+        this.preview = { ...inventory, token, createdAt: this.now() };
+        this.previewTimer = setTimeout(() => { this.preview = null; }, 30 * 60 * 1000);
+        this.previewTimer.unref?.();
+        return { token, skipped: inventory.skipped, active: inventory.active, backups: inventory.backups, candidates: inventory.candidates.map(({ files, directories, links, caches, ...entry }) => entry) };
+      });
     } finally { this.running = false; }
   }
 
@@ -499,12 +533,12 @@ class StorageCleanup {
     if (!preview || token !== preview.token || this.now() - preview.createdAt > 30 * 60 * 1000) throw new Error('Scan again before cleaning space');
     this.running = true;
     try {
-      const references = await this.references();
+      const revision = this.revision(), references = await this.references();
       const referenceIdentity = JSON.stringify(references);
-      const current = await this.inventory(references);
-      if (JSON.stringify(await this.references()) !== referenceIdentity) throw new Error('Reference files changed; scan again');
-      this.verify(current.verification || []);
-      return this.removeCandidates(current.candidates, preview.candidates);
+      return await this.inspect('inventory', references, {}, async (current, verify) => {
+        await this.confirmReferences(referenceIdentity, revision, verify);
+        return this.removeCandidates(current.candidates, preview.candidates);
+      });
     } finally { this.running = false; }
   }
 
@@ -513,15 +547,32 @@ class StorageCleanup {
     this.running = true;
     try {
       if (this.isActive()) return { files: 0, bytes: 0, deferred: true };
-      const references = await this.references();
+      const revision = this.revision(), references = await this.references();
       if (this.isActive() || references?.active) return { files: 0, bytes: 0, deferred: true };
       const referenceIdentity = JSON.stringify(references);
-      const current = await this.inventory(references, { attachmentsOnly: true });
-      if (this.isActive() || current.active) return { files: 0, bytes: 0, deferred: true };
-      if (JSON.stringify(await this.references()) !== referenceIdentity) throw new Error('Reference files changed; scan again');
-      this.verify(current.verification || []);
-      return { ...this.removeCandidates(current.candidates, current.candidates), nextSweepAt: current.nextSweepAt };
+      return await this.inspect('inventory', references, { attachmentsOnly: true }, async (current, verify) => {
+        if (this.isActive() || current.active) return { files: 0, bytes: 0, deferred: true };
+        await this.confirmReferences(referenceIdentity, revision, verify);
+        if (this.isActive()) return { files: 0, bytes: 0, deferred: true };
+        return { ...this.removeCandidates(current.candidates, current.candidates), nextSweepAt: current.nextSweepAt };
+      });
     } finally { this.running = false; }
+  }
+
+  async retentionInventory() {
+    const verification = []; let visited = 0;
+    const entries = directory => {
+      const stat = this.safeStat(directory);
+      verification.push({ file: directory, stat });
+      if (!stat) return [];
+      if (!stat.isDirectory()) throw new Error('Unexpected import backup layout');
+      const names = fs.readdirSync(directory);
+      if ((visited += names.length) > this.maxVisited) throw new Error('Too many backup files to verify safely');
+      return names;
+    };
+    const retained = await backupInventory({ dataDir: this.dataDir, safeStat: file => this.safeStat(file), entries, now: this.now(), signal: this.signal });
+    return { candidates: retained.candidates, nextSweepAt: retained.nextSweepAt,
+      verification: [...verification, ...retained.verification] };
   }
 
   async sweepRetention() {
@@ -529,23 +580,21 @@ class StorageCleanup {
     this.running = true;
     let removed, nextSweepAt;
     try {
+      const revision = this.revision();
       if (this.isActive() || (await this.references())?.active) return { files: 0, bytes: 0, deferred: true };
-      const verification = []; let visited = 0;
-      const entries = directory => {
-        const stat = this.safeStat(directory);
-        verification.push({ file: directory, stat });
-        if (!stat) return [];
-        if (!stat.isDirectory()) throw new Error('Unexpected import backup layout');
-        const names = fs.readdirSync(directory);
-        if ((visited += names.length) > this.maxVisited) throw new Error('Too many backup files to verify safely');
-        return names;
-      };
-      const retained = await backupInventory({ dataDir: this.dataDir, safeStat: file => this.safeStat(file), entries, now: this.now(), signal: this.signal });
-      this.signal?.throwIfAborted();
-      if (this.isActive() || (await this.references())?.active) return { files: 0, bytes: 0, deferred: true };
-      this.verify([...verification, ...retained.verification]);
-      removed = this.removeCandidates(retained.candidates, retained.candidates);
-      nextSweepAt = retained.nextSweepAt;
+      const result = await this.inspect('retention', undefined, undefined, async (retained, verify) => {
+        if (this.isActive() || (await this.references())?.active) return null;
+        await verify();
+        if (this.offload && retained.candidates.length) {
+          if ((await this.references())?.active) return null;
+          await verify();
+        }
+        this.signal?.throwIfAborted();
+        if (this.isActive() || revision !== this.revision()) return null;
+        return { removed: this.removeCandidates(retained.candidates, retained.candidates), nextSweepAt: retained.nextSweepAt };
+      });
+      if (!result) return { files: 0, bytes: 0, deferred: true };
+      ({ removed, nextSweepAt } = result);
     } finally { this.running = false; }
     // Only a successful deletion releases a backup's references. A second
     // inventory sees what actually remains before considering any attachments.

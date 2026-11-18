@@ -61,6 +61,79 @@ test('Kimi forwards native task follow-up replies after the user prompt has fini
   assert.equal(h.native.driver, undefined);
 });
 
+test('Kimi keeps the reply open across a batch of task notifications and a chained follow-up', { skip: !source }, async () => {
+  const h = await fixture();
+  let settled = false;
+  const first = h.native.driveTurn([]).then(result => { settled = true; return result; });
+  const promptId = h.submissions[0].promptId;
+  h.emit('turn.started', { turnId: 1, promptId });
+  const builds = ['task:android:completed', 'task:desktop:completed', 'task:tests:completed'];
+  for (const id of builds) h.emit('prompt.steered', { activePromptId: promptId, promptIds: [id] });
+  h.emit('turn.ended', { turnId: 1, reason: 'completed' });
+  await settle();
+  assert.equal(settled, false, 'The foreground reply must not complete before its task handoff');
+  for (const [index, id] of builds.entries()) {
+    const turnId = index + 2;
+    h.emit('turn.started', { turnId, promptId: id, origin: { kind: 'task' } });
+    if (index === 2) h.emit('prompt.steered', { activePromptId: id, promptIds: ['task:verify:completed'] });
+    h.emit('turn.ended', { turnId, reason: 'completed' });
+    await settle();
+    assert.equal(settled, false, 'Acknowledging a notification must not complete the reply with more notifications pending');
+  }
+  h.emit('turn.started', { turnId: 5, promptId: 'task:verify:completed', origin: { kind: 'task' } });
+  h.emit('assistant.delta', { turnId: 5, delta: 'Build verified. Download the APK.' });
+  h.emit('turn.ended', { turnId: 5, reason: 'completed' });
+  assert.equal((await first).stopReason, 'end_turn');
+  assert.equal(h.updates.findLast(row => row.update.content)?.update.content.text, 'Build verified. Download the APK.');
+  assert.ok(h.updates.every(row => row.update.sessionUpdate !== 'camellia_background_turn'));
+  assert.equal(h.native.driver, undefined);
+});
+
+test('Kimi task handoff reports a failed follow-up through the original prompt', { skip: !source }, async () => {
+  const h = await fixture();
+  const first = h.native.driveTurn([]);
+  const promptId = h.submissions[0].promptId;
+  h.emit('turn.started', { turnId: 1, promptId });
+  h.emit('prompt.steered', { activePromptId: promptId, promptIds: ['task:build:completed'] });
+  h.emit('turn.ended', { turnId: 1, reason: 'completed' });
+  h.emit('turn.started', { turnId: 2, promptId: 'task:build:completed', origin: { kind: 'task', taskId: 'build' } });
+  h.emit('turn.ended', { turnId: 2, reason: 'failed', error: { message: 'Verification failed' } });
+  await assert.rejects(first, /Verification failed/);
+  assert.equal(h.native.driver, undefined);
+  assert.equal(h.native.camelliaBackgroundDriver, undefined);
+});
+
+test('Kimi settles a task continuation that cannot launch', { skip: !source }, async () => {
+  for (const [reason, stopReason] of [['blocked', 'refusal'], ['aborted', 'cancelled']]) {
+    const h = await fixture();
+    const result = h.native.driveTurn([]);
+    const promptId = h.submissions[0].promptId, taskId = 'task:build:completed';
+    h.emit('turn.started', { turnId: 1, promptId });
+    h.emit('prompt.steered', { activePromptId: promptId, promptIds: [taskId] });
+    h.emit('turn.ended', { turnId: 1, reason: 'completed' });
+    h.emit(reason === 'aborted' ? 'prompt.aborted' : 'prompt.completed', { promptId: taskId, reason });
+    assert.equal((await result).stopReason, stopReason);
+    assert.equal(h.native.driver, undefined);
+  }
+});
+
+test('Kimi cancels pending task continuations between native turns', { skip: !source }, async () => {
+  const h = await fixture();
+  const result = h.native.driveTurn([]);
+  const promptId = h.submissions[0].promptId;
+  const notifications = ['task:build:completed', 'task:test:completed'];
+  h.emit('turn.started', { turnId: 1, promptId });
+  h.emit('prompt.steered', { activePromptId: promptId, promptIds: notifications });
+  h.emit('prompt.steered', { activePromptId: 'other', promptIds: ['task:unrelated:completed'] });
+  h.emit('turn.ended', { turnId: 1, reason: 'completed' });
+  const cancelled = [];
+  h.native.camelliaCancelPrompt = id => { cancelled.push(id); };
+  h.native.cancel();
+  assert.equal((await result).stopReason, 'cancelled');
+  assert.deepEqual(cancelled, notifications);
+  assert.equal(h.native.driver, undefined);
+});
+
 test('Kimi task follow-up does not settle or steal a queued user prompt', { skip: !source }, async () => {
   const h = await fixture();
   const queued = h.native.driveTurn([]);

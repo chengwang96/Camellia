@@ -18,7 +18,6 @@ def rpc(method, payload=None):
     return response['result']
 
 bridge = """window.wakeCalls = 0; window.refreshCalls = 0;
-window.camelliaDevices = { onEvent: () => () => {}, onTransfer: () => () => {}, call: async () => ({ok:true,result:{}}) };
 window.dshDesktop = new Proxy({}, {get: (_, method) => {
   if (method === 'kimiAccountRefresh') return async () => { window.refreshCalls++; return window.testRpc('kimiAccountState'); };
   if (method === 'kimiAccountWake') return async () => { window.wakeCalls++; const state = await window.testRpc('kimiAccountState'); return {...state, wakeSent:true}; };

@@ -19,6 +19,7 @@ const limits = ({ weeklyReset, weeklyUsed = 0, primaryReset = NOW + 60 * 60 * 10
 test('weekly probe ignores shorter windows and future reset times', () => {
   assert.deepEqual(probe.weeklyWindows({ primary: { windowDurationMins: 300, resetsAt: 1 } }), []);
   assert.equal(probe.weeklyWindows(limits({ weeklyReset: NOW + 1000 }))[0].id, 'codex:secondary');
+  assert.deepEqual(probe.weeklyWindows({ primary: { windowDurationMins: 30 * 24 * 60, resetsAt: 1 } }), []);
   assert.deepEqual(probe.dueWeeklyProbe({ rateLimits: limits({ weeklyReset: NOW + 1000 }), now: NOW }), []);
   assert.deepEqual(probe.nextWeeklyReset(limits({ weeklyReset: NOW + 1000 }), NOW), seconds(NOW + 1000));
 });

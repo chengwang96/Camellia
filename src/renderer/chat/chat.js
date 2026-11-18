@@ -5330,10 +5330,9 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
         if (res.settings?.ok === false) throw new Error(res.settings.error);
       }
       setConversationSessionId(id);
-      // The side panel follows the conversation: fetch the incoming session's
-      // snapshot now that its engine is confirmed, not only when a run event
-      // happens to refresh it.
-      contextPanel?.refresh();
+      // Side panels load when opened. Fetching their snapshots for every
+      // conversation competes with the transcript on large histories.
+      if (contextPanel?.isOpen()) contextPanel.refresh();
       if (res.remoteQueue) applyRemoteQueue(res.remoteQueue);
       void tasksUI.refresh();
       context.workspaceId = res.workspaceId || null;
@@ -5562,49 +5561,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
             const historyBlocks = process.length
               ? [...process.map(block => ({ ...block, phase: 'commentary' })), ...outputBlocks.filter(block => block.phase === 'final_answer')]
               : outputBlocks;
-            for (const block of historyBlocks) {
-              if (block.type === 'tool') {
-                const card = window.CamelliaChatControls.makeToolCard(block.title || 'Tool', block.input, openFilePreview);
-                const unfinished = !['completed', 'failed', 'cancelled'].includes(block.status);
-                const output = block.text || (unfinished ? runResult?.subtype === 'stopped'
-                  ? 'Stopped before a tool result was received.' : 'No tool result was received before the response ended.' : '');
-                const visual = addVisualizeResult(output, body);
-                card.setOutput(visualizeOutputLabel(visual, output),
-                  unfinished || block.status === 'failed' || block.status === 'cancelled');
-                body.processBlocks.push(card.el);
-                body.appendChild(card.el);
-                continue;
-              }
-              if (block.type === 'thinking') {
-                if (block.text?.trim()) {
-                  const think = buildThinkBlock('Completed', false, false);
-                  think.querySelector('.think-body').textContent = block.text;
-                  body.processBlocks.push(think);
-                  body.appendChild(think);
-                }
-                continue;
-              }
-              if (!block.text || resultOnly && block.phase === 'final_answer') continue;
-              if (block.type === 'plan') {
-                const plan = document.createElement('div'); plan.className = 'md';
-                plan.dataset.phase = 'commentary'; plan.textContent = block.text;
-                body.processBlocks.push(plan);
-                body.appendChild(plan);
-                continue;
-              }
-              const { body: text, thinking } = splitThinking(block.text);
-              if (thinking.trim()) {
-                const think = buildThinkBlock('Completed', false, false);
-                think.querySelector('.think-body').textContent = thinking.trim();
-                body.processBlocks.push(think);
-                body.appendChild(think);
-              }
-              const el = document.createElement('div'); el.className = 'md'; el.innerHTML = replyMarkdown(text, m.sources);
-              el.dataset.phase = block.phase || 'commentary';
-              el.artifactText = text;
-              body.processBlocks.push(el);
-              body.appendChild(el);
-            }
+            await paintProcessBlocks(historyBlocks, body, m, runResult, resultOnly, openSeq);
             layoutTurnProcess(true, body);
             if (runResult) div.appendChild(runResultChip(runResult, false,
               m === latestAssistant && latestUser?.seq < m.seq ? m.userSeq || latestUser.seq : null).chip);
@@ -5616,6 +5573,111 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
             void showTurnArtifacts(div, resultOnly ? '' : m.text, m.artifacts, [], [], m.process || []);
           }
         }
+        return true;
+      }
+
+      // A saved turn can contain over a hundred tool cards. Their shells are
+      // cheap, but decoding every multi-megabyte input and output blocks the
+      // history switch. Defer that work until the process disclosure opens.
+      async function paintProcessBlocks(blocks, body, message, runResult, resultOnly, openSeq) {
+        const tools = blocks.filter(block => block.type === 'tool');
+        const deferred = tools.length > 12;
+        const deferredCards = [];
+        let batchStarted = performance.now();
+        for (const block of blocks) {
+          if (openSeq !== sessionOpenSeq) return false;
+          if (performance.now() - batchStarted > 8) {
+            await new Promise(resolve => setTimeout(resolve, 0));
+            if (openSeq !== sessionOpenSeq) return false;
+            batchStarted = performance.now();
+          }
+          if (block.type === 'tool') {
+            const card = window.CamelliaChatControls.makeToolCard(block.title || 'Tool', block.input, openFilePreview,
+              { deferred });
+            const unfinished = !['completed', 'failed', 'cancelled'].includes(block.status);
+            const output = block.text || (unfinished ? runResult?.subtype === 'stopped'
+              ? 'Stopped before a tool result was received.' : 'No tool result was received before the response ended.' : '');
+            // Parsing a multi-megabyte tool result is exactly the work this
+            // disclosure defers. Look for the marker only; parse and mount it
+            // when the process opens.
+            const deferredVisual = deferred && !unfinished && typeof output === 'string'
+              && output.includes('"visualize"');
+            const visual = deferred ? false : addVisualizeResult(output, body);
+            const failed = unfinished || block.status === 'failed' || block.status === 'cancelled';
+            if (deferredVisual) {
+              card.setDeferredLabel('Interactive visualization will render when you open this process.');
+              card.pendingOutput = { text: output, isErr: failed };
+            } else {
+              card.setOutput(visualizeOutputLabel(visual, output), failed);
+            }
+            if (deferred) deferredCards.push(card);
+            body.processBlocks.push(card.el);
+            body.appendChild(card.el);
+            continue;
+          }
+          if (block.type === 'thinking') {
+            if (block.text?.trim()) {
+              const think = buildThinkBlock('Completed', false, false);
+              think.querySelector('.think-body').textContent = block.text;
+              body.processBlocks.push(think);
+              body.appendChild(think);
+            }
+            continue;
+          }
+          if (!block.text || resultOnly && block.phase === 'final_answer') continue;
+          if (block.type === 'plan') {
+            const plan = document.createElement('div'); plan.className = 'md';
+            plan.dataset.phase = 'commentary'; plan.textContent = block.text;
+            body.processBlocks.push(plan);
+            body.appendChild(plan);
+            continue;
+          }
+          const { body: text, thinking } = splitThinking(block.text);
+          if (thinking.trim()) {
+            const think = buildThinkBlock('Completed', false, false);
+            think.querySelector('.think-body').textContent = thinking.trim();
+            body.processBlocks.push(think);
+            body.appendChild(think);
+          }
+          const el = document.createElement('div'); el.className = 'md'; el.innerHTML = replyMarkdown(text, message.sources);
+          el.dataset.phase = block.phase || 'commentary';
+          el.artifactText = text;
+          body.processBlocks.push(el);
+          body.appendChild(el);
+        }
+        if (!deferredCards.length) return true;
+        const process = body.querySelector(':scope > .execution-process');
+        let filled = false;
+        const load = async () => {
+          if (filled) return;
+          filled = true;
+          let batchStarted = performance.now();
+          for (const card of deferredCards) {
+            if (openSeq !== sessionOpenSeq || !body.isConnected) return;
+            if (performance.now() - batchStarted > 8) {
+              await new Promise(resolve => setTimeout(resolve, 0));
+              if (openSeq !== sessionOpenSeq || !body.isConnected) return;
+              batchStarted = performance.now();
+            }
+            let mountedVisual = false;
+            if (card.pendingOutput && !card.pendingOutput.isErr
+                && typeof card.pendingOutput.text === 'string' && card.pendingOutput.text.includes('"visualize"')) {
+              mountedVisual = Boolean(addVisualizeResult(card.pendingOutput.text, body));
+            }
+            if (mountedVisual) {
+              card.pendingOutput = { text: 'Interactive visualization rendered in the conversation.', isErr: false };
+            }
+            card.fill();
+          }
+        };
+        const arm = () => {
+          const current = body.querySelector(':scope > .execution-process');
+          if (!current || current.dataset.deferredCards) return;
+          current.dataset.deferredCards = 'true';
+          current.addEventListener('toggle', () => { if (current.open && !filled) void load(); });
+        };
+        if (process) arm();
+        setTimeout(arm, 0);
         return true;
       }
   }

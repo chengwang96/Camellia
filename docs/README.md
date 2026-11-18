@@ -9,8 +9,6 @@ Start with the [English README](../README.md) or [Simplified Chinese README](../
 | [Configuration](configuration.md) | Providers, accounts, same-model routing, settings, usage, and data locations. |
 | [Android](../android/README.md) | Native app, local chat, remote pairing, attachments, build, and tests. |
 | [Desktop remote access](remote-access.md) | Embedded Tailnet, device approval, protocol, security, and discussion controls. |
-| [Linux server preview](linux-server-preview.md) | Headless host, one-terminal pairing, systemd user service, package, and checks. |
-| [Linux acceptance record](linux-server-acceptance.md) | Tested artifact and remaining live host acceptance. |
 | [Conversation control](conversation-tools.md) | Child conversations and device-wide read-only history tools. |
 | [Conversation work panel](conversation-work-panel.md) | Desktop subtasks/artifacts, mobile child pages, active forks, and engine limits. |
 | [Goals](goals.md) | Natural-language goals, revisions, continuation and independent completion checks. |
@@ -32,7 +30,6 @@ These explain current structures and past decisions. Check the guide and current
 | Shared chat and context | [Shared conversations](design/shared-conversations.md), [native model bindings](design/model-switch-segments.md), [native editing and forks](design/native-conversation-history.md), [context capacity](design/context-capacity.md), [context management roadmap](design/context-management-roadmap.md). |
 | Discussion groups | [Coordinator design](design/group-chat-discussion.md), [implementation and acceptance](design/group-chat-implementation-plan.md), [rich interaction](design/group-chat-rich-interaction-plan.md), [capability and isolation audit](design/group-chat-capabilities.md). |
 | Engines and settings | [Unified settings](design/unified-settings.md), [harness integration](design/harness-integration.md), [provider balances](design/provider-balances.md). |
-| Server | [Linux CLI design](design/linux-server-cli.md). |
 
 ## Dated investigations
 

@@ -95,6 +95,8 @@ window.createContextPanel = ({ context, getEngine, onOpen, setStatus, openConver
   }
 
   function reset() {
+    clearTimeout(refreshTimer);
+    refreshTimer = null;
     requestEpoch++;
     snapshot = null;
     previousSnapshot = null;
@@ -151,28 +153,38 @@ window.createContextPanel = ({ context, getEngine, onOpen, setStatus, openConver
       ]);
       if (epoch !== requestEpoch || context.sessionId !== sessionId) return;
       if (!result?.ok) throw new Error(result?.error || 'Context snapshot failed');
-      snapshot = result.snapshot;
-      if (snapshot?.turnSeq) {
-        snapshotCache.set(snapshot.turnSeq, snapshot);
-        while (snapshotCache.size > 32) snapshotCache.delete(snapshotCache.keys().next().value);
-      }
-      previousSnapshot = null;
-      if (snapshot?.turnSeq > 1) {
-        const previousSeq = snapshot.turnSeq - 1;
-        previousSnapshot = snapshotCache.get(previousSeq) || null;
-        if (!previousSnapshot) {
+      // Do not assign any response state before this epoch check. A reset for
+      // another conversation increments requestEpoch, and an older request
+      // must not repopulate the new conversation's panel while its own load
+      // is still in flight.
+      const nextSnapshot = result.snapshot;
+      let nextPrevious = null;
+      if (nextSnapshot?.turnSeq > 1) {
+        const previousSeq = nextSnapshot.turnSeq - 1;
+        nextPrevious = snapshotCache.get(previousSeq) || null;
+        if (!nextPrevious) {
           const previousResult = await window.dshDesktop.conversationCommand({
             engine: getEngine(), action: 'context-snapshot',
             payload: { sessionId, turnSeq: previousSeq },
           }).catch(() => null);
+          if (epoch !== requestEpoch || context.sessionId !== sessionId) return;
           if (previousResult?.ok && previousResult.snapshot?.turnSeq
-              && previousResult.snapshot.turnSeq < snapshot.turnSeq) {
-            previousSnapshot = previousResult.snapshot;
-            snapshotCache.set(previousSnapshot.turnSeq, previousSnapshot);
+              && previousResult.snapshot.turnSeq < nextSnapshot.turnSeq) {
+            nextPrevious = previousResult.snapshot;
           }
         }
       }
       if (epoch !== requestEpoch || context.sessionId !== sessionId) return;
+      snapshot = nextSnapshot;
+      previousSnapshot = nextPrevious;
+      if (snapshot?.turnSeq) {
+        snapshotCache.set(snapshot.turnSeq, snapshot);
+        while (snapshotCache.size > 32) snapshotCache.delete(snapshotCache.keys().next().value);
+      }
+      if (nextPrevious?.turnSeq) {
+        snapshotCache.set(nextPrevious.turnSeq, nextPrevious);
+        while (snapshotCache.size > 32) snapshotCache.delete(snapshotCache.keys().next().value);
+      }
       graph = agentResult?.ok ? agentResult.graph : null;
       blocks = blockResult?.ok ? blockResult.blocks || [] : [];
       memory = memoryResult?.ok ? memoryResult : null;

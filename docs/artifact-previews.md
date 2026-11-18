@@ -9,11 +9,21 @@ later canonical resolutions share the same entry, so adding a canonical path or
 replacing a file does not leave a second row behind.
 
 The desktop artifact sidebar renders Markdown locally with headings, tables, lists,
-links, images and task lists. It also supports footnotes, KaTeX mathematics using
+links, images and task lists. Markdown video syntax (`![clip](demo.mp4)`) renders a
+playback element instead of a broken image, and heading fragments in local links
+resolve after the document finishes rendering. It also supports footnotes, KaTeX mathematics using
 `$…$`, `$$…$$`, `\(…\)` and `\[…\]`, and syntax highlighting for recognized fenced
 code languages. Code copy and wrapping remain available. Unknown languages and
 code blocks over 50,000 characters remain plain code. Raw HTML is escaped; trusted
 TeX commands and external-resource commands are disabled. Mermaid is not included.
+
+Markdown renders in top-level blocks and hands each accumulated chunk (about
+48 KiB) back to the event loop, and the preview appends that chunk as it
+arrives. One very long paragraph is flushed as its own chunk, so the panel is
+no longer held for the whole document render. Stale output is discarded when
+another file opens or the preview closes. Bare file names stay literal; `www.`
+hosts, bare domain names, e-mail addresses, `mailto:` and explicit web or local
+file links become clickable.
 
 Text-based previews read up to 20 MiB (20,971,520 bytes) from disk, including
 Markdown, HTML, source code, logs and structured data. Larger files show the
@@ -71,6 +81,42 @@ the interface. Invalid or size-truncated JSON falls back to the available text
 with an explicit notice. JSONL remains a text preview.
 
 ## Word and Excel previews
+
+DOCX and legacy `.doc` files also support paragraph editing. Choose **Edit** and
+Camellia lists each non-empty paragraph as a text field; saving replaces the text
+of the paragraphs you changed and leaves numbers, pictures, charts, headers,
+footnotes and every other package part untouched. Formatting inside a paragraph
+(bold, italic, colour, alignment) is preserved, but a paragraph that mixes several
+formatting runs collapses to the formatting of its first run, and Word's own
+pagination is not recalculated in the preview. This is text editing, not a full
+word processor: you cannot add, delete or reorder paragraphs, change styles, or
+edit tables structurally.
+
+`report.docx` is edited in place: only `word/document.xml` is rewritten, every
+other ZIP entry keeps its original bytes, and an external change made since the
+preview opened is detected and refused instead of overwritten. Legacy `.doc` is an
+OLE2 binary whose text offsets live in a piece table and formatting runs that only
+Word can recalculate safely, so Camellia hands a private copy to an installed
+Microsoft Word through a small COM bridge, saves it back in the original `.doc`
+format, then swaps it into place. That path requires Windows, Microsoft Word and
+Python with `pywin32`; without them the document remains readable but read-only.
+The paragraph list used for saving is always the one Word reports, so table cells
+and empty paragraphs cannot shift an edit onto a neighbouring paragraph. Listing
+that list starts a hidden Word process, so it happens only when you choose
+**Edit**, never while the preview loads; closing Word and reopening the file
+cancels the pending edit token.
+
+When Word is available, `.doc` also gets a layout-faithful preview: Camellia asks
+Word for a temporary OOXML copy and runs it through the normal DOCX renderer, so
+pictures, theme colours and tables appear instead of plain text. That copy is
+cached per file version in the system temp directory and removed on quit. Without
+Word the bounded OLE2 reader still supplies the text preview, and the panel says
+which reason applied.
+
+Paragraphs that contain an inline picture or a page break are listed read-only,
+because Word represents each as a control character and replacing that row
+would delete the picture. The UI, the main process and the COM bridge all refuse
+such a save.
 
 DOCX uses the local `docx-preview` renderer for document styles, tables, pictures,
 headers/footers, footnotes/endnotes and explicit or saved page breaks. It does not

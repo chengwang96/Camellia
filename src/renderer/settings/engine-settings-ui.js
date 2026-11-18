@@ -407,8 +407,9 @@ window.createEngineSettingsUI = ({ api, status, navigate }) => {
     if (api.nativeSettingsView !== true) return Promise.resolve({ ok: true });
     const surface = $('dshSettingsSurface').getBoundingClientRect(), clip = document.querySelector('.scroll-content').getBoundingClientRect();
     const y = Math.max(surface.top, clip.top), height = Math.max(0, Math.min(surface.bottom, clip.bottom) - y);
-    return api.showNativeSettings({ visible: activePage && engine === 'dsh' && ! $('engineContent').hidden && height > 0,
-      bounds: { x: surface.left, y, width: surface.width, height }, reload });
+    const visible = activePage && engine === 'dsh' && !$('engineContent').hidden
+      && height > 0 && !document.querySelector('dialog:modal');
+    return api.showNativeSettings({ visible, bounds: { x: surface.left, y, width: surface.width, height }, reload });
   }
   function setVisible(visible) { activePage = visible; void placeNative(); }
   async function select(next, reload = false) {
@@ -822,5 +823,11 @@ window.createEngineSettingsUI = ({ api, status, navigate }) => {
   // Installation status and path controls now sit above the native surface.
   // Their height can change without resizing the surface itself.
   new ResizeObserver(layout).observe($('runtimeCards'), { box: 'border-box' });
+  if (api.nativeSettingsView === true) {
+    // The Electron child view paints above the settings renderer's modal layer.
+    new MutationObserver(records => {
+      if (records.some(({ target }) => target instanceof HTMLDialogElement)) void placeNative();
+    }).observe(document.body, { subtree: true, attributes: true, attributeFilter: ['open'] });
+  }
   return { select, openAccount, accountsPage, runtimePage, checkRuntimeUpdates, pythonPage, selected: () => engine, setVisible };
 };

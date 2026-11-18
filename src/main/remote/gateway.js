@@ -30,8 +30,8 @@ async function body(request, limit = 4096) {
 }
 
 class RemoteGateway {
-  constructor({ access, reader, commands, apiRoutes = null, apiImport = null, nativeSettings = null, management = null, desktopRestart = null, discussions = null, accountUsage = null, validateHost = isTailscaleIPv4 }) {
-    Object.assign(this, { access, reader, commands, apiRoutes, apiImport, nativeSettings, management, desktopRestart, discussions, accountUsage, validateHost });
+  constructor({ access, reader, commands, apiRoutes = null, desktopRestart = null, discussions = null, accountUsage = null, validateHost = isTailscaleIPv4 }) {
+    Object.assign(this, { access, reader, commands, apiRoutes, desktopRestart, discussions, accountUsage, validateHost });
     this.streams = new Set();
     this.downloads = new Set();
     this.sequence = 0;
@@ -169,45 +169,6 @@ class RemoteGateway {
       await this.handleDiscussions(request, response, url, device);
       return;
     }
-    const operation = /^\/v1\/server-management(?:\/([a-f0-9-]{36}))?$/.exec(url.pathname);
-    if (operation && this.management) {
-      if (device.permission !== 'control' || device.allWorkspaces !== true) fail(403, 'Full-device control permission required');
-      if (url.search) fail(400, 'Unsupported management query');
-      if (operation[1] && request.method === 'GET') this.json(response, 200, this.management.get(device.id, operation[1]));
-      else if (!operation[1] && request.method === 'POST') {
-        const payload = await body(request, 32 * 1024);
-        const current = this.access.authenticate(authorization.slice(7));
-        if (current.permission !== 'control' || current.allWorkspaces !== true) fail(403, 'Full-device control permission required');
-        this.json(response, 200, this.management.submit(current.id, payload));
-      } else fail(405, 'Unsupported management method');
-      return;
-    }
-    const native = /^\/v1\/native-settings\/(claude|codex|kimi|dsh|antigravity|grok)$/.exec(url.pathname);
-    if (native && this.nativeSettings) {
-      if (device.permission !== 'control' || device.allWorkspaces !== true) fail(403, 'Full-device control permission required');
-      if (url.search || !['GET', 'POST'].includes(request.method)) fail(400, 'Invalid native settings request');
-      if (request.method === 'GET') this.json(response, 200, this.nativeSettings.get(native[1]));
-      else {
-        const payload = await body(request, 1024 * 1024);
-        const current = this.access.authenticate(authorization.slice(7));
-        if (current.permission !== 'control' || current.allWorkspaces !== true) fail(403, 'Full-device control permission required');
-        if (payload?.engine !== native[1]) fail(400, 'Native settings engine mismatch');
-        this.json(response, 200, this.nativeSettings.save(payload));
-      }
-      return;
-    }
-    if (url.pathname === '/v1/api-import' && this.apiImport) {
-      if (device.permission !== 'control' || device.allWorkspaces !== true) fail(403, 'Full-device control permission required');
-      if (url.search || !['GET', 'POST'].includes(request.method)) fail(400, 'Invalid import request');
-      if (request.method === 'GET') this.json(response, 200, this.apiImport.state());
-      else {
-        const payload = await body(request, 1024 * 1024);
-        const current = this.access.authenticate(authorization.slice(7));
-        if (current.permission !== 'control' || current.allWorkspaces !== true) fail(403, 'Full-device control permission required');
-        this.json(response, 200, this.apiImport.apply(current.id, payload));
-      }
-      return;
-    }
     const read = /^\/v1\/conversations\/([a-f0-9-]{36})\/read$/.exec(url.pathname);
     if (read && request.method === 'POST' && !url.search) {
       this.reader.conversation(device, read[1]);
@@ -289,7 +250,11 @@ class RemoteGateway {
       return;
     }
     const incremental = /\/events$/.test(url.pathname) && url.searchParams.get('incremental') === '1';
+    const conversationEvents = /^\/v1\/conversations\/[a-f0-9-]{36}\/events$/.test(url.pathname);
+    const historyVersion = conversationEvents && incremental ? url.searchParams.get('historyVersion') : null;
+    if (historyVersion !== null && (!/^[a-f0-9]{64}$/.test(historyVersion) || url.searchParams.getAll('historyVersion').length !== 1)) fail(400, 'Invalid history version');
     for (const key of url.searchParams.keys()) if (!['before', 'offset'].includes(key) && !(key === 'incremental' && incremental)
+      && !(key === 'historyVersion' && historyVersion !== null)
       && !(url.pathname === '/v1/conversations' && ['limit', 'query'].includes(key))) fail(400, 'Unsupported query parameter');
     if (url.pathname === '/v1/workbench' || url.pathname === '/v1/workbench/events') {
       if (url.search) fail(400, 'Unsupported workbench query');
@@ -308,7 +273,7 @@ class RemoteGateway {
     } else {
       const match = /^\/v1\/conversations\/([a-f0-9-]{36})(\/events)?$/.exec(url.pathname);
       if (!match) fail(404, 'Endpoint not found');
-      if (match[2]) this.subscribe(response, device, match[1], 'conversations', incremental);
+      if (match[2]) this.subscribe(response, device, match[1], 'conversations', incremental, historyVersion || undefined);
       else this.json(response, 200, withJsonReadSnapshot(() => ({ ...this.reader.snapshot(device, match[1], number(url.searchParams.get('before'), undefined)), ...this.stamp() })));
     }
   }
@@ -318,9 +283,6 @@ class RemoteGateway {
       ...(fullControl ? ['create-workspace', 'delete-workspace', 'rename-workspace'] : [])] : ['artifacts'];
     if (this.apiRoutes && fullControl) capabilities.push('api-keys');
     if (this.accountUsage && fullControl) capabilities.push('account-usage');
-    if (this.apiImport && fullControl) capabilities.push('api-import');
-    if (this.nativeSettings && fullControl) capabilities.push('native-settings');
-    if (this.management && fullControl) capabilities.push('server-management');
     if (this.desktopRestart && fullControl) capabilities.push('desktop-restart');
     if (this.discussions && fullControl) capabilities.push('discussions', 'discussion-rich');
     if (this.commands) capabilities.push('interactive-approvals', 'next-turn-settings', 'subagents');
@@ -436,9 +398,9 @@ class RemoteGateway {
     const conversationList = { ...this.connectionInfo(device), ...this.reader.list(device), ...discussions };
     return { ...snapshot, conversationList, listVersion: version };
   }
-  subscribe(response, device, id, kind = 'conversations', incremental = false) {
+  subscribe(response, device, id, kind = 'conversations', incremental = false, historyVersion) {
     if (this.streams.size >= 16 || [...this.streams].filter(stream => stream.device.id === device.id).length >= 4) fail(429, 'Too many event streams');
-    const snapshot = this.streamSnapshot({ device, id, kind });
+    const snapshot = this.streamSnapshot({ device, id, kind, incremental, historyVersion });
     response.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' });
     const stream = { response, device, id, kind, incremental, dirty: false, blocked: false };
     this.streams.add(stream);
@@ -497,7 +459,7 @@ class RemoteGateway {
   writeSnapshot(stream, snapshot) {
     if (!stream.id && stream.listVersion === snapshot.listVersion) return;
     stream.listVersion = snapshot.listVersion;
-    if (snapshot.messages) stream.historyVersion = snapshot.historyVersion;
+    if (snapshot.historyVersion) stream.historyVersion = snapshot.historyVersion;
     const payload = { ...snapshot, ...this.stamp(),
       ...(snapshot.conversationList ? { conversationList: { ...snapshot.conversationList, ...this.stamp() } } : {}) };
     this.writeFrame(stream, `id: ${this.instanceId}:${this.sequence}\nevent: snapshot\ndata: ${JSON.stringify(payload)}\n\n`);

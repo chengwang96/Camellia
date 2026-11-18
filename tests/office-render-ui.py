@@ -7,6 +7,7 @@ from pathlib import Path
 from docx import Document
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill
+from openpyxl.utils import get_column_letter
 from pptx import Presentation
 from pptx.util import Inches, Pt
 from playwright.sync_api import sync_playwright, expect
@@ -35,8 +36,11 @@ with tempfile.TemporaryDirectory(prefix='camellia-office-render-') as directory:
     # survive the local renderer, which previously dropped every group shape.
     group = slide.shapes.add_group_shape()
     for offset, label in [(0, 'Grouped left'), (1, 'Grouped right')]:
-        box = group.shapes.add_textbox(Inches(7 + offset * 2), Inches(1), Inches(1.8), Inches(0.6))
+        box = group.shapes.add_textbox(Inches(6 + offset * 2), Inches(1), Inches(1.8), Inches(0.6))
         box.text_frame.paragraphs[0].text = label
+    second_slide = presentation.slides.add_slide(presentation.slide_layouts[6])
+    second_title = second_slide.shapes.add_textbox(Inches(1), Inches(1), Inches(6), Inches(1))
+    second_title.text_frame.paragraphs[0].text = 'Second slide'
     presentation.save(folder / 'slides.pptx')
 
     workbook = Workbook()
@@ -51,6 +55,13 @@ with tempfile.TemporaryDirectory(prefix='camellia-office-render-') as directory:
     sheet['A2'] = 'Merged cells'
     sheet.column_dimensions['A'].width = 28
     sheet.row_dimensions[2].height = 36
+    for row in range(4, 41):
+        sheet.cell(row=row, column=1, value=row)
+        sheet.cell(row=row, column=2, value=f'Value {row}')
+    for column in range(3, 11):
+        sheet.column_dimensions[get_column_letter(column)].width = 22
+        for row in range(1, 41):
+            sheet.cell(row=row, column=column, value=f'{get_column_letter(column)}{row}')
     sheet.freeze_panes = 'B2'
     workbook.create_sheet('Second sheet')['A1'] = 'Another worksheet'
     workbook.save(folder / 'results.xlsx')
@@ -76,8 +87,14 @@ with tempfile.TemporaryDirectory(prefix='camellia-office-render-') as directory:
                 expect(frame.get_by_text('Document header', exact=True).first).to_be_visible()
                 expect(frame.get_by_text('Document footer', exact=True).first).to_be_visible()
                 assert page.locator('iframe').evaluate('(frame) => frame.contentDocument === null')
+                assert frame.locator('body').evaluate("""body => [...body.querySelectorAll('*')].every(
+                    element => !['fixed', 'sticky'].includes(getComputedStyle(element).position))""")
+                second_page = frame.get_by_text('Second page', exact=True)
+                second_page.scroll_into_view_if_needed()
+                expect(second_page).to_be_in_viewport()
+                frame.get_by_text('Rendered Word report', exact=True).scroll_into_view_if_needed()
             elif kind == 'presentation':
-                expect(frame.locator('.slide')).to_be_visible()
+                expect(frame.locator('.slide').first).to_be_visible()
                 expect(frame.get_by_text('Rendered slide')).to_be_visible()
                 expect(frame.locator('.group')).to_have_count(1)
                 expect(frame.get_by_text('Grouped left')).to_be_visible()
@@ -87,12 +104,60 @@ with tempfile.TemporaryDirectory(prefix='camellia-office-render-') as directory:
                     '(el) => { const group = el.closest(".group").getBoundingClientRect(); const child = el.getBoundingClientRect(); return child.width <= group.width + 1 && child.height <= group.height + 1; }')
                 expect(frame.locator('img')).to_be_visible()
                 assert frame.locator('img').evaluate('(image) => image.complete && image.naturalWidth > 0')
+                expect(frame.locator('.slide')).to_have_count(2)
+                assert frame.locator('body').evaluate("""body => [...body.querySelectorAll('*')].every(
+                    element => !['fixed', 'sticky'].includes(getComputedStyle(element).position))""")
+                assert frame.locator('.slide').evaluate_all("""slides => slides.every(slide => {
+                    const bounds = slide.getBoundingClientRect();
+                    return [...slide.querySelectorAll('.shape,.group,.picture,.chart,.connector')].every(element => {
+                        const rect = element.getBoundingClientRect();
+                        return rect.left >= bounds.left - 1 && rect.top >= bounds.top - 1
+                            && rect.right <= bounds.right + 1 && rect.bottom <= bounds.bottom + 1;
+                    });
+                })""")
+                second_slide = frame.get_by_text('Second slide', exact=True)
+                second_slide.scroll_into_view_if_needed()
+                expect(second_slide).to_be_in_viewport()
+                frame.get_by_text('Rendered slide', exact=True).scroll_into_view_if_needed()
             else:
                 expect(frame.locator('h2').first).to_have_text('Results')
                 expect(frame.locator('td').nth(1)).to_have_text('25.00%')
                 expect(frame.locator('td').first).to_have_css('font-weight', '700')
                 expect(frame.locator('td[colspan="2"][rowspan="2"]')).to_have_text('Merged cells')
                 expect(frame.locator('td').first).to_have_css('position', 'sticky')
+                sheet_view = frame.locator('.sheet').first
+                sheet_view.evaluate('(element) => { element.scrollTop = 240; element.scrollLeft = 260; }')
+                assert frame.locator('td').first.evaluate("""cell => {
+                    const rect = cell.getBoundingClientRect();
+                    const hit = document.elementFromPoint(rect.left + 10, rect.top + rect.height / 2);
+                    return hit === cell || cell.contains(hit);
+                }""")
+                first_row_number = frame.locator('tbody tr').first.locator('th')
+                expect(first_row_number).to_have_text('1')
+                assert first_row_number.evaluate("""cell => {
+                    const rect = cell.getBoundingClientRect();
+                    const hit = document.elementFromPoint(rect.left + 10, rect.top + rect.height / 2);
+                    return hit === cell || cell.contains(hit);
+                }""")
+                column_a = frame.locator('thead th').nth(1)
+                expect(column_a).to_have_text('A')
+                assert column_a.evaluate("""header => {
+                    const rect = header.getBoundingClientRect();
+                    const cell = document.querySelector('tbody td').getBoundingClientRect();
+                    const hit = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
+                    return Math.abs(rect.left - cell.left) < 1 && (hit === header || header.contains(hit));
+                }""")
+                assert frame.locator('thead th').first.evaluate("""header => {
+                    const rect = header.getBoundingClientRect();
+                    const sheet = document.querySelector('.sheet').getBoundingClientRect();
+                    return Math.abs(rect.left - sheet.left) < 1;
+                }""")
+                assert frame.locator('tbody tr').nth(1).locator('th').evaluate("""header => {
+                    const rect = header.getBoundingClientRect();
+                    const sheet = document.querySelector('.sheet').getBoundingClientRect();
+                    return Math.abs(rect.left - sheet.left) < 1;
+                }""")
+                sheet_view.evaluate('(element) => { element.scrollTop = 0; element.scrollLeft = 0; }')
             output = root / 'dist/ui-preview'
             output.mkdir(parents=True, exist_ok=True)
             page.screenshot(path=str(output / f'office-render-{kind}.png'))

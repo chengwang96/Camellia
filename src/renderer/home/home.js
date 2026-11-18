@@ -38,10 +38,6 @@ for (const button of document.querySelectorAll('[data-mode]')) {
   });
 }
 document.getElementById('openConfig').addEventListener('click', () => window.dshDesktop.openSettingsWindow());
-document.getElementById('openCliDevices').addEventListener('click', async () => {
-  try { const result = await window.dshDesktop.openCliDevices(); if (!result.ok) throw new Error(result.error); }
-  catch (error) { status.textContent = error.message; status.className = 'error'; }
-});
 document.getElementById('openMobileAccess').addEventListener('click', async () => {
   try { const result = await window.dshDesktop.openMobileAccess(); if (!result.ok) throw new Error(result.error); }
   catch (error) { status.textContent = error.message; status.className = 'error'; }
@@ -50,42 +46,6 @@ document.getElementById('openDiscussions').addEventListener('click', async () =>
   try { const result = await window.dshDesktop.switchMode('discussions'); if (!result.ok) throw new Error(result.error); }
   catch (error) { status.textContent = error.message; status.className = 'error'; }
 });
-let loadingServers = false;
-async function renderServers() {
-  if (loadingServers) return;
-  loadingServers = true;
-  try {
-    const result = await window.dshDesktop.listCliServers();
-    if (!result.ok) throw new Error(result.error);
-    const english = result.language === 'en';
-    const anchor = document.querySelector('.home-tools');
-    const names = { codex: 'Codex CLI', claude: 'Claude Code', dsh: 'DeepSeek Harness', kimi: 'Kimi Code', antigravity: 'Antigravity', grok: 'Grok Build' };
-    document.getElementById('cliDivider').hidden = result.devices.length === 0;
-    for (const entry of document.querySelectorAll('[data-server]')) entry.remove();
-    document.querySelector('#openCliDevices .config-title').textContent = english ? 'Server connections' : '服务器连接';
-    document.getElementById('openCliDevices').setAttribute('aria-label', english ? 'Server connections' : '服务器连接');
-    document.querySelector('#openCliDevices .entry-description').textContent = english ? 'Pair servers and choose a default harness' : '配对服务器、设置默认 Harness';
-    for (const device of result.devices) {
-      const button = document.createElement('button'); button.className = 'agent-entry server-entry'; button.dataset.server = device.id;
-      const symbol = document.createElement('span'); symbol.className = 'agent-symbol server-symbol'; symbol.textContent = '>_'; symbol.setAttribute('aria-hidden', 'true');
-      const title = document.createElement('span'); title.className = 'entry-title'; title.textContent = device.name;
-      const description = document.createElement('span'); description.className = 'entry-description'; description.textContent = `CLI SERVER · ${names[device.defaultHarness] || (english ? 'Server harness' : '服务器 Harness')}`;
-      const address = document.createElement('span'); address.className = 'server-address'; address.textContent = device.address;
-      const action = document.createElement('span'); action.className = 'entry-action'; action.textContent = english ? 'Open server' : '打开服务器';
-      button.append(symbol, title, description, address, action);
-      button.onclick = async () => {
-        button.disabled = true;
-        try { const opened = await window.dshDesktop.openCliServer(device.id); if (!opened.ok) throw new Error(opened.error); }
-        catch (error) { status.textContent = error.message; status.className = 'error'; }
-        finally { button.disabled = false; }
-      };
-      anchor.before(button);
-    }
-  } catch (error) { status.textContent = error.message; status.className = 'error'; }
-  finally { loadingServers = false; }
-}
-window.addEventListener('focus', () => void renderServers());
-void renderServers();
 const runtimeRows = new Map();
 let runtimeUpdates = [], checkingRuntimeUpdates = false, runtimeCheckedAt = 0;
 const runtimeCheckInterval = 5 * 60 * 1000;

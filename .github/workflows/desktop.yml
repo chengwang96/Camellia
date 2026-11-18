@@ -62,6 +62,8 @@ jobs:
         run: node scripts/build-discussion-helper.cjs
       - name: Embedded network native smoke test
         run: node tests/embedded-network-electron.cjs
+      - name: Embedded network hot update smoke test
+        run: node tests/tailnet-update-restart-electron.cjs
       - name: Prepare engines used by integration tests
         run: npm run setup:runtimes -- claude codex dsh kimi antigravity grok
       - name: Prepare the Antigravity subscription CLI
@@ -186,6 +188,8 @@ jobs:
       - name: Verify Windows portable extraction and startup
         if: matrix.platform == 'windows'
         run: node tests/portable-smoke.cjs
+      - name: Prepare embedded network update assets
+        run: npm run build:tailnet -- --release-assets
       - name: Upload smoke diagnostics on failure
         if: failure()
         uses: actions/upload-artifact@v7
@@ -210,6 +214,7 @@ jobs:
             dist/*.exe
             dist/*.dmg
             dist/*.zip
+            dist/tailnet-updates/*
 
   # Separate dependency edges let macOS acceptance start as soon as its own
   # package is ready. Step anchors keep the two platform pipelines identical.
@@ -326,6 +331,7 @@ jobs:
             dist/*.exe
             dist/*.dmg
             dist/*.zip
+            dist/tailnet-updates/*
 
   acceptance-macos:
     name: Acceptance / ${{ matrix.platform }} / ${{ matrix.arch }}

@@ -27,7 +27,9 @@ async function run() {
   const version = spawnSync(runtime.file, ['--version'], { encoding: 'utf8', windowsHide: true,
     env: grokEnvironment(versionHome, isolatedEnvironment(root, process.execPath)) });
   assert.equal(version.status, 0, version.stderr);
-  assert.match(version.stdout + version.stderr, /grok 1\.0\.77/);
+  const packageVersion = JSON.parse(fs.readFileSync(
+    path.join(runtime.dir, 'node_modules', '@xai-official', 'grok', 'package.json'), 'utf8')).version;
+  assert.match(version.stdout + version.stderr, new RegExp('grok ' + packageVersion.replace(/\./g, '\\.') + '\\b'));
   const home = path.join(root, 'runtime-home'), cwd = path.join(root, 'Project With Spaces');
   fs.mkdirSync(cwd, { recursive: true });
   const marker = path.join(cwd, 'marker.txt'), written = path.join(cwd, 'written.txt'), denied = path.join(cwd, 'denied.txt');

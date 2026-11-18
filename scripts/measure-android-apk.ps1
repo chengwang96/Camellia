@@ -37,6 +37,7 @@ try {
             compressedBytes = [long][BitConverter]::ToUInt32($header, 20)
             uncompressedBytes = [long][BitConverter]::ToUInt32($header, 24)
             compression = [BitConverter]::ToUInt16($header, 10)
+            elfLoadAlignment = $null
             flags = [BitConverter]::ToUInt16($header, 8)
             offset = [long][BitConverter]::ToUInt32($header, 42)
         }
@@ -48,6 +49,31 @@ try {
         if ([BitConverter]::ToUInt32($header, 0) -ne 0x04034b50) { throw 'Invalid local APK ZIP header.' }
         $length = 30 + [BitConverter]::ToUInt16($header, 26) + [BitConverter]::ToUInt16($header, 28)
         $localBytes += $length; $payloadBytes += $entry.compressedBytes
+        if ($entry.name -match '^lib/.+\.so$' -and $entry.compression -eq 0) {
+            $dataOffset = $entry.offset + $length
+            $stream.Position = $dataOffset
+            $elf = $reader.ReadBytes(64)
+            if ($elf.Length -ne 64 -or [BitConverter]::ToUInt32($elf, 0) -ne 0x464c457f -or $elf[4] -ne 2 -or $elf[5] -ne 1) {
+                throw "Unsupported native ELF layout: $($entry.name)"
+            }
+            $programOffset = [BitConverter]::ToUInt64($elf, 32)
+            $programSize = [BitConverter]::ToUInt16($elf, 54)
+            $programCount = [BitConverter]::ToUInt16($elf, 56)
+            if ($programSize -lt 56 -or $programOffset -gt $entry.uncompressedBytes -or
+                $programCount * $programSize -gt $entry.uncompressedBytes - $programOffset) {
+                throw "Invalid native ELF program header: $($entry.name)"
+            }
+            $alignment = [long]::MaxValue
+            for ($j = 0; $j -lt $programCount; $j++) {
+                $stream.Position = $dataOffset + $programOffset + $j * $programSize
+                $program = $reader.ReadBytes($programSize)
+                if ($program.Length -ne $programSize) { throw "Truncated native ELF program header: $($entry.name)" }
+                if ([BitConverter]::ToUInt32($program, 0) -eq 1) {
+                    $alignment = [Math]::Min($alignment, [long][BitConverter]::ToUInt64($program, 48))
+                }
+            }
+            $entry.elfLoadAlignment = if ($alignment -eq [long]::MaxValue) { 0L } else { $alignment }
+        }
         if ($entry.flags -band 8) {
             $stream.Position = $entry.offset + $length + $entry.compressedBytes
             $descriptorBytes += $(if ($reader.ReadUInt32() -eq 0x08074b50) { 16 } else { 12 })
@@ -70,7 +96,7 @@ try {
     [pscustomobject]@{
         path = $resolved; bytes = $stream.Length; sha256 = (Get-FileHash -LiteralPath $resolved -Algorithm SHA256).Hash.ToLowerInvariant()
         entryCount = $count; payloadBytes = $payloadBytes; overheadBytes = $overhead; unreferencedBytes = $unreferenced
-        nativeLibraries = @($entries | Where-Object name -match '^lib/.+\.so$' | Select-Object name, compression, uncompressedBytes)
+        nativeLibraries = @($entries | Where-Object name -match '^lib/.+\.so$' | Select-Object name, compression, uncompressedBytes, elfLoadAlignment)
         categories = $groups
     }
 } finally { $reader.Dispose(); $stream.Dispose() }

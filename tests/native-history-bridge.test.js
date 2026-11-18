@@ -53,10 +53,15 @@ class NativeSession {
     driver.resolve({ stopReason: turnEndReasonToStopReason(event.reason, error) });
   }
   cancel() {
-    const driver = this.driver;
     for (const pending of this.pendingPromptAborts) pending.aborted = true;
+    const driver = this.driver;
+    if (driver === void 0 || driver.settled) return;
+    const turnId = driver.turnId;
+\t\t\tif (turnId === void 0) {
     driver.cancelRequested = true;
 \t\t\t\tthis.agent.cancel();
+      return;
+    }
   }
 }
 function runNative() {

@@ -256,21 +256,29 @@ test('npm update installs the latest version and restores the harness without re
   const registries = await registryFixture(t, { '@moonshot-ai/kimi-code': '0.43.1' });
   const manager = createRuntimeManager({ root, installRoot: path.join(root, 'elsewhere') });
   const calls = [];
-  const run = async (exe, args) => {
+  const run = async (exe, args, options) => {
     lifecycle.push('install');
     calls.push(args);
     const spec = args.find(arg => arg.startsWith('@moonshot-ai/kimi-code@'));
     const version = spec.slice('@moonshot-ai/kimi-code@'.length);
-    fs.writeFileSync(path.join(dir, 'node_modules', '@moonshot-ai', 'kimi-code', 'package.json'),
+    const candidate = path.join(options.cwd, 'node_modules', '@moonshot-ai', 'kimi-code');
+    fs.mkdirSync(path.join(candidate, 'dist'), { recursive: true });
+    fs.writeFileSync(path.join(candidate, 'dist/main.mjs'), '');
+    fs.writeFileSync(path.join(candidate, 'package.json'),
       JSON.stringify({ name: '@moonshot-ai/kimi-code', version }));
   };
   const lifecycle = [];
   const updates = createRuntimeUpdates({ manager, engines: ENGINES, node: '/node', npm: '/npm-cli.js', run,
-    downloadSettings: direct, registries,
+    downloadSettings: direct, registries, verifyKimi: async ({ runtime }) => {
+      assert.ok(fs.existsSync(runtime));
+      assert.equal(manager.locate('kimi').version, '0.43.0');
+      assert.notEqual(path.dirname(runtime), path.dirname(manager.locate('kimi').file));
+      lifecycle.push('verify');
+    },
     beforeInstall: async () => { lifecycle.push('stop'); return async () => { lifecycle.push('restore'); }; } });
   const result = await updates.update('kimi');
   assert.deepEqual({ ...result }, { ok: true, engine: 'kimi', from: '0.43.0', to: '0.43.1', changed: true, restartRequired: false, restarting: false });
-  assert.deepEqual(lifecycle, ['stop', 'install', 'restore']);
+  assert.deepEqual(lifecycle, ['install', 'verify', 'stop', 'restore']);
   assert.equal(calls.length, 1);
   const args = calls[0];
   assert.ok(args.includes('install') && args.includes('--save-exact'), `npm install args: ${args.join(' ')}`);
@@ -279,7 +287,7 @@ test('npm update installs the latest version and restores the harness without re
   assert.equal(manager.locate('kimi').version, '0.43.1');
 });
 
-test('npm updates speed-test the package archive and hand the winning route to npm', async t => {
+test('Kimi updates probe the archive route and retain the current install if verification fails', async t => {
   const root = fixtureRoot(t);
   const dir = npmRuntime(root, 'kimi', '0.43.0');
   const registries = await registryFixture(t, { '@moonshot-ai/kimi-code': '0.43.1' });
@@ -287,7 +295,8 @@ test('npm updates speed-test the package archive and hand the winning route to n
   const settings = { mode: 'proxy', url: await httpProxy(t) };
   let probeUrl = '', npmEnv;
   const updates = createRuntimeUpdates({ manager, engines: ENGINES, node: '/node', npm: '/npm-cli.js',
-    downloadSettings: () => settings, registries,
+    downloadSettings: () => settings, registries, verifyKimi: async () => { throw new Error('Incompatible ACP events'); },
+    beforeInstall: async () => assert.fail('An incompatible candidate must leave active sessions alone'),
     chooseConnection: async (received, options) => {
       assert.deepEqual(received, settings);
       probeUrl = options.probeUrl;
@@ -297,13 +306,16 @@ test('npm updates speed-test the package archive and hand the winning route to n
       npmEnv = options.env;
       const spec = args.find(arg => arg.startsWith('@moonshot-ai/kimi-code@'));
       const version = spec.slice('@moonshot-ai/kimi-code@'.length);
-      fs.writeFileSync(path.join(dir, 'node_modules', '@moonshot-ai', 'kimi-code', 'package.json'),
+      const candidate = path.join(options.cwd, 'node_modules', '@moonshot-ai', 'kimi-code');
+      fs.mkdirSync(candidate, { recursive: true });
+      fs.writeFileSync(path.join(candidate, 'package.json'),
         JSON.stringify({ name: '@moonshot-ai/kimi-code', version }));
     } });
-  assert.equal((await updates.update('kimi')).to, '0.43.1');
+  await assert.rejects(updates.update('kimi'), /Kept v0.43.0. Incompatible ACP events/);
   assert.match(probeUrl, /\/archive\//, 'The probe uses the npm tarball, not only the small version document');
   assert.equal(npmEnv.HTTPS_PROXY, '');
-  assert.equal(manager.locate('kimi').version, '0.43.1');
+  assert.equal(manager.locate('kimi').version, '0.43.0');
+  assert.deepEqual(fs.readdirSync(path.dirname(dir)), ['kimi']);
 });
 
 test('update with no newer version leaves the running harness alone', async t => {
@@ -440,18 +452,21 @@ for (const failures of [[], ['kimi'], ['claude'], ['claude', 'kimi']]) {
     const started = Object.fromEntries(ids.map(id => [id, Promise.withResolvers()]));
     const snapshots = [], restorations = [], calls = [];
     const updates = createRuntimeUpdates({ manager, engines: ENGINES, node: '/node', npm: '/npm-cli.js',
-      downloadSettings: direct, registries, onChange: rows => snapshots.push(rows),
+      downloadSettings: direct, registries, onChange: rows => snapshots.push(rows), verifyKimi: async () => {},
       beforeInstall: async id => async ({ updated, error }) => {
         assert.equal(updates.isUpdating(id), true);
         restorations.push({ id, updated, failed: Boolean(error) });
       },
-      run: async (_exe, args) => {
+      run: async (_exe, args, options) => {
         const id = ids.find(id => args.includes(`${ENGINES[id].package}@2.0.0`));
         calls.push(id);
         started[id].resolve();
         await gates[id].promise;
         if (failures.includes(id)) throw new Error(`${id} installation failed`);
-        fs.writeFileSync(path.join(directories[id], 'node_modules', ENGINES[id].package, 'package.json'),
+        const candidate = path.join(options.cwd, 'node_modules', ENGINES[id].package);
+        fs.mkdirSync(path.join(candidate, 'dist'), { recursive: true });
+        fs.writeFileSync(path.join(candidate, ENGINES[id].entry), '');
+        fs.writeFileSync(path.join(candidate, 'package.json'),
           JSON.stringify({ name: ENGINES[id].package, version: '2.0.0' }));
       } });
     const first = updates.update('claude');
@@ -469,7 +484,8 @@ for (const failures of [[], ['kimi'], ['claude'], ['claude', 'kimi']]) {
     gates.kimi.resolve();
     const secondResult = await secondSettled;
     assert.equal(secondResult instanceof Error, failures.includes('kimi'));
-    assert.deepEqual(restorations, ids.map(id => ({ id, updated: !failures.includes(id), failed: failures.includes(id) })));
+    assert.deepEqual(restorations, ids.filter(id => id !== 'kimi' || !failures.includes(id))
+      .map(id => ({ id, updated: !failures.includes(id), failed: failures.includes(id) })));
     assert.equal(updates.state().some(row => row.updating), false);
     assert.equal(snapshots.at(-1).some(row => row.updating), false);
     assert.deepEqual(calls.sort(), ids);

@@ -29,16 +29,11 @@ connection and account. The source keeps its native identity; a child gets a
 distinct identity and its own conversation-tool bridge. Parked native bindings
 are not copied into the child.
 
-The headless server advertises the same editing and fork capabilities. Its
-Claude driver passes the frozen transcript and guarded resume boundary through
-to the CLI and writes a separate MCP overlay for each conversation, preserving
-the configured custom MCP servers and their original configuration file.
-
 | Verified runtime | Native branch preparation |
 | --- | --- |
 | Claude 2.1.312 | Freeze a complete raw native JSONL prefix. `--fork-session` creates the child on its first send, including after restart or deletion of the source. |
 | Codex 0.165.0 | `thread/fork`, optionally through a turn boundary. API homes use SQLite backups including committed WAL data and copy/rebase the rollout lineage. |
-| Grok 1.0.77 | `_x.ai/session/fork`, optionally through `targetPromptIndex`; load the child with its own MCP configuration. |
+| Grok 1.0.89 | `_x.ai/session/fork`, optionally through `targetPromptIndex`; load the child with its own MCP configuration. |
 | Kimi 2.4.0 | ACP `session/fork` on the connection owning the source lease; close and restore only the child to replace inherited MCP servers. |
 | Antigravity API SDK 0.1.16 | Existing SDK bridge `session/fork`, using its native database snapshot. |
 | DSH 0.2.1-rc.2 | Host event-boundary fork through the bridge below. |

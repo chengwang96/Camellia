@@ -6,7 +6,9 @@ import android.test.InstrumentationTestCase;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.TextView;
+import org.json.JSONArray;
 import org.json.JSONObject;
+import java.util.concurrent.TimeUnit;
 
 public class ComputerSelectionTest extends InstrumentationTestCase {
     private MainActivity activity;
@@ -60,6 +62,48 @@ public class ComputerSelectionTest extends InstrumentationTestCase {
             root().findViewWithTag("addComputer").performClick();
             assertEquals("pair", field("screen")); assertEquals(2, computers.all().size());
         });
+    }
+
+    public void testForgettingAComputerDisconnectsAndDropsItsChatCache() throws Exception {
+        var context = getInstrumentation().getTargetContext();
+        JSONObject owner = new JSONObject(first.toString());
+        String id = "00000000-0000-0000-0000-000000000001";
+        var cancelled = new java.util.concurrent.CountDownLatch(1);
+        RemoteApi client = new RemoteApi(first.getString("address")) {
+            @Override public void cancel() { cancelled.countDown(); super.cancel(); }
+        };
+        JSONObject snapshot = new JSONObject()
+            .put("instanceId", "server").put("cursor", 4).put("historyVersion", "a".repeat(64)).put("permission", "control")
+            .put("conversation", new JSONObject().put("id", id).put("title", "Private chat"))
+            .put("messages", new JSONArray().put(new JSONObject().put("seq", 4).put("role", "assistant").put("text", "Cached private reply")))
+            .put("nextBefore", JSONObject.NULL);
+        RemoteConversationCache cache = RemoteConversationCache.get(context);
+        cache.put(owner, snapshot); cache.flush().get(5, TimeUnit.SECONDS);
+        try {
+            ui(() -> {
+                field("api", client);
+                assertNotNull(cache.get(owner, id));
+                invoke("removeComputer", new Class<?>[]{JSONObject.class}, first);
+                assertNull("The forgotten computer must lose its cached chat", cache.get(owner, id));
+                assertEquals(1, computers.all().size());
+                assertEquals(second.getString("address"), computers.all().get(0).getString("address"));
+                assertEquals(second.getString("address"), ((JSONObject) field("credentials")).getString("address"));
+            });
+            assertTrue("Forgetting a computer must close its live client",
+                cancelled.await(3, TimeUnit.SECONDS));
+            RemoteConversationCache reopened = new RemoteConversationCache(
+                new RemoteConversationCache.Storage() {
+                    @Override public JSONObject load(String key) throws Exception {
+                        return new CredentialStore(context, "remote-conversation-cache-" + key).load();
+                    }
+                    @Override public void save(String key, JSONObject value) throws Exception {
+                        new CredentialStore(context, "remote-conversation-cache-" + key).save(value);
+                    }
+                    @Override public void delete(String key) { new CredentialStore(context, "remote-conversation-cache-" + key).clear(); }
+                }, error -> fail(error.toString()), 60_000);
+            try { assertNull("A process restart must not revive the forgotten chat", reopened.get(owner, id)); }
+            finally { reopened.close(); }
+        } finally { cache.removeDurably(owner, null); }
     }
 
     public void testRefreshUpdatesVisibleAndAccessibleStateWithoutKeepingTheOldOnlineDot() throws Exception {
@@ -187,6 +231,9 @@ public class ComputerSelectionTest extends InstrumentationTestCase {
     }
     private void invoke(String name) throws Exception {
         var method = MainActivity.class.getDeclaredMethod(name); method.setAccessible(true); method.invoke(activity);
+    }
+    private void invoke(String name, Class<?>[] types, Object... arguments) throws Exception {
+        var method = MainActivity.class.getDeclaredMethod(name, types); method.setAccessible(true); method.invoke(activity, arguments);
     }
     private void state(JSONObject computer, String value) throws Exception {
         var method = MainActivity.class.getDeclaredMethod("updateComputerState", String.class, String.class); method.setAccessible(true);

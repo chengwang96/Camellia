@@ -2,13 +2,15 @@
 
 const { rateLimitGroups } = require('./subscription-accounts');
 
-const WEEKLY_MINUTES = 10080;
+const WEEKLY_MINUTES = 10080, MAX_WEEKLY_MINUTES = 8 * 24 * 60;
 const PROBE_RETRY_MS = 30 * 60 * 1000;
 
 // A running Codex weekly window reports its next reset time. Once that time has
 // passed and no new cycle has started, the next reset time stays unknown until
 // the account sends its first message again. Only the long window needs this
-// check; 5-hour windows roll over constantly.
+// check; 5-hour windows roll over constantly. Monthly windows also carry a
+// duration in minutes but are not weekly, and their reset is beyond Node's
+// timer range.
 function weeklyWindows(rateLimits) {
   const windows = [];
   for (const [group, limits] of Object.entries(rateLimitGroups(rateLimits))) {
@@ -17,7 +19,7 @@ function weeklyWindows(rateLimits) {
       const window = limits[key];
       if (!window || typeof window !== 'object') continue;
       const duration = Number(window.windowDurationMins);
-      if (!Number.isFinite(duration) || duration < WEEKLY_MINUTES) continue;
+      if (!Number.isFinite(duration) || duration < WEEKLY_MINUTES || duration > MAX_WEEKLY_MINUTES) continue;
       windows.push({ id: `${group}:${key}`,
         resetsAt: Number.isFinite(window.resetsAt) && window.resetsAt > 0 ? window.resetsAt : null });
     }
@@ -83,5 +85,5 @@ function markWeeklyFailure(records, due, { at = new Date(), error = '' } = {}) {
   return next;
 }
 
-module.exports = { WEEKLY_MINUTES, PROBE_RETRY_MS, weeklyWindows, observeWeekly, dueWeeklyProbe,
+module.exports = { WEEKLY_MINUTES, MAX_WEEKLY_MINUTES, PROBE_RETRY_MS, weeklyWindows, observeWeekly, dueWeeklyProbe,
   nextWeeklyReset, markWeeklyAttempt, markWeeklyProbe, markWeeklyFailure };

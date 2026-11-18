@@ -41,6 +41,7 @@ public final class MainActivity extends Activity {
     private static final int SCAN_QR_REQUEST = 44;
     private static final long COMMAND_CONFIRM_TIMEOUT_MS = 30_000;
     private static final long COMMAND_POLL_INTERVAL_MS = 1_500;
+    private static final long FOREGROUND_STREAM_GRACE_MS = 5_000;
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final Handler commandHandler = new Handler(Looper.getMainLooper());
     private final LocationConsent locationConsent = new LocationConsent(this);
@@ -63,6 +64,7 @@ public final class MainActivity extends Activity {
     private ComputerStore store;
     private RemoteListCache listCache;
     private RemoteListCache homeCache;
+    private RemoteConversationCache conversationCache;
     private final ArrayList<JSONObject> homeComputers = new ArrayList<>();
     private final RemoteWorkbenchSync homeSync = new RemoteWorkbenchSync(address -> this.homeClientFactory.apply(address));
     private final java.util.function.Function<String, RemoteApi> remoteClientFactory = address -> new RemoteApi(this, address);
@@ -98,6 +100,7 @@ public final class MainActivity extends Activity {
     private ConnectionTestDialog connectionTest;
     private Future<?> job;
     private RemoteStreamHealth streamHealth;
+    private boolean streamRetryPending;
     private final Runnable inspectStream = this::inspectStream;
     private volatile int generation;
     private boolean foreground;
@@ -246,6 +249,8 @@ public final class MainActivity extends Activity {
     private final ArrayList<JSONObject> selectedDocuments = new ArrayList<>();
     private boolean loadingImages;
     private boolean listEventsUnavailable;
+    private long listLastFrameAt;
+    private boolean listRetryPending;
     private boolean listLoaded, listLoadFailed;
     private LinearLayout imageTray;
     private android.widget.HorizontalScrollView imageStrip;
@@ -369,6 +374,7 @@ public final class MainActivity extends Activity {
         store = new ComputerStore(new CredentialStore(this));
         listCache = RemoteListCache.get(this);
         homeCache = RemoteListCache.workbench(this);
+        conversationCache = RemoteConversationCache.get(this);
         String recovery = null;
         try {
             credentials = store.load();
@@ -416,17 +422,8 @@ public final class MainActivity extends Activity {
         EmbeddedNetwork.foreground();
         resumePendingCommands();
         if (retained) {
-            // Deep sleep can suspend callbacks without changing the route.
-            // Inspect monotonic age before reusing the retained connection.
-            inspectStream();
-            if (screen.equals("detail") && displayedConversation != null) {
-                replies().markRead(credentials, displayedConversation);
-                replyReadSync.retry();
-                syncReplyRead(displayedConversation);
-            }
-            updateControls();
-            refreshDetailSidebar();
-            return;
+            if (screen.equals("detail")) { resumeDetail(); return; }
+            if (screen.equals("list")) { resumeList(); return; }
         }
         if (networkScreen) { refreshNetwork(false); return; }
         if (screen.equals("computers")) { refreshComputers(); return; }
@@ -441,7 +438,8 @@ public final class MainActivity extends Activity {
             return;
         }
         if (credentials.has("token")) {
-            if (conversationId != null) connectEvents(); else loadList(false);
+            if (screen.equals("detail") && conversationId != null) connectEvents();
+            else if (screen.equals("list")) loadList(false);
         } else if (credentials.has("claim")) waitForApproval();
     }
 
@@ -535,6 +533,7 @@ public final class MainActivity extends Activity {
         persistDraft();
         if (listCache != null) listCache.flush();
         if (homeCache != null) homeCache.flush();
+        if (conversationCache != null) conversationCache.flush();
         artifactDownloads.stop();
         if (conversationPopup != null) conversationPopup.dismiss();
         locationConsent.cancel();
@@ -570,6 +569,7 @@ public final class MainActivity extends Activity {
         artifactDownloads.close();
         InlineImageGallery.close(this);
         if (listCache != null) listCache.flush();
+        if (conversationCache != null) conversationCache.flush();
         prefetch.close();
         worker.shutdownNow(); eventWorker.shutdownNow(); commandWorker.shutdownNow(); urgentWorker.shutdownNow(); statusWorker.shutdownNow(); networkWorker.shutdownNow(); super.onDestroy();
     }
@@ -615,6 +615,9 @@ public final class MainActivity extends Activity {
         if (scroll instanceof RefreshScrollView) ((RefreshScrollView) scroll).setRefreshing(false);
         generation++;
         streamHealth = null;
+        streamRetryPending = false;
+        listLastFrameAt = 0;
+        listRetryPending = false;
         statusWorker.getQueue().clear();
         handler.removeCallbacksAndMessages(null);
         if (job != null) job.cancel(true);
@@ -682,6 +685,7 @@ public final class MainActivity extends Activity {
         if (!screen.equals("detail")) composerAttachments.replace();
         reconnecting = false; connectionBlocked = false;
         boolean settingsPage = screen.equals("settings") || screen.equals("network") || screen.equals("pair");
+        boolean tabletNetworkCategory = tabletShell && screen.equals("network") && networkReturn.equals("settings");
         boolean showNavigation = screen.equals("home") || screen.equals("list") || screen.equals("computers") || screen.equals("settings");
         int bottomPadding = screen.equals("list") || screen.equals("detail") ? chatStyle.dockBottomPadding() : dp(24);
         if (showNavigation) bottomPadding = 0;
@@ -784,7 +788,7 @@ public final class MainActivity extends Activity {
                 split.setOnApplyWindowInsetsListener(null);
                 if (detailSidebar != null) detailSidebar.setPadding(dp(8), dp(8), dp(8), dp(8));
             }
-            if (screen.equals("network") && networkReturn.equals("settings")) {
+            if (tabletNetworkCategory) {
                 page = TabletScaffold.settingsBody(this, page, "network", section -> {
                     if (section.equals("network")) return;
                     if (section.equals("usage")) openAccountUsage(null); else openSettingsSection(section);
@@ -798,7 +802,7 @@ public final class MainActivity extends Activity {
             : screen.equals("detail") || (screen.equals("network") && networkReturn.equals("pair")) ? 3 : 2;
         pages.show(page, screen, depth, destinationSwitch || tabletShell); page.requestApplyInsets();
         if (settingsPage) {
-            root.addView(screen.equals("settings") ? settingsStyle.header(title)
+            root.addView(screen.equals("settings") || tabletNetworkCategory ? settingsStyle.header(title)
                 : settingsStyle.header(title, tr("返回上一级", "Back"), this::onBackPressed));
         } else if (screen.equals("computers") && !tabletShell) {
             LinearLayout header = settingsStyle.topLevelHeader(title);
@@ -1530,7 +1534,7 @@ public final class MainActivity extends Activity {
         java.util.function.Consumer<RemoteWorkbenchSync.Update> listener = update -> deliver(ticket, () -> {
             if (!screen.equals("home") || !homeSync.current(update)) return;
             if (update.state == RemoteWorkbenchSync.State.UNAUTHORIZED) {
-                homeCache.remove(update.computer); listCache.remove(update.computer);
+                homeCache.remove(update.computer); listCache.remove(update.computer); conversationCache.remove(update.computer, null);
             } else if (update.page != null) {
                 homeCache.put(update.computer, update.page.optJSONArray("conversations"), -1, new JSONArray(), false);
             }
@@ -1969,7 +1973,7 @@ public final class MainActivity extends Activity {
                     boolean unauthorized = revoked;
                     deliver(ticket, () -> {
                         if (metadata == null) computerInformation.remove(address); else computerInformation.put(address, metadata);
-                        if (unauthorized) { listCache.remove(computer); homeCache.remove(computer); prefetch.remove(computer, null); }
+                        if (unauthorized) { listCache.remove(computer); homeCache.remove(computer); prefetch.remove(computer, null); conversationCache.remove(computer, null); }
                         updateComputerState(address, state);
                         if (--remaining[0] == 0) {
                             ((RefreshScrollView) scroll).setRefreshing(false);
@@ -3135,6 +3139,13 @@ public final class MainActivity extends Activity {
         return unread ? indicator + (indicator.isEmpty() ? "" : " · ") + tr("新消息", "New reply") : indicator;
     }
 
+    private void resumeList() {
+        long now = android.os.SystemClock.elapsedRealtime();
+        boolean stale = !connected || listRetryPending || listLastFrameAt == 0
+            || now - listLastFrameAt > FOREGROUND_STREAM_GRACE_MS;
+        if (stale) { reconnecting = true; loadList(false); }
+    }
+
     private void loadList(boolean append) {
         if (screen.equals("detail") && tabletConversationList != null) { loadTabletConversationList(append); return; }
         if (!networkActive()) return;
@@ -3407,6 +3418,7 @@ public final class MainActivity extends Activity {
                             JSONArray deleted = payload.optJSONArray("targets");
                             for (int index = 0; deleted != null && index < deleted.length(); index++) {
                                 String id = deleted.getJSONObject(index).getString("id");
+                                conversationCache.remove(credentials, id);
                                 for (String key : java.util.List.of("drafts", "draftEdits", "draftAttachments")) {
                                     JSONObject drafts = saved.optJSONObject(key); if (drafts != null) drafts.remove(id);
                                 }
@@ -3645,11 +3657,11 @@ public final class MainActivity extends Activity {
                     if (initial && attempt == 0 && syncedCursor >= 0 && syncedCursor == snapshot.optLong("cursor", -1)
                             && syncedInstance.equals(snapshot.optString("instanceId"))) {
                         received[0] = true;
-                        deliver(ticket, () -> listConnected());
+                        deliver(ticket, () -> { markListFrame(); listConnected(); });
                         return;
                     }
                     received[0] = true;
-                    deliver(ticket, () -> scheduleListRefresh(client, ticket, snapshot));
+                    deliver(ticket, () -> { markListFrame(); scheduleListRefresh(client, ticket, snapshot); });
                 });
             } catch (Exception error) { failure = error; }
             final Exception error = failure;
@@ -3663,11 +3675,17 @@ public final class MainActivity extends Activity {
                     connected = false;
                     showFailure(error, true); return;
                 }
+                listRetryPending = true;
                 connectionFailure(RemoteApi.failureMessage(error, chinese) + tr(" 正在重连，当前显示上次同步内容。", " Reconnecting; displayed content may be stale."));
                 long delay = error instanceof RemoteApi.Failure && ((RemoteApi.Failure) error).status == 429 ? 60_000 : Math.min(30_000, 1000L << nextAttempt);
                 handler.postDelayed(() -> streamList(client, ticket, nextAttempt), delay);
             });
         });
+    }
+
+    private void markListFrame() {
+        listLastFrameAt = android.os.SystemClock.elapsedRealtime();
+        listRetryPending = false;
     }
 
     private void scheduleListRefresh(RemoteApi client, int ticket, JSONObject snapshot) {
@@ -3854,7 +3872,7 @@ public final class MainActivity extends Activity {
         }
         renderMessages(preserveLiveState ? lastLive : null);
         if (preserveLiveState) renderAutomationViews();
-        if (!preserveLiveState) showPrefetchedConversation();
+        if (!preserveLiveState) showAvailableConversation();
         updateControls();
         // The background list stream supplies the fresh sidebar. Starting a
         // separate pull here would immediately be invalidated by connectEvents.
@@ -3907,11 +3925,15 @@ public final class MainActivity extends Activity {
         } catch (Exception error) { reportError("无法保存草稿，请重试。", "Could not save the draft. Try again.", error); }
     }
 
-    private void showPrefetchedConversation() {
+    private boolean showAvailableConversation() {
+        return showPrefetchedConversation() || showPersistedConversation();
+    }
+
+    private boolean showPrefetchedConversation() {
         JSONObject cached = prefetch.get(credentials, conversationId);
-        if (cached == null) return;
+        if (cached == null) return false;
         JSONArray rows = cached.optJSONArray("messages");
-        if (rows == null) return;
+        if (rows == null) return false;
         for (int index = 0; index < rows.length(); index++) {
             JSONObject row = rows.optJSONObject(index);
             if (row != null) retainHistory(row.optLong("seq"), row);
@@ -3919,19 +3941,68 @@ public final class MainActivity extends Activity {
         connected = false; controlAllowed = false; lastLive = null; remoteSettings = null;
         trimHistory(false); renderMessages(null);
         updateWorkStatus();
+        return true;
     }
 
-    private void connectEvents() {
+    private boolean showPersistedConversation() {
+        JSONObject cached = conversationCache.get(credentials, conversationId);
+        if (cached == null) return false;
+        JSONArray rows = cached.optJSONArray("messages");
+        if (rows == null) return false;
+        for (int index = 0; index < rows.length(); index++) {
+            JSONObject row = rows.optJSONObject(index);
+            if (row != null) retainHistory(row.optLong("seq"), row);
+        }
+        instance = cached.optString("instanceId"); historyInstance = instance;
+        cursor = cached.optLong("cursor", -1); historyVersion = cached.optString("historyVersion");
+        nextBefore = cached.isNull("nextBefore") ? null : cached.optLong("nextBefore");
+        if (conversationTitle.isEmpty()) {
+            JSONObject conversation = cached.optJSONObject("conversation");
+            conversationTitle = conversation == null ? "" : conversation.optString("title");
+            TextView pageTitle = root.findViewWithTag("pageTitle");
+            if (pageTitle != null) pageTitle.setText(conversationTitle);
+        }
+        connected = false; controlAllowed = false; lastLive = null; remoteSettings = null;
+        trimHistory(false); renderMessages(null); updateOlderControl(); updateWorkStatus();
+        return true;
+    }
+
+    private void resumeDetail() {
+        if (history.isEmpty() && !historyDetached) showAvailableConversation();
+        long now = android.os.SystemClock.elapsedRealtime();
+        boolean stale = streamRetryPending || streamHealth == null
+            || !streamHealth.fresh(now, FOREGROUND_STREAM_GRACE_MS);
+        if (stale) { reconnecting = true; connectEvents(true); }
+        else {
+            inspectStream();
+            startConversationSync();
+        }
+        if (displayedConversation != null) {
+            replies().markRead(credentials, displayedConversation);
+            replyReadSync.retry();
+            syncReplyRead(displayedConversation);
+        }
+        updateControls();
+        refreshDetailSidebar();
+        if (stale) setStatusNotice(history.isEmpty() ? tr("正在恢复连接…", "Restoring the connection…")
+            : tr("显示上次内容，正在恢复连接…", "Showing the latest available content; restoring the connection…"));
+    }
+
+    private void connectEvents() { connectEvents(false); }
+
+    private void connectEvents(boolean foregroundRecovery) {
         if (!networkActive()) return;
         RemoteApi client = begin(); int ticket = generation;
+        long initialTimeout = foregroundRecovery ? RemoteStreamHealth.RECOVERY_INITIAL_TIMEOUT_MS : RemoteStreamHealth.INITIAL_TIMEOUT_MS;
+        boolean incremental = canIncremental || !historyVersion.isEmpty();
         startConversationSync();
         updateWorkStatus();
         String token = credentials.optString("token");
         if (capabilityAddress.equals(credentials.optString("address")) && capabilityToken.equals(token)) {
             // Capabilities only select the wire format. Fresh permission and
             // command state still come from the initial conversation snapshot.
-            client.incremental(canIncremental);
-            stream(client, ticket, 0);
+            client.incremental(incremental);
+            stream(client, ticket, 0, initialTimeout);
             return;
         }
         // Optional capability discovery must not gate the first transcript.
@@ -3941,10 +4012,11 @@ public final class MainActivity extends Activity {
             if (ticket != generation) return;
             try {
                 JSONObject info = client.json("/v1/status", token, null);
-                deliver(ticket, () -> { updateCapabilities(info); client.incremental(canIncremental); updateControls(); });
+                deliver(ticket, () -> { updateCapabilities(info); client.incremental(canIncremental || !historyVersion.isEmpty()); updateControls(); });
             } catch (Exception ignored) { /* The stream reports connection and authorization failures. */ }
         });
-        stream(client, ticket, 0);
+        client.incremental(incremental);
+        stream(client, ticket, 0, initialTimeout);
     }
 
     private void startConversationSync() {
@@ -3997,10 +4069,16 @@ public final class MainActivity extends Activity {
     }
 
     private void stream(RemoteApi client, int ticket, int attempt) {
+        stream(client, ticket, attempt, RemoteStreamHealth.INITIAL_TIMEOUT_MS);
+    }
+
+    private void stream(RemoteApi client, int ticket, int attempt, long initialTimeout) {
         if (!networkActive() || ticket != generation) return;
         replyReadSync.retry();
         String id = conversationId, token = credentials.optString("token");
-        RemoteStreamHealth health = new RemoteStreamHealth(android.os.SystemClock.elapsedRealtime());
+        String syncedHistoryVersion = historyVersion;
+        client.historyVersion(syncedHistoryVersion);
+        RemoteStreamHealth health = new RemoteStreamHealth(android.os.SystemClock.elapsedRealtime(), initialTimeout);
         streamHealth = health;
         inspectStream();
         job = eventWorker.submit(() -> {
@@ -4009,8 +4087,11 @@ public final class MainActivity extends Activity {
             try {
                 client.events(id, token, snapshot -> {
                     JSONObject conversation = snapshot.optJSONObject("conversation");
-                    if (conversation == null || !id.equals(conversation.optString("id"))
-                            || !received[0] && snapshot.optJSONArray("messages") == null) throw new IOException("Invalid snapshot");
+                    if (conversation == null || !id.equals(conversation.optString("id"))) throw new IOException("Invalid snapshot");
+                    if (!received[0] && snapshot.optJSONArray("messages") == null
+                            && (syncedHistoryVersion.isEmpty() || !syncedHistoryVersion.equals(snapshot.optString("historyVersion")))) {
+                        throw new IOException("Invalid incremental snapshot");
+                    }
                     received[0] = true;
                     queueSnapshot(ticket, snapshot);
                 }, () -> health.heartbeat(android.os.SystemClock.elapsedRealtime()));
@@ -4031,6 +4112,7 @@ public final class MainActivity extends Activity {
                     connected = false; updateControls();
                     showFailure(error, true); return;
                 }
+                streamRetryPending = true;
                 connectionFailure(RemoteApi.failureMessage(error, chinese) + tr(" 正在重连，当前显示上次同步内容。", " Reconnecting; displayed content may be stale."));
                 long delay = error instanceof RemoteApi.Failure && ((RemoteApi.Failure) error).status == 429 ? 60_000 : Math.min(30_000, 1000L << nextAttempt);
                 handler.postDelayed(() -> stream(client, ticket, nextAttempt), delay);
@@ -4087,6 +4169,7 @@ public final class MainActivity extends Activity {
         boolean reconnect = !connected;
         String server = snapshot.optString("instanceId"); long nextCursor = snapshot.optLong("cursor", -1);
         if (server.equals(instance) && nextCursor < cursor) return;
+        streamRetryPending = false;
         connected = true; controlAllowed = snapshot.optString("permission").equals("control"); conversationSeq = conversation.optLong("seq");
         archivedConversation = snapshot.optJSONObject("archived");
         archivedRestorable = snapshot.optBoolean("canRestore");
@@ -4154,6 +4237,7 @@ public final class MainActivity extends Activity {
             if (stop != null) retryPendingCommand(stop, false, true);
         }
         scheduleAutomaticHistory();
+        conversationCache.put(credentials, snapshot);
     }
 
     private void syncReplyRead(JSONObject conversation) {
@@ -4915,6 +4999,7 @@ public final class MainActivity extends Activity {
                     stopNetwork();
                     listCache.remove(credentials);
                     prefetch.remove(credentials, null);
+                    conversationCache.remove(credentials, null);
                     credentials.remove("token");
                     try { store.save(credentials); } catch (Exception ignored) { }
                     pairScreen();
@@ -4925,6 +5010,7 @@ public final class MainActivity extends Activity {
             if (code == 404) {
                 prefetch.cancel();
                 prefetch.remove(credentials, screen.equals("detail") ? conversationId : null);
+                conversationCache.remove(credentials, screen.equals("detail") ? conversationId : null);
                 if (screen.equals("detail") && conversationId != null) {
                     boolean released = releasePendingCommandForUnavailableConversation();
                     clearUnavailableDetail();
@@ -4938,6 +5024,7 @@ public final class MainActivity extends Activity {
             if (code == 403) {
                 prefetch.cancel();
                 prefetch.remove(credentials, null);
+                conversationCache.remove(credentials, null);
                 if (screen.equals("detail")) {
                     clearUnavailableDetail();
                 }
@@ -6671,9 +6758,22 @@ public final class MainActivity extends Activity {
         new CamelliaDialog.Builder(this).setTitle(tr("移除这台电脑？", "Forget this computer?"))
             .setMessage(tr("将删除手机上的凭据。若要撤销权限，还需在电脑端撤销此设备。", "This deletes credentials on the phone. Also revoke this device on the computer to remove its authorization."))
             .setNegativeButton(tr("取消", "Cancel"), null).setPositiveButton(tr("移除", "Forget"), (dialog, which) -> {
-                try { closeCommandClients(); store.remove(computer.getString("address")); listCache.remove(computer); homeCache.remove(computer); prefetch.remove(computer, null); credentials = store.load(); computersScreen(); refreshComputers(); }
+                try { removeComputer(computer); }
                 catch (Exception error) { reportError("无法清除凭据，请重试。", "Could not remove credentials. Try again.", error); }
             }).show();
+    }
+
+    private void removeComputer(JSONObject computer) throws Exception {
+        // Close the old stream before deleting credentials so a late snapshot
+        // cannot repopulate the cache after this removal.
+        stopNetwork();
+        closeCommandClients();
+        boolean cacheCleared = conversationCache == null || conversationCache.removeDurably(computer, null);
+        store.remove(computer.getString("address"));
+        listCache.remove(computer); homeCache.remove(computer); prefetch.remove(computer, null);
+        credentials = store.load(); computersScreen(); refreshComputers();
+        if (!cacheCleared) setStatusError(tr("手机上的凭据已删除，但会话缓存未能写入删除记录；请重启应用后再次移除。",
+            "Credentials were removed, but the chat cache could not record the deletion; restart the app and remove this computer again."));
     }
 
     @Override public void onBackPressed() {

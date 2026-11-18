@@ -186,6 +186,30 @@ with sync_playwright() as playwright:
         expect(batch.locator('.turn-body > .md')).to_have_text(['Answer part one', 'Answer part two'])
         expect(batch.locator('.execution-process .md')).to_have_count(27)
         expect(batch.locator('.execution-process .tool-card')).to_have_count(27)
+        # Deferred cards render their output and visualization when the
+        # disclosure opens; the summary must not advertise an empty result.
+        # The 27-card batch lives farther up the transcript after later turns.
+        page.evaluate("""() => {
+          const turn = [...document.querySelectorAll('.turn')]
+            .find(node => node.textContent.includes('Answer part one'));
+          turn.querySelector('.execution-process summary').click();
+        }""")
+        expect(batch.locator('.execution-process .tool-output')).to_have_count(27)
+        expect(batch.locator('.execution-process .tool-output').first).to_have_text('Output 0')
+        page.evaluate("""() => renderHistoryMessages([{role:'assistant',engine:'codex',outputBlocks:Array.from({length:13},(_,index)=>({
+          type:'tool', title:'visualize', status:'completed',
+          text: JSON.stringify({ok:true,visualize:{cardId:'deferred-viz-'+index,title:'Deferred card '+index,
+            summary:'Opened from the process',html:'<p>Deferred visualization</p>'}})
+        }))}])""")
+        deferred_visual = page.locator('.turn').last
+        expect(deferred_visual.locator('.tool-output').first).to_contain_text(
+          'Interactive visualization will render when you open this process.')
+        expect(deferred_visual.locator('.visualize-block')).to_have_count(0)
+        page.evaluate("""() => {
+          const turns = [...document.querySelectorAll('.turn')];
+          turns.at(-1).querySelector('.execution-process summary').click();
+        }""")
+        expect(deferred_visual.locator('.visualize-block')).to_have_count(13)
         page.evaluate("""() => {
           applyLiveRun({sessionId:'shared-fixture',engine:'codex',runId:902,prompt:'Restored run',messages:[],events:[
             {type:'stream_event',session_id:'shared-fixture',runId:902,event:{type:'content_block_start',index:0,content_block:{type:'text',text:'Restored progress'}}},

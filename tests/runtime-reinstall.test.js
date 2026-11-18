@@ -211,12 +211,21 @@ test('future version checks and updates install into the migrated managed prefix
   }
   t.after(async () => { registry.closeAllConnections(); await new Promise(resolve => registry.close(resolve)); });
   await f.manager.reinstall('kimi');
+  let stagedPrefix;
   const updates = createRuntimeUpdates({ manager: f.manager, engines: ENGINES, node: process.execPath, npm: 'npm-cli',
     downloadSettings: () => ({ mode: 'direct' }), registries: { npm: () => `http://127.0.0.1:${registry.address().port}` },
+    verifyKimi: async ({ runtime }) => {
+      assert.ok(fs.existsSync(runtime));
+      assert.equal(fs.realpathSync.native(path.dirname(runtime)), path.join(stagedPrefix, 'node_modules', '@moonshot-ai', 'kimi-code', 'dist'));
+      assert.notEqual(f.manager.locate('kimi').version, '2.1.0');
+    },
     run: async (_exe, args) => {
       const prefix = args[args.indexOf('--prefix') + 1];
-      assert.equal(prefix, fs.realpathSync.native(path.join(f.managed, 'runtimes', 'kimi')));
+      assert.equal(path.basename(prefix), 'candidate');
+      assert.ok(path.basename(path.dirname(prefix)).startsWith('.kimi-update-'));
+      assert.equal(path.dirname(path.dirname(prefix)), fs.realpathSync.native(path.join(f.managed, 'runtimes')));
       assert.ok(args.includes('@moonshot-ai/kimi-code@2.1.0'));
+      stagedPrefix = prefix;
       npmTree(prefix, 'kimi', '2.1.0');
     } });
   const row = (await updates.check()).find(row => row.id === 'kimi');
@@ -226,6 +235,7 @@ test('future version checks and updates install into the migrated managed prefix
   const result = await updates.update('kimi');
   assert.equal(result.to, '2.1.0');
   assert.equal(createRuntimeManager(f.settings).locate('kimi').version, '2.1.0');
+  assert.deepEqual(fs.readdirSync(path.join(f.managed, 'runtimes')), ['kimi']);
 });
 
 for (const failure of ['download', 'version', 'uninstall', 'save']) {

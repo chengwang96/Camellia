@@ -6,8 +6,10 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { removeTree } = require('./test-fs.cjs');
+const JSZip = require('jszip');
 const { readOfficePreview } = require('../src/main/office-preview');
 const { previewKind } = require('../src/main/file-preview');
+const { readDocxEdit, saveDocxEdit } = require('../src/main/docx-edit');
 
 function archive(t, parts) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'camellia-office-'));
@@ -62,6 +64,20 @@ test('Word preview renders headings, bold runs, tables and embedded images', asy
   assert.match(html, /<h1[^>]*><span style="font-weight:700">Report/);
   assert.match(html, /<table><tr><td[^>]*><p[^>]*><span[^>]*>Value/);
   assert.match(html, /src="data:image\/png;base64,/);
+});
+
+test('Word preview renders VML pictures from a legacy .doc conversion', async t => {
+  const file = archive(t, {
+    'word/document.xml': '<w:document xmlns:w="word" xmlns:r="rel" xmlns:v="vml"><w:body><w:p><w:r>'
+      + '<w:pict><v:shape style="width:150pt;height:75pt"><v:imagedata r:id="picture"/></v:shape></w:pict>'
+      + '</w:r></w:p></w:body></w:document>',
+    'word/_rels/document.xml.rels': '<Relationships><Relationship Id="picture" Target="media/image.png"/></Relationships>',
+    'word/media/image.png': 'image-fixture',
+  });
+  const { html } = await readOfficePreview(file, 'word');
+  assert.match(html, /src="data:image\/png;base64,/);
+  // Word writes the shape size in points; the preview converts it to pixels.
+  assert.match(html, /width:200px;height:100px/);
 });
 
 test('slides render positioned shapes with scaled text and embedded pictures', async t => {
@@ -150,7 +166,7 @@ test('Excel renders merges, row and column sizing, frozen panes and date systems
     'xl/workbook.xml': '<workbook xmlns:r="rel"><workbookPr date1904="1"/><sheets><sheet name="Layout" r:id="sheet"/></sheets></workbook>',
     'xl/_rels/workbook.xml.rels': '<Relationships><Relationship Id="sheet" Target="worksheets/sheet1.xml"/></Relationships>',
     'xl/styles.xml': '<styleSheet><numFmts><numFmt numFmtId="164" formatCode="yyyy-mm-dd"/></numFmts><cellXfs><xf numFmtId="0"/><xf numFmtId="164"/></cellXfs></styleSheet>',
-    'xl/worksheets/sheet1.xml': '<worksheet><sheetViews><sheetView><pane state="frozen" xSplit="1" ySplit="1"/></sheetView></sheetViews><cols><col min="1" max="1" width="30"/></cols><sheetData><row r="1" ht="30"><c r="A1" t="inlineStr"><is><t>Merged title</t></is></c></row><row r="2"><c r="C2" s="1"><v>0</v></c></row></sheetData><mergeCells><mergeCell ref="A1:B2"/></mergeCells></worksheet>',
+    'xl/worksheets/sheet1.xml': '<worksheet><sheetViews><sheetView><pane state="frozen" xSplit="1" ySplit="1"/></sheetView></sheetViews><cols><col min="1" max="1" width="30"/></cols><sheetData><row r="1" ht="30"><c r="A1" t="inlineStr"><is><t>Merged title</t></is></c><c r="C1" t="inlineStr"><is><t>Header</t></is></c></row><row r="2"><c r="C2" s="1"><v>0</v></c></row><row r="3"><c r="A3" t="inlineStr"><is><t>Row label</t></is></c></row></sheetData><mergeCells><mergeCell ref="A1:B2"/></mergeCells></worksheet>',
   });
   const result = await readOfficePreview(file, 'spreadsheet');
   assert.equal(result.sheets.length, 1);
@@ -158,7 +174,13 @@ test('Excel renders merges, row and column sizing, frozen panes and date systems
   assert.match(result.html, /rowspan="2" colspan="2"/);
   assert.match(result.html, /width:215px/);
   assert.match(result.html, /height:40px/);
-  assert.match(result.html, /position:sticky;z-index:2;top:32px;left:48px/);
+  assert.match(result.html, /position:sticky;z-index:4;top:32px;left:48px[^>]*>Merged title/);
+  assert.match(result.html, /position:sticky;z-index:3;top:32px[^>]*>Header/);
+  assert.match(result.html, /position:sticky;z-index:2;left:48px[^>]*>Row label/);
+  assert.match(result.html, /<th scope="row" style="position:sticky;left:0;z-index:4;top:32px">1<\/th>/);
+  assert.match(result.html, /<th style="position:sticky;left:0;z-index:2"><\/th>/);
+  assert.match(result.html, /min-width:215px;position:sticky;left:48px;z-index:1;[^>]*>A<\/th>/);
+  assert.match(result.html, /\.sheet tbody th\{position:sticky;left:0;z-index:1\}/);
   assert.match(result.html, /1904-01-01/);
 });
 
@@ -302,4 +324,151 @@ test('Office previews reject entity declarations and missing document parts', as
   const file = archive(t, { 'word/document.xml': '<!DOCTYPE data [<!ENTITY value SYSTEM "file:///secret">]><document/>' });
   await assert.rejects(readOfficePreview(file, 'word'), /Unsupported Office XML/);
   await assert.rejects(readOfficePreview(archive(t, { 'other.xml': '<x/>' }), 'word'), /missing/);
+});
+
+function docx(t, parts) {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'camellia-docx-edit-'));
+  t.after(() => removeTree(directory));
+  const file = path.join(directory, 'report.docx');
+  const zip = new JSZip();
+  for (const [name, content] of Object.entries(parts)) zip.file(name, content);
+  return zip.generateAsync({ type: 'nodebuffer' }).then(bytes => { fs.writeFileSync(file, bytes); return file; });
+}
+
+test('DOCX editing rewrites paragraph text and leaves every other part untouched', async t => {
+  const body = '<?xml version="1.0"?><w:document xmlns:w="word"><w:body>'
+    + '<w:p><w:pPr><w:jc w:val="center"/></w:pPr><w:r><w:rPr><w:b/></w:rPr><w:t>Bold</w:t></w:r><w:r><w:t xml:space="preserve"> mix </w:t></w:r><w:r><w:t>italic</w:t></w:r></w:p>'
+    + '<w:p><w:r><w:t>Second &amp; last</w:t></w:r></w:p>'
+    + '<w:tbl><w:tr><w:tc><w:p><w:r><w:t>Cell</w:t></w:r></w:p></w:tc></w:tr></w:tbl>'
+    + '</w:body></w:document>';
+  const file = await docx(t, {
+    '[Content_Types].xml': '<Types/>',
+    'word/document.xml': body,
+    'word/media/image1.png': Buffer.from([1, 2, 3, 4, 5]),
+  });
+  const snapshot = await readDocxEdit(file);
+  assert.deepEqual(snapshot.blocks, ['Bold mix italic', 'Second & last', 'Cell']);
+  const saved = await saveDocxEdit(snapshot, [{ index: 0, text: 'Edited <text> & more' }, { index: 2, text: 'Cell 2' }]);
+  assert.ok(saved.file.size > 0);
+  const archiveBytes = fs.readFileSync(file);
+  const zip = await JSZip.loadAsync(archiveBytes);
+  const xml = await zip.file('word/document.xml').async('string');
+  assert.match(xml, /<w:t xml:space="preserve">Edited &lt;text&gt; &amp; more<\/w:t>/);
+  assert.match(xml, /<w:t xml:space="preserve">Cell 2<\/w:t>/);
+  assert.doesNotMatch(xml, /Bold mix italic/);
+  assert.match(xml, /<w:jc w:val="center"\/>/);
+  assert.match(xml, /<w:b\/>/);
+  assert.deepEqual([...await zip.file('word/media/image1.png').async('nodebuffer')], [1, 2, 3, 4, 5]);
+  assert.deepEqual((await readDocxEdit(file)).blocks, ['Edited <text> & more', 'Second & last', 'Cell 2']);
+});
+
+test('DOCX editing refuses external changes and keeps an unchanged file byte-identical', async t => {
+  const body = '<w:document xmlns:w="word"><w:body><w:p><w:r><w:t>One</w:t></w:r></w:p></w:body></w:document>';
+  const file = await docx(t, { 'word/document.xml': body });
+  const snapshot = await readDocxEdit(file);
+  const original = fs.readFileSync(file);
+  const unchanged = await saveDocxEdit(snapshot, []);
+  assert.equal(unchanged.file.size, fs.statSync(file).size);
+  assert.deepEqual(fs.readFileSync(file), original);
+  await saveDocxEdit(snapshot, [{ index: 0, text: 'Two' }]);
+  await assert.rejects(saveDocxEdit(snapshot, [{ index: 0, text: 'Three' }]), /changed on disk/);
+  assert.deepEqual((await readDocxEdit(file)).blocks, ['Two']);
+});
+
+test('DOCX editing skips picture-only paragraphs that have no text runs', async t => {
+  const body = '<w:document xmlns:w="word"><w:body><w:p><w:r><w:t>Before</w:t></w:r></w:p>'
+    + '<w:p><w:r><w:drawing/></w:r></w:p><w:p><w:r><w:t>After</w:t></w:r></w:p></w:body></w:document>';
+  const file = await docx(t, { 'word/document.xml': body });
+  const snapshot = await readDocxEdit(file);
+  assert.deepEqual(snapshot.blocks, ['Before', '', 'After']);
+  await saveDocxEdit(snapshot, [{ index: 0, text: 'Changed' }, { index: 1, text: '' }]);
+  const xml = await (await JSZip.loadAsync(fs.readFileSync(file))).file('word/document.xml').async('string');
+  assert.match(xml, /<w:drawing\/>/);
+  assert.match(xml, /<w:t xml:space="preserve">Changed<\/w:t>/);
+});
+
+test('DOCX editing keeps a text box drawing while replacing the outer paragraph', async t => {
+  const body = '<w:document xmlns:w="word"><w:body>'
+    + '<w:p><w:r><w:t>Outer</w:t></w:r><w:r><w:drawing><w:txbxContent><w:p><w:r><w:t>Inside</w:t></w:r></w:p></w:txbxContent></w:drawing></w:r></w:p>'
+    + '</w:body></w:document>';
+  const file = await docx(t, { 'word/document.xml': body });
+  const snapshot = await readDocxEdit(file);
+  // A text box is its own Word story. Its paragraph is not part of the outer
+  // paragraph, and an outer edit must leave the whole drawing untouched.
+  assert.deepEqual(snapshot.blocks, ['Outer']);
+  await saveDocxEdit(snapshot, [{ index: 0, text: 'Outer changed' }]);
+  const xml = await (await JSZip.loadAsync(fs.readFileSync(file))).file('word/document.xml').async('string');
+  assert.match(xml, /<w:t>Inside<\/w:t>/);
+  assert.match(xml, /<w:t xml:space="preserve">Outer changed<\/w:t>/);
+});
+
+test('DOCX editing round-trips tabs, line breaks and entities without duplicating markup', async t => {
+  const body = '<w:document xmlns:w="word"><w:body>'
+    + '<w:p><w:r><w:t>Name</w:t><w:tab/><w:t>42 &#x1F642; &#128512;</w:t><w:br/><w:t>Last</w:t></w:r></w:p>'
+    + '<w:p><w:r><w:t>Plain</w:t></w:r></w:p>'
+    + '</w:body></w:document>';
+  const file = await docx(t, { 'word/document.xml': body });
+  const snapshot = await readDocxEdit(file);
+  assert.deepEqual(snapshot.blocks, ['Name\t42 🙂 😀\nLast', 'Plain']);
+  await saveDocxEdit(snapshot, [{ index: 0, text: 'Changed\tvalue\nsecond' }]);
+  const xml = await (await JSZip.loadAsync(fs.readFileSync(file))).file('word/document.xml').async('string');
+  assert.equal((xml.match(/<w:tab\/>/g) || []).length, 1);
+  assert.equal((xml.match(/<w:br\/>/g) || []).length, 1);
+  assert.match(xml, /<w:t xml:space="preserve">Changed<\/w:t><w:tab\/><w:t xml:space="preserve">value<\/w:t><w:br\/><w:t xml:space="preserve">second<\/w:t>/);
+  assert.doesNotMatch(xml, /&#128512;|&#x1F642;/);
+  assert.deepEqual((await readDocxEdit(file)).blocks, ['Changed\tvalue\nsecond', 'Plain']);
+});
+
+test('DOCX editing protects direct page breaks and reports locked paragraphs', async t => {
+  const body = '<w:document xmlns:w="word"><w:body>'
+    + '<w:p><w:r><w:t>Before</w:t></w:r></w:p>'
+    + '<w:p><w:r><w:t>First page</w:t><w:br w:type="page"/><w:t>Second page</w:t></w:r></w:p>'
+    + '<w:p><w:r><w:drawing><w:txbxContent><w:p><w:r><w:t>Inside</w:t><w:br w:type="page"/></w:r></w:p></w:txbxContent></w:drawing></w:r><w:t>Outer</w:t></w:p>'
+    + '</w:body></w:document>';
+  const file = await docx(t, { 'word/document.xml': body });
+  const snapshot = await readDocxEdit(file);
+  assert.deepEqual(snapshot.blocks, ['Before', 'First page\nSecond page', 'Outer']);
+  assert.deepEqual(snapshot.editability, [true, false, true]);
+  await assert.rejects(saveDocxEdit(snapshot, [{ index: 1, text: 'Merged' }]), /page break/);
+  // A page break inside a text box belongs to that nested story and must not
+  // make the outer paragraph read-only.
+  await saveDocxEdit(snapshot, [{ index: 2, text: 'Outer changed' }]);
+  const xml = await (await JSZip.loadAsync(fs.readFileSync(file))).file('word/document.xml').async('string');
+  assert.match(xml, /<w:t>First page<\/w:t><w:br w:type="page"\/><w:t>Second page<\/w:t>/);
+  assert.match(xml, /<w:t xml:space="preserve">Outer changed<\/w:t>/);
+});
+
+test('DOCX editing refuses a stale editability list after the page-break set changes', async t => {
+  const safe = '<w:document xmlns:w="word"><w:body><w:p><w:r><w:t>One</w:t></w:r></w:p><w:p><w:r><w:t>Two</w:t></w:r></w:p></w:body></w:document>';
+  const risky = safe.replace('<w:t>Two</w:t>', '<w:t>Two</w:t><w:br w:type="page"/>');
+  const file = await docx(t, { 'word/document.xml': safe });
+  const snapshot = await readDocxEdit(file);
+  assert.deepEqual(snapshot.editability, [true, true]);
+  // Model an external edit that keeps the same paragraph count but inserts a
+  // page break. The save must re-scan the body, not trust the old list.
+  const zip = await JSZip.loadAsync(fs.readFileSync(file));
+  zip.file('word/document.xml', risky);
+  fs.writeFileSync(file, await zip.generateAsync({ type: 'nodebuffer' }));
+  await assert.rejects(saveDocxEdit(snapshot, [{ index: 1, text: 'Changed' }]), /changed on disk|page break/);
+  assert.equal((await readDocxEdit(file)).blocks[1], 'Two\n');
+});
+
+test('DOCX editing exposes a paragraph containing only a tab or line break', async t => {
+  const body = '<w:document xmlns:w="word"><w:body>'
+    + '<w:p><w:r><w:tab/><w:br/></w:r></w:p>'
+    + '</w:body></w:document>';
+  const file = await docx(t, { 'word/document.xml': body });
+  const snapshot = await readDocxEdit(file);
+  assert.deepEqual(snapshot.blocks, ['\t\n']);
+  assert.deepEqual(snapshot.editability, [true]);
+  await saveDocxEdit(snapshot, [{ index: 0, text: 'Only a tab remains:\t' }]);
+  const xml = await (await JSZip.loadAsync(fs.readFileSync(file))).file('word/document.xml').async('string');
+  assert.match(xml, /<w:t xml:space="preserve">Only a tab remains:<\/w:t><w:tab\/>/);
+});
+
+test('DOCX editing rejects duplicate paragraph edits', async t => {
+  const body = '<w:document xmlns:w="word"><w:body><w:p><w:r><w:t>One</w:t></w:r></w:p></w:body></w:document>';
+  const file = await docx(t, { 'word/document.xml': body });
+  const snapshot = await readDocxEdit(file);
+  await assert.rejects(saveDocxEdit(snapshot, [{ index: 0, text: 'A' }, { index: 0, text: 'B' }]), /Duplicate/);
 });

@@ -3,14 +3,14 @@
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:">
 <title data-i18n>Settings — Camellia</title>
-<link rel="stylesheet" href="../shared/ui-theme.css"><link rel="stylesheet" href="../shared/network-notice.css"><link rel="stylesheet" href="./api-settings.css"><link rel="stylesheet" href="../devices/devices.css">
+<script src="./settings-frame.js"></script>
+<link rel="stylesheet" href="../shared/ui-theme.css"><link rel="stylesheet" href="../shared/network-notice.css"><link rel="stylesheet" href="./api-settings.css">
 <link rel="stylesheet" href="./engine-settings.css">
 <link rel="stylesheet" href="../shared/engine-brand.css">
 <link rel="stylesheet" href="./settings-groups.css">
 <link rel="stylesheet" href="../remote/diagnostics.css">
 <link rel="stylesheet" href="./device-settings.css">
 <link rel="stylesheet" href="./settings-surface.css">
-<script src="./settings-frame.js" defer></script>
 </head><body>
 <div class="settings-shell">
 <aside class="settings-nav">
@@ -28,7 +28,6 @@
     <div class="nav-divider"></div>
     <button data-view="network" data-i18n><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18 14 14 0 0 1 0-18Z"/></svg>Network</button>
     <button data-view="mobile" data-i18n><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="6" y="2.5" width="12" height="19" rx="2.5"/><path d="M10 5h4m-3 13.5h2"/></svg>Mobile access</button>
-    <button data-view="devices" data-i18n><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="3" y="4" width="18" height="13" rx="2"/><path d="m7 8 3 3-3 3m6 0h4M9 21h6m-3-4v4"/></svg>CLI devices</button>
     <div class="nav-divider"></div>
     <button data-view="data" data-i18n><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M10 16h.01M2.212 11.577a2 2 0 0 0-.212.896V18a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-5.527a2 2 0 0 0-.212-.896L18.55 5.11A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11zM21.946 12.013H2.054M6 16h.01"/></svg>Data &amp; backups</button>
     <button data-view="archived" data-i18n><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="3" y="4" width="18" height="4" rx="1"/><path d="M5 8v11a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8M10 12h4"/></svg>Archived</button>
@@ -202,9 +201,6 @@
       </div>
       <div id="archivedList"></div>
     </section>
-    <section id="devicesPage" class="page" hidden>
-      <div id="cliDevicesRoot"></div>
-    </section>
     <section id="mobilePage" class="page device-settings mobile-access" hidden>
       <section class="device-section device-card device-connection" aria-labelledby="mobile-connectionTitle">
         <div class="device-heading"><h2 id="mobile-connectionTitle" data-copy="connection">连接</h2><span id="mobile-status" class="device-status" role="status"></span></div>
@@ -228,6 +224,10 @@
         <div id="mobile-pending"></div>
       </section>
       <section class="device-section device-card" aria-labelledby="mobile-devicesTitle"><div class="device-heading"><h2 id="mobile-devicesTitle" data-copy="devices">已授权设备</h2><span id="mobile-devicesSummary" class="device-status"></span></div><div id="mobile-devices"></div></section>
+      <section class="device-section device-card" aria-labelledby="mobile-tailnetUpdateTitle" hidden>
+        <div class="device-heading"><h2 id="mobile-tailnetUpdateTitle" data-copy="tailnetUpdateTitle">内置 Tailscale</h2><span id="mobile-tailnetVersion" class="device-status"></span></div>
+        <div class="device-toolbar"><p id="mobile-tailnetUpdateStatus" class="hint" role="status"></p><button id="mobile-tailnetUpdate" type="button" hidden data-copy="tailnetCheck">检查更新</button></div>
+      </section>
       <section class="device-section device-card network-path" aria-labelledby="mobile-pathTitle">
         <div class="device-heading"><h2 id="mobile-pathTitle" data-copy="pathTitle">网络路径</h2><span id="mobile-pathSummary" class="device-status"></span></div>
         <p id="mobile-relayPathError" class="hint error" role="status" hidden></p>
@@ -394,6 +394,6 @@
 <script src="../../shared/i18n.js"></script>
 <script src="../shared/i18n.js"></script>
 <script src="../remote/diagnostics.js"></script>
-<script src="./settings-charts.js"></script><script src="./subscription-cards.js"></script><script src="./codex-reset-ui.js"></script><script src="./engine-settings-ui.js"></script><script src="../remote/remote.js"></script><script src="../devices/devices-view.js"></script><script src="../devices/connections.js"></script><script src="../shared/network-notice.js"></script><script src="../../shared/shortcuts.js"></script><script src="./api-settings.js"></script>
+<script src="./settings-charts.js"></script><script src="./subscription-cards.js"></script><script src="./codex-reset-ui.js"></script><script src="./engine-settings-ui.js"></script><script src="../remote/remote.js"></script><script src="../shared/network-notice.js"></script><script src="../../shared/shortcuts.js"></script><script src="./api-settings.js"></script>
 <script src="./settings-groups.js"></script>
 </body></html>

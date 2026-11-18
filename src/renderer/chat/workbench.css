@@ -938,7 +938,15 @@
   .file-preview-editor-actions button { min-height: 30px; padding: 4px 12px; font: var(--f-xs-13); }
   .file-preview-editor-actions button:disabled { opacity: .5; cursor: default; }
   .file-preview-editor-input { position: relative; flex: 1; min-height: 0; width: 100%; }
+  .file-preview-word { min-height: 0; }
+  .file-preview-word-blocks { flex: 1; min-height: 0; overflow: auto; padding: 14px 18px 40px; background: #e9ebee; }
+  .file-preview-word-block { display: block; margin: 0 auto 8px; max-width: 760px; }
+  .file-preview-word-block textarea { display: block; width: 100%; min-height: 32px; padding: 7px 10px; border: 1px solid #cdd2d8; border-radius: 4px; background: #fff; color: #202124; font: 14px/1.5 Arial, sans-serif; resize: none; overflow: hidden; }
+  .file-preview-word-block textarea:focus { outline: 2px solid var(--dsw-alias-brand-primary, #4d6bfe); outline-offset: -1px; border-color: transparent; }
+  .file-preview-word-block.locked textarea { background: #f1f3f5; color: #7b858f; cursor: not-allowed; }
   .file-preview-markdown { min-height: 100%; padding: 24px 28px 48px; background: var(--dsw-alias-bg-base); overflow-wrap: anywhere; white-space: normal; }
+  .file-preview-video { display: block; width: 100%; max-height: calc(100vh - 150px); margin: 12px 0; border: 1px solid var(--dsw-alias-border-l2); border-radius: 10px; background: #000; }
+  .file-preview-notice.file-preview-rendering { position: sticky; top: 0; z-index: 1; background: var(--dsw-alias-bg-base); font: var(--f-xxs-12); }
   .file-preview-markdown p { margin: 0 0 14px; }
   .file-preview-markdown ul, .file-preview-markdown ol { padding-left: 26px; margin: 0 0 14px; }
   .file-preview-markdown li > ul, .file-preview-markdown li > ol { margin-bottom: 0; }
@@ -954,6 +962,7 @@
   .file-preview-markdown h2 { font-size: 22px; }
   .file-preview-markdown h3 { font-size: 18px; }
   .file-preview-notice { padding: 12px 20px; font-size: 12px; color: var(--dsw-alias-label-caption); }
+  .file-preview-message { position: sticky; top: 0; z-index: 2; margin: 0; border-bottom: 1px solid var(--dsw-alias-border-l3); background: var(--dsw-alias-bg-layer-1); color: var(--dsw-alias-label-primary); }
   .file-preview-empty { min-height: 100%; padding: 48px 30px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; text-align: center; color: var(--dsw-alias-label-secondary); line-height: 1.6; }
   .file-preview-empty svg { width: 34px; height: 34px; color: var(--dsw-alias-label-caption); }
   .file-preview-empty button { margin-top: 6px; padding: 8px 14px; border: 1px solid var(--dsw-alias-border-l2); border-radius: 999px; background: var(--dsw-alias-bg-layer-1); color: var(--dsw-alias-label-primary); cursor: pointer; }

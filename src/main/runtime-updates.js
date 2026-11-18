@@ -1,8 +1,8 @@
 'use strict';
 
 // User-initiated version checks and upgrades for the five harness runtimes.
-// npm engines upgrade in place inside the directory locate() resolved (the
-// userData copy in production, the repo copy in development). Antigravity in
+// npm engines update the installation selected by locate(). Kimi validates
+// its ACP adapter in a separate installation before swapping it in. Antigravity in
 // API mode upgrades its Python SDK through the bundled uv installer; in
 // Google subscription mode the CLI uses Google's SHA-512 release manifest and
 // keeps the previous executable available for rollback.
@@ -13,6 +13,7 @@ const patchDsh = require('../../integrations/dsh/patch.cjs');
 const { createDownloadConnection, chooseDownloadConnection } = require('./download-network');
 const { upgradePythonRuntime } = require('./python-runtime');
 const { latestAntigravityCli, upgradeAntigravityCli, manifestUrl } = require('./antigravity-cli-release');
+const { verifyKimiRuntime } = require('./kimi-runtime-check');
 
 const REGISTRY_TIMEOUT = 30000;
 
@@ -33,7 +34,7 @@ function compareVersions(a, b) {
   return x.pre < y.pre ? -1 : 1;
 }
 
-function createRuntimeUpdates({ manager, engines, node, npm, run, downloadSettings = () => undefined, registries = {}, beforeInstall = async () => {}, onChange = () => {}, log = () => {}, cliUpgrade = upgradeAntigravityCli, chooseConnection = chooseDownloadConnection }) {
+function createRuntimeUpdates({ manager, engines, node, npm, run, downloadSettings = () => undefined, registries = {}, beforeInstall = async () => {}, onChange = () => {}, log = () => {}, cliUpgrade = upgradeAntigravityCli, chooseConnection = chooseDownloadConnection, verifyKimi = verifyKimiRuntime }) {
   const pending = new Map();
   const reinstalling = new Set();
   const uninstalling = new Set();
@@ -196,12 +197,47 @@ function createRuntimeUpdates({ manager, engines, node, npm, run, downloadSettin
       choice = { connection: createDownloadConnection(settings), route: 'configured', results: [] };
     }
     const connection = choice.connection;
+    let staging, keepBackup = false;
     try {
       log(`runtime update ${engine}: using the ${choice.route} download connection`);
+      if (engine === 'kimi') {
+        staging = fs.mkdtempSync(path.join(path.dirname(found.dir), '.kimi-update-'));
+        const candidate = path.join(staging, 'candidate');
+        fs.cpSync(found.dir, candidate, { recursive: true, filter: source => source !== path.join(found.dir, 'node_modules') });
+        await upgradeNpmRuntime(engine, candidate, connection, latest);
+        try {
+          await verifyKimi({ node, runtime: path.join(candidate, 'node_modules', engines.kimi.package, engines.kimi.entry),
+            version: latest });
+        } catch (error) {
+          throw new Error(`Kimi v${latest} failed the compatibility check. Kept v${found.version}. ${error.message}`, { cause: error });
+        }
+      }
       const restore = await beforeInstall(engine);
       let result, updateError;
       try {
-        if (cliRelease) {
+        if (staging) {
+          const backup = path.join(staging, 'previous');
+          const candidate = path.join(staging, 'candidate');
+          const current = manager.locate(engine);
+          if (current?.dir !== found.dir || current.version !== found.version)
+            throw new Error('The installed Kimi runtime changed during verification. Check for updates again.');
+          fs.renameSync(found.dir, backup);
+          let activated = false;
+          try {
+            fs.renameSync(candidate, found.dir);
+            activated = true;
+            if (manager.locate(engine)?.version !== latest) throw new Error(`The update to v${latest} could not be activated.`);
+          } catch (error) {
+            try {
+              if (activated) fs.renameSync(found.dir, candidate);
+              fs.renameSync(backup, found.dir);
+            } catch (rollbackError) {
+              keepBackup = true;
+              throw new AggregateError([error, rollbackError], `Kimi update rollback failed. The previous installation is at ${backup}.`);
+            }
+            throw error;
+          }
+        } else if (cliRelease) {
           await cliUpgrade({ dir: found.dir, release: cliRelease, connection, run, report: message => log(message) });
         } else if (engines[engine].type === 'python') {
           await upgradePythonRuntime({ dir: found.dir, run, connection, sdk: latest, report: () => {},
@@ -220,7 +256,13 @@ function createRuntimeUpdates({ manager, engines, node, npm, run, downloadSettin
       if (updateError) throw updateError;
       return result;
     } finally {
-      await connection.close();
+      try { await connection.close(); }
+      finally {
+        if (staging && !keepBackup) {
+          try { await fs.promises.rm(staging, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }); }
+          catch (error) { log(`Kimi update staging cleanup failed: ${error.message}`); }
+        }
+      }
     }
   }
 

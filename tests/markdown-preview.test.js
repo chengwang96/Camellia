@@ -70,9 +70,9 @@ test('Markdown supports references, images, emphasis, quotes, tasks and fenced c
 
 test('untrusted Markdown cannot inject HTML, script URLs or network file shares', () => {
   const html = render('<img src=x onerror=alert(1)>\n\n<script>alert(1)</script>\n\n[bad](javascript:alert(1))\n\n[encoded](jav&#x61;script:alert(1))\n\n![bad](data:text/html,evil)\n\n[share](file://server/share)\n\n![share](//server/share.png)\n\n[local](file:///C:/secret.txt)', { baseUrl });
-  assert.doesNotMatch(html, /<(?:script|img)\b|href="(?:javascript|file):/);
+  assert.doesNotMatch(html, /<(?:script|img)\b|href="javascript:/);
   assert.match(html, /&lt;script&gt;/);
-  assert.match(render('[blocked](ftp://example.com/file)', { baseUrl }), /data-preview-blocked="true"/);
+  assert.doesNotMatch(render('[blocked](ftp://example.com/file)', { baseUrl }), /<a\b/);
 });
 
 test('heading anchors are scoped, unique and code renderers remain available', () => {
@@ -83,4 +83,74 @@ test('heading anchors are scoped, unique and code renderers remain available', (
   assert.match(html, /id="preview-hello-world-1"/);
   assert.match(html, /href="#hello-world"/);
   assert.match(html, /<pre data-language="js">value/);
+});
+
+test('explicit local file links open the local preview while network shares stay inert', () => {
+  const explicit = render('[local](file:///C:/secret.txt)', { baseUrl });
+  assert.match(explicit, /href="file:\/\/\/C:\/secret\.txt"/);
+  assert.doesNotMatch(render('[share](file://server/share)', { baseUrl }), /<a\b/);
+  assert.doesNotMatch(render('![share](//server/share.png)', { baseUrl }), /<img\b/);
+});
+
+test('bare file names stay literal while www hosts and e-mail addresses become links', () => {
+  const html = render('README.md setup.sh main.rs example.com www.example.com person@example.com', { baseUrl });
+  for (const name of ['README.md', 'setup.sh', 'main.rs']) assert.doesNotMatch(html, new RegExp('href="[^"]*' + name));
+  assert.match(html, /href="http:\/\/example\.com\/"/);
+  assert.match(html, /href="http:\/\/www\.example\.com\/"/);
+  assert.match(html, /href="mailto:person@example\.com"/);
+});
+
+test('mailto links open instead of being marked as blocked', () => {
+  const html = render('[Contact](mailto:person@example.com)', { baseUrl });
+  assert.match(html, /href="mailto:person@example\.com"/);
+  assert.doesNotMatch(html, /data-preview-blocked/);
+});
+
+test('Windows paths and heading fragments resolve to local file URLs', () => {
+  assert.match(render('[doc](C:/project/docs/a.md#Install)', { baseUrl }), /href="file:\/\/\/C:\/project\/docs\/a\.md#Install"/);
+  assert.match(render('[doc](C:\\project\\docs\\a.md)', { baseUrl }), /href="file:\/\/\/C:\/project\/docs\/a\.md"/);
+  assert.match(render('[doc](file:///C:/project/docs/a.md#Install)', { baseUrl }), /href="file:\/\/\/C:\/project\/docs\/a\.md#Install"/);
+});
+
+test('Markdown video syntax renders a playback element in document previews', () => {
+  const html = render('![Clip](media/clip.mp4)', { baseUrl });
+  assert.match(html, /<video class="file-preview-video"[^>]*src="file:\/\/\/C:\/project\/media\/clip\.mp4"/);
+  assert.match(html, /controls preload="metadata" playsinline/);
+  assert.doesNotMatch(html, /<img\b/);
+});
+
+test('chunked rendering matches synchronous rendering and reports progress', async () => {
+  const { render, renderChunked } = require('../src/renderer/chat/markdown-preview');
+  const source = ('## Section\n\nParagraph with [link](https://example.com) and `code`.\n\n').repeat(900);
+  const expected = render(source, { baseUrl });
+  const chunks = [];
+  const actual = await renderChunked(source, {
+    baseUrl,
+    onChunk: html => chunks.push(html),
+    yieldControl: async () => {},
+  });
+  assert.equal(actual, expected);
+  assert.ok(chunks.length > 1);
+  assert.equal(chunks.join(''), expected);
+});
+
+test('chunked rendering stops on abort without returning partial HTML', async () => {
+  const { renderChunked } = require('../src/renderer/chat/markdown-preview');
+  const controller = new AbortController();
+  controller.abort();
+  await assert.rejects(
+    renderChunked('# Heading\n\nBody\n', { baseUrl, signal: controller.signal, yieldControl: async () => {} }),
+    /cancelled/i,
+  );
+});
+
+test('code blocks expose source line ranges for chat-to-preview navigation', () => {
+  const html = render('Text\n\n```js\nconst value = 1;\n```\n', { baseUrl, sourceLines: true });
+  assert.match(html, /<div class="preview-source-block" data-preview-line="3" data-preview-end-line="5">/);
+});
+
+test('heading anchors match their links without regard to case', () => {
+  const html = render('## Install (Windows)\n\n[Jump](#install-windows)', { baseUrl });
+  assert.match(html, /data-preview-anchor="install-windows"/);
+  assert.match(html, /href="#install-windows"/);
 });

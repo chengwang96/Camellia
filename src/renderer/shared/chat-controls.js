@@ -234,7 +234,7 @@
     return typeof candidate === 'string' ? candidate : '';
   }
 
-  function makeToolCard(name, inputData, openFilePreview) {
+  function makeToolCard(name, inputData, openFilePreview, { deferred = false } = {}) {
     const el = document.createElement('div');
     el.className = 'tool-card';
     el.innerHTML =
@@ -254,12 +254,13 @@
     el.querySelector('.tool-name').textContent = name || 'tool';
     el.querySelector('.tool-head').addEventListener('click', () => el.classList.toggle('open'));
     const card = {
-      name, el,
+      name, el, deferred,
       inputEl: el.querySelector('.tool-input'),
       outputEl: el.querySelector('.tool-output'),
       stateEl: el.querySelector('.tool-state'),
       summaryEl: el.querySelector('.tool-summary'),
       setInput(data) {
+        if (this.deferred && !this.filled) { this.pendingInput = data; return; }
         this.inputData = data;
         this.previewPath = previewableToolPath(this.name, data);
         this.summaryEl.textContent = toolSummary(this.name, data);
@@ -276,6 +277,7 @@
         }
       },
       setOutput(text, isErr) {
+        if (this.deferred && !this.filled) { this.pendingOutput = { text, isErr }; return; }
         this.finished = true;
         this.failed = !!isErr;
         const search = isErr ? null : webSearchView(this.name, text);
@@ -298,6 +300,22 @@
           button.addEventListener('click', event => { event.stopPropagation(); void openFilePreview(this.previewPath); });
           this.outputEl.after(button);
         }
+      },
+      setDeferredLabel(text) {
+        if (!this.deferred || this.filled) return;
+        this.outputEl.textContent = text || '';
+        this.stateEl.className = 'tool-state done';
+      },
+      fill() {
+        if (!this.deferred || this.filled) return;
+        this.filled = true;
+        const input = this.pendingInput;
+        const output = this.pendingOutput;
+        this.deferred = false;
+        delete this.pendingInput;
+        delete this.pendingOutput;
+        if (input !== undefined) this.setInput(input);
+        if (output) this.setOutput(output.text, output.isErr);
       },
     };
     card.setInput(inputData || null);

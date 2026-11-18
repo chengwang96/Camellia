@@ -56,10 +56,12 @@ public final class RemoteUsageActivity extends Activity {
         address = saved == null ? getIntent().getStringExtra("address") : saved.getString("address");
         if (address == null) address = "";
         if (saved != null) { tab = saved.getString("tab", tab); range = saved.getString("range", range); source = saved.getString("source", ""); accountId = saved.getString("account", ""); model = saved.getString("model", ""); }
+        boolean tabletSettings = MobileLayout.useTabletRail(getResources().getConfiguration());
         LinearLayout root = column(); root.setBackgroundColor(style.background); style.pagePadding(root);
         getWindow().setStatusBarColor(style.background); getWindow().setNavigationBarColor(style.background);
         getWindow().getDecorView().setSystemUiVisibility(style.palette().dark ? 0 : View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR | View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR);
-        root.addView(style.header(tr("额度与用量", "Quota & usage"), tr("返回", "Back"), this::finish));
+        String title = tr("额度与用量", "Quota & usage");
+        root.addView(tabletSettings ? style.header(title) : style.header(title, tr("返回", "Back"), this::finish));
         LinearLayout connection = style.group(root, ""); connection.setElevation(0);
         connection.setOrientation(LinearLayout.HORIZONTAL); connection.setGravity(Gravity.CENTER_VERTICAL);
         connection.setPadding(dp(6), dp(4), dp(6), dp(4));
@@ -90,7 +92,7 @@ public final class RemoteUsageActivity extends Activity {
         LinearLayout.LayoutParams tabsParams = new LinearLayout.LayoutParams(-1, -2); tabsParams.topMargin = dp(8); root.addView(tabs, tabsParams);
         scroll = ScrollViews.plain(this); scroll.setVerticalScrollBarEnabled(false); body = column(); body.setPadding(0, dp(12), 0, dp(16)); scroll.addView(body); root.addView(scroll, new LinearLayout.LayoutParams(-1, 0, 1));
         View page = root;
-        if (MobileLayout.useTabletRail(getResources().getConfiguration())) {
+        if (tabletSettings) {
             root.setOnApplyWindowInsetsListener(null); root.setPadding(dp(24), dp(8), dp(24), dp(16));
             View split = TabletScaffold.settingsBody(this, root, "usage", section -> {
                 if (section.equals("usage")) return;

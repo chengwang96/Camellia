@@ -6,7 +6,10 @@ const { spawn } = require('node:child_process');
 const { randomBytes } = require('node:crypto');
 const { jsonLines } = require('../../shared/json-lines');
 const { isTailscaleIPv4 } = require('./tailscale');
-const { DeviceTransport, deviceAddress } = require('./device-transport');
+
+function bundleDirectory(app) {
+  return app.isPackaged ? path.join(process.resourcesPath, 'runtime') : path.resolve(__dirname, '../../../build/runtime-assets');
+}
 
 function loginURL(value) {
   try {
@@ -51,14 +54,13 @@ class EmbeddedNetwork {
         && (typeof hostname !== 'string' || (hostname && !/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(hostname)))) throw new Error('Invalid Tailscale hostname');
     Object.assign(this, { app, safeStorage, directory, executable, keyProvider, hostname, openExternal, onFailure, spawnProcess });
     this.pending = new Map();
-    this.connections = new Set();
     this.sequence = 0;
     this.snapshot = { state: 'Stopped', loginUrl: null, address: null };
   }
   async start() {
     if (this.child) return;
     const directory = this.directory || path.join(this.app.getPath('userData'), 'remote', 'tailnet');
-    const executable = this.executable || promoteHelper(path.join(this.app.isPackaged ? path.join(process.resourcesPath, 'runtime') : path.resolve(__dirname, '../../../build/runtime-assets'),
+    const executable = this.executable || promoteHelper(path.join(bundleDirectory(this.app),
       process.platform === 'win32' ? 'camellia-tailnet.exe' : 'camellia-tailnet'));
     if (!fs.existsSync(executable)) throw new Error('Embedded network helper is missing. Reinstall Camellia; source builds must run npm run build:tailnet.');
     const key = this.keyProvider ? this.keyProvider(directory) : storageKey(directory, this.safeStorage);
@@ -76,7 +78,6 @@ class EmbeddedNetwork {
       this.child = null;
       this.snapshot = { state: 'Error', loginUrl: null, address: null };
       this.rejectPending(new Error('Embedded network stopped unexpectedly. Disable and enable mobile access to retry.'));
-      this.closeConnections();
       child.kill();
       this.onFailure();
     };
@@ -152,35 +153,6 @@ class EmbeddedNetwork {
       throw error;
     }
   }
-  async connect(address) {
-    deviceAddress(address);
-    if (!this.child) throw new Error('Start and sign into embedded networking before connecting a device');
-    const child = this.child;
-    const token = randomBytes(32).toString('hex');
-    let result;
-    try { result = await this.request('connect', { target: address, token }); }
-    catch (error) {
-      if (error.message === 'unsupported network action') throw new Error('Embedded network helper is outdated and cannot connect to CLI servers. Update Camellia and restart it; source builds must run npm run build:tailnet, then fully restart Camellia.');
-      throw error;
-    }
-    if (this.child !== child) throw new Error('Network changed while connecting');
-    let connection;
-    try {
-      connection = new DeviceTransport({ url: result.url, token, disconnect: async () => {
-        this.connections.delete(connection);
-        if (this.child === child) await this.request('disconnect', { token });
-      } });
-    } catch (error) { await this.request('disconnect', { token }); throw error; }
-    this.connections.add(connection);
-    return connection;
-  }
-  closeConnections() {
-    for (const connection of this.connections) {
-      connection.disconnect = null;
-      void connection.close();
-    }
-    this.connections.clear();
-  }
   async logout() {
     await this.start();
     await this.request('logout');
@@ -193,7 +165,6 @@ class EmbeddedNetwork {
   async stop() {
     const child = this.child;
     this.child = null;
-    this.closeConnections();
     this.snapshot = { state: 'Stopped', loginUrl: null, address: null };
     this.rejectPending(new Error('Embedded network stopped'));
     if (!child) return;
@@ -205,4 +176,4 @@ class EmbeddedNetwork {
   }
 }
 
-module.exports = { EmbeddedNetwork, loginURL, storageKey, promoteHelper, tailscaleHostname };
+module.exports = { EmbeddedNetwork, bundleDirectory, loginURL, storageKey, promoteHelper, tailscaleHostname };

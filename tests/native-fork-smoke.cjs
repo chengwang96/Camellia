@@ -159,7 +159,7 @@ async function main() {
       dsh,
     };
     if (headless) {
-      const engines = require('../src/cli/engine-drivers').createEngineDrivers({ ...common, root: appRoot,
+      const engines = require('./fixtures/engine-drivers').createEngineDrivers({ ...common, root: appRoot,
         runtimeManager, router: () => routes, isBusy: engine => manager?.isBusy(engine) || false,
         onEvent: (engine, event) => manager.capture(engine, event) });
       drivers = engines.drivers;

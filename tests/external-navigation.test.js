@@ -36,9 +36,9 @@ test('same-frame PDF links also leave the preview in place', () => {
 
 test('new-tab links use the same external browser policy without creating an app window', () => {
   const { contents, opened } = fixture();
-  for (const url of ['https://example.com/product', 'http://example.com/help'])
+  for (const url of ['https://example.com/product', 'http://example.com/help', 'mailto:person@example.com'])
     assert.deepEqual(contents.openWindow({ url }), { action: 'deny' });
-  assert.deepEqual(opened, ['https://example.com/product', 'http://example.com/help']);
+  assert.deepEqual(opened, ['https://example.com/product', 'http://example.com/help', 'mailto:person@example.com']);
 });
 
 test('local PDF and sandboxed document frames still load normally', () => {
@@ -50,11 +50,17 @@ test('local PDF and sandboxed document frames still load normally', () => {
 
 test('non-web links cannot replace the workbench or launch system protocols', () => {
   const { contents, navigate, opened } = fixture();
-  for (const url of ['javascript:alert(1)', 'file:///C:/other.pdf', 'data:text/html,other', 'ms-settings:display', 'mailto:someone@example.com', 'not a URL']) {
+  for (const url of ['javascript:alert(1)', 'file:///C:/other.pdf', 'data:text/html,other', 'ms-settings:display', 'not a URL']) {
     assert.equal(navigate('will-navigate', { url }).prevented, true, url);
     assert.deepEqual(contents.openWindow({ url }), { action: 'deny' });
   }
   assert.deepEqual(opened, []);
+});
+
+test('mail links open in the system mail handler without replacing the app', () => {
+  const { navigate, opened } = fixture();
+  assert.equal(navigate('will-navigate', { url: 'mailto:someone@example.com' }).prevented, true);
+  assert.deepEqual(opened, ['mailto:someone@example.com']);
 });
 
 test('legacy navigation arguments still protect the app', () => {

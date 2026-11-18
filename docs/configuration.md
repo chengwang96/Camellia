@@ -231,7 +231,7 @@ Engine configurations receive a loopback router URL and placeholder credentials.
 
 The desktop checks the catalog in the background at startup when it is stale and every 24 hours while open. **Refresh prices** in Usage checks immediately; the card shows the source, catalog date, last successful check, and any refresh error. A validated cache in `<app-data>/subscription-prices-cache.json` and the bundled snapshot keep pricing available offline. Failed or invalid downloads do not replace the last good catalog. `node scripts/update-subscription-prices.cjs` refreshes the bundled snapshot for a build while preserving the official Kimi supplements.
 
-Already priced records keep their original estimates. Up to 10,000 recent unpriced samples retain per-request pricing inputs and can be valued once a later catalog contains the model; each record is applied only once. Legacy aggregates without those inputs remain explicitly unpriced, since context thresholds cannot be reconstructed accurately from a turn total. The bundled snapshot now includes `gpt-6.1-sol`. Headless hosts use the bundled catalog and retain their own ledger.
+Already priced records keep their original estimates. Up to 10,000 recent unpriced samples retain per-request pricing inputs and can be valued once a later catalog contains the model; each record is applied only once. Legacy aggregates without those inputs remain explicitly unpriced, since context thresholds cannot be reconstructed accurately from a turn total. The bundled snapshot now includes `gpt-6.1-sol`.
 
 - Daily records cover the most recent 90 days; cumulative model totals are retained. CSV export uses the selected filters.
 - API success counts represent requests; subscription success counts represent completed turns. A turn's tool-driven model calls contribute all reported tokens without multiplying the turn count. Explicit Codex account wake requests and native manual compaction also contribute reported usage.
@@ -241,7 +241,7 @@ Already priced records keep their original estimates. Up to 10,000 recent unpric
 - Kimi collects new native journal entries after the turn ends, including reported internal agent usage. Codex uses thread token events; native Codex collaboration tool activity is marked incomplete because internal child-thread consumption is not independently reconciled. Antigravity uses step usage when available and the native result otherwise. Camellia child conversations have their own meters.
 - Legacy aggregates are retained without inventing historical model attribution.
 
-Account queries, connection validation, and token-counting requests are not business usage. Subscription quota (such as Kimi's account-wide windows) remains in **Subscription accounts**; API balances remain in **API Keys**. Provider-reported quota may include other clients and is not added to local token totals. A remote CLI server keeps its own ledger in its data directory and exposes subscription estimates in its server usage view.
+Account queries, connection validation, and token-counting requests are not business usage. Subscription quota (such as Kimi's account-wide windows) remains in **Subscription accounts**; API balances remain in **API Keys**. Provider-reported quota may include other clients and is not added to local token totals.
 
 ## Balances and subscription quotas
 

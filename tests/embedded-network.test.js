@@ -78,31 +78,6 @@ test('embedded networking accepts a headless key provider without an Electron ap
   await assert.rejects(invalid.start(), /Invalid embedded network storage key/);
 });
 
-test('embedded outgoing connections are disposed on disconnect and helper shutdown', async () => {
-  const network = new EmbeddedNetwork({});
-  const calls = [];
-  const child = new EventEmitter();
-  child.stdin = { end: () => child.emit('exit', 0) };
-  child.kill = () => {};
-  network.child = child;
-  network.request = async (action, payload) => {
-    calls.push({ action, payload });
-    return action === 'connect' ? { url: 'http://127.0.0.1:12345' } : null;
-  };
-  const first = await network.connect('http://100.80.1.2:43127');
-  assert.match(calls[0].payload.token, /^[a-f0-9]{64}$/);
-  await first.close();
-  assert.equal(calls[1].action, 'disconnect');
-  assert.equal(network.connections.size, 0);
-  const second = await network.connect('http://100.80.1.3:43127');
-  await network.stop();
-  assert.equal(second.closed, true);
-  assert.equal(network.connections.size, 0);
-  assert.equal(calls.length, 3);
-  await assert.rejects(network.connect('http://127.0.0.1:43127'), /Tailscale/);
-  await assert.rejects(network.connect('http://100.80.1.2:43127'), /Start and sign/);
-});
-
 test('headless hostname is validated before any helper process starts', () => {
   for (const hostname of ['-bad', 'bad-', 'bad.name', 'UPPER', 'bad\nname', 'a'.repeat(64), 123]) {
     assert.throws(() => new EmbeddedNetwork({ hostname }), /hostname/);
@@ -152,16 +127,4 @@ test('embedded hostname changes use the helper and refresh the cached identity',
   assert.equal(network.identity().hostName, 'new-name');
   network.child = null;
   assert.deepEqual(await network.setHostname('ignored'), { hostName: '' });
-});
-
-test('outdated helper connect errors explain the local rebuild and restart without stopping networking', async () => {
-  const network = new EmbeddedNetwork({});
-  const child = {};
-  network.child = child;
-  network.request = async () => { throw new Error('unsupported network action'); };
-  await assert.rejects(network.connect('http://100.80.1.2:43127'), /helper is outdated.*build:tailnet.*restart Camellia/);
-  assert.equal(network.child, child);
-  assert.equal(network.connections.size, 0);
-  network.request = async () => { throw new Error('Connection refused'); };
-  await assert.rejects(network.connect('http://100.80.1.2:43127'), /^Error: Connection refused$/);
 });

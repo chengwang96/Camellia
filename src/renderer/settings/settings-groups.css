@@ -32,8 +32,6 @@
 .settings-main .subscription-model-row ~ .subscription-model-row { border-top: 1px solid var(--dsw-alias-border-l2); }
 .settings-main .route-row { border-bottom: 0; }
 .settings-main .route-row ~ .route-row { border-top: 1px solid var(--dsw-alias-border-l2); }
-.settings-main .cli-devices .server-setting { border-top: 0; }
-.settings-main .cli-devices .server-setting ~ .server-setting { border-top: 1px solid var(--dsw-alias-border-l2); }
 @media (max-width: 700px) {
   .settings-main .quick-switch-head + .quick-switch-row { border-top: 0; }
 }

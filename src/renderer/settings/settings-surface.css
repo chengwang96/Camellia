@@ -124,7 +124,6 @@ input[type=checkbox]:is(:checked, :indeterminate) { border-color: var(--dsw-alia
 input[type=checkbox]:is(:checked, :indeterminate)::before { opacity: 1; }
 input[type=checkbox]:indeterminate::before { height: 0; margin: 0; border-left: 0; transform: none; }
 input[type=checkbox]:disabled { cursor: default; opacity: .45; }
-.cli-devices .native-confirm input[type=checkbox] { width: 16px; height: 16px; padding: 0; }
 /* Boolean preferences use the same switch in every category and account row. */
 :is(.setting-row, .engine-field) > input[type=checkbox],
 .subscription-rotation input[type=checkbox], .key-row input[type=checkbox], #enabled, #pEnabled {

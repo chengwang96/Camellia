@@ -1,8 +1,27 @@
 'use strict';
 const fs = require('node:fs');
 const path = require('node:path');
+const { createHash } = require('node:crypto');
 const { nativeHistoryModule } = require('./native-history-module');
 const { patchKimiAcpTurns } = require('./kimi-acp-turns');
+
+const kimiAcpVersions = new Set(['2.4.0', '2.4.1', '2.5.1', '2.5.2', '2.6.2', '2.6.3', '2.7.0']);
+function kimiAcpVerificationFile(runtime) {
+  return path.join(path.dirname(runtime), '.camellia-acp-verified');
+}
+function kimiAcpFingerprint(metadata, source) {
+  return createHash('sha256').update(metadata.version + '\n').update(source).digest('hex');
+}
+function supportsKimiAcp(metadata, runtime, source) {
+  if (metadata.name !== '@moonshot-ai/kimi-code') return false;
+  if (kimiAcpVersions.has(metadata.version)) return true;
+  try {
+    return fs.readFileSync(kimiAcpVerificationFile(runtime), 'utf8') === kimiAcpFingerprint(metadata, source);
+  } catch (error) {
+    if (error.code === 'ENOENT') return false;
+    throw error;
+  }
+}
 
 // The official engine owns undo, including checkpoint/compaction validation
 // and derived-state reconciliation. Only expose that engine operation over
@@ -123,10 +142,11 @@ const cache = new Map();
 function prepareKimiHistory(runtime) {
   try {
     const metadata = JSON.parse(fs.readFileSync(path.resolve(path.dirname(runtime), '../package.json'), 'utf8'));
-    if (metadata.name !== '@moonshot-ai/kimi-code' || !['2.4.0', '2.4.1', '2.5.1', '2.5.2', '2.6.2'].includes(metadata.version)) return null;
-    const stat = fs.statSync(runtime), key = runtime + ':' + stat.size + ':' + stat.mtimeMs;
+    const stat = fs.statSync(runtime), key = runtime + ':' + metadata.version + ':' + stat.size + ':' + stat.mtimeMs;
     if (cache.has(key) && fs.existsSync(cache.get(key))) return cache.get(key);
-    const source = fs.readFileSync(runtime, 'utf8'), patched = patchKimiHistory(source);
+    const source = fs.readFileSync(runtime, 'utf8');
+    if (!supportsKimiAcp(metadata, runtime, source)) return null;
+    const patched = patchKimiHistory(source);
     if (!patched) return null;
     const file = nativeHistoryModule(runtime, patched);
     cache.set(key, file);
@@ -137,4 +157,4 @@ function prepareKimiHistory(runtime) {
   }
 }
 
-module.exports = { prepareKimiHistory, patchKimiHistory };
+module.exports = { prepareKimiHistory, patchKimiHistory, supportsKimiAcp, kimiAcpVerificationFile, kimiAcpFingerprint };

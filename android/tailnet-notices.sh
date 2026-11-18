@@ -13,11 +13,6 @@ ROOT="$(cd "$(dirname "$0")" && pwd)"
 MODULE="$ROOT/tailnet"
 TARGET="$ROOT/app/src/main/assets/third-party-notices.txt"
 
-export PATH="$HOME/sdk/go1.26.3/bin:$HOME/go/bin:$PATH"
-export GOPROXY="${GOPROXY:-https://goproxy.cn,direct}"
-export GOSUMDB=off
-export GOTOOLCHAIN=local
-unset HTTP_PROXY HTTPS_PROXY http_proxy https_proxy
 
 cd "$MODULE"
 

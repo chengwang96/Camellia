@@ -82,11 +82,38 @@ test('Grok opens and resumes native sessions with authentication, model, effort 
     return {};
   };
   await session.open();
-  assert.deepEqual(calls.map(call => call.method), ['initialize', 'authenticate', 'session/load', 'session/set_model', 'session/set_config_option', 'session/set_mode']);
+  assert.deepEqual(calls.map(call => call.method), ['initialize', 'authenticate', 'session/load', 'session/set_model', 'session/set_config_option']);
   assert.equal(calls[1].params.methodId, 'cached_token');
+  assert.deepEqual(calls[2].params._meta, { yoloMode: true });
   assert.deepEqual(calls[3].params, { sessionId, modelId: 'grok-4.7' });
   assert.deepEqual(calls[4].params, { sessionId, configId: 'reasoning_effort', value: 'high' });
-  assert.deepEqual(calls[5].params, { sessionId, modeId: 'bypassPermissions' });
+});
+
+test('Grok keeps automatic modes in session metadata and uses only supported ACP mode IDs', async t => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'camellia-grok-modes-'));
+  t.after(() => removeTree(home));
+  const sessionId = '00000000-0000-4000-8000-000000000002';
+  for (const [permissionMode, meta, modeId] of [
+    ['ask', undefined, 'default'],
+    ['plan', undefined, 'plan'],
+    ['auto', { autoMode: true }, undefined],
+    ['full', { yoloMode: true }, undefined],
+  ]) {
+    const calls = [];
+    const session = new GrokSession({ gen: 1, settings: { cwd: home, permissionMode }, opts: {},
+      exe: '/fixture/grok', spec: { args: [], env: {} }, spawn: () => assert.fail('no process expected'),
+      log() {}, history: { root: home, find: () => null }, onEvent() {}, onSessionId() {}, onResult() {} });
+    session.starting = Promise.resolve();
+    session.request = async (method, params) => {
+      calls.push({ method, params });
+      return method === 'session/new' ? { sessionId } : {};
+    };
+    await session.open();
+    const created = calls.find(call => call.method === 'session/new');
+    const switched = calls.find(call => call.method === 'session/set_mode');
+    assert.deepEqual(created.params._meta, meta, permissionMode);
+    assert.equal(switched?.params.modeId, modeId, permissionMode);
+  }
 });
 
 for (const targetPromptIndex of [undefined, 0]) test('Grok loads the source before forking and preserves the boundary ' + targetPromptIndex, async t => {

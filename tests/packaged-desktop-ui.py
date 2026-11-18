@@ -397,6 +397,9 @@ def run_scenario(playwright, executable, resources, output, scenario, shortcut, 
             wait_value(settings, "workbenchSettings", lambda state: state["theme"] == "dark")
             settings.locator('[data-view="data"]').click()
             expect(settings.locator("#dataPath")).to_have_text(str(profile))
+            storage_scan = ipc(settings, "storageScan")
+            assert storage_scan.get("ok"), storage_scan
+            result["checks"].append("packaged storage inventory runs its worker from the application archive")
             settings.locator('[data-view="network"]').click()
             settings.locator("#networkMode").select_option("direct")
             wait_value(settings, "networkSettings", lambda state: state.get("mode") == "direct")

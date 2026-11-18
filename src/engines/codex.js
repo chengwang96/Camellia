@@ -20,6 +20,8 @@ const weeklyProbe = require('./codex-weekly-probe');
 const { getDiscussionLaunch, buildDiscussionSpec, assertDiscussionPoolAccess } = require('./discussions/native-launch');
 const { withSessionAffinity } = require('../api/session-affinity');
 
+const MAX_TIMER_MS = 0x7fffffff;
+
 function createCodex({ dataDir, loadConfig, saveConfig, getRoute, getModels = () => [], getContextWindow = () => undefined, runtimes, environment = () => process.env,
   openExternal, onEvent, onGoal, onAccount = () => {}, createUsageMeter = () => null, isBusy = () => false, log = () => {}, createAccountClient = options => new CodexClient(options) }) {
   const home = path.join(dataDir, 'codex');
@@ -152,7 +154,7 @@ function createCodex({ dataDir, loadConfig, saveConfig, getRoute, getModels = ()
     const timer = setTimeout(() => {
       weeklyTimers.delete(id);
       void refreshAccount(id).catch(error => log('Codex weekly quota check: ' + error.message));
-    }, Math.max(60000, next * 1000 + 60000 - Date.now()));
+    }, Math.min(MAX_TIMER_MS, Math.max(60000, next * 1000 + 60000 - Date.now())));
     timer.unref?.();
     weeklyTimers.set(id, timer);
   }

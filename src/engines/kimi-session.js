@@ -134,7 +134,7 @@ function updateKimiConnectionSettings(config, patch) {
 
 // API credentials stay in the router. Subscription credentials are maintained
 // by the official CLI in a separate app-owned home.
-function kimiSpawnSpec({ home, runtime, model, contextWindow = 131072, route, connection = 'api', sharedSubscription = false, config = {}, mcp = '', env = process.env, thinkingBudget }) {
+function kimiSpawnSpec({ home, runtime, model, contextWindow = 131072, route, connection = 'api', sharedSubscription = false, config = {}, mcp = '', env = process.env, thinkingBudget, preparedRuntime }) {
   fs.mkdirSync(home, { recursive: true });
   if (process.platform === 'win32') home = fs.realpathSync.native(home);
   const { routeKimi } = require('./engine-settings');
@@ -151,7 +151,7 @@ function kimiSpawnSpec({ home, runtime, model, contextWindow = 131072, route, co
     route: thinkingBudget === undefined ? route : harnessThinkingRoute(route, thinkingBudget), model, contextWindow });
   writeText(path.join(home, 'config.toml'), TOML.stringify(merged));
   writeText(path.join(home, 'mcp.json'), mcp || '{"mcpServers":{}}');
-  const bridge = prepareKimiRuntime(runtime);
+  const bridge = preparedRuntime || prepareKimiRuntime(runtime);
   return { args: [bridge.file, 'acp'], env: { ...kimiEnvironment(home, env), KIMI_DISABLE_TELEMETRY: merged.telemetry ? '0' : '1' }, modeEngine: 'kimi',
     nativeHistory: bridge.nativeHistory, nativeSteer: bridge.nativeSteer, nativeBackgroundTasks: bridge.nativeBackgroundTasks === true,
     ...(connection !== 'subscription' && thinkingBudget !== undefined ? { applyThinking: false } : {}) };

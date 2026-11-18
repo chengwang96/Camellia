@@ -51,6 +51,25 @@ public class RemoteApiResponseTest extends InstrumentationTestCase {
         } finally { EmbeddedNetwork.setEnabled(old); }
     }
 
+    public void testConversationEventsIncludeTheSyncedHistoryVersion() throws Exception {
+        var context = getInstrumentation().getTargetContext(); EmbeddedNetwork.initialize(context);
+        boolean old = EmbeddedNetwork.enabled(); EmbeddedNetwork.setEnabled(false);
+        String id = "00000000-0000-0000-0000-000000000001", version = "a".repeat(64);
+        byte[] body = ("event: snapshot\ndata: {\"conversation\":{\"id\":\"" + id
+            + "\"},\"historyVersion\":\"" + version + "\"}\n\n").getBytes(StandardCharsets.UTF_8);
+        try (Server server = new Server(body, "text/event-stream")) {
+            RemoteApi client = client(server); client.incremental(true); client.historyVersion(version);
+            var snapshots = new java.util.concurrent.atomic.AtomicInteger();
+            try {
+                client.events(id, "a".repeat(43), value -> {
+                    assertFalse(value.has("messages")); assertEquals(version, value.optString("historyVersion")); snapshots.incrementAndGet();
+                });
+                assertEquals(1, snapshots.get());
+                assertEquals("GET /v1/conversations/" + id + "/events?incremental=1&historyVersion=" + version + " HTTP/1.1", server.requestLine);
+            } finally { client.cancel(); }
+        } finally { EmbeddedNetwork.setEnabled(old); }
+    }
+
     static RemoteApi client(Server server) throws Exception {
         RemoteApi client = new RemoteApi("http://100.80.1.2:" + server.socket.getLocalPort());
         // This private fixture alone uses loopback; the production Endpoint validator remains unchanged.
