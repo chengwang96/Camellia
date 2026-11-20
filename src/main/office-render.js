@@ -94,6 +94,10 @@ async function wordBlocks(node, context, depth = 0) {
   return result.join('');
 }
 
+async function renderWordParagraph(node, context) {
+  return paragraph(node, context);
+}
+
 function renderDocumentHtml(body) {
   return `<!doctype html><html><head><meta charset="utf-8"><style>
     *{box-sizing:border-box}body{margin:0;padding:20px;background:#e9ebee;color:#202124;font:15px/1.55 Arial,sans-serif}
@@ -128,4 +132,4 @@ async function renderOfficeDocument(kind, reader, sections) {
   return renderDocumentHtml(body);
 }
 
-module.exports = { renderOfficeDocument, renderDocumentHtml };
+module.exports = { renderOfficeDocument, renderDocumentHtml, renderWordParagraph };

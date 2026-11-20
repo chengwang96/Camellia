@@ -1,14 +1,16 @@
 'use strict';
 
-function createClaudeSidebar({ $, context, contextBusy, canChangeContext, canReadReply = () => true, getDiscussionId = () => null, discussionVisible = () => false, discussionOpening = () => false, setStatus, newSession, openHistorySession, openDiscussions, forkSession, canFork = () => true, openActionMenu, closePops, noteLocalDelete = () => {} }) {
+function createClaudeSidebar({ $, context, contextBusy, canChangeContext, canReadReply = () => true, hasDraft = () => false,
+  getDiscussionId = () => null, discussionVisible = () => false, discussionOpening = () => false, setStatus, newSession,
+  openHistorySession, openDiscussions, forkSession, canFork = () => true, openActionMenu, closePops, noteLocalDelete = () => {} }) {
   const input = $('input');
   let sessionHistory = [], workspaces = [];
   let renamingWorkspaceId = null, renamingWorkspaceInput = null;
   let historyLoadSeq = 0;
   let pagination = {}, limits = {};
-  let drag = null, suppressClickUntil = 0;
+  let drag = null, suppressClickUntil = 0, sidebarRenderKey = '';
   const navigation = window.CamelliaWorkbenchNavigation;
-  let discussionGroups = [], discussionLoadSeq = 0, discussionTimer;
+  let discussionGroups = [], discussionLoadSeq = 0, discussionTimer, discussionsLoaded = false;
   let renamingDiscussionId = null;
   async function loadDiscussions() {
     if (!navigation || !openDiscussions || typeof window.dshDesktop.discussion !== 'function') return;
@@ -17,7 +19,7 @@ function createClaudeSidebar({ $, context, contextBusy, canChangeContext, canRea
       const result = await window.dshDesktop.discussion('list');
       if (seq !== discussionLoadSeq) return;
       if (!result?.ok) throw new Error(result?.error || 'Could not load discussions');
-      discussionGroups = result.groups; renderDiscussionSection($('sessionList'));
+      discussionGroups = result.groups; discussionsLoaded = true; renderDiscussionSection($('sessionList'));
     } catch (error) { setStatus(error.message); }
   }
   function discussionActions(anchor, row) {
@@ -109,6 +111,7 @@ function createClaudeSidebar({ $, context, contextBusy, canChangeContext, canRea
     else if (uncertain) { status = t('Background status unknown'); tone = 'muted'; }
     else if (background) { status = t('Background tasks'); tone = 'busy'; }
     else if (session?.unread) { status = t('Unread reply'); tone = 'unread'; }
+    else if (sessionHasDraft(session)) { status = t('Draft'); tone = 'muted'; }
     else if (active) { status = t('Current'); tone = 'current'; }
     else if (session?.pinned) { status = t('Pinned'); tone = 'muted'; }
 
@@ -179,7 +182,7 @@ function createClaudeSidebar({ $, context, contextBusy, canChangeContext, canRea
       if (active) context.workspaceId = active.workspaceId || null;
       if (context.workspaceId && !workspaces.some((w) => w.id === context.workspaceId)) context.workspaceId = null;
       renderSessionSidebar();
-      void loadDiscussions();
+      if (!discussionsLoaded) void loadDiscussions();
       return true;
     } catch (err) {
       setStatus("Could not load session: " + err.message);
@@ -204,8 +207,17 @@ function createClaudeSidebar({ $, context, contextBusy, canChangeContext, canRea
     list.appendChild(group);
     return group;
   }
-  function renderSessionSidebar() {
+  function sessionHasDraft(session) {
+    return Boolean(hasDraft(session ? session.id : null));
+  }
+  function renderSessionSidebar(force = false) {
     if (drag?.active || renamingDiscussionId || renamingWorkspaceId) return;
+    const nextKey = JSON.stringify([sessionHistory, workspaces, pagination, importableCount,
+      context.sessionId, context.workspaceId, $('headerTitle').textContent, discussionVisible(), getDiscussionId(),
+      discussionGroups, harnessId, window.CamelliaI18n.language, Math.floor(Date.now() / 60000),
+      hasDraft(null), sessionHistory.map(sessionHasDraft)]);
+    if (!force && nextKey === sidebarRenderKey) { updateWorkspaceLabel(); return; }
+    sidebarRenderKey = nextKey;
     const list = $('sessionList');
     const scroll = list.scrollTop;
     list.replaceChildren();
@@ -350,6 +362,7 @@ function createClaudeSidebar({ $, context, contextBusy, canChangeContext, canRea
   }
   function makeSessionItem(s) {
     const active = s ? s.id === context.sessionId : !context.sessionId;
+    const draft = sessionHasDraft(s);
     const item = document.createElement('div');
     item.className = 'session-item' + (active ? ' active' : '');
     item.tabIndex = 0;
@@ -375,7 +388,9 @@ function createClaudeSidebar({ $, context, contextBusy, canChangeContext, canRea
     const uncertain = background && s.backgroundWork.tasks.some(task => task.status === 'unknown');
     item.dataset.activity = activity || '';
     item.dataset.background = uncertain ? 'unknown' : background ? 'running' : '';
-    item.querySelector('.session-item-time').textContent = activity === 'permission' ? 'Needs approval' : activity === 'question' ? 'Needs input' : activity ? 'Working' : uncertain ? 'Background status unknown' : background ? 'Background tasks' : s ? relTime(s.mtimeMs) : 'Now';
+    const status = item.querySelector('.session-item-time');
+    status.textContent = activity === 'permission' ? 'Needs approval' : activity === 'question' ? 'Needs input' : activity ? 'Working' : uncertain ? 'Background status unknown' : background ? 'Background tasks' : draft ? 'Draft' : s ? relTime(s.mtimeMs) : 'Now';
+    status.classList.toggle('is-draft', Boolean(draft && !activity && !background));
     const open = () => {
       const wrongHarness = Boolean(s?.currentEngine && s.currentEngine !== harnessId);
       if (s && (discussionOpening() || s.id !== context.sessionId || wrongHarness || ['permission', 'question'].includes(s.activity)))
@@ -824,7 +839,7 @@ function createClaudeSidebar({ $, context, contextBusy, canChangeContext, canRea
           setStatus("Session renamed");
         } catch (err) { setStatus(err.message); }
       }
-      await loadSessionHistory();
+      if (await loadSessionHistory()) renderSessionSidebar(true);
     };
     inputEl.addEventListener('keydown', (e) => {
       if (e.key === 'Enter') { e.preventDefault(); void commit(true); }

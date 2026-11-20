@@ -46,6 +46,10 @@ function settingsView(manager, conversation) {
         ? model.name + ' (hidden)' : model.name,
       thinking: model.thinking, connection: model.connection, supportsFast: model.supportsFast })),
     permissionLevels: LEVELS };
+  // The id alone is too long for the phone's composer, and account models
+  // already carry the name the picker shows ("K3.1 Pro"). Send it alongside
+  // the id so clients do not have to shorten a raw `kimi-code/k3.1-pro`.
+  settings.modelName = allModels.find(model => model.id === settings.model && model.connection === connection)?.name || settings.model;
   const quickModel = preferences.quickSwitchModels?.[engine];
   settings.quickSwitch = quickModel ? { model: quickModel, connection: preferences.quickSwitchConnections?.[engine]
     || (settings.models.some(m => m.id === quickModel && m.connection === 'subscription') ? 'subscription' : 'api'), thinking: preferences.quickSwitchLevels?.[engine] || '',

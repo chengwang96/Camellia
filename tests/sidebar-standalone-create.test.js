@@ -7,32 +7,53 @@ const path = require('node:path');
 const vm = require('node:vm');
 
 const source = fs.readFileSync(path.join(__dirname, '../src/renderer/chat/workbench-sidebar.js'), 'utf8');
-const renderSource = source.slice(source.indexOf('  function sidebarButton('), source.indexOf('  function makeSessionItem('));
+const draftSource = source.slice(source.indexOf('  function sessionHasDraft('), source.indexOf('  function renderSessionSidebar('));
+const renderSource = draftSource + source.slice(source.indexOf('  function sidebarButton('), source.indexOf('  async function runMetaOp('));
 const updateSource = source.slice(source.indexOf('  function updateWorkspaceLabel('), source.indexOf('  async function loadSessionHistory('));
 
 function element() {
   return {
-    dataset: {}, children: [], listeners: {}, attributes: {}, scrollTop: 120,
+    dataset: {}, children: [], listeners: {}, attributes: {}, scrollTop: 120, sourceText: '',
+    classList: { toggle() {}, add() {}, remove() {} },
     setAttribute(name, value) { this.attributes[name] = value; },
+    removeAttribute() {},
     appendChild(child) { this.children.push(child); },
     replaceChildren() { this.children = []; },
     addEventListener(type, callback) { this.listeners[type] = callback; },
+    querySelector(selector) {
+      if (!this.stamp) {
+        this.stamp = { textContent: '', appendChild() {}, dataset: {}, classes: new Set(),
+          classList: { toggle(name, value) { if (value) this.owner.classes.add(name); else this.owner.classes.delete(name); } } };
+        this.stamp.classList.owner = this.stamp;
+        this.stamp.dataset.i18n = selector === '.session-item-time' ? '' : undefined;
+      }
+      return this.stamp;
+    },
     get childElementCount() { return this.children.length; },
+    set textContent(value) { this.sourceText = value; },
+    get textContent() { return this.sourceText; },
   };
 }
 
 function fixture() {
-  const list = element(), topButton = element(), created = [];
+  const list = element(), topButton = element(), header = element(), created = [];
+  header.textContent = 'New session';
   const context = {
     document: { createElement: element },
-    $: id => id === 'sessionList' ? list : id === 'newSessionBtn' ? topButton
+    window: { CamelliaI18n: { language: 'en' } },
+    $: id => id === 'sessionList' ? list : id === 'newSessionBtn' ? topButton : id === 'headerTitle' ? header
       : list.children.flatMap(group => group.children).find(child => child.id === id),
     context: { sessionId: null, workspaceId: 'selected-workspace' },
     contextBusy: () => false,
+    hasDraft: id => id === 'draft-session',
     renamingDiscussionId: null, renamingWorkspaceId: null, renamingWorkspaceInput: null,
-    discussionVisible: () => false,
-    sessionHistory: [], workspaces: [], pagination: {}, importableCount: 0, drag: null, navigation: null,
+    discussionVisible: () => false, getDiscussionId: () => null,
+    sessionHistory: [{ id: 'draft-session', title: 'Unsent task', workspaceId: null, mtimeMs: Date.now() }],
+    workspaces: [], pagination: {}, importableCount: 0, drag: null, navigation: null,
+    sidebarRenderKey: '', discussionGroups: [], harnessId: 'codex',
     sidebarIcon: name => name,
+    relTime: () => 'Now',
+    discussionOpening: () => false,
     newSession: workspaceId => created.push(workspaceId),
   };
   vm.runInNewContext(updateSource + renderSource, context);
@@ -77,4 +98,12 @@ test('standalone plus follows new-session busy state across updates and rerender
   context.updateWorkspaceLabel();
   assert.equal(context.$('standaloneCreateBtn').disabled, false);
   assert.equal(topButton.disabled, false);
+});
+
+test('a saved standalone draft replaces the timestamp with a localized status', () => {
+  const { context, list } = fixture();
+  context.renderSessionSidebar();
+  const independent = list.children.find(child => child.id === 'independentSessions');
+  const item = independent.children.find(child => child.dataset?.sid === 'draft-session');
+  assert.equal(item.stamp.textContent, 'Draft');
 });

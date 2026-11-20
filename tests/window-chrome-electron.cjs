@@ -76,6 +76,18 @@ async function main() {
   assert.equal(home.isMenuBarVisible(), false);
   assert.deepEqual(await wc.executeJavaScript('[...document.querySelectorAll(".desktop-titlebar button")].map(button => button.textContent)'), ['Application', 'Engine', 'Edit', 'View']);
   assert.ok(Menu.getApplicationMenu().items[0].submenu.items.some(item => item.label === 'Check for updates'));
+  const applicationItems = Menu.getApplicationMenu().items[0].submenu.items;
+  assert.deepEqual(applicationItems.map(item => item.type === 'separator' ? 'separator' : item.label), [
+    'About', 'Check for updates', 'separator', 'Settings…', 'Mobile access…', 'separator',
+    'Open logs folder', 'separator', 'Quit',
+  ]);
+  const engineItems = Menu.getApplicationMenu().items[1].submenu.items;
+  assert.deepEqual(engineItems.map(item => item.type === 'separator' ? 'separator' : item.label), [
+    'Home', 'separator', 'Switch to Claude Code', 'Switch to Codex CLI', 'Switch to DSH',
+    'Switch to Kimi Code', 'Switch to Antigravity', 'Switch to Grok Build',
+  ]);
+  const viewItems = Menu.getApplicationMenu().items[3].submenu.items;
+  assert.equal(viewItems[0].label, 'Reload');
   assert.equal(await wc.executeJavaScript('document.querySelector(".desktop-titlebar").textContent.includes("Camellia")'), false);
   // The native overlay publishes the available caption rect to Chromium.
   const overlay = await wc.executeJavaScript('navigator.windowControlsOverlay.getTitlebarAreaRect().toJSON()');

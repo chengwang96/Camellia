@@ -44,6 +44,7 @@ const titles = {
   models: "Model Settings",
 };
 let config, live, presets = [], insight = { providers: {}, keys: {} }, selected = null, view = 'general';
+const expandedKeys = new Set();
 let insightsLoaded = false, insightsPending = null, insightsRevision = 0;
 let balanceKey = null, usageData = [];
 let catalog = [], catalogSelected = new Set(), catalogProvider = null;
@@ -176,7 +177,7 @@ function syncMaskedKeys(snapshot) {
       if (!k.key) continue;
       k.key = '';
       const input = document.querySelector(`[data-key-card="${k.id}"] [data-field=key]`);
-      if (input) { input.value = ''; input.placeholder = saved.maskedKey + ' · Leave blank to keep'; }
+      if (input) { input.value = ''; input.placeholder = saved.maskedKey + ' · ' + window.CamelliaI18n.t('Leave blank to keep'); }
     }
   }
   return changed;
@@ -273,15 +274,18 @@ function renderEditor() {
   $('balancesSection').hidden = !!p;
   if (!p) { $('editor').innerHTML = ''; return; }
   $('editor').innerHTML = `<button class="back" id="backProviders" data-i18n>← All providers</button>
-    <div class="editor-heading"><span class="provider-mark">${brandMark(p)}</span><input id="pName" value="${esc(p.name)}" aria-label="Provider name" data-i18n-attrs="aria-label"><label><input id="pEnabled" type="checkbox" ${p.enabled ? 'checked' : ''}>Enabled</label></div>
-    <label for="pPriority" data-i18n>API priority</label><select id="pPriority" aria-describedby="pPriorityHint"><option value="-1" data-i18n>Low</option><option value="0" data-i18n>Default</option><option value="1" data-i18n>High</option></select>
-    <p class="hint" id="pPriorityHint" data-i18n>Routes use High, Default, then Low priority.</p>
-    <details id="providerRoutingHelp" class="settings-help"><summary data-i18n>Routing behavior</summary><p class="hint" data-i18n>Manage concurrency and failover in Model Settings. Next route switches among available keys at the highest available priority.</p></details>
+    <div class="editor-heading"><span class="provider-mark">${brandMark(p)}</span><input id="pName" value="${esc(p.name)}" aria-label="Provider name" data-i18n-attrs="aria-label"><label class="provider-enabled"><input id="pEnabled" type="checkbox" ${p.enabled ? 'checked' : ''}><span data-i18n>Enabled</span></label></div>
+    <div class="provider-options"><label class="priority-control" for="pPriority"><span data-i18n>API priority</span><select id="pPriority" aria-describedby="pPriorityHint"><option value="-1" data-i18n>Low</option><option value="0" data-i18n>Default</option><option value="1" data-i18n>High</option></select></label>
+      <p class="hint" id="pPriorityHint" data-i18n>Routes use High, Default, then Low priority.</p>
+      <button type="button" class="settings-help-toggle" id="providerRoutingToggle" aria-expanded="false" aria-controls="providerRoutingHelp"><span data-i18n>Routing behavior</span></button>
+      <div id="providerRoutingHelp" class="settings-help provider-routing-help" hidden><p class="hint" data-i18n>Manage concurrency and failover in Model Settings. Next route switches among available keys at the highest available priority.</p></div>
+    </div>
     ${p.type.startsWith('mimo-token-plan-') ? '<p class="hint" id="mimoTokenPlanHint" data-i18n>Use your Token Plan tp- key and the region shown in your console. Coding use only. Do not add a pay-as-you-go route for the same model unless you want paid fallback. Check remaining Credits in the MiMo console.</p>' : ''}
     ${p.type === 'mimo' ? '<p class="hint" id="mimoApiHint" data-i18n>Use a regular MiMo API key, not a Token Plan tp- key. Requests are billed to your API balance. Adding this provider alongside Token Plan for the same model allows paid fallback.</p>' : ''}
-    <div class="section-head"><h2 data-i18n>${p.type === 'qclaw' ? 'Connection' : 'API Key'}</h2><button id="showImport" ${p.type === 'qclaw' ? 'hidden' : ''} data-i18n>Import keys</button><button id="addKey" ${p.type === 'qclaw' ? 'hidden' : ''} data-i18n>+ Add key</button></div>
-    <p class="hint" id="keyOrderHint" ${p.type === 'qclaw' ? 'hidden' : ''} data-i18n>Keys are tried in order. Leave blank to keep a saved key.</p><div id="keyRows"></div>
+    <div class="section-head key-pool-head"><h2 data-i18n>${p.type === 'qclaw' ? 'Connection' : 'API Key'}<span class="section-count" id="keyCount"></span></h2><div class="section-actions"><button id="showImport" ${p.type === 'qclaw' ? 'hidden' : ''} data-i18n>Import keys</button><button id="addKey" ${p.type === 'qclaw' ? 'hidden' : ''} data-i18n>+ Add key</button></div></div>
+    <p class="hint key-pool-hint" id="keyOrderHint" ${p.type === 'qclaw' ? 'hidden' : ''} data-i18n>Keys are tried in order. Open Details for usage and actions.</p>
     <div id="keyImport" class="key-import" hidden><label for="bulkKeys" data-i18n>One key per line</label><textarea id="bulkKeys" placeholder="Paste API keys" spellcheck="false" aria-describedby="bulkKeysHint" data-i18n-attrs="placeholder"></textarea><button id="importKeys" data-i18n>Add to key pool</button><p class="hint" id="bulkKeysHint" data-i18n>Duplicate keys for this provider are merged on save.</p></div>
+    <div id="keyRows" class="key-list"></div>
     <div class="section"><div class="section-head"><h2 data-i18n>Model</h2><button id="mapModels" data-i18n>Map model aliases</button><button id="discoverModels" data-i18n>Fetch models</button></div><div id="modelChips" class="model-chips"></div>
       <details class="advanced" id="modelAdvanced"><summary data-i18n>Manual models and mappings</summary><p class="hint" data-i18n>Use one routing ID for aliases of the same model; keep versions, dates, variants and moving aliases separate. Recognized owner prefixes and case normalize automatically; upstream IDs stay unchanged. Saves automatically.</p><div class="table-scroll"><table class="model-table"><thead><tr><th data-i18n>Routing model ID</th><th data-i18n>Upstream model ID</th><th data-i18n>Protocol</th><th data-i18n>Context</th><th></th></tr></thead><tbody id="modelRows"></tbody></table></div><datalist id="routingModelIds"></datalist><button id="addModel" data-i18n>+ Add model</button></details>
       <div class="row verify-row" style="margin-top:18px"><label data-i18n>Validation model<select id="verifyModel" aria-label="Validation model" data-i18n-attrs="aria-label"></select></label><button id="verifyNow" data-verify-now aria-describedby="verifyHint" data-i18n>Validate</button></div><p class="hint" id="verifyHint" data-i18n>Validate sends a short model request and may incur a charge. Fetching the catalog only checks catalog access.</p>
@@ -291,7 +295,7 @@ function renderEditor() {
       <div><label for="pProtocol" data-i18n>Default protocol</label><select id="pProtocol"><option value="openai" data-i18n>OpenAI Chat Completions</option><option value="anthropic" data-i18n>Anthropic Messages</option><option value="dual" data-i18n>Both protocols</option></select></div>
       <div class="full" id="aUrlField"><label for="pAUrl" data-i18n>Anthropic URL (leave blank if the same)</label><input id="pAUrl" value="${esc(p.anthropicBaseUrl || '')}" spellcheck="false"></div></div></details>
     <details class="advanced section"><summary data-i18n>Active routes and priority</summary><div id="routeRows"></div></details>
-    <button id="deleteProvider" class="danger" style="margin-top:24px" data-i18n>Remove provider</button>`;
+    <button id="deleteProvider" class="danger remove-provider" data-i18n>Remove provider</button>`;
   $('pProtocol').value = p.protocol; $('aUrlField').hidden = p.protocol !== 'dual';
   $('backProviders').onclick = () => { void flushSave(); selected = null; renderEditor(); };
   for (const [id, field] of [['pName','name'], ['pUrl','baseUrl'], ['pAUrl','anthropicBaseUrl']]) {
@@ -305,7 +309,12 @@ function renderEditor() {
   $('pEnabled').onchange = e => { p.enabled = e.target.checked; edited(true); };
   $('pPriority').value = String(Math.sign(p.priority ?? 0));
   $('pPriority').onchange = e => { p.priority = Number(e.target.value); edited(true); };
-  $('addKey').onclick = () => { p.keys.push({ id: uid(), key: '', name: '', enabled: true }); edited(); renderKeys(); };
+  $('providerRoutingToggle').onclick = () => {
+    const open = $('providerRoutingToggle').getAttribute('aria-expanded') !== 'true';
+    $('providerRoutingToggle').setAttribute('aria-expanded', String(open));
+    $('providerRoutingHelp').hidden = !open;
+  };
+  $('addKey').onclick = () => { const key = { id: uid(), key: '', name: '', enabled: true }; expandedKeys.add(key.id); p.keys.push(key); edited(); renderKeys(); };
   $('showImport').onclick = () => { $('keyImport').hidden = !$('keyImport').hidden; if (!$('keyImport').hidden) $('bulkKeys').focus(); };
   $('importKeys').onclick = () => {
     const keys = [...new Set($('bulkKeys').value.split(/\r?\n/).map(s => s.trim()).filter(Boolean))];
@@ -314,23 +323,32 @@ function renderEditor() {
     // A saved key comes back masked, so compare on the mask too. Otherwise a
     // pasted duplicate of an already-stored key appends a second entry that
     // looks distinct only because its stored value is masked.
-    for (const key of keys) if (!p.keys.some(k => k.key === key || k.maskedKey === maskKey(key))) p.keys.push({ id: uid(), key, name: '', enabled: true });
+    for (const key of keys) if (!p.keys.some(k => k.key === key || k.maskedKey === maskKey(key))) {
+      const entry = { id: uid(), key, name: '', enabled: true };
+      expandedKeys.add(entry.id); p.keys.push(entry);
+    }
     $('bulkKeys').value = ''; $('keyImport').hidden = true; edited(true); renderKeys(); status(`Added ${keys.length} keys.`);
   };
   $('addModel').onclick = () => { p.models.push({ id: '', upstream: '', protocol: 'auto' }); edited(); renderModels(); };
   $('mapModels').onclick = () => { $('modelAdvanced').open = true; $('modelRows').querySelector('[data-field="id"]')?.focus(); };
   $('discoverModels').onclick = () => discoverModels(p);
-  $('deleteProvider').onclick = () => { config.providers = config.providers.filter(x => x.id !== p.id); selected = null; edited(true); renderEditor(); };
+  $('deleteProvider').onclick = () => { for (const key of p.keys) expandedKeys.delete(key.id); config.providers = config.providers.filter(x => x.id !== p.id); selected = null; edited(true); renderEditor(); };
   renderKeys(); renderModels(); renderRoutes();
 }
 function renderKeys() {
   const p = current(); if (!p) return;
+  $('keyCount').textContent = p.keys.length || '';
   if (p.type === 'qclaw') {
-    $('keyRows').innerHTML = p.keys.map(key => `<div class="key-card" data-key-card="${key.id}"><div class="key-actions"><span data-i18n data-badge="${key.id}"></span><button data-verify="${key.id}" data-i18n>Validate</button><button data-key-usage="${key.id}" data-i18n>Usage</button><button data-reset-key="${key.id}" data-i18n>Reset</button></div><div class="key-note" data-i18n data-note="${key.id}"></div></div>`).join('') || '<p class="hint" data-i18n>QClaw gateway was not found. Start QClaw and try again; no API key is required.</p>';
+    $('keyRows').innerHTML = p.keys.map(key => `<div class="key-card qclaw-card expanded" data-key-card="${key.id}"><div class="key-actions"><span data-i18n data-badge="${key.id}"></span><button data-verify="${key.id}" data-i18n>Validate</button><button data-key-usage="${key.id}" data-i18n>Usage</button><button data-reset-key="${key.id}" data-i18n>Reset</button></div><div class="key-note" data-i18n data-note="${key.id}"></div></div>`).join('') || '<p class="hint key-list-empty" data-i18n>QClaw gateway was not found. Start QClaw and try again; no API key is required.</p>';
     updateKeyStats();
     return;
   }
-  $('keyRows').innerHTML = p.keys.map((k,i) => `<div class="key-card" data-key-card="${k.id}"><div class="key-row"><input type="checkbox" data-key="${i}" data-field="enabled" ${k.enabled ? 'checked' : ''} aria-label="Enable key ${i+1}" data-i18n-attrs="aria-label"><input class="key-name" data-key="${i}" data-field="name" value="${esc(k.name)}" placeholder="Key ${i+1}" aria-label="Key label ${i+1}" data-i18n-attrs="aria-label placeholder"><input type="password" data-key="${i}" data-field="key" value="${esc(k.key || '')}" placeholder="${esc(k.maskedKey ? k.maskedKey + " · Leave blank to keep" : "Paste API key")}" aria-label="API Key ${i+1}" autocomplete="new-password" spellcheck="false" data-i18n-attrs="aria-label placeholder"></div><div class="key-actions"><span data-i18n data-badge="${k.id}"></span><button data-verify="${k.id}" data-i18n>Validate</button><button data-key-usage="${k.id}" data-i18n>Usage</button><button data-key-balance="${k.id}" data-i18n>Balance</button><button data-up-key="${i}" aria-label="Move key up ${i+1}" ${i ? '' : 'disabled'} data-i18n-attrs="aria-label">↑</button><button data-down-key="${i}" aria-label="Move key down ${i+1}" ${i === p.keys.length-1 ? 'disabled' : ''} data-i18n-attrs="aria-label">↓</button><button data-reset-key="${k.id}" data-i18n>Reset</button><button data-remove-key="${i}" aria-label="Remove key ${i+1}" data-i18n-attrs="aria-label">×</button></div><div class="key-note" data-i18n data-note="${k.id}"></div></div>`).join('') || "<p class=\"hint\" data-i18n>Add a key to connect this provider.</p>";
+  $('keyRows').innerHTML = p.keys.map((k,i) => {
+    const open = expandedKeys.has(k.id) || !k.maskedKey;
+    if (open) expandedKeys.add(k.id); else expandedKeys.delete(k.id);
+    const detailsId = `key-details-${k.id}`;
+    return `<article class="key-card${open ? ' expanded' : ''}" data-key-card="${k.id}"><div class="key-row"><input type="checkbox" data-key="${i}" data-field="enabled" ${k.enabled ? 'checked' : ''} aria-label="Enable key ${i+1}" data-i18n-attrs="aria-label"><span class="key-order" aria-hidden="true">${String(i + 1).padStart(2, '0')}</span><input class="key-name" data-key="${i}" data-field="name" value="${esc(k.name)}" placeholder="Key ${i+1}" aria-label="Key label ${i+1}" data-i18n-attrs="aria-label placeholder"><input type="password" data-key="${i}" data-field="key" value="${esc(k.key || '')}" placeholder="${esc(k.maskedKey ? k.maskedKey + " · " + window.CamelliaI18n.t("Leave blank to keep") : "Paste API key")}" aria-label="API Key ${i+1}" autocomplete="new-password" spellcheck="false" data-i18n-attrs="aria-label placeholder"><span data-i18n data-badge="${k.id}"></span><button type="button" class="key-disclosure" data-toggle-key="${k.id}" aria-expanded="${open}" aria-controls="${detailsId}" aria-label="Key details" title="Usage and actions" data-i18n-attrs="aria-label title"><span data-i18n>Details</span><svg viewBox="0 0 16 16" aria-hidden="true"><path d="m4 6 4 4 4-4"/></svg></button></div><div class="key-details" id="${detailsId}" ${open ? '' : 'hidden'}><div class="key-actions"><div class="key-action-group"><button data-verify="${k.id}" data-i18n>Validate</button><button data-key-usage="${k.id}" data-i18n>Usage</button><button data-key-balance="${k.id}" data-i18n>Balance</button></div><div class="key-action-group key-action-secondary"><button data-up-key="${i}" aria-label="Move key up ${i+1}" ${i ? '' : 'disabled'} data-i18n-attrs="aria-label">↑</button><button data-down-key="${i}" aria-label="Move key down ${i+1}" ${i === p.keys.length-1 ? 'disabled' : ''} data-i18n-attrs="aria-label">↓</button><button data-reset-key="${k.id}" data-i18n>Reset</button><button data-remove-key="${i}" aria-label="Remove key ${i+1}" data-i18n-attrs="aria-label">×</button></div></div><div class="key-note" data-i18n data-note="${k.id}"></div></div></article>`;
+  }).join('') || "<p class=\"hint key-list-empty\" data-i18n>Add a key to connect this provider.</p>";
   updateKeyStats();
 }
 function updateKeyStats() {
@@ -659,9 +677,17 @@ $('editor').addEventListener('focusout', event => {
 $('editor').onclick = async e => {
   const button = e.target.closest('button'), p = current(); if (!button || !p) return;
   const d = button.dataset;
+  if (d.toggleKey) {
+    const open = button.getAttribute('aria-expanded') !== 'true';
+    button.setAttribute('aria-expanded', String(open));
+    button.closest('.key-card').classList.toggle('expanded', open);
+    button.closest('.key-card').querySelector('.key-details').hidden = !open;
+    if (open) expandedKeys.add(d.toggleKey); else expandedKeys.delete(d.toggleKey);
+    return;
+  }
   if (d.removeModelGroup !== undefined) { p.models = p.models.filter(model => routingId(model.id) !== d.removeModelGroup); edited(true); renderModels(); renderRoutes(); }
   if (d.removeModel !== undefined) { p.models.splice(Number(d.removeModel),1); edited(true); renderModels(); renderRoutes(); }
-  if (d.removeKey !== undefined) { p.keys.splice(Number(d.removeKey),1); edited(true); renderKeys(); }
+  if (d.removeKey !== undefined) { const [removed] = p.keys.splice(Number(d.removeKey),1); if (removed) expandedKeys.delete(removed.id); edited(true); renderKeys(); }
   if (d.upKey !== undefined || d.downKey !== undefined) { const i = Number(d.upKey ?? d.downKey), j = d.upKey !== undefined ? i-1 : i+1; [p.keys[i], p.keys[j]] = [p.keys[j], p.keys[i]]; edited(true); renderKeys(); }
   try {
     if (d.keyUsage) {
@@ -1962,6 +1988,6 @@ window.addEventListener('camellia:language', () => {
   if (!dataMigrationBusy) renderPluginCacheMaintenance(pluginCacheState);
   if (!live) return;
   if (view === 'usage') { fillUsageFilters(); renderUsage(); }
-  if (view === 'providers') renderBalances();
+  if (view === 'providers') { renderBalances(); if (current()) renderKeys(); }
   if (view === 'archived') void renderArchived();
 });

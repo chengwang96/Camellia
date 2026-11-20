@@ -207,6 +207,31 @@ public class TabletConversationListTest extends InstrumentationTestCase {
         ui(() -> { set(main, "foreground", false); invoke(main, "stopNetwork"); });
     }
 
+    public void testRemoteListRetriesRecoverableFailureWithoutTouchingTheChat() throws Exception {
+        if (!wide()) return;
+        openRemote(10);
+        FixtureApi chat = new FixtureApi(rows);
+        java.util.concurrent.atomic.AtomicInteger attempts = new java.util.concurrent.atomic.AtomicInteger();
+        ui(() -> {
+            set(main, "foreground", true); set(main, "api", chat);
+            set(main, "homeClientFactory", (java.util.function.Function<String, RemoteApi>) address -> {
+                if (attempts.incrementAndGet() > 1) return new FixtureApi(rows);
+                return new RemoteApi(address) {
+                    @Override public JSONObject json(String path, String token, JSONObject payload) throws java.io.IOException {
+                        throw new java.net.SocketTimeoutException("Network is still recovering");
+                    }
+                };
+            });
+            ((EditText) field(main, "composer")).setText("draft during automatic retry");
+        });
+        Object generation = field(main, "generation");
+        ui(() -> invokeLoadList(false));
+        await(() -> attempts.get() >= 2 && rowTags(pane(main), "conversation:").size() == 65,
+            "A recoverable tablet list failure must retry the initial sync");
+        assertSame(chat, field(main, "api")); assertFalse(chat.cancelled); assertEquals(generation, field(main, "generation"));
+        assertEquals("draft during automatic retry", ((EditText) field(main, "composer")).getText().toString());
+    }
+
     private final class FixtureApi extends RemoteApi {
         private final JSONArray entries;
         volatile boolean cancelled;

@@ -1920,7 +1920,7 @@ test('read model isolates workspace scope and strips paths, credentials and nati
   const snapshot = reader.snapshot(device, visible.id);
   assert.equal(snapshot.messages.length, 2);
   for (const field of ['apiKey', 'attachments', 'artifacts', 'segments', 'cwd']) assert.ok(!JSON.stringify(snapshot).includes(`"${field}"`));
-  assert.deepEqual(Object.keys(snapshot.settings).sort(), ['appliesNextTurn', 'connection', 'editable', 'engine', 'fastMode', 'model', 'modelEditable', 'models', 'permissionLevels', 'permissionMode', 'quickSwitch', 'supportsFast', 'thinking', 'version']);
+  assert.deepEqual(Object.keys(snapshot.settings).sort(), ['appliesNextTurn', 'connection', 'editable', 'engine', 'fastMode', 'model', 'modelEditable', 'modelName', 'models', 'permissionLevels', 'permissionMode', 'quickSwitch', 'supportsFast', 'thinking', 'version']);
   manager.workspaces.archiveSession(visible.id, true);
   // The archived conversation stays readable to an already-authorized phone,
   // but its snapshot grants no control and exposes no configurable settings.

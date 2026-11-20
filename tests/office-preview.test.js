@@ -9,7 +9,8 @@ const { removeTree } = require('./test-fs.cjs');
 const JSZip = require('jszip');
 const { readOfficePreview } = require('../src/main/office-preview');
 const { previewKind } = require('../src/main/file-preview');
-const { readDocxEdit, saveDocxEdit } = require('../src/main/docx-edit');
+const { readDocxEdit, saveDocxEdit, saveDocxStructure, readDocxCellPreview } = require('../src/main/docx-edit');
+const { createHarness } = require('./main-process-harness.cjs');
 
 function archive(t, parts) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'camellia-office-'));
@@ -471,4 +472,106 @@ test('DOCX editing rejects duplicate paragraph edits', async t => {
   const file = await docx(t, { 'word/document.xml': body });
   const snapshot = await readDocxEdit(file);
   await assert.rejects(saveDocxEdit(snapshot, [{ index: 0, text: 'A' }, { index: 0, text: 'B' }]), /Duplicate/);
+});
+
+
+test('DOCX cells insert an empty paragraph with the same paragraph and run formatting', async t => {
+  const body = '<w:document xmlns:w="word" xmlns:w14="ids"><w:body>'
+    + '<w:p w14:paraId="12345678" w14:textId="87654321"><w:pPr><w:pStyle w:val="Heading1"/><w:spacing w:after="240"/></w:pPr>'
+    + '<w:r><w:rPr><w:b/><w:color w:val="C0554F"/><w:sz w:val="36"/></w:rPr><w:t>Styled</w:t></w:r><w:r><w:drawing/></w:r></w:p>'
+    + '<w:p><w:r><w:t>Next</w:t></w:r></w:p>'
+    + '</w:body></w:document>';
+  const file = await docx(t, { 'word/document.xml': body, 'word/media/image1.png': Buffer.from([1, 2, 3]) });
+  const snapshot = await readDocxEdit(file);
+  const inserted = await saveDocxStructure(snapshot, { type: 'insertAfter', index: 0 });
+  assert.deepEqual(inserted.snapshot.blocks, ['Styled', '', 'Next']);
+  assert.deepEqual(inserted.snapshot.editability, [true, true, true]);
+  const zip = await JSZip.loadAsync(fs.readFileSync(file));
+  const xml = await zip.file('word/document.xml').async('string');
+  assert.match(xml, /<w:p><w:pPr><w:pStyle w:val="Heading1"\/><w:spacing w:after="240"\/><\/w:pPr><w:r><w:rPr><w:b\/><w:color w:val="C0554F"\/><w:sz w:val="36"\/><\/w:rPr><w:t xml:space="preserve"><\/w:t><\/w:r><\/w:p>/);
+  assert.equal((xml.match(/w14:paraId=/g) || []).length, 1);
+  assert.equal((xml.match(/<w:drawing\/>/g) || []).length, 1);
+  assert.deepEqual([...await zip.file('word/media/image1.png').async('nodebuffer')], [1, 2, 3]);
+  const edited = await saveDocxEdit(inserted.snapshot, [{ index: 1, text: 'New text' }]);
+  assert.deepEqual(edited.snapshot.blocks, ['Styled', 'New text', 'Next']);
+  const updated = await (await JSZip.loadAsync(fs.readFileSync(file))).file('word/document.xml').async('string');
+  assert.match(updated, /<w:rPr><w:b\/><w:color w:val="C0554F"\/><w:sz w:val="36"\/><\/w:rPr><w:t xml:space="preserve">New text<\/w:t>/);
+});
+
+test('DOCX cells reorder only among siblings and preserve table structure', async t => {
+  const body = '<w:document xmlns:w="word"><w:body>'
+    + '<w:p><w:r><w:t>One</w:t></w:r></w:p><w:p><w:r><w:t>Two</w:t></w:r></w:p>'
+    + '<w:tbl><w:tr><w:tc><w:p><w:r><w:t>Cell A</w:t></w:r></w:p><w:p><w:r><w:t>Cell B</w:t></w:r></w:p></w:tc></w:tr></w:tbl>'
+    + '</w:body></w:document>';
+  const file = await docx(t, { 'word/document.xml': body });
+  const snapshot = await readDocxEdit(file);
+  assert.equal(snapshot.cells[0].parent, snapshot.cells[1].parent);
+  assert.equal(snapshot.cells[2].parent, snapshot.cells[3].parent);
+  assert.notEqual(snapshot.cells[0].parent, snapshot.cells[2].parent);
+  const moved = await saveDocxStructure(snapshot, { type: 'move', from: 0, to: 1, position: 'after' });
+  assert.deepEqual(moved.snapshot.blocks, ['Two', 'One', 'Cell A', 'Cell B']);
+  const cells = await saveDocxStructure(moved.snapshot, { type: 'move', from: 3, to: 2, position: 'before' });
+  assert.deepEqual(cells.snapshot.blocks, ['Two', 'One', 'Cell B', 'Cell A']);
+  const xml = await (await JSZip.loadAsync(fs.readFileSync(file))).file('word/document.xml').async('string');
+  assert.match(xml, /<w:tbl><w:tr><w:tc><w:p><w:r><w:t>Cell B<\/w:t><\/w:r><\/w:p><w:p><w:r><w:t>Cell A<\/w:t><\/w:r><\/w:p><\/w:tc><\/w:tr><\/w:tbl>/);
+  await assert.rejects(saveDocxStructure(cells.snapshot, { type: 'move', from: 0, to: 2, position: 'before' }), /same document section or table cell/);
+});
+
+test('DOCX cell previews render direct formatting and embedded images without external relationships', async t => {
+  const body = '<w:document xmlns:w="word" xmlns:a="drawing" xmlns:r="rel"><w:body>'
+    + '<w:p><w:pPr><w:pStyle w:val="Heading1"/><w:jc w:val="center"/></w:pPr><w:r><w:rPr><w:b/><w:color w:val="C0554F"/></w:rPr><w:t>Preview &lt;text&gt;</w:t></w:r><w:r><w:drawing><a:p><a:r><a:t>Drawing text</a:t></a:r></a:p></w:drawing></w:r></w:p>'
+    + '<w:p><w:r><w:drawing><a:blip r:embed="picture"/></w:drawing></w:r></w:p>'
+    + '<w:p><w:r><w:drawing><a:blip r:embed="external"/></w:drawing></w:r></w:p>'
+    + '</w:body></w:document>';
+  const file = await docx(t, {
+    'word/document.xml': body,
+    'word/_rels/document.xml.rels': '<Relationships><Relationship Id="picture" Target="media/image1.png"/><Relationship Id="external" Target="https://example.com/private.png" TargetMode="External"/></Relationships>',
+    'word/media/image1.png': Buffer.from([1, 2, 3, 4]),
+  });
+  const snapshot = await readDocxEdit(file);
+  const text = await readDocxCellPreview(snapshot, 0);
+  assert.match(text, /^<h1 style="text-align:center">/);
+  assert.match(text, /font-weight:700;color:#C0554F/);
+  assert.match(text, /Preview &lt;text&gt;/);
+  const image = await readDocxCellPreview(snapshot, 1);
+  assert.match(image, /src="data:image\/png;base64,/);
+  const external = await readDocxCellPreview(snapshot, 2);
+  assert.doesNotMatch(external, /example\.com|<img/);
+});
+
+test('DOCX structure edits reject stale snapshots instead of overwriting external changes', async t => {
+  const file = await docx(t, { 'word/document.xml': '<w:document xmlns:w="word"><w:body><w:p><w:r><w:t>One</w:t></w:r></w:p></w:body></w:document>' });
+  const snapshot = await readDocxEdit(file);
+  await saveDocxEdit(snapshot, [{ index: 0, text: 'Changed elsewhere' }]);
+  await assert.rejects(saveDocxStructure(snapshot, { type: 'insertAfter', index: 0 }), /changed on disk/);
+  assert.deepEqual((await readDocxEdit(file)).blocks, ['Changed elsewhere']);
+});
+
+test('the main process wires DOCX cells through preview, structure and cell preview IPC', async t => {
+  const h = createHarness();
+  t.after(() => h.cleanup());
+  const file = path.join(h.folder('documents'), 'notebook.docx');
+  const zip = new JSZip();
+  zip.file('word/document.xml', '<w:document xmlns:w="word"><w:body>'
+    + '<w:p><w:r><w:t>First</w:t></w:r></w:p><w:p><w:r><w:t>Second</w:t></w:r></w:p></w:body></w:document>');
+  fs.writeFileSync(file, await zip.generateAsync({ type: 'nodebuffer' }));
+  const frame = { url: require('node:url').pathToFileURL(path.resolve(
+    __dirname, '../src/renderer/chat/workbench.html')).href };
+  const sender = { mainFrame: frame };
+  const event = { sender, senderFrame: frame };
+  h.api.setWindow({ isDestroyed: () => false, setTitle() {}, webContents: sender });
+  const preview = await h.call('preview-file', file, event);
+  assert.equal(preview.ok, true, preview.error);
+  assert.deepEqual(preview.file.paragraphs, ['First', 'Second']);
+  assert.deepEqual(preview.file.wordCells.map(cell => cell.index), [0, 1]);
+  const token = preview.file.wordEditToken;
+  const structure = await h.call('structure-preview-word', {
+    token, operation: { type: 'move', from: 0, to: 1, position: 'after' } }, event);
+  assert.equal(structure.ok, true, structure.error);
+  assert.deepEqual(structure.paragraphs, ['Second', 'First']);
+  assert.deepEqual(structure.cells.map(cell => cell.index), [0, 1]);
+  const cell = await h.call('preview-word-cell', { token, index: 1 }, event);
+  assert.equal(cell.ok, true, cell.error);
+  assert.match(cell.html, /First/);
+  assert.equal((await h.call('preview-word-cell', { token: 'stale', index: 0 }, event)).ok, false);
 });

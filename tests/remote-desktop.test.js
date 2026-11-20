@@ -26,16 +26,16 @@ function startupHarness(context, devices = [], initialState = 'Running') {
     async listen(target, token) { calls.listen++; assert.match(target, /^http:\/\/127\.0\.0\.1:\d+$/); assert.match(token, /^[a-f0-9]{64}$/); },
     async stop() { calls.stop++; this.snapshot = { state: 'Stopped' }; },
   };
-  const handlers = new Map();
+  const handlers = new Map(), logs = [];
   const settings = { webContents: { mainFrame: {} }, isDestroyed: () => false };
   const controller = createRemoteDesktop({ app: { getPath: () => root },
     BrowserWindow: class { constructor() { assert.fail('Automatic startup must not open a window'); } },
     ipcMain: { handle: (channel, callback) => handlers.set(channel, callback) },
     manager: { workspaces: { sessionMeta: () => ({ workspaces: [] }) } }, loadConfig: () => ({}),
-    getSettingsWindow: () => settings, networkFactory: () => network });
+    getSettingsWindow: () => settings, networkFactory: () => network, log: message => logs.push(message) });
   context.after(() => controller.close());
   const command = (action, payload) => handlers.get('dsh:remote-control')({ sender: settings.webContents, senderFrame: settings.webContents.mainFrame }, { action, payload });
-  return { controller, command, network, calls, file };
+  return { controller, command, network, calls, file, logs };
 }
 
 const trustedPhone = () => ({ id: 'trusted-phone', name: 'Phone', tokenDigest: 'a'.repeat(64),
@@ -81,6 +81,36 @@ test('automatic startup retries a connecting network without the healthy monitor
   network.snapshot = { state: 'Running', address: '100.80.1.2' };
   await new Promise(resolve => setTimeout(resolve, 750));
   assert.equal(calls.listen, 1);
+});
+
+test('a live helper with persistent status errors is restarted automatically', async context => {
+  const { controller, command, network, calls, logs } = startupHarness(context, [trustedPhone()]);
+  const start = network.start, stop = network.stop;
+  let recovered = false;
+  network.start = async () => {
+    if (network.child) return;
+    await start.call(network);
+    network.child = {};
+  };
+  network.stop = async () => {
+    recovered = true;
+    network.child = null;
+    await stop.call(network);
+  };
+  await controller.startTrustedDevices();
+  assert.equal(calls.listen, 1);
+  network.status = async () => {
+    if (!recovered) throw new Error('Local status unavailable');
+    return network.snapshot;
+  };
+  const deadline = Date.now() + 8000;
+  while (calls.listen < 2 && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 25));
+  assert.equal(calls.stop, 1);
+  assert.equal(calls.start, 2);
+  assert.equal(calls.listen, 2);
+  assert.equal((await command('state')).result.running, true);
+  assert.ok(logs.some(message => message.includes('Local status unavailable')));
+  assert.ok(logs.some(message => message.includes('restarting the embedded network helper')));
 });
 
 test('automatic startup failures keep the enabled preference and can be retried manually', async context => {

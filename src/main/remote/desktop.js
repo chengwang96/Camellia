@@ -19,7 +19,7 @@ function createRemoteDesktop({ app, BrowserWindow, ipcMain, nativeTheme, windowC
   };
   const desktopRestart = require('./desktop-restart').createDesktopRestart({ file: path.join(app.getPath('userData'), 'remote', 'desktop-restarts.json'),
     prepare: prepareRestart, restart: () => { app.relaunch(); app.quit(); }, log });
-  const service = createRemoteService({ dataDir: app.getPath('userData'), manager, apiRoutes, setComputerName, getDiscussions, desktopRestart, accountUsage,
+  const service = createRemoteService({ dataDir: app.getPath('userData'), manager, apiRoutes, setComputerName, getDiscussions, desktopRestart, accountUsage, log,
     safeStorage: require('electron').safeStorage, openExternal: url => require('electron').shell.openExternal(url),
     preferences: () => ({ closeToTray: loadConfig().closeToTray === true, theme: loadConfig().theme || 'system', language: loadConfig().language || 'zh-CN',
       computerName: computerName() }),

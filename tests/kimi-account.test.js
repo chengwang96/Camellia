@@ -9,7 +9,7 @@ const { EventEmitter } = require('node:events');
 const { PassThrough } = require('node:stream');
 const TOML = require('smol-toml');
 const { createKimiAccount, parseLoginOutput, accountModels } = require('../src/engines/kimi-account');
-const { kimiSpawnSpec, kimiEnvironment, kimiConnectionSettings, updateKimiConnectionSettings } = require('../src/engines/kimi-session');
+const { kimiSpawnSpec, kimiEnvironment, kimiConnectionSettings, updateKimiConnectionSettings, managedKimiConfig } = require('../src/engines/kimi-session');
 
 function managedConfig(region = 'mainland-cn') {
   const suffix = region === 'global' ? 'ai' : 'com';
@@ -17,7 +17,7 @@ function managedConfig(region = 'mainland-cn') {
   return { default_model: 'kimi-code/coding', thinking: { enabled: true },
     providers: { 'managed:kimi-code': { type: 'kimi', base_url: `https://api.kimi.${suffix}/coding`, api_key: '', oauth } },
     models: {
-      'kimi-code/coding': { provider: 'managed:kimi-code', model: 'coding', display_name: 'Kimi Coding', max_context_size: 262144,
+      'kimi-code/coding': { provider: 'managed:kimi-code', model: 'coding', display_name: 'Kimi Coding', max_context_size: 262144, max_output_size: 65536,
         capabilities: ['thinking', 'always_thinking', 'image_in'], support_efforts: ['low', 'high', 'max'], default_effort: 'high' },
       'kimi-code/fast': { provider: 'managed:kimi-code', model: 'fast', max_context_size: 131072 },
     },
@@ -98,6 +98,7 @@ test('official device login handles split output, verifies the account and delet
   assert.equal(state.account.region, 'global');
   assert.deepEqual(state.models.map(model => [model.id, model.name]), [['kimi-code/coding', 'Kimi Coding'], ['kimi-code/fast', 'Fast account model']]);
   assert.equal(state.models[0].contextWindow, 262144);
+  assert.equal(state.models[0].outputLimit, 65536);
   assert.deepEqual(state.models[0].supportedReasoningEfforts, ['low', 'high', 'max']);
   assert.equal(state.models[0].defaultReasoningEffort, 'high');
   assert.deepEqual(state.models[1].supportedReasoningEfforts, []);
@@ -323,6 +324,16 @@ test('subscription spawn keeps official account models and search without API ov
   assert.doesNotMatch(JSON.stringify(config) + JSON.stringify(spec), /external-key|search-key|api-token|override\.invalid/);
   assert.equal(spec.env.CUSTOM_VAR, 'keep'); assert.equal(env.KIMI_API_KEY, 'external-key');
   assert.throws(() => kimiSpawnSpec({ home: f.home, connection: 'subscription', model: 'api-model' }), /not available/);
+});
+
+test('subscription output limits reach the native request budget', t => {
+  const f = fixture(t); f.put(managedConfig());
+  const account = accountModels(managedKimiConfig(f.home));
+  assert.equal(account.find(model => model.id === 'kimi-code/coding').outputLimit, 65536);
+  kimiSpawnSpec({ home: f.home, runtime: 'fixture', connection: 'subscription', model: 'kimi-code/coding',
+    outputLimit: 65536 });
+  const spawned = TOML.parse(fs.readFileSync(path.join(f.home, 'config.toml'), 'utf8'));
+  assert.equal(spawned.model_overrides.max_completion_tokens, 65536);
 });
 
 test('API default, account model and existing native connection survive setting changes', () => {

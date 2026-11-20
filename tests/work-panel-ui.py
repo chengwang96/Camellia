@@ -185,6 +185,7 @@ def exercise_design(browser, theme, language, width, height):
     # Native tasks can have only a nickname until progress arrives.
     empty = {**child, 'goal': '', 'progress': '', 'history': []}
     page.evaluate('tasks => deliverChild(tasks)', [empty])
+    expect(page.locator('#workPanel .work-task')).to_have_count(1)
     page.locator('#workPanel .work-task').click()
     expect(page.locator('.work-progress')).to_contain_text('尚未收到进展' if chinese else 'No progress reported yet')
     expect(page.locator('.work-history')).to_have_count(0)
@@ -205,6 +206,15 @@ def exercise_design(browser, theme, language, width, height):
     expect(page.locator('.work-detail-section p').filter(has_text=finished['result'])).to_have_count(1)
     expect(page.locator('#workPanelFooter')).to_be_hidden()
     assert page.locator('#workPanelBody').evaluate('(node)=>node.scrollWidth<=node.clientWidth')
+
+    other = {**finished, 'id': 'other-child', 'userSeq': 3, 'title': 'Other child'}
+    page.evaluate('tasks => deliverChild(tasks)', [long_task, other])
+    expect(page.locator('.subtask-turn-card')).to_have_count(2)
+    stable = page.locator('.subtask-turn-card[data-seq="3"]').element_handle()
+    renamed = {**long_task, 'title': long_task['title'] + ' updated'}
+    page.evaluate('tasks => deliverChild(tasks)', [renamed, other])
+    expect(page.locator('.subtask-turn-card[data-seq="1"]')).to_contain_text('updated')
+    assert stable.evaluate('node => node.isConnected'), 'An unchanged sibling card was rebuilt'
     assert not errors, errors
     page.close()
 

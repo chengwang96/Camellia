@@ -161,12 +161,19 @@ with sync_playwright() as playwright:
       const raw = liveBlock.raw;
       const stoppedCalls = renderCalls;
       rebuildTurn([{type:'text', text:raw, phase:'final_answer'}]);
+      const afterFirstRebuild = renderCalls;
       rebuildTurn([{type:'text', text:raw, phase:'final_answer'}]);
-      if (renderCalls !== stoppedCalls) throw Error('Canonical text parsed again');
+      if (renderCalls !== stoppedCalls) throw Error('Canonical text parsed again: ' + JSON.stringify({stoppedCalls,afterFirstRebuild,renderCalls,raw,artifact:turnEl.querySelector('.md')?.artifactText,final:turnEl.querySelector('.md')?.markdownFinal}));
       if (turnEl.querySelector('.md-code-block') !== stableCode || stableCode.querySelector('.md-latex-panel').hidden) throw Error('Preview lost on final reconcile');
       if (stableCode.querySelector('.md-latex-body').firstChild !== previewNode) throw Error('Final preview redrawn');
       if (getSelection().toString() !== selectedText) throw Error('Selection lost at completion');
       if (document.activeElement !== stableCode.querySelector('.md-code-latex')) throw Error('Final focus lost');
+      const canonicalBody = turnEl.querySelector('.turn-body');
+      canonicalBody.processBoundary = canonicalBody.processBlocks.length;
+      canonicalBody.canonicalEpoch = (canonicalBody.canonicalEpoch || 0) + 1;
+      rebuildTurn([{type:'text', text:raw, phase:'final_answer'}]);
+      if ([...canonicalBody.querySelectorAll('.md')].filter(node => node.artifactText === raw).length !== 2)
+        throw Error('A new canonical message reused the previous message with identical text');
       onBlockStart({type:'thinking', thinking:'Native reasoning'}, 89);
       onBlockDelta({type:'thinking_delta', thinking:' finishes immediately'}, 89);
       onBlockStop(89);
@@ -194,6 +201,17 @@ with sync_playwright() as playwright:
       onBlockDelta({type:'text_delta',text:' delta'},92); flushBlockRenders();
       if (stale.markdown || stale.thinkingStream) throw Error('Detached block retained state');
       finalizeStreamBlocks();
+    }''')
+    page.evaluate(r'''() => {
+      const layout = layoutTurnProcess;
+      let layouts = 0;
+      layoutTurnProcess = (...args) => { layouts++; return layout(...args); };
+      onBlockStart({type:'text',phase:'final_answer',text:'First batched block'},95);
+      onBlockStart({type:'thinking',thinking:'Second batched block'},96);
+      flushBlockRenders();
+      layoutTurnProcess = layout;
+      if (layouts !== 1) throw Error('A multi-block batch laid out the turn ' + layouts + ' times');
+      onBlockStop(95); onBlockStop(96);
     }''')
     page.evaluate(r'''() => {
       chat.querySelector('[style="height: 2000px;"]')?.remove();

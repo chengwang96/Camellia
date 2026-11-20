@@ -9,11 +9,14 @@ final class ModelLabel {
 
     static String compact(String name) {
         if (name == null) return "";
-        String value = name.trim();
+        // Account models arrive as `kimi-code/k3.1-pro` while shared routes use
+        // the bare family (`deepseek-v4.1-flash:1017`). Drop the Kimi provider
+        // prefix and the registry tag so both sides shorten the same way.
+        String value = name.trim().replaceFirst("(?i)^(?:kimi-code|moonshot)[/:]", "");
         int tag = value.indexOf(':');
         if (tag > 0) value = value.substring(0, tag).trim();
-        Matcher kimi = Pattern.compile("(?i)^kimi[- ]+(k\\d+(?:\\.\\d+)*)(?:[- ]+(thinking|preview))?$").matcher(value);
-        if (kimi.matches()) return kimi.group(1).toUpperCase(Locale.ROOT) + (kimi.group(2) == null ? "" : " " + title(kimi.group(2)));
+        Matcher kimi = Pattern.compile("(?i)^(?:kimi[- ]+)?(k\\d+(?:\\.\\d+)*)(?:[- ]+(pro[- ]+highspeed|pro|highspeed|thinking|preview|\\d+k))?$").matcher(value);
+        if (kimi.matches()) return kimi.group(1).toUpperCase(Locale.ROOT) + (kimi.group(2) == null ? "" : " " + titleWords(kimi.group(2)));
         Matcher gpt = Pattern.compile("(?i)^gpt-(?:6-astra|5\\.6-(?:sol|terra|luna))$").matcher(value);
         if (gpt.matches()) return title(value.substring(value.lastIndexOf('-') + 1));
         Matcher deepseek = Pattern.compile("(?i)^deepseek[- ]+([vr]\\d+(?:\\.\\d+)*)(?:[- ]+(pro|flash|lite))?$").matcher(value);
@@ -23,6 +26,16 @@ final class ModelLabel {
         if (value.equalsIgnoreCase("deepseek-chat")) return "DS Chat";
         if (value.equalsIgnoreCase("deepseek-reasoner")) return "DS Reasoner";
         return value;
+    }
+
+    private static String titleWords(String value) {
+        StringBuilder result = new StringBuilder();
+        for (String word : value.split("[- ]+")) {
+            if (word.isEmpty()) continue;
+            if (result.length() > 0) result.append(' ');
+            result.append(word.matches("(?i)\\d+k") ? word.toUpperCase(Locale.ROOT) : title(word));
+        }
+        return result.toString();
     }
 
     private static String title(String value) { return value.substring(0, 1).toUpperCase(Locale.ROOT) + value.substring(1).toLowerCase(Locale.ROOT); }

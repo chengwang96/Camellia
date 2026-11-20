@@ -11,7 +11,7 @@ const { TailscaleAPI } = require('./tailscale-api');
 const { tailscaleHostname } = require('./embedded-network');
 
 function createRemoteService({ dataDir, manager, networkFactory, apiRoutes = null, desktopRestart = null, getDiscussions = null, accountUsage = null,
-  preferences = () => ({}), setComputerName = () => '', safeStorage = null, openExternal = null }) {
+  preferences = () => ({}), setComputerName = () => '', safeStorage = null, openExternal = null, log = () => {} }) {
   let gateway = null, access = null, network = null, busy = false, enabled = false, closed = false;
   let startupChecked = false, monitor = null, attachmentMaintenance = null, retryDelay = 1000, retryAt = 0;
   let recovering = null, diagnosing = false, sourceDeviceId = '', sourceAddress = '';
@@ -85,7 +85,13 @@ function createRemoteService({ dataDir, manager, networkFactory, apiRoutes = nul
     if (!enabled) return;
     if (recovering) { await recovering; recovering = null; }
     if (Date.now() < retryAt) return;
-    if (['Stopped', 'Error'].includes(network.snapshot.state)) await network.start();
+    if (['Stopped', 'Error'].includes(network.snapshot.state)) {
+      if (network.snapshot.state === 'Error' && network.child) {
+        log('Mobile access is restarting the embedded network helper after a failure');
+        await network.stop();
+      }
+      await network.start();
+    }
     const status = await network.status();
     // The helper's stable node ID can differ from the management API ID.
     // Publish its address in the same update so status can resolve that node.
@@ -133,7 +139,8 @@ function createRemoteService({ dataDir, manager, networkFactory, apiRoutes = nul
       if (enabled && !busy) {
         busy = true;
         try { await refreshNetwork(); }
-        catch {
+        catch (error) {
+          log('Mobile access network check failed: ' + error.message);
           await gateway.stop(); network.snapshot.state = 'Error';
           retryAt = Date.now() + retryDelay; retryDelay = Math.min(30_000, retryDelay * 2);
         }
@@ -293,6 +300,7 @@ function createRemoteService({ dataDir, manager, networkFactory, apiRoutes = nul
         return { ok: true, result };
       } catch (error) {
         if (enabled && network && ['state', 'start'].includes(action)) {
+          log(`Mobile access ${action} failed: ` + error.message);
           retryAt = Date.now() + retryDelay; retryDelay = Math.min(30_000, retryDelay * 2);
           network.snapshot.state = 'Error';
         }

@@ -2317,7 +2317,7 @@ public final class MainActivity extends Activity {
         conversationId = id; conversationTitle = title; detailReturn = "list"; detailScreen(); connectEvents();
     }
 
-    private void loadTabletConversationList(boolean append) {
+    private void loadTabletConversationList(boolean append, int attempt) {
         if (!networkActive() || !credentials.has("token") || tabletConversationList == null || append && nextOffset < 0) return;
         ConversationListPane pane = tabletConversationList;
         int requestId = ++tabletListRequest;
@@ -2348,7 +2348,16 @@ public final class MainActivity extends Activity {
                     applyConversationPage(page, append); cacheConversations();
                 });
             } catch (Exception error) {
-                handler.post(() -> { if (tabletConversationList == pane && requestId == tabletListRequest && networkActive()) setStatusNotice(RemoteApi.failureMessage(error, chinese)); });
+                handler.post(() -> {
+                    if (tabletConversationList != pane || requestId != tabletListRequest || !networkActive()) return;
+                    if (!append && retryableListFailure(error)) {
+                        setStatusNotice(RemoteApi.failureMessage(error, chinese) + tr(" 正在重连，当前显示上次同步内容。", " Reconnecting; displayed content may be stale."));
+                        int nextAttempt = Math.min(attempt + 1, 5);
+                        handler.postDelayed(() -> {
+                            if (tabletConversationList == pane && requestId == tabletListRequest) loadList(false, nextAttempt);
+                        }, listRetryDelay(error, attempt));
+                    } else setStatusNotice(RemoteApi.failureMessage(error, chinese));
+                });
             } finally {
                 client.cancel();
                 handler.post(() -> { if (tabletConversationList == pane && requestId == tabletListRequest) { tabletListClient = null; ((RefreshScrollView) pane.scroll).setRefreshing(false); } });
@@ -3146,8 +3155,10 @@ public final class MainActivity extends Activity {
         if (stale) { reconnecting = true; loadList(false); }
     }
 
-    private void loadList(boolean append) {
-        if (screen.equals("detail") && tabletConversationList != null) { loadTabletConversationList(append); return; }
+    private void loadList(boolean append) { loadList(append, 0); }
+
+    private void loadList(boolean append, int attempt) {
+        if (screen.equals("detail") && tabletConversationList != null) { loadTabletConversationList(append, attempt); return; }
         if (!networkActive()) return;
         listLoadFailed = false;
         if (!listLoaded) renderConversations();
@@ -3187,10 +3198,33 @@ public final class MainActivity extends Activity {
                     watchList(client, ticket);
                 });
             } catch (Exception error) { deliver(ticket, () -> {
-                ((RefreshScrollView) scroll).setRefreshing(false); listLoadFailed = true; showFailure(error, true);
+                ((RefreshScrollView) scroll).setRefreshing(false); listLoadFailed = true;
+                if (!append && retryableListFailure(error)) {
+                    int nextAttempt = Math.min(attempt + 1, 5);
+                    listRetryPending = true;
+                    connectionFailure(RemoteApi.failureMessage(error, chinese) + tr(" 正在重连，当前显示上次同步内容。", " Reconnecting; displayed content may be stale."));
+                    handler.postDelayed(() -> { if (ticket == generation) loadList(false, nextAttempt); }, listRetryDelay(error, attempt));
+                } else showFailure(error, true);
                 if (screen.equals("list")) renderConversations();
             }); }
         });
+    }
+
+    private static boolean retryableListFailure(Exception error) {
+        if (!(error instanceof java.io.IOException)) return false;
+        if (error instanceof RemoteApi.Failure) {
+            int status = ((RemoteApi.Failure) error).status;
+            return status == 408 || status == 429 || status >= 500;
+        }
+        return switch (ConnectionFailure.classify(error, EmbeddedNetwork.online())) {
+            case LOGIN_REQUIRED, DEVICE_APPROVAL_REQUIRED, NETWORK_STOPPED, PROTOCOL_ERROR, INVALID_CREDENTIAL -> false;
+            default -> true;
+        };
+    }
+
+    private static long listRetryDelay(Exception error, int attempt) {
+        if (error instanceof RemoteApi.Failure && ((RemoteApi.Failure) error).status == 429) return 60_000;
+        return Math.min(30_000, 1000L << Math.min(attempt, 5));
     }
 
     private void loadArchived(boolean append) {
@@ -5078,7 +5112,7 @@ public final class MainActivity extends Activity {
     }
 
     private void listConnected() {
-        connected = true; reconnecting = false; updateConnectionHeader(); setStatusNotice("");
+        connected = true; reconnecting = false; listRetryPending = false; updateConnectionHeader(); setStatusNotice("");
     }
 
     private void updateWorkStatus() {
@@ -5143,7 +5177,9 @@ public final class MainActivity extends Activity {
         boolean configurable = available && !pending && remoteSettings != null && remoteSettings.optBoolean("modelEditable", remoteSettings.optBoolean("editable"));
         if (!configurable && settingsPopup != null) { settingsPopup.dismiss(); settingsPopup = null; }
         if (modelButton != null) {
-            String model = remoteSettings == null ? tr("模型", "Model") : remoteSettings.optString("model", tr("模型", "Model"));
+            String model = remoteSettings == null ? "" : remoteSettings.optString("modelName", "").trim();
+            if (model.isEmpty() && remoteSettings != null) model = remoteSettings.optString("model", "").trim();
+            if (model.isEmpty()) model = tr("模型", "Model");
             String thinking = remoteSettings == null ? "" : remoteSettings.optString("thinking");
             chatComposer.model(model, LocalChatThinking.display(thinking, chinese), configurable);
         }

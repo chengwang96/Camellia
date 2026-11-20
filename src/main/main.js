@@ -62,7 +62,7 @@ const { attachImageContextMenu } = require('./image-context-menu');
 const { attachLinkContextMenu } = require('./link-context-menu');
 const { attachExternalNavigation } = require('./external-navigation');
 const { describePreview, savePreviewText } = require('./file-preview');
-const { isDocx, readDocxEdit, saveDocxEdit } = require('./docx-edit');
+const { isDocx, readDocxEdit, saveDocxEdit, saveDocxStructure, readDocxCellPreview } = require('./docx-edit');
 const gitService = require('./git-service').createGitService();
 const { ENGINES: SUBSCRIPTION_MODEL_ENGINES } = require('../shared/subscription-models');
 const { revealInFileManager } = require('./reveal-file');
@@ -1146,6 +1146,7 @@ function ensureKimiSession(settings, opts) {
   if (!settings.model) throw new Error("Select a configured model in the composer first");
   const subscription = settings.connection === 'subscription';
   let route;
+  let outputLimit;
   const storageId = opts.forkSourceConversationId || opts.conversationId;
   let home = path.join(app.getPath('userData'), 'kimi-code', ...(storageId ? ['conversations', storageId] : []));
   if (subscription) {
@@ -1157,7 +1158,9 @@ function ensureKimiSession(settings, opts) {
     const account = kimiAccount.state(accountId);
     if (account.loginPending || account.refreshing || account.signingOut) throw new Error('Wait for the Kimi account operation to finish');
     if (!account.account) throw new Error('Sign in with Kimi in Settings → Engine Settings → Kimi Code first');
-    if (!account.models.some(model => model.id === settings.model)) throw new Error('Refresh the Kimi account and select an available model');
+    const selected = account.models.find(model => model.id === settings.model);
+    if (!selected) throw new Error('Refresh the Kimi account and select an available model');
+    outputLimit = selected.outputLimit;
   } else {
     settings.model = routerConfig.modelId(settings.model);
     route = withSessionAffinity(resolveClaudeRoute(), opts.conversationId);
@@ -1175,7 +1178,7 @@ function ensureKimiSession(settings, opts) {
   if (!exe) throw new Error("Kimi Code requires Node.js 22.19 or later. Configure the runtime in settings.");
   const spec = kimiSpawnSpec({ home,
     sharedSubscription: Boolean(opts.conversationId), runtime, route, connection: settings.connection,
-    model: settings.model, contextWindow: settings.contextWindow, env: runtimeEnvironment(exe, 'kimi'), ...engineSettings().kimiConfig(),
+    model: settings.model, contextWindow: settings.contextWindow, outputLimit, env: runtimeEnvironment(exe, 'kimi'), ...engineSettings().kimiConfig(),
     thinkingBudget: settings.thinkingBudget || '' });
   const previousClosed = current?.shutdown();
   const session = new KimiSession({ gen: ++kimiGen, settings, opts, exe, spec, spawn, log, history: kimiHistory,
@@ -3216,6 +3219,7 @@ if (!gotSingleInstanceLock) {
           }
           file.paragraphs = snapshot.blocks;
           file.paragraphEditability = snapshot.editability;
+          file.wordCells = snapshot.cells;
           file.wordFormat = 'docx';
           file.officeTruncated = Boolean(snapshot.truncated);
         } catch (error) { log('Word editing is unavailable for ' + file.path + ': ' + error.message); }
@@ -3244,7 +3248,31 @@ if (!gotSingleInstanceLock) {
       if (!canEditPreviewTarget(preview.snapshot.path)) throw new Error('Reopen the document before editing it.');
       const result = await saveDocxEdit(preview.snapshot, payload.paragraphs);
       preview.snapshot = result.snapshot;
-      return { ok: true, file: result.file, paragraphs: result.snapshot.blocks, editable: result.snapshot.editability };
+      return { ok: true, file: result.file, paragraphs: result.snapshot.blocks,
+        editable: result.snapshot.editability, cells: result.snapshot.cells };
+    } catch (error) { return { ok: false, error: error?.message || String(error) }; }
+  });
+
+  ipcMain.handle('dsh:structure-preview-word', async (event, payload) => {
+    try {
+      const frame = textPreviewFrame(event);
+      const preview = frame && wordPreviewEdits.get(frame);
+      if (!preview || preview.token !== payload?.token) throw new Error('Reopen the document before editing it.');
+      if (!canEditPreviewTarget(preview.snapshot.path)) throw new Error('Reopen the document before editing it.');
+      const result = await saveDocxStructure(preview.snapshot, payload.operation);
+      preview.snapshot = result.snapshot;
+      return { ok: true, file: result.file, paragraphs: result.snapshot.blocks,
+        editable: result.snapshot.editability, cells: result.snapshot.cells };
+    } catch (error) { return { ok: false, error: error?.message || String(error) }; }
+  });
+
+  ipcMain.handle('dsh:preview-word-cell', async (event, payload) => {
+    try {
+      const frame = textPreviewFrame(event);
+      const preview = frame && wordPreviewEdits.get(frame);
+      if (!preview || preview.token !== payload?.token) throw new Error('Reopen the document before editing it.');
+      if (!canEditPreviewTarget(preview.snapshot.path)) throw new Error('Reopen the document before editing it.');
+      return { ok: true, html: await readDocxCellPreview(preview.snapshot, payload.index) };
     } catch (error) { return { ok: false, error: error?.message || String(error) }; }
   });
 

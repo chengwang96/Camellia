@@ -177,26 +177,29 @@ test('production requester classifies upstream errors and detects empty truncate
 
 function rendererFixture() {
   const source = fs.readFileSync(path.join(__dirname, '../src/renderer/chat/chat.js'), 'utf8');
+  const scheduler = source.slice(source.indexOf('  let sidebarLoadTimer'), source.indexOf('  // Offline defaults'));
   const handler = source.slice(source.indexOf('  function handleEvent(ev)'), source.indexOf("    if (ev.type === 'conversation:remote-queue')")) + '\n  }';
   const header = { textContent: 'Open conversation', dataset: {} }, state = { loads: 0 };
   const context = { context: { sessionId: 'open' }, restoringRun: false, eventsDuringRestore: [],
-    sidebar: { load: async () => { state.loads++; } }, $: () => header };
-  vm.runInNewContext(handler, context);
+    sidebar: { load: async () => { state.loads++; } }, $: () => header, setTimeout, clearTimeout };
+  vm.runInNewContext(scheduler + handler, context);
   return { context, state, header, event: (id, title) => context.handleEvent({ type: 'conversation:title', session_id: id, title }) };
 }
 
-test('desktop refreshes titles generated for a background or remotely created conversation', () => {
+test('desktop refreshes titles generated for a background or remotely created conversation', async () => {
   const f = rendererFixture();
   f.event('remote', '远程命名修复');
+  await new Promise(resolve => setTimeout(resolve, 120));
   assert.equal(f.state.loads, 1);
   assert.equal(f.header.textContent, 'Open conversation');
   f.event('open', '当前会话标题');
+  await new Promise(resolve => setTimeout(resolve, 120));
   assert.equal(f.state.loads, 2);
   assert.equal(f.header.textContent, '当前会话标题');
   assert.equal(f.header.dataset.titled, '1');
 });
 
-test('desktop retains titles emitted before the first send returns its conversation ID', () => {
+test('desktop retains titles emitted before the first send returns its conversation ID', async () => {
   const f = rendererFixture();
   f.context.restoringRun = true;
   f.event('new', '首条消息标题');
@@ -204,6 +207,7 @@ test('desktop retains titles emitted before the first send returns its conversat
   assert.equal(f.context.eventsDuringRestore.length, 1);
   f.context.context.sessionId = 'new'; f.context.restoringRun = false;
   f.context.handleEvent(f.context.eventsDuringRestore.shift());
+  await new Promise(resolve => setTimeout(resolve, 120));
   assert.equal(f.header.textContent, '首条消息标题');
   assert.equal(f.state.loads, 1);
 });

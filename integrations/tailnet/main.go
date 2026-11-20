@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"tailscale.com/ipn"
+	"tailscale.com/ipn/ipnstate"
 	"tailscale.com/tsnet"
 )
 
@@ -74,6 +75,26 @@ func proxyHandler(target, token string) (http.Handler, error) {
 	}), nil
 }
 
+func statusResult(status *ipnstate.Status) map[string]any {
+	address := ""
+	for _, candidate := range status.TailscaleIPs {
+		if candidate.Is4() && netip.MustParsePrefix("100.64.0.0/10").Contains(candidate) {
+			address = candidate.String()
+			break
+		}
+	}
+	deviceID, hostName, online := "", "", false
+	if status.Self != nil {
+		deviceID, hostName, online = string(status.Self.ID), status.Self.HostName, status.Self.Online
+	}
+	health := status.Health
+	if health == nil {
+		health = []string{}
+	}
+	return map[string]any{"state": status.BackendState, "loginUrl": status.AuthURL, "address": address,
+		"deviceId": deviceID, "hostName": hostName, "online": online, "health": health}
+}
+
 func (service *helper) execute(request command) (any, error) {
 	if request.Action == "init" {
 		if service.node != nil || !filepath.IsAbs(request.Directory) {
@@ -115,19 +136,7 @@ func (service *helper) execute(request command) (any, error) {
 		if err != nil {
 			return nil, err
 		}
-		address := ""
-		for _, candidate := range status.TailscaleIPs {
-			if candidate.Is4() && netip.MustParsePrefix("100.64.0.0/10").Contains(candidate) {
-				address = candidate.String()
-				break
-			}
-		}
-		deviceID, hostName := "", ""
-		if status.Self != nil {
-			deviceID, hostName = string(status.Self.ID), status.Self.HostName
-		}
-		return map[string]any{"state": status.BackendState, "loginUrl": status.AuthURL, "address": address,
-			"deviceId": deviceID, "hostName": hostName}, nil
+		return statusResult(status), nil
 	case "set-hostname":
 		hostname, err := nodeHostname(request.Hostname)
 		if err != nil {

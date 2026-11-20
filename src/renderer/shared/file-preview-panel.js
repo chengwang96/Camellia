@@ -88,7 +88,17 @@ window.CamelliaFilePreview = { closeTextEditors: closeTextPreviewEditors, create
   }
   function updatePreviewMeta(file) {
     const location = previewLocation.line ? ':' + previewLocation.line : '';
-    $('fileViewerMeta').textContent = [formatFileSize(file.size), file.path && file.path + location].filter(Boolean).join('  ·  ');
+    const filePath = file.path && file.path + location;
+    const meta = $('fileViewerMeta');
+    if (file.office) {
+      const summary = document.createElement('span');
+      summary.className = 'file-preview-meta-summary';
+      summary.textContent = [formatFileSize(file.size), t('Document preview · Complex layouts may differ from the original.')].filter(Boolean).join('  ·  ');
+      summary.title = filePath || '';
+      meta.replaceChildren(summary);
+      return;
+    }
+    meta.textContent = [formatFileSize(file.size), filePath].filter(Boolean).join('  ·  ');
   }
   // A toast in the chat's status line is easy to miss while the user is
   // looking at the preview, so editor failures also appear inside the panel.
@@ -233,9 +243,6 @@ window.CamelliaFilePreview = { closeTextEditors: closeTextPreviewEditors, create
       body.appendChild(media);
     } else if (file.office) {
       const stage = document.createElement('div'); stage.className = 'file-preview-office';
-      const notice = document.createElement('p'); notice.className = 'office-preview-notice';
-      notice.dataset.i18n = ''; notice.textContent = 'Document preview · Complex layouts may differ from the original.';
-      stage.appendChild(notice);
       // Rich conversion failed (no Word, or Word refused the file). The text
       // fallback is still readable, but say why it is not the full layout.
       if (file.office.richError) {
@@ -403,38 +410,65 @@ window.CamelliaFilePreview = { closeTextEditors: closeTextPreviewEditors, create
     renderFilePreview(previewedFile);
     focusWhenRendered(previewLocation);
   }
-  // Word text is stored per paragraph, not per rendered page, so the editor
-  // shows one row per paragraph and keeps its index in the original document.
-  // That index is what the main process uses to replace only the runs of the
-  // paragraphs the user actually changed.
+  // Word text is stored per paragraph, not per rendered page. Each cell keeps
+  // its original document index for text saves and same-parent structure edits.
   function wordEditorBlocks(file) {
+    if (file.wordFormat === 'docx' && Array.isArray(file.wordCells)) {
+      return file.wordCells.map(cell => ({
+        index: cell.index, text: file.paragraphs[cell.index] || '',
+        locked: file.paragraphEditability?.[cell.index] === false,
+        parent: cell.parent, canMove: Boolean(cell.canMove), notebook: true,
+      }));
+    }
     const blocks = [];
     file.paragraphs?.forEach((text, index) => {
       // A page break or inline picture has no editable text; the marker is
       // deliberately dropped rather than shown as a row that a save would
       // overwrite.
       if (!text.trim() || /[\u0000-\u0008\u000e-\u001f]/.test(text)) return;
-      blocks.push({ index, text, locked: file.paragraphEditability?.[index] === false });
+      blocks.push({ index, text, locked: file.paragraphEditability?.[index] === false, notebook: false });
     });
     return blocks;
   }
-  function wordEditorDirty(editor) {
-    return editor.blocks.some(block => !block.input.readOnly && block.input.value !== block.original);
+  function wordEditorDirty(editor, onlyBlock = null) {
+    return editor.blocks.some(block => (!onlyBlock || block === onlyBlock) && !block.locked && block.input.value !== block.original);
   }
   function updateWordEditor(editor) {
     const dirty = wordEditorDirty(editor);
-    editor.save.disabled = !dirty || Boolean(editor.pending) || editor.leaving;
-    editor.preview.disabled = editor.leaving;
-    const error = dirty && editor.error;
+    const busy = Boolean(editor.structurePending || editor.cellPreviewPending);
+    editor.save.disabled = !dirty || Boolean(editor.pending) || editor.leaving || busy;
+    editor.preview.disabled = editor.leaving || busy;
+    const error = editor.error;
     editor.status.classList.toggle('error', Boolean(error));
-    const label = t(editor.pending ? dirty ? 'Saving… newer edits are not saved yet' : 'Saving…'
-      : dirty ? error || 'Unsaved changes' : editor.hasSaved ? 'Saved' : 'Text only · formatting is kept');
+    const label = t(editor.cellPreviewPending ? 'Rendering cell preview…' : editor.structurePending ? 'Saving cell layout…'
+      : editor.pending ? dirty ? 'Saving… newer edits are not saved yet' : 'Saving…'
+        : error || (dirty ? 'Unsaved changes' : editor.hasSaved ? 'Saved' : 'Text only · formatting is kept'));
     if (editor.status.textContent !== label) editor.status.textContent = label;
+    for (const block of editor.blocks) {
+      if (!block.notebook) continue;
+      block.input.readOnly = block.locked || busy || editor.leaving;
+      block.edit.disabled = busy || editor.leaving;
+      block.previewCell.disabled = busy || editor.leaving;
+      block.insert.disabled = busy || editor.leaving;
+      block.grip.disabled = busy || editor.leaving || !block.canMove;
+      block.grip.draggable = block.canMove && !busy && !editor.leaving;
+      block.edit.classList.toggle('active', block.mode === 'edit');
+      block.previewCell.classList.toggle('active', block.mode === 'preview');
+      block.edit.setAttribute('aria-pressed', String(block.mode === 'edit'));
+      block.previewCell.setAttribute('aria-pressed', String(block.mode === 'preview'));
+    }
   }
-  function saveWordEdit(editor) {
+  function updateWordFile(editor, result) {
+    editor.file = previewedFile = {
+      ...editor.file, ...result.file, paragraphs: result.paragraphs,
+      ...(Array.isArray(result.editable) ? { paragraphEditability: result.editable } : {}),
+      ...(Array.isArray(result.cells) ? { wordCells: result.cells } : {}),
+    };
+  }
+  function saveWordEdit(editor, onlyBlock = null) {
     if (editor.pending) return editor.pending;
     const changes = editor.blocks
-      .filter(block => !block.input.readOnly && block.input.value !== block.original)
+      .filter(block => (!onlyBlock || block === onlyBlock) && !block.locked && block.input.value !== block.original)
       .map(block => ({ index: block.index, text: block.input.value }));
     // Nothing to save is always a clean close, even while Word is still being
     // asked for its exact paragraph list.
@@ -447,10 +481,7 @@ window.CamelliaFilePreview = { closeTextEditors: closeTextPreviewEditors, create
     editor.pending = Promise.resolve().then(() => save)
       .then(result => {
         if (!result?.ok) throw new Error(result?.error || 'Could not save the document.');
-        editor.file = previewedFile = {
-          ...editor.file, ...result.file, paragraphs: result.paragraphs,
-          ...(Array.isArray(result.editable) ? { paragraphEditability: result.editable } : {}),
-        };
+        updateWordFile(editor, result);
         // A word editor stays editable while Word saves. Mark only the text
         // actually submitted; a keystroke made during the save must remain
         // dirty and be sent on the next save instead of being mislabeled as
@@ -471,10 +502,17 @@ window.CamelliaFilePreview = { closeTextEditors: closeTextPreviewEditors, create
     updateWordEditor(editor);
     return editor.pending;
   }
+  async function flushWordEdit(editor, onlyBlock = null) {
+    while (editor.pending || wordEditorDirty(editor, onlyBlock)) {
+      if (editor.pending) { if (!await editor.pending) return false; }
+      if (wordEditorDirty(editor, onlyBlock) && !await saveWordEdit(editor, onlyBlock)) return false;
+    }
+    return true;
+  }
   async function finishWordEdit() {
     const editor = wordEditor;
     if (!editor) return true;
-    if (editor.leaving) return false;
+    if (editor.leaving || editor.structurePending || editor.cellPreviewPending) return false;
     if (!wordEditorDirty(editor)) {
       wordPreviewClosers.delete(closeFilePreview);
       editor.resizeObserver?.disconnect();
@@ -485,7 +523,7 @@ window.CamelliaFilePreview = { closeTextEditors: closeTextPreviewEditors, create
     editor.leaving = true;
     updateWordEditor(editor);
     try {
-      if (!await saveWordEdit(editor) && !window.confirm(t(editor.error || 'Could not save the document.') + '\n\n' + t('Discard unsaved changes to this file?'))) return false;
+      if (!await flushWordEdit(editor) && !window.confirm(t(editor.error || 'Could not save the document.') + '\n\n' + t('Discard unsaved changes to this file?'))) return false;
       wordPreviewClosers.delete(closeFilePreview);
       editor.resizeObserver?.disconnect();
       editor.resizeObserver = null;
@@ -498,6 +536,89 @@ window.CamelliaFilePreview = { closeTextEditors: closeTextPreviewEditors, create
         updateWordEditor(editor);
       }
     }
+  }
+  function setWordCellMode(block, mode) {
+    block.mode = mode;
+    block.input.hidden = mode !== 'edit';
+    block.previewPane.hidden = mode !== 'preview';
+    block.row.classList.toggle('previewing', mode === 'preview');
+  }
+  async function previewWordCell(editor, block) {
+    if (block.mode === 'preview' || editor.structurePending || editor.cellPreviewPending) return;
+    editor.cellPreviewPending = true;
+    editor.error = '';
+    updateWordEditor(editor);
+    try {
+      if (!await flushWordEdit(editor, block)) return;
+      const result = await window.dshDesktop.previewWordCell(editor.file.wordEditToken, block.index);
+      if (!result?.ok) throw new Error(result?.error || 'Could not preview this cell.');
+      block.previewPane.innerHTML = result.html;
+      setWordCellMode(block, 'preview');
+    } catch (error) {
+      editor.error = error.message || 'Could not preview this cell.';
+    } finally {
+      editor.cellPreviewPending = false;
+      updateWordEditor(editor);
+    }
+  }
+  function refreshWordStructure(editor, result) {
+    updateWordFile(editor, result);
+    editor.blocks.forEach((block, position) => {
+      const cell = result.cells[position];
+      block.index = cell.index;
+      block.parent = cell.parent;
+      block.canMove = Boolean(cell.canMove);
+      block.locked = result.editable[cell.index] === false;
+      block.row.classList.toggle('locked', block.locked);
+      block.number.textContent = String(cell.index + 1);
+      block.original = result.paragraphs[cell.index] || '';
+      block.input.value = block.original;
+      block.input.setAttribute('aria-label', t('Paragraph ') + (block.index + 1) + (block.locked ? ', ' + t('read-only') : ''));
+    });
+    updatePreviewMeta(previewedFile);
+    editor.fitAll();
+  }
+  async function runWordStructure(editor, operation, apply) {
+    if (editor.structurePending || editor.cellPreviewPending || editor.leaving) return;
+    editor.structurePending = true;
+    editor.error = '';
+    updateWordEditor(editor);
+    try {
+      if (!await flushWordEdit(editor)) return;
+      const result = await window.dshDesktop.structurePreviewWord(editor.file.wordEditToken, operation);
+      if (!result?.ok) throw new Error(result?.error || 'Could not change the cell layout.');
+      apply(result);
+      refreshWordStructure(editor, result);
+      editor.hasSaved = true;
+    } catch (error) {
+      editor.error = error.message || 'Could not change the cell layout.';
+    } finally {
+      editor.structurePending = false;
+      updateWordEditor(editor);
+    }
+  }
+  async function insertWordCell(editor, source) {
+    await runWordStructure(editor, { type: 'insertAfter', index: source.index }, result => {
+      const created = editor.createBlock({ index: source.index + 1, text: '', locked: false, parent: source.parent, canMove: true, notebook: true });
+      source.row.after(created.row);
+      editor.blocks.splice(editor.blocks.indexOf(source) + 1, 0, created);
+      editor.fitAll();
+      created.input.focus();
+    });
+  }
+  async function moveWordCell(editor, source, target, position) {
+    if (source === target || !source.canMove || source.parent !== target.parent) return;
+    await runWordStructure(editor, { type: 'move', from: source.index, to: target.index, position }, () => {
+      if (position === 'before') target.row.before(source.row);
+      else target.row.after(source.row);
+      const from = editor.blocks.indexOf(source);
+      editor.blocks.splice(from, 1);
+      const targetPosition = editor.blocks.indexOf(target);
+      editor.blocks.splice(targetPosition + (position === 'after' ? 1 : 0), 0, source);
+    });
+  }
+  function clearWordDropIndicators(editor) {
+    for (const block of editor.blocks) block.row.classList.remove('drop-before', 'drop-after', 'dragging');
   }
   function showWordEditor() {
     if (wordEditor || textEditor || !previewedFile?.wordEditToken) return;
@@ -520,6 +641,7 @@ window.CamelliaFilePreview = { closeTextEditors: closeTextPreviewEditors, create
     // rendered content instead of the raw paragraph newlines. This also runs
     // after a width change, when more or fewer characters fit on each line.
     const fitInput = input => {
+      if (input.hidden) return;
       input.style.height = 'auto';
       // scrollHeight covers the content but not the textarea's own border;
       // without this the last line is clipped by exactly one pixel per edge.
@@ -527,11 +649,14 @@ window.CamelliaFilePreview = { closeTextEditors: closeTextPreviewEditors, create
       input.style.height = input.scrollHeight + Math.max(0, border) + 'px';
     };
     const fitAll = () => editor.blocks.forEach(block => fitInput(block.input));
-    for (const block of blocks) {
-      const row = document.createElement('label'); row.className = 'file-preview-word-block';
+    editor.fitAll = fitAll;
+    editor.createBlock = data => {
+      const row = document.createElement(data.notebook ? 'section' : 'label');
+      row.className = 'file-preview-word-block' + (data.notebook ? ' notebook' : '');
       const input = document.createElement('textarea');
-      input.value = block.text; input.rows = 1;
-      if (block.locked) {
+      input.value = data.text; input.rows = 1;
+      const block = { ...data, original: data.text, input, row, mode: 'edit' };
+      if (data.locked) {
         input.readOnly = true;
         row.classList.add('locked');
         input.title = t('This paragraph contains a picture or page break and is read-only.');
@@ -541,13 +666,89 @@ window.CamelliaFilePreview = { closeTextEditors: closeTextPreviewEditors, create
         // WYSIWYG editor.
         row.title = t('Text only. Pictures and page breaks are shown in Preview and are not edited here.');
       }
-      input.setAttribute('aria-label', t('Paragraph ') + (block.index + 1) + (block.locked ? ', ' + t('read-only') : ''));
+      input.setAttribute('aria-label', t('Paragraph ') + (data.index + 1) + (data.locked ? ', ' + t('read-only') : ''));
       input.addEventListener('input', () => {
         fitInput(input);
+        editor.error = '';
         updateWordEditor(editor);
       });
-      row.appendChild(input); list.appendChild(row);
-      editor.blocks.push({ index: block.index, original: block.text, input });
+      if (!data.notebook) {
+        row.appendChild(input);
+        return block;
+      }
+      const bar = document.createElement('div'); bar.className = 'file-preview-word-cell-bar';
+      const grip = document.createElement('button'); grip.type = 'button'; grip.className = 'file-preview-word-cell-grip';
+      grip.innerHTML = '<span aria-hidden="true">↕</span>';
+      grip.title = t('Drag to reorder. Arrow keys also move this cell.');
+      grip.setAttribute('aria-label', grip.title);
+      grip.draggable = data.canMove;
+      const number = document.createElement('span'); number.className = 'file-preview-word-cell-number';
+      number.textContent = String(data.index + 1);
+      const cellActions = document.createElement('div'); cellActions.className = 'file-preview-word-cell-actions';
+      const edit = document.createElement('button'); edit.type = 'button'; edit.dataset.i18n = ''; edit.textContent = t('Edit');
+      const previewCell = document.createElement('button'); previewCell.type = 'button'; previewCell.dataset.i18n = ''; previewCell.textContent = t('Preview');
+      const insert = document.createElement('button'); insert.type = 'button'; insert.dataset.i18n = ''; insert.textContent = t('New same format');
+      cellActions.append(edit, previewCell, insert);
+      bar.append(grip, number, cellActions);
+      const previewPane = document.createElement('div'); previewPane.className = 'file-preview-word-cell-preview'; previewPane.hidden = true;
+      row.append(bar, input, previewPane);
+      Object.assign(block, { grip, number, edit, previewCell, insert, previewPane });
+      edit.onclick = () => {
+        setWordCellMode(block, 'edit');
+        updateWordEditor(editor);
+        fitInput(input);
+        input.focus();
+      };
+      previewCell.onclick = () => void previewWordCell(editor, block);
+      insert.onclick = () => void insertWordCell(editor, block);
+      grip.addEventListener('dragstart', event => {
+        if (!block.canMove || editor.structurePending || editor.cellPreviewPending) { event.preventDefault(); return; }
+        editor.dragging = block;
+        event.dataTransfer?.setData('application/x-camellia-word-cell', String(block.index));
+        if (event.dataTransfer) event.dataTransfer.effectAllowed = 'move';
+        row.classList.add('dragging');
+      });
+      grip.addEventListener('dragend', () => {
+        editor.dragging = null;
+        clearWordDropIndicators(editor);
+      });
+      grip.addEventListener('keydown', event => {
+        if (!['ArrowUp', 'ArrowDown'].includes(event.key)) return;
+        const siblings = editor.blocks.filter(candidate => candidate.parent === block.parent);
+        const position = siblings.indexOf(block);
+        const target = siblings[position + (event.key === 'ArrowUp' ? -1 : 1)];
+        if (!target) return;
+        event.preventDefault();
+        void moveWordCell(editor, block, target, event.key === 'ArrowUp' ? 'before' : 'after');
+      });
+      row.addEventListener('dragover', event => {
+        const source = editor.dragging;
+        if (!source || source === block || !source.canMove || source.parent !== block.parent) return;
+        event.preventDefault();
+        if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
+        const after = event.clientY >= row.getBoundingClientRect().top + row.offsetHeight / 2;
+        row.classList.toggle('drop-before', !after);
+        row.classList.toggle('drop-after', after);
+      });
+      row.addEventListener('dragleave', event => {
+        if (row.contains(event.relatedTarget)) return;
+        row.classList.remove('drop-before', 'drop-after');
+      });
+      row.addEventListener('drop', event => {
+        const source = editor.dragging;
+        if (!source || source === block || source.parent !== block.parent) return;
+        event.preventDefault();
+        const after = event.clientY >= row.getBoundingClientRect().top + row.offsetHeight / 2;
+        editor.dragging = null;
+        clearWordDropIndicators(editor);
+        void moveWordCell(editor, source, block, after ? 'after' : 'before');
+      });
+      return block;
+    };
+    for (const data of blocks) {
+      const block = editor.createBlock(data);
+      editor.blocks.push(block);
+      list.appendChild(block.row);
     }
     if (file.officeTruncated) {
       const note = document.createElement('p'); note.dataset.i18n = ''; note.className = 'file-preview-notice';
@@ -785,6 +986,7 @@ window.CamelliaFilePreview = { closeTextEditors: closeTextPreviewEditors, create
   $('fileViewerReveal').setAttribute('aria-label', revealLabel());
   $('fileViewerReveal').onclick = () => void revealFile(previewedFile?.path);
   window.addEventListener('camellia:language', () => {
+    if (previewedFile) updatePreviewMeta(previewedFile);
     if (textEditor) {
       textEditor.input.updateOptions({ ariaLabel: t('File contents') });
       updateEditor(textEditor);

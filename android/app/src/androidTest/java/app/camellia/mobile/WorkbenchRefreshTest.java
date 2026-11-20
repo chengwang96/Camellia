@@ -789,14 +789,20 @@ public class WorkbenchRefreshTest extends InstrumentationTestCase {
                 }
                 assertTrue(id + " held feedback must leave the rounded corners visually neutral"
                     + " (largest pixel difference " + cornerDifference + ")", cornerDifference <= 72);
+                getInstrumentation().runOnMainSync(() -> assertTrue(id + " must remain pressed while held",
+                    target[0].isPressed()));
+                // The shared glass uses a deliberately low-opacity ripple, so
+                // the pressed face is a subtle tonal wash rather than a solid
+                // highlight. It still has to change the interior visibly.
                 int strongest = 0;
                 int[] sampleX = {bounds[0] + bounds[2] / 2, bounds[0] + inset, bounds[0] + bounds[2] - 1 - inset};
                 int[] sampleY = {bounds[1] + inset, bounds[1] + bounds[3] / 2, bounds[1] + bounds[3] - 1 - inset};
                 for (int x : sampleX) for (int y : sampleY) {
-                    strongest = Math.max(strongest, pixelDifference(before.getPixel(x, y), held.getPixel(x, y)));
+                    int difference = pixelDifference(before.getPixel(x, y), held.getPixel(x, y));
+                    strongest = Math.max(strongest, difference);
                 }
                 assertTrue(id + " must still show visible feedback inside the rounded shape"
-                    + " (largest interior difference " + strongest + ")", strongest > 24);
+                    + " (largest interior difference " + strongest + ")", strongest > 16);
                 android.graphics.Bitmap crop = android.graphics.Bitmap.createBitmap(held,
                     bounds[0], bounds[1], bounds[2], bounds[3]);
                 try (var output = new java.io.FileOutputStream(new java.io.File(directory, id + "-held.png"))) {

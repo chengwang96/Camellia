@@ -1,14 +1,14 @@
 'use strict';
 
-// Text editing for OOXML Word documents. The preview only needs rendered HTML,
-// but an edit must map back to the original XML: a paragraph is not a single
-// node, and Word splits prose across several `<w:t>` runs (formatting, spelling
-// marks, fields). This module builds a small block model over word/document.xml
-// and edits a block by replacing its run text in place.
+// Text and structure editing for OOXML Word documents. The preview only needs
+// rendered HTML, but an edit must map back to the original XML: a paragraph is
+// not a single node, and Word splits prose across several `<w:t>` runs. This
+// module builds a block model over word/document.xml, replaces run text in
+// place, previews one paragraph, and inserts or reorders whole paragraphs.
 //
-// Only word/document.xml is recompressed. Pictures, charts, media, headers and
-// every other package part are copied unchanged, so an edit never rewrites the
-// parts the preview does not understand.
+// Only word/document.xml is recompressed. New paragraphs keep paragraph and
+// character properties but not text, drawings or section breaks. Pictures,
+// charts, media, headers and every other package part are copied unchanged.
 
 const fs = require('node:fs');
 const path = require('node:path');
@@ -82,17 +82,34 @@ const escapeRegExp = value => String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&
 
 function scanParagraphs(source) {
   const blocks = [];
+  const containers = [];
   let truncated = false;
   let depth = 0, start = -1, innerStart = -1;
-  const pattern = /<w:p\b[^>]*>|<\/w:p>/g;
+  const pattern = /<w:(p|body|tc|sdtContent)\b[^>]*>|<\/w:(p|body|tc|sdtContent)>/g;
   let match;
   while ((match = pattern.exec(source))) {
     const value = match[0];
+    const tag = match[1] || match[2];
+    if (tag !== 'p') {
+      if (match[2]) {
+        for (let index = containers.length - 1; index >= 0; index--) {
+          if (containers[index].tag !== tag) continue;
+          containers.length = index;
+          break;
+        }
+      } else if (!value.endsWith('/>')) containers.push({ tag, start: match.index });
+      continue;
+    }
     if (value.startsWith('<w:p')) {
       if (depth === 0) {
         if (blocks.length >= MAX_BLOCKS) { truncated = true; break; }
+        const parent = containers.length ? containers[containers.length - 1].start : -1;
         if (value.endsWith('/>')) {
-          blocks.push({ index: blocks.length, text: '', start: match.index, end: match.index + value.length, inner: '', locked: false });
+          blocks.push({
+            index: blocks.length, text: '', start: match.index, end: match.index + value.length,
+            outerStart: match.index, outerEnd: match.index + value.length,
+            inner: '', opening: value, locked: false, parent,
+          });
           continue;
         }
         start = match.index; innerStart = match.index + value.length;
@@ -104,13 +121,19 @@ function scanParagraphs(source) {
     if (depth === 0 && start >= 0) {
       const innerEnd = match.index;
       const inner = source.slice(innerStart, innerEnd);
+      const parent = containers.length ? containers[containers.length - 1].start : -1;
       blocks.push({
         index: blocks.length, text: paragraphText(inner),
-        start: innerStart, end: innerEnd, inner, locked: hasDirectPageBreak(inner),
+        start: innerStart, end: innerEnd,
+        outerStart: start, outerEnd: match.index + value.length,
+        inner, opening: source.slice(start, innerStart), locked: hasDirectPageBreak(inner), parent,
       });
       start = innerStart = -1;
     }
   }
+  const siblings = new Map();
+  for (const block of blocks) siblings.set(block.parent, (siblings.get(block.parent) || 0) + 1);
+  for (const block of blocks) block.canMove = siblings.get(block.parent) > 1;
   return { blocks, truncated };
 }
 
@@ -211,11 +234,111 @@ async function readDocxEdit(filePath) {
     blocks: blocks.map(block => block.text),
     editability: blocks.map(block => !block.locked
       && (!block.inner || /<w:t\b/.test(block.inner) || /<(?:w:tab|w:br|w:cr)\b/.test(block.inner))),
+    cells: blocks.map(block => ({ index: block.index, parent: block.parent, canMove: block.canMove })),
     truncated,
     revision: revision(source),
     sourceRevision: revision(Buffer.from(content, 'utf8')),
     path: filePath,
   };
+}
+
+function snapshotContent(snapshot, current, content) {
+  if (revision(current) !== snapshot.revision) throw new Error('The file changed on disk. Reopen the document before saving.');
+  if (revision(Buffer.from(content, 'utf8')) !== snapshot.sourceRevision) throw new Error('The Word document changed in memory. Reopen it before saving.');
+}
+
+async function readSnapshotContent(snapshot) {
+  const current = fs.readFileSync(snapshot.path);
+  const archive = await JSZip.loadAsync(current);
+  const part = archive.file(DOCUMENT_PART);
+  if (!part) throw new Error('This Word document has no main body.');
+  const content = await part.async('string');
+  snapshotContent(snapshot, current, content);
+  return { current, archive, content };
+}
+
+function directRunProperties(inner) {
+  const nested = rangesOfNestedParagraphs(inner);
+  const pattern = /<w:r\b[^>]*>([\s\S]*?)<\/w:r>/g;
+  for (const match of inner.matchAll(pattern)) {
+    if (nested.some(([start, end]) => match.index >= start && match.index < end)) continue;
+    const properties = /<w:rPr\b[^>]*(?:\/>|>[\s\S]*?<\/w:rPr>)/.exec(match[1]);
+    if (properties) return properties[0];
+  }
+  return '';
+}
+
+function blankParagraphLike(block) {
+  let opening = block.opening.replace(/\s+w14:(?:paraId|textId)\s*=\s*(?:"[^"]*"|'[^']*')/g, '');
+  if (opening.endsWith('/>')) opening = opening.slice(0, -2) + '>';
+  const properties = /<w:pPr\b[^>]*(?:\/>|>[\s\S]*?<\/w:pPr>)/.exec(block.inner)?.[0] || '';
+  const withoutSection = properties
+    .replace(/<w:sectPr\b[^>]*(?:\/>|>[\s\S]*?<\/w:sectPr>)/g, '')
+    .replace(/<w:(?:ins|del)\b[^>]*(?:\/>|>[\s\S]*?<\/w:(?:ins|del)>)/g, '');
+  const runProperties = directRunProperties(block.inner);
+  return opening + withoutSection + '<w:r>' + runProperties + '<w:t xml:space="preserve"></w:t></w:r></w:p>';
+}
+
+async function persistDocxContent(snapshot, current, archive, content, updated) {
+  if (updated === content) {
+    return { file: { size: current.length, modifiedAt: fs.statSync(snapshot.path).mtimeMs }, snapshot: { ...snapshot } };
+  }
+  archive.file(DOCUMENT_PART, updated, { date: new Date(), createFolders: false });
+  const bytes = await archive.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE', compressionOptions: { level: 6 } });
+  if (bytes.length > MAX_FILE_BYTES) throw new Error('The edited Word document is too large.');
+
+  const target = fs.realpathSync.native(snapshot.path);
+  fs.accessSync(target, fs.constants.W_OK);
+  const temporary = path.join(path.dirname(target), `.camellia-office-${randomUUID()}.tmp`);
+  let replaced = false;
+  try {
+    const handle = fs.openSync(temporary, 'wx', 0o600);
+    try {
+      fs.writeFileSync(handle, bytes);
+      if (process.platform !== 'win32') fs.fchmodSync(handle, fs.statSync(target).mode & 0o777);
+      fs.fsyncSync(handle);
+    } finally { fs.closeSync(handle); }
+    if (revision(fs.readFileSync(target)) !== snapshot.revision) throw new Error('The file changed on disk. Reopen the document before saving.');
+    fs.renameSync(temporary, target);
+    replaced = true;
+    const saved = fs.statSync(target);
+    const next = await readDocxEdit(target);
+    return { file: { size: saved.size, modifiedAt: saved.mtimeMs, editRevision: next.revision }, snapshot: next };
+  } finally {
+    if (!replaced) try { fs.unlinkSync(temporary); } catch {}
+  }
+}
+
+async function saveDocxStructure(snapshot, operation) {
+  if (!['insertAfter', 'move'].includes(operation?.type)) throw new Error('Invalid Word structure edit.');
+  const { current, archive, content } = await readSnapshotContent(snapshot);
+  const { blocks } = scanParagraphs(content);
+  let updated;
+  if (operation.type === 'insertAfter') {
+    if (!Number.isInteger(operation.index) || operation.index < 0 || operation.index >= blocks.length) {
+      throw new Error('The Word paragraph layout changed on disk.');
+    }
+    if (blocks.length >= MAX_BLOCKS) throw new Error('This Word document has reached the editable paragraph limit.');
+    const block = blocks[operation.index];
+    const paragraph = blankParagraphLike(block);
+    updated = content.slice(0, block.outerEnd) + paragraph + content.slice(block.outerEnd);
+  } else {
+    if (!Number.isInteger(operation.from) || !Number.isInteger(operation.to)
+      || operation.from < 0 || operation.to < 0 || operation.from >= blocks.length || operation.to >= blocks.length
+      || operation.from === operation.to || !['before', 'after'].includes(operation.position)) {
+      throw new Error('The Word paragraph layout changed on disk.');
+    }
+    const source = blocks[operation.from], target = blocks[operation.to];
+    if (source.parent !== target.parent || !source.canMove) {
+      throw new Error('Paragraphs can only be reordered within the same document section or table cell.');
+    }
+    const paragraph = content.slice(source.outerStart, source.outerEnd);
+    const without = content.slice(0, source.outerStart) + content.slice(source.outerEnd);
+    let insertion = operation.position === 'before' ? target.outerStart : target.outerEnd;
+    if (source.outerStart < insertion) insertion -= paragraph.length;
+    updated = without.slice(0, insertion) + paragraph + without.slice(insertion);
+  }
+  return persistDocxContent(snapshot, current, archive, content, updated);
 }
 
 async function saveDocxEdit(snapshot, edits) {
@@ -249,33 +372,57 @@ async function saveDocxEdit(snapshot, edits) {
     const replaced = replaceParagraphText(block.inner, edit.text);
     updated = updated.slice(0, block.start) + replaced + updated.slice(block.end);
   }
-  if (updated !== content) archive.file(DOCUMENT_PART, updated, { date: new Date(), createFolders: false });
-  if (updated === content) {
-    return { file: { size: current.length, modifiedAt: fs.statSync(snapshot.path).mtimeMs }, snapshot: { ...snapshot } };
-  }
-  const bytes = await archive.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE', compressionOptions: { level: 6 } });
-  if (bytes.length > MAX_FILE_BYTES) throw new Error('The edited Word document is too large.');
-
-  const target = fs.realpathSync.native(snapshot.path);
-  fs.accessSync(target, fs.constants.W_OK);
-  const temporary = path.join(path.dirname(target), `.camellia-office-${randomUUID()}.tmp`);
-  let replaced = false;
-  try {
-    const handle = fs.openSync(temporary, 'wx', 0o600);
-    try {
-      fs.writeFileSync(handle, bytes);
-      if (process.platform !== 'win32') fs.fchmodSync(handle, fs.statSync(target).mode & 0o777);
-      fs.fsyncSync(handle);
-    } finally { fs.closeSync(handle); }
-    if (revision(fs.readFileSync(target)) !== snapshot.revision) throw new Error('The file changed on disk. Reopen the document before saving.');
-    fs.renameSync(temporary, target);
-    replaced = true;
-    const saved = fs.statSync(target);
-    const next = await readDocxEdit(target);
-    return { file: { size: saved.size, modifiedAt: saved.mtimeMs, editRevision: next.revision }, snapshot: next };
-  } finally {
-    if (!replaced) try { fs.unlinkSync(temporary); } catch {}
-  }
+  return persistDocxContent(snapshot, current, archive, content, updated);
 }
 
-module.exports = { isDocx, readDocxEdit, saveDocxEdit, DOCUMENT_PART };
+async function readDocxCellPreview(snapshot, index) {
+  if (!Number.isInteger(index)) throw new Error('Invalid Word paragraph.');
+  const { archive, content } = await readSnapshotContent(snapshot);
+  const { blocks } = scanParagraphs(content);
+  if (index < 0 || index >= blocks.length) throw new Error('The Word paragraph layout changed on disk.');
+  const { DOMParser } = require('@xmldom/xmldom');
+  const parser = new DOMParser({ onError(level, message) { if (level !== 'warning') throw new Error(message); } });
+  const document = parser.parseFromString(content, 'text/xml');
+  const paragraphs = Array.from(document.getElementsByTagName('*')).filter(node => {
+    if (node.nodeName !== 'w:p') return false;
+    for (let parent = node.parentNode; parent; parent = parent.parentNode) if (parent.nodeName === 'w:p') return false;
+    return true;
+  });
+  const paragraph = paragraphs[index];
+  if (!paragraph) throw new Error('The Word paragraph layout changed on disk.');
+  const relations = new Map();
+  const relationshipPart = archive.file('word/_rels/document.xml.rels');
+  if (relationshipPart) {
+    const source = await relationshipPart.async('string');
+    if (/<!DOCTYPE|<!ENTITY/i.test(source)) throw new Error('Unsupported Office XML declaration.');
+    const relationships = parser.parseFromString(source, 'text/xml');
+    for (const node of Array.from(relationships.getElementsByTagName('*'))) {
+      if (node.localName !== 'Relationship' || node.getAttribute('TargetMode') === 'External') continue;
+      const target = node.getAttribute('Target') || '';
+      if (!target || target.includes('..') || target.includes('\\')) continue;
+      relations.set(node.getAttribute('Id'), path.posix.normalize(target.startsWith('/') ? target.slice(1) : path.posix.join('word', target)));
+    }
+  }
+  const images = new Map();
+  let imageBytes = 0;
+  const context = {
+    relations,
+    async image(name) {
+      if (images.has(name)) return images.get(name);
+      const mime = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp', '.bmp': 'image/bmp', '.svg': 'image/svg+xml', '.tif': 'image/tiff', '.tiff': 'image/tiff' }[path.posix.extname(name).toLowerCase()];
+      const part = mime && archive.file(name);
+      let source = '';
+      if (part) {
+        const data = await part.async('nodebuffer');
+        imageBytes += data.length;
+        if (imageBytes <= MAX_PART_BYTES) source = `data:${mime};base64,${data.toString('base64')}`;
+      }
+      images.set(name, source);
+      return source;
+    },
+  };
+  const { renderWordParagraph } = require('./office-render');
+  return renderWordParagraph(paragraph, context);
+}
+
+module.exports = { isDocx, readDocxEdit, saveDocxEdit, saveDocxStructure, readDocxCellPreview, DOCUMENT_PART };

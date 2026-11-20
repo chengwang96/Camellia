@@ -379,9 +379,9 @@ with sync_playwright() as playwright:
         assert page.evaluate("transferCalls.length + storageCalls.length") == 0
     for height in [820, 580, 480]:
         page.set_viewport_size({"width": 390, "height": height})
-        page.locator('[data-view="devices"]').click()
-        expect(page.locator("#devicesPage")).to_be_visible()
-        bounds = page.locator('[data-view="devices"]').bounding_box()
+        page.locator('[data-view="mobile"]').click()
+        expect(page.locator("#mobilePage")).to_be_visible()
+        bounds = page.locator('[data-view="mobile"]').bounding_box()
         assert bounds["y"] >= 0 and bounds["y"] + bounds["height"] <= height, bounds
         assert page.evaluate("document.documentElement.scrollHeight <= innerHeight"), height
         page.locator('[data-view="data"]').click()

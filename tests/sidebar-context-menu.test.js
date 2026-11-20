@@ -7,7 +7,8 @@ const path = require('node:path');
 const vm = require('node:vm');
 
 const source = fs.readFileSync(path.join(__dirname, '../src/renderer/chat/workbench-sidebar.js'), 'utf8');
-const itemSource = source.slice(source.indexOf('  function makeSessionItem(s)'), source.indexOf('  async function runMetaOp('));
+const draftSource = source.slice(source.indexOf('  function sessionHasDraft('), source.indexOf('  function renderSessionSidebar('));
+const itemSource = draftSource + source.slice(source.indexOf('  function makeSessionItem(s)'), source.indexOf('  async function runMetaOp('));
 const buttonSource = source.slice(source.indexOf('  function sidebarButton('), source.indexOf('  function appendGroup('));
 
 function element() {
@@ -15,7 +16,7 @@ function element() {
     dataset: {}, children: [], listeners: {},
     classList: { toggle() {}, add() {}, remove() {} },
     setAttribute() {},
-    querySelector() { return { textContent: '' }; },
+    querySelector() { return { textContent: '', classList: { toggle() {} } }; },
     appendChild(child) { this.children.push(child); },
     addEventListener(type, callback) { this.listeners[type] = callback; },
     closest() { return null; },
@@ -32,6 +33,7 @@ function fixture(session) {
     discussionOpening: () => false,
     $: () => ({ textContent: 'New session' }),
     input: { focus() { opened.push('input'); } },
+    hasDraft: () => false,
     sidebarIcon: () => '', relTime: () => 'Now',
     openHistorySession: id => opened.push(id),
     openSessionActions: (...args) => menus.push(['session', ...args]),

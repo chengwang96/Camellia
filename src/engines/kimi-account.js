@@ -50,7 +50,7 @@ function accountModels(config, options = [], snapshots = new Map()) {
   const visit = rows => { for (const row of rows || []) { if (row.value) labels.set(row.value, row.name || row.value); if (row.options) visit(row.options); } };
   visit(options.find(row => row.id === 'model')?.options);
   return Object.entries(config.models).map(([id, model]) => ({ id, name: labels.get(id) || model.display_name || model.model || id,
-    isDefault: config.default_model === id, contextWindow: model.max_context_size,
+    isDefault: config.default_model === id, contextWindow: model.max_context_size, outputLimit: model.max_output_size,
     ...thinkingMetadata(model, snapshots.get(id)) }));
 }
 

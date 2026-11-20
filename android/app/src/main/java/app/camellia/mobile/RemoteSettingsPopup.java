@@ -66,7 +66,7 @@ final class RemoteSettingsPopup {
         addGrip();
         if (settings.optBoolean("appliesNextTurn")) heading(tr("模型与思考等级更改从下一轮生效", "Changes apply to the next message"));
         JSONObject quick = settings.optJSONObject("quickSwitch");
-        if (quick != null && quick.optBoolean("available")) row(tr("切换默认模型", "Quick-switch default"), quick.optString("model"), false,
+        if (quick != null && quick.optBoolean("available")) row(tr("切换默认模型", "Quick-switch default"), ModelLabel.compact(quick.optString("model")), false,
             "remoteQuickSwitch", () -> choose("quickSwitch", "true"));
         JSONArray models = settings.optJSONArray("models");
         if (models == null || models.length() == 0) row(tr("暂无可用模型", "No models available"), tr("请在电脑端配置模型或登录账号", "Configure models or sign in on your computer"), false, "remoteModelsEmpty", () -> {});

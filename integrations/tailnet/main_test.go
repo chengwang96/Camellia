@@ -5,11 +5,13 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"os"
 	"strings"
 	"testing"
 
 	"tailscale.com/ipn"
+	"tailscale.com/ipn/ipnstate"
 )
 
 func TestEncryptedState(t *testing.T) {
@@ -51,6 +53,27 @@ func TestEncryptedState(t *testing.T) {
 	}
 	if _, err := newStore(directory, nil); err == nil {
 		t.Fatal("accepted missing key")
+	}
+}
+
+func TestStatusResultIncludesHealth(t *testing.T) {
+	result := statusResult(&ipnstate.Status{
+		BackendState: "Running",
+		AuthURL:      "https://login.tailscale.com/a/test",
+		TailscaleIPs: []netip.Addr{netip.MustParseAddr("192.168.1.2"), netip.MustParseAddr("100.80.1.2")},
+		Self:         &ipnstate.PeerStatus{HostName: "work-pc", Online: true},
+		Health:       []string{"Control plane is reconnecting"},
+	})
+	if result["state"] != "Running" || result["address"] != "100.80.1.2" || result["hostName"] != "work-pc" || result["online"] != true {
+		t.Fatal("status identity or health was lost", result)
+	}
+	health := result["health"].([]string)
+	if len(health) != 1 || health[0] != "Control plane is reconnecting" {
+		t.Fatal("health details were lost", result)
+	}
+	empty := statusResult(&ipnstate.Status{})
+	if health, ok := empty["health"].([]string); !ok || len(health) != 0 {
+		t.Fatal("missing health must be an empty list", empty)
 	}
 }
 

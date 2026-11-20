@@ -121,6 +121,7 @@ try:
         page.locator('#usageModel').select_option('future-model')
         page.locator('[data-view=providers]').click()
         page.locator('#providers [data-select=test]').first.click()
+        page.locator('[data-toggle-key=test-key]').click()
         page.locator('[data-key-usage=test-key]').click()
         expect(page.locator('#usageProvider')).to_have_value('test')
         expect(page.locator('#usageKey')).to_have_value('test-key')

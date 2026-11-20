@@ -2598,8 +2598,8 @@ struct Composer: View {
     }
 
     private var modelLabel: String {
-        let id = settings?.model ?? ""
-        let name = ModelLabel.compact(id.isEmpty ? (model.usesChinese ? "模型" : "Model") : id)
+        let shown = settings?.modelName ?? ""
+        let name = ModelLabel.compact(shown.isEmpty ? (model.usesChinese ? "模型" : "Model") : shown)
         let thinking = LocalChatThinking.display(settings?.thinking ?? "", chinese: model.usesChinese)
         return thinking.isEmpty ? name : name + " · " + thinking
     }

@@ -23,7 +23,7 @@ function fixture() {
     editingMessage: null, turnEl: null, harnessId: 'codex', loadedEngine: 'codex', pendingForkId: null, currentRunId: null, currentFastMode: false,
     input: { value: 'Continue' }, attachments: [], chatProfile: {}, statusText: '', eventsDuringRestore: [],
     messageQueue: [], messageQueuePaused: false, conversationQueues: new Map(), drainingQueue: false,
-    sendBtn: { classList: { toggle() {} } }, pendingConversationSends: new Map(), latestConversationSends: new Map(),
+    sendBtn: { classList: { toggle() {} }, dataset: {} }, pendingConversationSends: new Map(), latestConversationSends: new Map(),
     window: { CamelliaContextOverflow: require('../src/shared/context-overflow') },
     goalUI: { isActive: () => false, isDraft: () => false },
     sidebar: { render() {}, load() {} }, chat: { querySelector: () => null, querySelectorAll: () => [], appendChild() {} },

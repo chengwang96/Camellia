@@ -231,4 +231,54 @@ public class RemoteConnectionTest extends InstrumentationTestCase {
             ui(() -> routeField.set(null, originalRoute));
         }
     }
+
+    public void testInitialListNetworkFailureRetriesAndConnects() throws Exception {
+        AtomicInteger requests = new AtomicInteger();
+        JSONObject owner = new JSONObject().put("address", "http://100.64.0.1:43128").put("token", "a".repeat(43));
+        ui(() -> {
+            invoke("stopNetwork"); field("credentials", owner); invoke("listScreen");
+            field("foreground", true); field("listEventsUnavailable", true);
+            field("remoteClientFactory", (java.util.function.Function<String, RemoteApi>) address -> new RemoteApi(address) {
+                @Override public JSONObject json(String path, String token, JSONObject payload) throws IOException {
+                    if (requests.incrementAndGet() == 1) throw new java.net.SocketTimeoutException("Network is still recovering");
+                    try {
+                        return new JSONObject().put("protocol", 1).put("permission", "control")
+                            .put("capabilities", new org.json.JSONArray()).put("conversations", new org.json.JSONArray());
+                    } catch (org.json.JSONException error) { throw new IOException(error); }
+                }
+            });
+            var load = MainActivity.class.getDeclaredMethod("loadList", boolean.class); load.setAccessible(true); load.invoke(activity, false);
+        });
+        long deadline = android.os.SystemClock.elapsedRealtime() + 5000;
+        while (requests.get() < 2 && android.os.SystemClock.elapsedRealtime() < deadline) {
+            Thread.sleep(40); getInstrumentation().waitForIdleSync();
+        }
+        assertTrue("The first recoverable failure must schedule another initial sync", requests.get() >= 2);
+        ui(() -> {
+            var connected = MainActivity.class.getDeclaredField("connected"); connected.setAccessible(true);
+            var retry = MainActivity.class.getDeclaredField("listRetryPending"); retry.setAccessible(true);
+            assertTrue(connected.getBoolean(activity)); assertFalse(retry.getBoolean(activity));
+        });
+    }
+
+    public void testListRetryPolicyRejectsPairingPermissionAndProtocolFailures() throws Exception {
+        var routeField = EmbeddedNetwork.class.getDeclaredField("route"); routeField.setAccessible(true);
+        Object originalRoute = routeField.get(null);
+        var retryable = MainActivity.class.getDeclaredMethod("retryableListFailure", Exception.class); retryable.setAccessible(true);
+        try {
+            ui(() -> routeField.set(null, new NetworkRoute("online", "links")));
+            assertTrue((Boolean) retryable.invoke(null, new java.net.SocketTimeoutException()));
+            assertTrue((Boolean) retryable.invoke(null, ConnectionFailure.failure(ConnectionFailure.Code.NETWORK_STARTING, null)));
+            for (int status : new int[] {400, 401, 403, 404, 409})
+                assertFalse("HTTP " + status + " must not be retried", (Boolean) retryable.invoke(null, new RemoteApi.Failure(status)));
+            for (int status : new int[] {408, 429, 500, 502, 503, 504})
+                assertTrue("HTTP " + status + " should be retried", (Boolean) retryable.invoke(null, new RemoteApi.Failure(status)));
+            for (ConnectionFailure.Code code : new ConnectionFailure.Code[] {ConnectionFailure.Code.LOGIN_REQUIRED,
+                    ConnectionFailure.Code.DEVICE_APPROVAL_REQUIRED, ConnectionFailure.Code.NETWORK_STOPPED,
+                    ConnectionFailure.Code.PROTOCOL_ERROR, ConnectionFailure.Code.INVALID_CREDENTIAL})
+                assertFalse(code.name(), (Boolean) retryable.invoke(null, ConnectionFailure.failure(code, null)));
+        } finally {
+            ui(() -> routeField.set(null, originalRoute));
+        }
+    }
 }

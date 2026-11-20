@@ -116,6 +116,18 @@ test('the helper receives a DNS label and can be given a lazily read name', asyn
   await network.stop();
 });
 
+test('embedded status preserves control-plane health diagnostics', async () => {
+  const network = new EmbeddedNetwork({});
+  network.child = {};
+  network.request = async action => {
+    assert.equal(action, 'status');
+    return { state: 'Running', address: '100.80.1.2', deviceId: 'node', hostName: 'work-pc',
+      online: true, health: ['Control plane is reconnecting'] };
+  };
+  assert.deepEqual(await network.status(), { state: 'Running', loginUrl: null, address: '100.80.1.2',
+    deviceId: 'node', hostName: 'work-pc', online: true, health: ['Control plane is reconnecting'] });
+});
+
 test('embedded hostname changes use the helper and refresh the cached identity', async () => {
   const network = new EmbeddedNetwork({});
   const requests = [];

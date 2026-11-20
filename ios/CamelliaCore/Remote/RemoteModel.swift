@@ -659,6 +659,9 @@ public struct RemoteSettings: Sendable, Equatable {
     public let appliesNextTurn: Bool
     public let connection: String
     public let model: String
+    /// The display name the desktop's picker uses for `model` (`K3.1 Pro`),
+    /// falling back to the id when an older desktop does not send one.
+    public let modelName: String
     /// Empty means "whatever the engine defaults to".
     public let thinking: String
     public let permissionMode: String
@@ -676,7 +679,9 @@ public struct RemoteSettings: Sendable, Equatable {
         appliesNextTurn = json.bool("appliesNextTurn")
         let selectedConnection = json.text("connection", fallback: "api")
         connection = selectedConnection
-        model = json.text("model")
+        let selectedModel = json.text("model")
+        model = selectedModel
+        modelName = json.text("modelName", fallback: selectedModel)
         thinking = json.text("thinking")
         permissionMode = json.text("permissionMode")
         supportsFast = json.bool("supportsFast")

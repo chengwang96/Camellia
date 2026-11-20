@@ -109,6 +109,22 @@ public class RemoteRichControlsTest extends InstrumentationTestCase {
             assertNotNull(last); last.performClick(); assertEquals("api", result.get().getString("connection")); assertEquals("same", result.get().getString("model"));
         });
     }
+    public void testModelChipShowsTheDesktopDisplayName() throws Exception {
+        ui(() -> {
+            String id = "22222222-2222-4222-8222-222222222222";
+            set("credentials", new JSONObject()); set("conversationId", id); set("conversationTitle", "Kimi");
+            var detail = MainActivity.class.getDeclaredMethod("detailScreen"); detail.setAccessible(true); detail.invoke(activity);
+            JSONObject settings = new JSONObject().put("model", "kimi-code/k3.1-pro").put("modelName", "K3.1 Pro")
+                .put("connection", "subscription").put("modelEditable", true).put("editable", true);
+            JSONObject snapshot = new JSONObject().put("instanceId", "fixture").put("cursor", 1).put("permission", "control")
+                .put("conversation", new JSONObject().put("id", id).put("title", "Kimi").put("seq", 1))
+                .put("messages", new JSONArray()).put("settings", settings);
+            var apply = MainActivity.class.getDeclaredMethod("applySnapshot", JSONObject.class); apply.setAccessible(true); apply.invoke(activity, snapshot);
+            String level = LocalChatThinking.display("", (Boolean) field(activity, "chinese"));
+            assertEquals("K3.1 Pro · " + level, ((TextView) field(activity, "modelButton")).getText().toString());
+        });
+        getInstrumentation().waitForIdleSync();
+    }
     public void testActiveConversationEnablesNextTurnModelsButKeepsPermissionsLockedWithoutTokenDisplay() throws Exception {
         ui(() -> {
             String id = "11111111-1111-4111-8111-111111111111";

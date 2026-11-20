@@ -2547,10 +2547,11 @@ do {
     checkEqual(legacy.modelChanges(for: legacy.models[0]), ["model": "same"], "old desktops get a model-only patch")
     check(!legacy.appliesNextTurn && !legacy.supportsFast && !legacy.fastMode && legacy.quickSwitch == nil,
           "new settings controls stay absent on legacy desktops")
+    checkEqual(legacy.modelName, "same", "a legacy desktop falls back to the model id for the label")
 
     let busy = RemoteSettings(JSONObject(dictionary: [
         "version": "v1", "editable": false, "modelEditable": true, "appliesNextTurn": true,
-        "connection": "subscription", "model": "same", "thinking": "max",
+        "connection": "subscription", "model": "same", "modelName": "K3.1 Pro", "thinking": "max",
         "supportsFast": true, "fastMode": true,
         "quickSwitch": ["model": "default", "thinking": "ultra", "available": true],
         "models": [["id": "same", "connection": "api", "thinking": ["low"]],
@@ -2561,6 +2562,7 @@ do {
     checkEqual(busy.models[1].connection, "subscription", "model choices inherit the active connection")
     checkEqual(busy.selectedModel?.name, "Account", "same model id in API and account selects only the active connection")
     checkEqual(busy.selectedModel?.thinking, ["high", "max"], "thinking menu belongs to the selected connection")
+    checkEqual(busy.modelName, "K3.1 Pro", "the desktop's display name travels with the model id")
     checkEqual(busy.modelChanges(for: busy.models[0]), ["model": "same", "connection": "api"],
                "modern selection sends model and connection atomically")
     check(busy.supportsFast && busy.fastMode, "Fast capability and selection are distinct decoded flags")
@@ -6201,6 +6203,16 @@ do {
     checkEqual(ModelLabel.compact("gpt-5.6-sol:free"), "Sol", "nor on a codename")
     checkEqual(ModelLabel.compact("deepseek-r1:7b"), "R1", "nor on a reasoner")
     checkEqual(ModelLabel.compact("mimo-v2.6-pro:cloud"), "MiMo 2.6 Pro", "nor on a MiMo")
+
+    checkEqual(ModelLabel.compact("kimi-k2.5-thinking"), "K2.5 Thinking", "a Kimi effort keeps its word")
+    checkEqual(ModelLabel.compact("kimi-code/k3.1-pro"), "K3.1 Pro", "an account id keeps the tier the picker shows")
+    checkEqual(ModelLabel.compact("kimi-code/k3.1-pro-highspeed"), "K3.1 Pro Highspeed",
+               "and spells both words of a combined tier")
+    checkEqual(ModelLabel.compact("kimi-code/k3"), "K3", "a bare account id still shortens")
+    checkEqual(ModelLabel.compact("kimi-code/k3-256k"), "K3 256K", "a context tag keeps its upper case")
+    checkEqual(ModelLabel.compact("moonshot:kimi-k3.1-pro"), "K3.1 Pro", "the Moonshot prefix is not part of the name")
+    checkEqual(ModelLabel.compact("kimi-k3.1-pro"), "K3.1 Pro", "and a bare route id shortens the same way")
+    checkEqual(ModelLabel.compact("K3.1 Pro"), "K3.1 Pro", "a display name already short enough survives")
 }
 
 // MARK: - Independent encrypted local records and drafts

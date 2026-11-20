@@ -51,7 +51,7 @@ with sync_playwright() as playwright:
           sendEvent({type:'result',subtype:'success',result:'The confirmed answer.'});
         }""")
         expect(turn.locator('.turn-body > .md')).to_have_text('The confirmed answer.')
-        expect(process).not_to_have_attribute('open', '')
+        expect(process).to_have_attribute('open', '')
         page.screenshot(path=str(scope['preview'] / f'output-folding-{theme}.png'))
         page.evaluate("""() => {
           chatFixture.messages = [{role:'user',text:'Check output folding'}, {

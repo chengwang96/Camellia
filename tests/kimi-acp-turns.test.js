@@ -61,6 +61,41 @@ test('Kimi forwards native task follow-up replies after the user prompt has fini
   assert.equal(h.native.driver, undefined);
 });
 
+test('Kimi reports a truncated native step as max_tokens and resets it for the next turn', { skip: !source }, async () => {
+  const h = await fixture();
+  const first = h.native.driveTurn([]);
+  h.emit('turn.started', { turnId: 20, promptId: h.submissions[0].promptId });
+  h.emit('assistant.delta', { turnId: 20, delta: 'I will update the files next.' });
+  h.emit('turn.step.completed', { turnId: 20, step: 1, finishReason: 'max_tokens',
+    providerFinishReason: 'truncated', rawFinishReason: 'length' });
+  h.emit('turn.step.completed', { turnId: 20, step: 2, finishReason: 'end_turn',
+    providerFinishReason: 'completed', rawFinishReason: 'stop' });
+  h.emit('turn.ended', { turnId: 20, reason: 'completed' });
+  assert.equal((await first).stopReason, 'max_tokens');
+
+  const second = h.native.driveTurn([]);
+  h.emit('turn.started', { turnId: 21, promptId: h.submissions[1].promptId });
+  h.emit('turn.step.completed', { turnId: 21, step: 1, finishReason: 'end_turn',
+    providerFinishReason: 'completed', rawFinishReason: 'stop' });
+  h.emit('turn.ended', { turnId: 21, reason: 'completed' });
+  assert.equal((await second).stopReason, 'end_turn');
+});
+
+test('Kimi reports a truncated background follow-up without hiding its reply', { skip: !source }, async () => {
+  const h = await fixture();
+  const first = h.native.driveTurn([]);
+  h.emit('turn.started', { turnId: 1, promptId: h.submissions[0].promptId });
+  h.emit('turn.ended', { turnId: 1, reason: 'completed' });
+  await first;
+  h.emit('turn.started', { turnId: 2, origin: { kind: 'task', taskId: 'build' } });
+  h.emit('assistant.delta', { turnId: 2, delta: 'Build verification started.' });
+  h.emit('turn.step.completed', { turnId: 2, step: 1, finishReason: 'max_tokens',
+    providerFinishReason: 'truncated', rawFinishReason: 'length' });
+  h.emit('turn.ended', { turnId: 2, reason: 'completed' });
+  assert.equal(h.updates.at(-1).update.state, 'ended');
+  assert.equal(h.updates.at(-1).update.stopReason, 'max_tokens');
+});
+
 test('Kimi keeps the reply open across a batch of task notifications and a chained follow-up', { skip: !source }, async () => {
   const h = await fixture();
   let settled = false;
@@ -265,6 +300,12 @@ test('Kimi pending steering propagates cancellation, blocked prompts and failure
 test('Kimi queue adapter supports the async ACP server registration contract', { skip: !source }, () => {
   const modern = patchKimiAcpTurns(source.replace('getServer().prompt(ctx.params, ctx.signal)', '(await getServer()).prompt(ctx.params, ctx.signal)'));
   assert.ok(modern.includes('(await getServer()).camelliaPrompt(ctx.params, ctx.signal)'));
+});
+
+test('the prepared Kimi runtime registers the native step completion event', { skip: !source }, () => {
+  const prepared = patchKimiAcpTurns(source);
+  assert.ok(prepared.includes('"turn.step.completed": { kind: "stream"'));
+  assert.ok(prepared.includes('camelliaStepFinishReason'));
 });
 
 test('Kimi propagates failed turns through ACP with the provider reason, even after partial output', { skip: !source }, async () => {

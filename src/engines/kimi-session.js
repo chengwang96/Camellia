@@ -134,7 +134,7 @@ function updateKimiConnectionSettings(config, patch) {
 
 // API credentials stay in the router. Subscription credentials are maintained
 // by the official CLI in a separate app-owned home.
-function kimiSpawnSpec({ home, runtime, model, contextWindow = 131072, route, connection = 'api', sharedSubscription = false, config = {}, mcp = '', env = process.env, thinkingBudget, preparedRuntime }) {
+function kimiSpawnSpec({ home, runtime, model, contextWindow = 131072, outputLimit, route, connection = 'api', sharedSubscription = false, config = {}, mcp = '', env = process.env, thinkingBudget, preparedRuntime }) {
   fs.mkdirSync(home, { recursive: true });
   if (process.platform === 'win32') home = fs.realpathSync.native(home);
   const { routeKimi } = require('./engine-settings');
@@ -149,6 +149,8 @@ function kimiSpawnSpec({ home, runtime, model, contextWindow = 131072, route, co
     delete merged.secondary_model;
   } else merged = routeKimi({ telemetry: false, ...config, providers: {}, models: {} }, {
     route: thinkingBudget === undefined ? route : harnessThinkingRoute(route, thinkingBudget), model, contextWindow });
+  if (Number.isInteger(outputLimit) && outputLimit > 0)
+    merged = { ...merged, model_overrides: { ...(merged.model_overrides || {}), max_completion_tokens: outputLimit } };
   writeText(path.join(home, 'config.toml'), TOML.stringify(merged));
   writeText(path.join(home, 'mcp.json'), mcp || '{"mcpServers":{}}');
   const bridge = preparedRuntime || prepareKimiRuntime(runtime);

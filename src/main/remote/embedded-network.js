@@ -116,7 +116,8 @@ class EmbeddedNetwork {
     if (this.child) {
       const result = await this.request('status');
       this.snapshot = { state: String(result.state), loginUrl: loginURL(result.loginUrl), address: isTailscaleIPv4(result.address) ? result.address : null,
-        deviceId: typeof result.deviceId === 'string' ? result.deviceId : '', hostName: typeof result.hostName === 'string' ? result.hostName : '' };
+        deviceId: typeof result.deviceId === 'string' ? result.deviceId : '', hostName: typeof result.hostName === 'string' ? result.hostName : '',
+        online: result.online === true, health: Array.isArray(result.health) ? result.health.filter(value => typeof value === 'string') : [] };
     }
     return { ...this.snapshot };
   }

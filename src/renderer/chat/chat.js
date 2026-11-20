@@ -86,6 +86,11 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
   let textChoice = null, textChoiceTimer = null;
   const questionDrafts = new Map();
   const selfDeletedIds = new Set();
+  let sidebarLoadTimer = 0;
+  function scheduleSidebarLoad() {
+    clearTimeout(sidebarLoadTimer);
+    sidebarLoadTimer = setTimeout(() => { sidebarLoadTimer = 0; void sidebar.load(); }, 100);
+  }
 
   // Offline defaults; a configured pool supplies its explicit model groups.
   const MODELS = [];
@@ -161,6 +166,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
   }
   function writeUi(key, value) {
     const kind = key.startsWith('draft:') ? 'draft' : key.startsWith('queue:') ? 'queue' : null;
+    let saved = true;
     if (kind) {
       const files = kind === 'draft' ? value.attachments || [] : value.flatMap(entry => entry.attachments || []);
       const identity = key + JSON.stringify(files.map(file => [file.path, file.fullPath]));
@@ -170,11 +176,21 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       }
     }
     try { localStorage.setItem(uiPrefix + key, JSON.stringify(value)); }
-    catch { setStatus('Could not save the draft on this computer. Keep this page open until you copy or send it.'); }
+    catch {
+      saved = false;
+      setStatus('Could not save the draft on this computer. Keep this page open until you copy or send it.');
+    }
+    if (kind === 'draft' && saved) sidebar.render();
+  }
+  let draftSaveTimer = 0;
+  function scheduleDraftSave() {
+    clearTimeout(draftSaveTimer);
+    draftSaveTimer = setTimeout(() => { draftSaveTimer = 0; saveDraft(); }, 250);
   }
   function saveDraft() {
-    if (discussionVisible) return;
-    if (!uiReady || loadingSession || (sending && !pendingConversationSend())) return;
+    clearTimeout(draftSaveTimer);
+    draftSaveTimer = 0;
+    if (discussionVisible || !uiReady || loadingSession || (sending && !pendingConversationSend())) return;
     writeUi('draft:' + draftKey(), { text: input.value, attachments, pendingForkId,
       codexFastMode: harnessId === 'codex' ? currentFastMode : readUi('draft:' + draftKey())?.codexFastMode === true });
     writeUi('location', { sessionId: context.sessionId, workspaceId: context.workspaceId });
@@ -211,7 +227,6 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     }
   }
   window.addEventListener('beforeunload', saveDraft);
-  let scrollSaveTimer;
   let lastChatScrollTop = chatScroll.scrollTop;
   function enterHistoryReading() {
     followRunOutput = false;
@@ -226,7 +241,6 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       else if (chatScroll.scrollTop > lastChatScrollTop && chatScroll.scrollHeight - chatScroll.scrollTop - chatScroll.clientHeight <= 2) followRunOutput = true;
     }
     lastChatScrollTop = chatScroll.scrollTop;
-    clearTimeout(scrollSaveTimer); scrollSaveTimer = setTimeout(saveDraft, 120);
   });
   chatScroll.addEventListener('wheel', event => {
     userScrollIntentUntil = performance.now() + 250;
@@ -754,13 +768,22 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       if (followRunOutput) { chatScroll.scrollTop = chatScroll.scrollHeight; lastChatScrollTop = chatScroll.scrollTop; }
     });
   }
+  function scheduleScrollToLatest() {
+    if (followScrollFrame !== null) return;
+    const seq = sessionOpenSeq, scrollIntent = userScrollIntentUntil;
+    followScrollFrame = requestAnimationFrame(() => {
+      followScrollFrame = null;
+      if (seq !== sessionOpenSeq || userScrollActive || scrollIntent !== userScrollIntentUntil || !followRunOutput) return;
+      scrollToLatest();
+    });
+  }
   function maybeScroll(was) {
-    if (!replayingLiveSnapshot && followRunOutput && !userScrollActive && (was || running)) scrollToLatest();
+    if (!replayingLiveSnapshot && followRunOutput && !userScrollActive && (was || running)) scheduleScrollToLatest();
   }
   new ResizeObserver(() => {
     // History media can finish loading after the reply and entry scroll have
     // settled. Keep the reader's follow intent across those layout changes.
-    if (!replayingLiveSnapshot && followRunOutput && !userScrollActive) scrollToLatest();
+    if (!replayingLiveSnapshot && followRunOutput && !userScrollActive) scheduleScrollToLatest();
   }).observe(chat);
 
   function clearEmpty() {
@@ -839,6 +862,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
   window.addEventListener('camellia:language', () => {
     renderModelPill();
     updateCtxRing();
+    renderMessageQueue();
     if (!context.sessionId) $('headerTitle').textContent = window.CamelliaI18n.t('New session');
   });
   function renderModelPill() {
@@ -1307,10 +1331,17 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       first.order - second.order || first.at - second.at || first.index - second.index);
   }
 
+  let renderedQueueKey = '';
   function renderMessageQueue() {
     const list = $('messageQueue');
     const t = window.CamelliaI18n.t;
     const rows = queuedRows();
+    const key = JSON.stringify([messageQueue, remoteMessageQueue, messageQueuePaused,
+      sending, drainingQueue, loadingSession, switchingEngine, Boolean(editingMessage),
+      Boolean(pendingConversationSend()), goalUI.isDraft(), handoffSessions.has(context.sessionId),
+      running, currentRunId, goalUI.waitingId?.(), window.CamelliaI18n.language]);
+    if (key === renderedQueueKey) return;
+    renderedQueueKey = key;
     list.hidden = rows.length === 0;
     list.replaceChildren(...rows.map(({ message, local, source }, index) => {
       const row = document.createElement('div');
@@ -3037,7 +3068,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     if (b.textState.bodyDelta === null) { b.resetMarkdown = true; b.pendingBody = ''; }
     else b.pendingBody += b.textState.bodyDelta;
   }
-  function renderBlock(b) {
+  function renderBlock(b, layout = true) {
     if (!b.el.isConnected) {
       b.markdown?.dispose(); b.markdown = null;
       b.thinkingStream?.dispose(); b.thinkingStream = null;
@@ -3080,15 +3111,20 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       body.firstChild.appendData(b.raw.slice(b.thinkingRendered || 0));
       b.thinkingRendered = b.raw.length;
     }
-    layoutTurnProcess();
+    if (layout) layoutTurnProcess();
   }
   function flushBlockRenders() {
     if (blockRenderFrame !== null) cancelAnimationFrame(blockRenderFrame);
     blockRenderFrame = null;
     clearTimeout(blockRenderTimer); blockRenderTimer = null;
-    const was = nearBottom();
-    for (const b of pendingBlockRenders) renderBlock(b);
+    const was = nearBottom(), bodies = new Set();
+    for (const b of pendingBlockRenders) {
+      renderBlock(b, false);
+      const body = b.el.isConnected ? b.el.closest('.turn-body') : null;
+      if (body) bodies.add(body);
+    }
     pendingBlockRenders.clear();
+    for (const body of bodies) layoutTurnProcess(false, body);
     maybeScroll(was);
   }
   function queueBlockRender(b) {
@@ -3194,7 +3230,9 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     // one model message share the same message ID. Stable blocks from the same
     // message may be reused for idempotence, but blocks from earlier messages
     // stay distinct even when their text happens to match.
-    const sameMessageStable = messageKey ? stableEntries.filter(el => el.assistantMessageId === messageKey) : [];
+    const canonicalEpoch = body.canonicalEpoch || 0;
+    const sameMessageStable = stableEntries.filter(el => messageKey ? el.assistantMessageId === messageKey
+      : el.canonicalEpoch !== undefined && el.canonicalEpoch === canonicalEpoch);
     const oldTexts = currentEntries.filter(el => el.classList.contains('md'));
     const folded = new Set(oldTexts.map(el => el.foldedThinkEl).filter(Boolean));
     const oldThinking = currentEntries.filter(el => el.classList.contains('think') && !folded.has(el));
@@ -3222,6 +3260,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
         reused.add(el);
         if (!body.processBlocks.includes(el)) body.processBlocks.push(el);
         if (messageKey) el.assistantMessageId = messageKey;
+        else el.canonicalEpoch = canonicalEpoch;
         if (blk.phase) el.dataset.phase = blk.phase; else delete el.dataset.phase;
         foldThinkingBlock({ el, thinkEl: el.foldedThinkEl }, thinking);
         if (thinking && el.foldedThinkEl) reused.add(el.foldedThinkEl);
@@ -3240,6 +3279,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
         reused.add(el);
         if (!body.processBlocks.includes(el)) body.processBlocks.push(el);
         if (messageKey) el.assistantMessageId = messageKey;
+        else el.canonicalEpoch = canonicalEpoch;
         el.classList.remove('open', 'live');
         el.querySelector('.think-status').textContent = "Completed";
         el.querySelector('.think-body').textContent = blk.thinking;
@@ -3255,10 +3295,12 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
           }
           if (blk.input !== undefined) existing.toolCard?.setInput(blk.input);
           if (messageKey) existing.assistantMessageId = messageKey;
+          else existing.canonicalEpoch = canonicalEpoch;
           if (existing.toolCard) pendingTools[id] = existing.toolCard;
         } else {
           const card = makeToolCard(blk.name, blk.input, blk.id);
           if (messageKey) card.el.assistantMessageId = messageKey;
+          else card.el.canonicalEpoch = canonicalEpoch;
         }
       }
     }
@@ -3659,9 +3701,9 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       void reviewPanel?.refreshContext();
       return;
     }
-    if (['conversation:workspaces', 'conversation:read'].includes(ev.type)) { void sidebar.load(); return; }
+    if (['conversation:workspaces', 'conversation:read'].includes(ev.type)) { scheduleSidebarLoad(); return; }
     if (ev.type === 'conversation:activity') {
-      void sidebar.load();
+      scheduleSidebarLoad();
       if (restoringRun) { eventsDuringRestore.push(ev); return; }
       if (ev.session_id === context.sessionId) {
         conversationActivity = ev.activity;
@@ -3676,7 +3718,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     // A /find answered on this computer (or by the paired phone) appends rows
     // without an engine stream, so the open transcript reloads in place.
     if (ev.type === 'conversation:transcript') {
-      void sidebar.load();
+      scheduleSidebarLoad();
       if (restoringRun) { eventsDuringRestore.push(ev); return; }
       // The window that issued the search already reloaded; only a search
       // started elsewhere (for example on the phone) needs this reload.
@@ -3686,7 +3728,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     }
     if (ev.type === 'conversation:title') {
       if (restoringRun) { eventsDuringRestore.push(ev); return; }
-      void sidebar.load();
+      scheduleSidebarLoad();
       if (ev.session_id === context.sessionId) {
         $('headerTitle').textContent = ev.title;
         $('headerTitle').dataset.titled = '1';
@@ -3814,7 +3856,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       context.workspaceId = ev.workspaceId || null;
       contextPanel?.refresh();
       sidebar.render();
-      void sidebar.load();
+      scheduleSidebarLoad();
       return;
     }
 
@@ -3836,6 +3878,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
         const body = turnEl?.querySelector('.turn-body');
         if (body?.processBlocks) {
           body.processBoundary = body.processBlocks.length;
+          body.canonicalEpoch = (body.canonicalEpoch || 0) + 1;
         }
         runAnchorMs = Date.now();
         startStatusClock();
@@ -4000,7 +4043,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       if (readingEntry?.isConnected && !followRunOutput)
         chatScroll.scrollTo({ top: chatScroll.scrollTop + readingEntry.getBoundingClientRect().top - readingTop, behavior: 'instant' });
       currentRunId = null;
-      void sidebar.load();
+      scheduleSidebarLoad();
       void gitUI.refresh(true);
       contextPanel?.refresh();
       maybeScroll(was);
@@ -4036,12 +4079,13 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     const active = running || Boolean(pendingSend) || (Boolean(conversationActivity) && !goalUI.waitingId?.());
     sendBtn.classList.toggle('stop', active && !hasMessage);
     sendBtn.classList.toggle('queue', active && hasMessage);
-    if (active && !hasMessage) {
-      sendBtn.title = 'Stop';
-      sendBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="currentColor"><rect x="7" y="7" width="10" height="10" rx="2"/></svg>';
-    } else {
-      sendBtn.title = active ? 'Queue message' : 'Send';
-      sendBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/></svg>';
+    const action = active && !hasMessage ? 'stop' : active ? 'queue' : 'send';
+    sendBtn.title = action === 'stop' ? 'Stop' : action === 'queue' ? 'Queue message' : 'Send';
+    if (sendBtn.dataset.action !== action) {
+      sendBtn.dataset.action = action;
+      sendBtn.innerHTML = action === 'stop'
+        ? '<svg viewBox="0 0 24 24" fill="currentColor"><rect x="7" y="7" width="10" height="10" rx="2"/></svg>'
+        : '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/></svg>';
     }
     const handoffHere = handoffSessions.has(context.sessionId);
     sendBtn.disabled = (handoffHere && !active) || (loadingSession && !(active && !hasMessage)) || (sending && !(pendingSend && (hasMessage || (active && !hasMessage)))) || (Boolean(editingMessage) && !(pendingSend && active && !hasMessage)) || (!active && goalUI.isActive() && !goalUI.waitingId?.()) || (!active && !hasMessage);
@@ -4184,6 +4228,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       autoResize();
       updateSendEnabled();
       await findUI.run(text);
+      saveDraft();
       return;
     }
     if (!queuedMessage && goalUI.isDraft()) {
@@ -4194,7 +4239,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       autoResize();
       const goalDraftKey = draftKey(), newGoal = !context.sessionId;
       const started = await goalUI.startFromComposer(text, harnessId === 'codex' && newGoal ? { fastMode: currentFastMode } : {});
-      if (started && newGoal && harnessId === 'codex') writeUi('draft:' + goalDraftKey, {});
+      if (started) writeUi('draft:' + goalDraftKey, {});
       return;
     }
     const atts = queuedMessage ? queuedMessage.attachments : attachments.slice();
@@ -4362,7 +4407,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
   input.addEventListener('input', () => {
     autoResize();
     updateSendEnabled();
-    saveDraft();
+    scheduleDraftSave();
     renderSlash();
   });
   sendBtn.addEventListener('click', () => void send());
@@ -4418,6 +4463,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
   function runSlashActive() {
     const command = slashMatches()[slashIndex];
     input.value = ''; closeSlash(); autoResize(); updateSendEnabled();
+    saveDraft();
     if (command) command.run();
   }
   async function showUsageCard() {
@@ -5098,6 +5144,10 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
   }
   const sidebar = createClaudeSidebar({ $, context, contextBusy, canChangeContext, setStatus,
     canReadReply: () => !discussionVisible && !loadingSession && !restoringRun,
+    hasDraft: id => {
+      const saved = readUi('draft:' + (id || draftKey()));
+      return Boolean(saved && ((typeof saved.text === 'string' && saved.text.trim()) || saved.attachments?.length));
+    },
     getDiscussionId: () => discussionVisible ? discussionSurface?.groupId : null, discussionVisible: () => discussionVisible, discussionOpening: () => discussionOpening,
     newSession, openHistorySession, openDiscussions, forkSession, openActionMenu, closePops,
     noteLocalDelete: (id) => {

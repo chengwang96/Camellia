@@ -8,12 +8,24 @@ public class ModelLabelTest {
         assertEquals("K3", ModelLabel.compact("kimi k3"));
         assertEquals("K3", ModelLabel.compact("kimi-k3"));
         assertEquals("K2.5", ModelLabel.compact("kimi-k2.5"));
+        assertEquals("K2.5 Thinking", ModelLabel.compact("kimi-k2.5-thinking"));
         assertEquals("Astra", ModelLabel.compact("gpt-6-astra"));
         assertEquals("Sol", ModelLabel.compact("gpt-5.6-sol"));
         assertEquals("V4 Pro", ModelLabel.compact("deepseek-v4-pro"));
         assertEquals("R1", ModelLabel.compact("deepseek-r1"));
         assertEquals("MiMo 2.6 Pro", ModelLabel.compact("mimo-v2.6-pro"));
         assertEquals("MiMo 2.6 Flash", ModelLabel.compact("mimo-v2.6-flash"));
+    }
+
+    @Test public void kimiAccountIdsKeepTheirTier() {
+        assertEquals("K3.1 Pro", ModelLabel.compact("kimi-code/k3.1-pro"));
+        assertEquals("K3.1 Pro Highspeed", ModelLabel.compact("kimi-code/k3.1-pro-highspeed"));
+        assertEquals("K3", ModelLabel.compact("kimi-code/k3"));
+        assertEquals("K3 256K", ModelLabel.compact("kimi-code/k3-256k"));
+        assertEquals("K3.1 Pro", ModelLabel.compact("moonshot:kimi-k3.1-pro"));
+        assertEquals("K3.1 Pro", ModelLabel.compact("kimi-k3.1-pro"));
+        assertEquals("kimi-for-coding", ModelLabel.compact("kimi-code/kimi-for-coding"));
+        assertEquals("K3.1 Pro", ModelLabel.compact("K3.1 Pro"));
     }
 
     @Test public void unknownVariantsAndAliasesStayDistinct() {

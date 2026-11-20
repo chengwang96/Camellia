@@ -163,6 +163,53 @@ try:
         expect(page.locator('#pPriority')).to_have_value('1')
         expect(page.locator('#pProtocol')).to_have_value('dual')
         assert page.locator('#keyRows input[type=password]').evaluate_all('inputs => inputs.every(input => !input.value)')
+        expect(page.locator('#keyRows .key-card.expanded')).to_have_count(0)
+        disclosure = page.locator('[data-toggle-key]').first
+        expect(disclosure).to_have_attribute('aria-expanded', 'false')
+        expect(page.locator('.key-details').first).to_be_hidden()
+        disclosure.click()
+        expect(disclosure).to_have_attribute('aria-expanded', 'true')
+        expect(page.locator('.key-details').first).to_be_visible()
+        expect(page.locator('#keyRows .key-card.expanded')).to_have_count(1)
+        expect(page.locator('[data-key-usage]').first).to_be_visible()
+        disclosure.click()
+        expect(page.locator('.key-details').first).to_be_hidden()
+        disclosure.click()
+        routing_help = page.locator('#providerRoutingHelp')
+        routing_summary = page.locator('#providerRoutingToggle')
+        closed_summary = routing_summary.evaluate('''summary => {
+          const bounds = summary.getBoundingClientRect();
+          return {right: bounds.right, top: bounds.top};
+        }''')
+        routing_summary.click()
+        expect(routing_summary).to_have_attribute('aria-expanded', 'true')
+        expect(routing_help).to_be_visible()
+        opened_summary = routing_summary.evaluate('''summary => {
+          const bounds = summary.getBoundingClientRect();
+          return {right: bounds.right, top: bounds.top};
+        }''')
+        assert abs(opened_summary['right'] - closed_summary['right']) < 1, (closed_summary, opened_summary)
+        assert abs(opened_summary['top'] - closed_summary['top']) < 1, (closed_summary, opened_summary)
+        for language in ['en', 'zh-CN']:
+            page.evaluate('language => CamelliaI18n.setLanguage(language)', language)
+            expect(disclosure.locator('span')).to_have_text('Details' if language == 'en' else '详情')
+            expect(disclosure).to_have_attribute('aria-expanded', 'true')
+            placeholder = page.locator('[data-field=key]').first.get_attribute('placeholder')
+            assert ('Leave blank to keep' if language == 'en' else '留空保留') in placeholder
+            for width in [1100, 760, 560, 390, 320]:
+                page.set_viewport_size({'width': width, 'height': 900})
+                assert page.evaluate('document.documentElement.scrollWidth <= innerWidth'), (language, width)
+                assert page.locator('#keyRows').evaluate('list => list.scrollWidth <= list.clientWidth'), (language, width)
+                routing_layout = page.locator('.provider-options').evaluate('''options => {
+                  const container = options.getBoundingClientRect();
+                  const summary = options.querySelector('#providerRoutingToggle').getBoundingClientRect();
+                  const note = options.querySelector('#providerRoutingHelp > p').getBoundingClientRect();
+                  return {left: container.left, right: container.right,
+                    summaryRight: summary.right, noteLeft: note.left, noteRight: note.right};
+                }''')
+                assert abs(routing_layout['summaryRight'] - routing_layout['right']) < 1, (language, width, routing_layout)
+                assert abs(routing_layout['noteLeft'] - routing_layout['left']) < 1, (language, width, routing_layout)
+                assert routing_layout['noteRight'] <= routing_layout['right'] + 1, (language, width, routing_layout)
         assert not errors, errors
         browser.close()
     print('PASS API autosave: fields, toggles, protocols, mappings, imports, reordering, empty rows, failures, navigation and reload')

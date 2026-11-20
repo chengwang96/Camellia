@@ -51,7 +51,7 @@ function scrollFixture() {
   };
   vm.createContext(state);
   vm.runInContext(source.slice(source.indexOf('  function nearBottom()'), source.indexOf('  function clearEmpty()')), state);
-  vm.runInContext(source.slice(source.indexOf('  let scrollSaveTimer;'), source.indexOf('  const SENT =')), state);
+  vm.runInContext(source.slice(source.indexOf('  let lastChatScrollTop'), source.indexOf('  const SENT =')), state);
   return {
     state,
     dispatch(type, event = {}, target = 'chat') { listeners[target].get(type)?.({ target: state.chatScroll, ...event }); },
@@ -206,6 +206,35 @@ test('restoring a draft ignores legacy scroll positions without losing composer 
     assert.equal(state.attachments.length, saved?.attachments.length || 0);
     assert.equal(state.messageQueue.length, 0);
   }
+});
+
+test('composer draft writes coalesce and an immediate save cancels the pending write', () => {
+  let nextTimer = 0, writes = 0;
+  const timers = new Map();
+  const state = {
+    discussionVisible: false, uiReady: true, loadingSession: false, sending: false,
+    context: { sessionId: 'session', workspaceId: null },
+    pendingConversationSend: () => null, draftKey: () => 'session', input: { value: 'draft' },
+    attachments: [], pendingForkId: null, harnessId: 'claude', currentFastMode: false,
+    writeUi: () => { writes++; }, readUi: () => null,
+    setTimeout(callback) { const id = ++nextTimer; timers.set(id, callback); return id; },
+    clearTimeout(id) { timers.delete(id); },
+  };
+  vm.createContext(state);
+  vm.runInContext(source.slice(source.indexOf('  let draftSaveTimer'), source.indexOf('  function restoreDraft()')), state);
+  state.scheduleDraftSave(); state.scheduleDraftSave();
+  assert.equal(timers.size, 1);
+  assert.equal(writes, 0);
+  const save = [...timers.values()][0]; timers.clear(); save();
+  assert.equal(writes, 2);
+  state.scheduleDraftSave(); state.saveDraft();
+  assert.equal(timers.size, 0);
+  assert.equal(writes, 4);
+});
+
+test('scroll tracking does not persist an unchanged draft', () => {
+  const listener = source.slice(source.indexOf("  chatScroll.addEventListener('scroll'"), source.indexOf("  chatScroll.addEventListener('wheel'"));
+  assert.doesNotMatch(listener, /saveDraft|localStorage/);
 });
 
 test('history is revealed before live replay and final scrolling follows the reader', () => {

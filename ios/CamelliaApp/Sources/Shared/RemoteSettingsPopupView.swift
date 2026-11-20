@@ -45,7 +45,7 @@ struct RemoteSettingsPopupView: View {
             if let settings = model.transcript.settings {
                 if settings.appliesNextTurn { heading("模型与思考等级更改从下一轮生效") }
                 if let quick = settings.quickSwitch, quick.available {
-                    PopupChoiceRow(title: "切换默认模型", subtitle: quick.model) {
+                    PopupChoiceRow(title: "切换默认模型", subtitle: ModelLabel.compact(quick.model)) {
                         choose(["quickSwitch": true], settings: settings)
                     }
                 }

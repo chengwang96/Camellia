@@ -133,6 +133,8 @@ contextBridge.exposeInMainWorld('dshDesktop', {
   previewFile: (filePath) => ipcRenderer.invoke('dsh:preview-file', filePath),
   savePreviewText: (token, text) => ipcRenderer.invoke('dsh:save-preview-text', { token, text }),
   savePreviewWord: (token, paragraphs) => ipcRenderer.invoke('dsh:save-preview-word', { token, paragraphs }),
+  structurePreviewWord: (token, operation) => ipcRenderer.invoke('dsh:structure-preview-word', { token, operation }),
+  previewWordCell: (token, index) => ipcRenderer.invoke('dsh:preview-word-cell', { token, index }),
   savePreviewDoc: (token, paragraphs) => ipcRenderer.invoke('dsh:save-preview-doc', { token, paragraphs }),
   previewWordParagraphs: (token) => ipcRenderer.invoke('dsh:preview-word-paragraphs', token),
   gitStatus: payload => ipcRenderer.invoke('dsh:git-status', payload),

@@ -6,6 +6,8 @@ window.createWorkPanel = ({ context, setStatus, openFilePreview, shouldFollow, g
   const main = panel.closest('.main');
   const t = value => window.CamelliaI18n.t(value);
   let tasks = [], selected = null, epoch = 0, fileTicket = 0, busy = false, reviews = [];
+  let pendingTasks = null, updateTimer = null;
+  const renderedCards = new Map(), childFileRequests = new Map();
   const files = window.CamelliaArtifacts.artifactStore();
   const drafts = new Map(), expanded = new Map(), detailExpanded = new Map(), scrollPositions = new Map();
   let renderedView = null, footerKey = null;
@@ -55,6 +57,7 @@ window.createWorkPanel = ({ context, setStatus, openFilePreview, shouldFollow, g
     toggle.setAttribute('aria-expanded', String(open));
     panel.setAttribute('aria-hidden', String(!open));
     panel.inert = !open;
+    if (open) { flushUpdate(); render(); }
   }
   window.addEventListener('camellia:panel-open', event => {
     if (event.detail?.name !== 'work' && panelIsOpen()) setOpen(false);
@@ -191,23 +194,42 @@ window.createWorkPanel = ({ context, setStatus, openFilePreview, shouldFollow, g
     return card;
   }
   function renderCards() {
+    const users = new Map([...document.querySelectorAll('.msg-user')].map(node => [node.messageData?.seq, node]));
+    const groups = new Map();
+    for (const task of tasks) { const group = groups.get(task.userSeq) || []; group.push(task); groups.set(task.userSeq, group); }
+    const seen = new Set(), changes = [], stale = [];
+    for (const [seq, children] of groups) {
+      const user = users.get(seq);
+      if (!user) continue;
+      seen.add(seq);
+      const signature = JSON.stringify(children.map(task => [taskKey(task), task.status, task.title,
+        task.result, task.progress, task.goal, task.engine, task.approvals?.length || 0]));
+      const current = renderedCards.get(seq);
+      if (current?.node.isConnected && current.signature === signature && user.nextElementSibling === current.node) continue;
+      changes.push({ seq, children, user, current, signature });
+    }
+    for (const [seq, card] of renderedCards) if (!seen.has(seq)) stale.push([seq, card]);
+    if (!changes.length && !stale.length) return;
     const scroll = document.getElementById('chatScroll'), rect = scroll.getBoundingClientRect();
     const anchor = [...document.querySelectorAll('.msg-user, .turn')].find(node => {
       const box = node.getBoundingClientRect(); return box.bottom > rect.top && box.top < rect.bottom;
     });
     const top = anchor?.getBoundingClientRect().top;
     const follow = panel.hidden && shouldFollow() && scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < 40;
-    document.querySelectorAll('.subtask-turn-card').forEach(node => node.remove());
-    const groups = new Map();
-    for (const task of tasks) { const group = groups.get(task.userSeq) || []; group.push(task); groups.set(task.userSeq, group); }
-    for (const [seq, children] of groups) {
-      const user = [...document.querySelectorAll('.msg-user')].find(node => node.messageData?.seq === seq); if (!user) continue;
-      const card = el('details', 'subtask-turn-card'); card.dataset.seq = seq;
-      card.open = expanded.get(seq) ?? children.some(task => ['starting', 'running', 'waiting'].includes(task.status));
-      const attention = children.filter(task => task.approvals?.length || task.status === 'waiting').length;
-      card.append(el('summary', '', `${t('Subtasks')} · ${children.length}${attention ? ' · ' + t('Needs attention') + ' ' + attention : ''}`));
-      for (const task of children) card.append(taskRow(task)); user.after(card);
-      card.querySelector('summary').onclick = () => expanded.set(seq, !card.open);
+    for (const [seq, card] of stale) { card.node.remove(); renderedCards.delete(seq); }
+    for (const change of changes) {
+      const { seq, children, user, current, signature } = change;
+      let node = current?.signature === signature && current.node.isConnected ? current.node : null;
+      if (!node) {
+        node = el('details', 'subtask-turn-card'); node.dataset.seq = seq;
+        node.open = expanded.get(seq) ?? children.some(task => ['starting', 'running', 'waiting'].includes(task.status));
+        const attention = children.filter(task => task.approvals?.length || task.status === 'waiting').length;
+        node.append(el('summary', '', `${t('Subtasks')} · ${children.length}${attention ? ' · ' + t('Needs attention') + ' ' + attention : ''}`));
+        for (const task of children) node.append(taskRow(task));
+        node.querySelector('summary').onclick = () => expanded.set(seq, !node.open);
+        if (current?.node.isConnected) current.node.replaceWith(node); else user.after(node);
+      } else if (user.nextElementSibling !== node) user.after(node);
+      renderedCards.set(seq, { node, signature });
     }
     if (follow) scroll.scrollTop = scroll.scrollHeight;
     else if (anchor?.isConnected) scroll.scrollTop += anchor.getBoundingClientRect().top - top;
@@ -216,6 +238,7 @@ window.createWorkPanel = ({ context, setStatus, openFilePreview, shouldFollow, g
     const attention = tasks.filter(task => task.approvals?.length || task.status === 'waiting').length;
     badge.textContent = String(attention); badge.hidden = !attention; toggle.title = t('Work panel') + (attention ? ' · ' + t('Needs attention') + ' ' + attention : '');
     count.textContent = String(tasks.length); count.hidden = !tasks.length;
+    if (!panelIsOpen()) return;
     const task = tasks.find(task => taskKey(task) === selected);
     const nextFooter = task?.canStop ? taskKey(task) + ':' + task.turnId : null;
     if (footerKey !== nextFooter) {
@@ -301,20 +324,48 @@ window.createWorkPanel = ({ context, setStatus, openFilePreview, shouldFollow, g
     body.scrollTop = scrollPositions.get(renderedView) || 0;
   }
   async function childFiles() {
-    const ticket = ++fileTicket, generation = epoch, sessionId = context.sessionId;
+    const generation = epoch, sessionId = context.sessionId;
+    const active = new Set(tasks.map(taskKey));
+    for (const key of childFileRequests.keys()) if (!active.has(key)) childFileRequests.delete(key);
+    let changed = false;
     for (const task of tasks) if (task.status === 'completed' && (task.artifacts?.length || task.result)) {
+      const key = taskKey(task);
+      const signature = JSON.stringify([task.managedConversationId || sessionId, task.title,
+        task.artifacts?.map(file => [file.path, file.explicitDelivery === true]) || [], task.result]);
+      if (childFileRequests.get(key)?.signature === signature) continue;
+      const ticket = ++fileTicket;
+      childFileRequests.set(key, { signature, ticket });
       try {
         const result = await window.dshDesktop.resolveArtifacts({ sessionId: task.managedConversationId || sessionId, paths: task.artifacts?.map(file => file.path) || [],
           explicitPaths: task.artifacts?.filter(file => file.explicitDelivery).map(file => file.path), text: task.result });
-        if (epoch !== generation || fileTicket !== ticket || context.sessionId !== sessionId) return;
-        if (result.ok) for (const file of result.files) addFile(file, task.title);
-      } catch {}
+        if (epoch !== generation || context.sessionId !== sessionId || childFileRequests.get(key)?.ticket !== ticket) continue;
+        if (result.ok) for (const file of result.files) { addFile(file, task.title); changed = true; }
+        else childFileRequests.delete(key);
+      } catch {
+        if (childFileRequests.get(key)?.ticket === ticket) childFileRequests.delete(key);
+      }
     }
-    render();
+    if (changed && epoch === generation) render();
+  }
+
+  function flushUpdate() {
+    clearTimeout(updateTimer); updateTimer = null;
+    if (pendingTasks === null) return;
+    tasks = pendingTasks; pendingTasks = null;
+    render(); renderCards(); void childFiles();
   }
   window.addEventListener('camellia:language', () => { render(); renderCards(); });
-  return { reset() { epoch++; tasks = []; reviews = []; files.clear(); drafts.clear(); expanded.clear(); detailExpanded.clear(); scrollPositions.clear(); renderedView = null; selected = null; gitPanel?.reset(); render(); },
-    update(value) { tasks = orderedTasks(value || []); render(); renderCards(); void childFiles(); },
+  return {
+    reset() {
+      epoch++; clearTimeout(updateTimer); updateTimer = null; pendingTasks = null; tasks = [];
+      reviews = []; files.clear(); drafts.clear(); expanded.clear(); detailExpanded.clear(); scrollPositions.clear();
+      childFileRequests.clear(); renderedView = null; selected = null; gitPanel?.reset(); render(); renderCards();
+    },
+    update(value) {
+      pendingTasks = orderedTasks(value || []);
+      if (updateTimer === null) updateTimer = setTimeout(flushUpdate, 50);
+    },
     artifacts(value) { for (const file of value || []) addFile(file, t('Main conversation')); render(); }, refreshCards: renderCards,
-    refreshReviews: loadReviews, setOpen, render };
+    refreshReviews: loadReviews, setOpen, render,
+  };
 };

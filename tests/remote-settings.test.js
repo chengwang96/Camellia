@@ -46,6 +46,14 @@ test('an API conversation also offers the signed-in account models', () => {
   assert.deepEqual(models.find(model => model.id === 'account-a').thinking, ['high']);
 });
 
+test('the selected model carries the same display name the picker shows', () => {
+  const account = view(manager());
+  assert.equal(account.model, 'account-a');
+  assert.equal(account.modelName, 'GPT account A');
+  const route = view(manager({ connection: 'api', model: 'route-a' }));
+  assert.equal(route.modelName, 'route-a');
+});
+
 test('an account that is not signed in contributes no selectable models', () => {
   const signedOut = manager({ connection: 'api', model: 'route-a' });
   signedOut.conversationModels = (name, selected) => selected.connection === 'subscription' ? [] : [{ id: 'route-a', name: 'route-a', thinking: [] }];
@@ -60,6 +68,7 @@ test('hidden subscription models leave current remote selections intact but disa
   target.state.connection = 'subscription'; target.state.model = 'account-a';
   assert.match(view(target).models[0].name, /hidden/);
   assert.equal(view(target).models[0].id, 'account-a');
+  assert.equal(view(target).modelName, 'GPT account A');
   assert.equal(view(target).quickSwitch.available, false);
 });
 

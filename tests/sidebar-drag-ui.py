@@ -16,6 +16,7 @@ with sync_playwright() as playwright:
     page.evaluate("""async () => {
       window.calls = []; window.opened = []; window.menus = [];
       window.dshDesktop = {platform:'win32'};
+      window.CamelliaI18n = {language:'en',t:value=>value};
       window.harnessId = 'codex'; window.chatProfile = {fixedCwd:true}; window.sharedChat = true;
       window.chatApi = {
         listSessions: async () => ({ok:true, sessions:[

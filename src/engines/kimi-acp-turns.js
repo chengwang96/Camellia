@@ -40,7 +40,8 @@ function patchKimiAcpTurns(source) {
             error?.message || "Kimi turn failed"));
           return;
         }
-        driver.resolve({ stopReason: turnEndReasonToStopReason(event.reason, error) });`],
+        driver.resolve({ stopReason: event.reason === "completed" && driver.camelliaStepFinishReason === "max_tokens"
+          ? "max_tokens" : turnEndReasonToStopReason(event.reason, error) });`],
     ['const events = this.agent.events;\n\t\t\tthis.subscriptions.push', `const events = this.agent.events;
       Object.assign(events.registrations ||= {}, {
         "task.started": { kind: "stream", name: "events", type: "task.started",
@@ -48,7 +49,9 @@ function patchKimiAcpTurns(source) {
         "task.terminated": { kind: "stream", name: "events", type: "task.terminated",
           schema: looseObject({ type: literal("task.terminated"), agentId: string(), info: looseObject({}) }) },
         "prompt.steered": { kind: "stream", name: "events", type: "prompt.steered",
-          schema: looseObject({ type: literal("prompt.steered"), agentId: string(), activePromptId: string() }) }
+          schema: looseObject({ type: literal("prompt.steered"), agentId: string(), activePromptId: string() }) },
+        "turn.step.completed": { kind: "stream", name: "events", type: "turn.step.completed",
+          schema: looseObject({ type: literal("turn.step.completed"), agentId: string() }) }
       });
       const forwardBackgroundTask = (event, terminated) => {
         const info = event.info;
@@ -73,6 +76,7 @@ function patchKimiAcpTurns(source) {
           driver.turnId = event.turnId;
           driver.camelliaActivePromptId = event.promptId;
           driver.camelliaAwaitingTask = false;
+          driver.camelliaStepFinishReason = void 0;
           if (driver.cancelRequested) this.agent.cancel({ turnId: event.turnId }).catch(() => {});
           return;
         }
@@ -87,7 +91,14 @@ function patchKimiAcpTurns(source) {
           this.emit({ sessionId: this.sessionId, update: { sessionUpdate: "camellia_background_turn",
             state: "started", turnId: event.turnId } });
         }
-      }), events.on("prompt.completed", event => this.camelliaPromptEnded(event, false)),
+      }), events.on("turn.step.completed", event => this.dispatchTurnEvent(event.turnId, () => {
+        const driver = this.driverFor(event.turnId);
+        if (!driver || driver.settled) return;
+        if (event.providerFinishReason === "truncated"
+          || event.rawFinishReason === "length" || event.rawFinishReason === "max_output_tokens"
+            || event.finishReason === "max_tokens") driver.camelliaStepFinishReason = "max_tokens";
+        else if (driver.camelliaStepFinishReason !== "max_tokens") driver.camelliaStepFinishReason = event.finishReason;
+      })), events.on("prompt.completed", event => this.camelliaPromptEnded(event, false)),
         events.on("prompt.aborted", event => this.camelliaPromptEnded(event, true)),
         events.on("task.started", event => forwardBackgroundTask(event, false)),
         events.on("task.terminated", event => forwardBackgroundTask(event, true)));
