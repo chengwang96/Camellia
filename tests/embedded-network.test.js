@@ -5,7 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { loginURL, storageKey, EmbeddedNetwork, promoteHelper } = require('../src/main/remote/embedded-network');
+const { loginURL, storageKey, EmbeddedNetwork, promoteHelper, embeddedNetworkEnvironment, EMBEDDED_NETWORK_ENV } = require('../src/main/remote/embedded-network');
 const { EventEmitter } = require('node:events');
 const { PassThrough, Writable } = require('node:stream');
 const { removeTree } = require('./test-fs.cjs');
@@ -66,6 +66,11 @@ test('embedded networking accepts a headless key provider without an Electron ap
     spawnProcess: (executable, args, options) => {
       assert.equal(executable, process.execPath);
       assert.equal(options.env.TS_NO_LOGS_NO_SUPPORT, 'true');
+      assert.equal(options.env.TS_DISABLE_FEATURE, 'useproxy');
+      for (const key of ['HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'http_proxy', 'https_proxy', 'all_proxy', 'npm_config_proxy', 'npm_config_https_proxy']) {
+        assert.equal(options.env[key], '', key);
+      }
+      for (const key of ['NO_PROXY', 'no_proxy', 'npm_config_noproxy']) assert.equal(options.env[key], '*', key);
       return child;
     } });
   await network.start();
@@ -76,6 +81,21 @@ test('embedded networking accepts a headless key provider without an Electron ap
   const invalid = new EmbeddedNetwork({ directory, executable: process.execPath, keyProvider: () => 'invalid',
     spawnProcess: () => assert.fail('Invalid key must not spawn a helper') });
   await assert.rejects(invalid.start(), /Invalid embedded network storage key/);
+});
+
+test('the embedded network never inherits a model or system proxy', () => {
+  const names = ['HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'http_proxy', 'https_proxy', 'all_proxy',
+    'npm_config_proxy', 'npm_config_https_proxy', 'NO_PROXY', 'no_proxy', 'npm_config_noproxy'];
+  const env = embeddedNetworkEnvironment({ PATH: 'keep-me', TS_AUTHKEY: 'remove-me', TSNET_FORCE_LOGIN: '1',
+    HTTP_PROXY: 'http://127.0.0.1:7897', HTTPS_PROXY: 'http://127.0.0.1:7897',
+      ALL_PROXY: 'socks5://127.0.0.1:7898', http_proxy: 'http://127.0.0.1:7897',
+      https_proxy: 'http://127.0.0.1:7897', all_proxy: 'socks5://127.0.0.1:7898',
+      npm_config_proxy: 'http://127.0.0.1:7897', npm_config_https_proxy: 'http://127.0.0.1:7897',
+      NO_PROXY: 'localhost', no_proxy: 'localhost', npm_config_noproxy: 'localhost' });
+  for (const name of names) assert.equal(env[name], EMBEDDED_NETWORK_ENV[name], name);
+  assert.equal(env.PATH, 'keep-me');
+  assert.equal(env.TS_AUTHKEY, undefined);
+  assert.equal(env.TSNET_FORCE_LOGIN, undefined);
 });
 
 test('headless hostname is validated before any helper process starts', () => {

@@ -24,6 +24,25 @@ function tailscaleHostname(value) {
     .replace(/^-+|-+$/g, '').slice(0, 63).replace(/-+$/g, '');
 }
 
+// Tailscale normally resolves an HTTP proxy from the environment and, on
+// Windows, from WinHTTP. That is useful for the system Tailscale client but
+// wrong for this node: the remote channel must not depend on a model proxy
+// that can disappear independently. The feature must be disabled before the
+// helper's process starts; TS_DISABLE_FEATURE is read during init.
+const EMBEDDED_NETWORK_ENV = {
+  TS_NO_LOGS_NO_SUPPORT: 'true',
+  TS_DISABLE_FEATURE: 'useproxy',
+  HTTP_PROXY: '', HTTPS_PROXY: '', ALL_PROXY: '',
+  http_proxy: '', https_proxy: '', all_proxy: '',
+  NO_PROXY: '*', no_proxy: '*',
+  npm_config_proxy: '', npm_config_https_proxy: '', npm_config_noproxy: '*',
+};
+
+function embeddedNetworkEnvironment(source = process.env) {
+  const env = Object.fromEntries(Object.entries(source).filter(([name]) => !/^TS(?:NET)?_/i.test(name)));
+  return { ...env, ...EMBEDDED_NETWORK_ENV };
+}
+
 function storageKey(directory, safeStorage) {
   if (!safeStorage.isEncryptionAvailable() || safeStorage.getSelectedStorageBackend?.() === 'basic_text') {
     throw new Error('Secure system storage is unavailable. Unlock your system keychain before using embedded networking.');
@@ -69,8 +88,7 @@ class EmbeddedNetwork {
     // omitted so the helper keeps its own platform fallback.
     const savedHostname = typeof this.hostname === 'function' ? this.hostname() : this.hostname;
     const requestedHostname = savedHostname && /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(savedHostname) ? savedHostname : '';
-    const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => !/^TS(?:NET)?_/i.test(name)));
-    const child = this.spawnProcess(executable, [], { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'], env: { ...env, TS_NO_LOGS_NO_SUPPORT: 'true' } });
+    const child = this.spawnProcess(executable, [], { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'], env: embeddedNetworkEnvironment() });
     this.child = child;
     this.snapshot = { state: 'Starting', loginUrl: null, address: null };
     const fail = () => {
@@ -177,4 +195,4 @@ class EmbeddedNetwork {
   }
 }
 
-module.exports = { EmbeddedNetwork, bundleDirectory, loginURL, storageKey, promoteHelper, tailscaleHostname };
+module.exports = { EmbeddedNetwork, bundleDirectory, loginURL, storageKey, promoteHelper, tailscaleHostname, embeddedNetworkEnvironment, EMBEDDED_NETWORK_ENV };

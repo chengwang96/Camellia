@@ -759,6 +759,66 @@ final class LocalChatModel: ObservableObject {
         }
     }
 
+    /// Seals a long clipboard block as a text document and adds it to the tray.
+    func addPastedText(_ text: String) {
+        guard !text.isEmpty, let id = openId else { return }
+        guard !running, !busy, !preparing, !committingAttachments else {
+            notice = Notice(text: "正在处理消息，请稍后再粘贴。", serious: false)
+            return
+        }
+        guard images.count + documents.count < AttachmentLimits.maxCount else {
+            notice = Notice(text: "最多 \(AttachmentLimits.maxCount) 个附件。", serious: false)
+            return
+        }
+        busy = true
+        let store = attachments
+        let existing = attachmentsFor(images: images, documents: documents)
+        DispatchQueue.global(qos: .userInitiated).async {
+            var added: [[String: Any]] = []
+            var failure: String?
+            do {
+                let bytes = Data(text.utf8)
+                guard bytes.count <= AttachmentLimits.documentMaxBytes else {
+                    throw AttachmentError.documentTooBig
+                }
+                let reference = try store.save(bytes)
+                var document: [String: Any] = [
+                    "name": LongPaste.fileName(),
+                    "data": reference,
+                    "size": bytes.count,
+                    "mimeType": "text/plain",
+                    "isImage": false,
+                    "text": reference.replacingOccurrences(of: AttachmentStore.prefix,
+                                                           with: AttachmentStore.textPrefix),
+                ]
+                added.append(document)
+                let candidates = existing + added.map {
+                    RemoteAttachment(name: $0["name"] as? String ?? "document",
+                                     data: $0["data"] as? String ?? "", isImage: false)
+                }
+                var sizes: [String: Int64] = [:]
+                for attachment in candidates { sizes[attachment.data] = try store.size(attachment.data) }
+                try AttachmentRules.validate(candidates, sizes: sizes)
+            } catch {
+                Self.discard(documents: added, from: store)
+                added = []
+                failure = Self.describe(error)
+            }
+            DispatchQueue.main.async {
+                self.busy = false
+                guard failure == nil, self.openId == id else {
+                    Self.discard(documents: added, from: store)
+                    if let failure, self.openId == id {
+                        self.notice = Notice(text: failure, serious: false)
+                    }
+                    return
+                }
+                self.notice = Notice(text: "粘贴的文本已转为 .txt 附件 · \(text.utf16.count) 个字符", serious: false)
+                self.commitAttachments(id: id, images: [], documents: added, previews: [:])
+            }
+        }
+    }
+
     /// Extracts a document's text and seals both it and its bytes.
     ///
     /// A PDF keeps its native bytes and goes over as a document; everything

@@ -19,6 +19,9 @@ final class AccountUsage {
         for (String range : new String[]{"1", "7", "30", "all"}) if (data.optJSONObject("ranges").optJSONArray(range) == null) return false;
         return true;
     }
+    static boolean hasRange(JSONObject data, String range) {
+        return data != null && data.optJSONObject("ranges") != null && data.optJSONObject("ranges").optJSONArray(range) != null;
+    }
     static List<JSONObject> accounts(JSONObject data, String source) {
         List<JSONObject> rows = new ArrayList<>();
         if (data != null) for (JSONObject account : objects(data.optJSONArray("accounts"))) {

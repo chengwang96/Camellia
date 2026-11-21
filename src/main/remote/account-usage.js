@@ -31,7 +31,7 @@ function quota(info = {}, capability = {}, fallback = {}) {
 
 function accountUsageSnapshot({ router = {}, insights = {} } = {}, now = new Date()) {
   if (router.ok === false) throw new Error('Account usage is unavailable');
-  const accounts = [], records = [], ranges = Object.fromEntries(['1', '7', '30', 'all'].map(range => [range, []]));
+  const accounts = [], records = [], ranges = Object.fromEntries(['1', '7', '30', 'month', 'all'].map(range => [range, []]));
   function append(account, usage) { accounts.push(account); records.push({ account, usage: usage || {} }); }
   for (const provider of router.providers || []) for (const [index, key] of (provider.keys || []).entries()) {
     append({ id: 'api:' + key.id, source: 'api', provider: label(provider.name),
@@ -52,9 +52,11 @@ function accountUsageSnapshot({ router = {}, insights = {} } = {}, now = new Dat
       ...quota(current?.info, current?.capability) }, history?.usage);
   }
   const today = dayId(now);
+  const month = dayId(new Date(now.getFullYear(), now.getMonth(), 1));
   for (const range of Object.keys(ranges)) {
-    const earliest = new Date(now); if (range !== 'all') earliest.setDate(earliest.getDate() - (Number(range) - 1));
-    const min = range === 'all' ? '' : dayId(earliest);
+    const earliest = new Date(now);
+    if (!['all', 'month'].includes(range)) earliest.setDate(earliest.getDate() - (Number(range) - 1));
+    const min = range === 'all' ? '' : range === 'month' ? month : dayId(earliest);
     for (const { account, usage } of records) {
       const totals = new Map();
       if (range === 'all') {

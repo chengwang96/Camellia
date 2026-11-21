@@ -3025,6 +3025,76 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// Seals a long clipboard block as a text document and adds it to the tray.
+    func addPastedText(_ text: String) {
+        guard !text.isEmpty, let target = openId, let computer = current?.address else { return }
+        guard !attaching else {
+            notice = Notice(text: "正在添加附件，请稍后再粘贴。", serious: false)
+            return
+        }
+        guard access.canAttachFiles else {
+            notice = Notice(text: AttachmentError.documentsUnsupported.errorDescription ?? "", serious: false)
+            return
+        }
+        let room = access.attachmentCount - attachments.count
+        guard room > 0 else {
+            notice = Notice(text: "当前电脑最多 \(access.attachmentCount) 个附件，更新电脑端可提高限额。", serious: false)
+            return
+        }
+        let existing = attachments
+        let expanded = access.usesExpandedAttachments
+        let files = access.canAttachFiles
+        let multiImage = access.allowsMultipleImages
+        let taskId = UUID()
+        attachmentTaskId = taskId
+        attaching = true
+        publish()
+        DispatchQueue.global(qos: .userInitiated).async {
+            let store = AppStores.attachmentStore
+            var added: [RemoteAttachment] = []
+            var failure: String?
+            do {
+                let data = Data(text.utf8)
+                guard data.count <= AttachmentLimits.documentMaxBytes else {
+                    throw AttachmentError.documentTooBig
+                }
+                let reference = try store.save(data)
+                added.append(RemoteAttachment(name: LongPaste.fileName(), data: reference, isImage: false))
+                var sizes: [String: Int64] = [:]
+                for attachment in existing + added {
+                    sizes[attachment.data] = try store.size(attachment.data)
+                }
+                try AttachmentRules.validateRemote(existing + added, sizes: sizes,
+                                                   expanded: expanded, files: files,
+                                                   multiImage: multiImage)
+            } catch {
+                for attachment in added { store.remove(attachment.data) }
+                added = []
+                failure = Self.describe(error)
+            }
+            DispatchQueue.main.async {
+                guard self.attachmentTaskId == taskId else {
+                    for attachment in added { store.remove(attachment.data) }
+                    return
+                }
+                self.attachmentTaskId = nil
+                self.attaching = false
+                guard self.openId == target, self.current?.address == computer else {
+                    for attachment in added { store.remove(attachment.data) }
+                    self.publish()
+                    return
+                }
+                self.attachments.append(contentsOf: added)
+                if !added.isEmpty { self.stashDraft() }
+                if failure == nil, !added.isEmpty {
+                    self.notice = Notice(text: "粘贴的文本已转为 .txt 附件 · \(text.utf16.count) 个字符", serious: false)
+                }
+                if let failure { self.notice = Notice(text: failure, serious: false) }
+                self.publish()
+            }
+        }
+    }
+
     func removeAttachment(_ attachment: RemoteAttachment) {
         attachments.removeAll { $0.data == attachment.data }
         attachmentPreviews.removeValue(forKey: attachment.data)

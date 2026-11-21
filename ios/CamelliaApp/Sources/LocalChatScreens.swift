@@ -1122,6 +1122,7 @@ struct LocalChatComposer: View {
                 ComposerField(text: draftBinding, height: $draftHeight, focus: $writing,
                               sendOnReturn: app.preferences.enterMode == .send,
                               maxUTF16Length: 100_000,
+                              onLongPaste: { model.addPastedText($0) },
                               onSubmit: { if canSend { model.send(chinese: app.usesChinese) } })
                     .disabled(model.busy || model.preparing)
                 if model.draft.isEmpty {

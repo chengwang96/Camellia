@@ -1135,6 +1135,9 @@ function saveKimiSettings(patch) {
   saveConfig({ kimi: updateKimiConnectionSettings(loadConfig(), patch) });
   return kimiSettings(patch.sessionId);
 }
+function notifyEngineSettingsChanged(engine) {
+  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('dsh:engine-settings-changed', { engine });
+}
 function ensureKimiSession(settings, opts) {
   kimiSessions.assertAccess(opts);
   const current = kimiSessions.get(opts);
@@ -1969,6 +1972,7 @@ if (!gotSingleInstanceLock) {
       if (engine === 'kimi') {
         if (kimiAccount.changingAccount) throw new Error('Complete the account operation before changing login preferences');
         saveKimiSettings({ region: preferences.region, ...connection });
+        notifyEngineSettingsChanged('kimi');
         return { ok: true, preferences: { region: kimiSettings().region, connection: kimiSettings().connection } };
       }
       const savedProxy = engine === 'codex' ? codex.settings().proxyUrl : engine === 'grok' ? grokChat.settings().proxyUrl : antigravity.settings().proxyUrl;
@@ -1985,6 +1989,7 @@ if (!gotSingleInstanceLock) {
       } else if (engine === 'grok') {
         if (grokAccount.changingAccount) throw new Error('Complete the account operation before changing login preferences');
         grokChat.saveSettings({ proxyUrl, ...connection });
+        notifyEngineSettingsChanged('grok');
         return { ok: true, preferences: { proxyUrl, connection: grokChat.settings().connection } };
       } else {
         const file = path.join(os.homedir(), '.gemini/antigravity-cli/settings.json');
@@ -1997,9 +2002,11 @@ if (!gotSingleInstanceLock) {
         if (deferred) deferEngineRestart(engine, 'login preferences');
         else await antigravity.shutdown();
         antigravity.saveSettings({ proxyUrl, ...connection });
+        notifyEngineSettingsChanged('antigravity');
         return { ok: true, preferences: { proxyUrl, connection: antigravity.settings().connection,
           useG1Credits: preferences.useG1Credits ?? (native.useG1Credits === true) }, restartDeferred: deferred };
       }
+      notifyEngineSettingsChanged('codex');
       return { ok: true, preferences: { proxyUrl, connection: codex.settings().connection,
         weeklyProbe: loadConfig().subscriptionWeeklyProbe?.codex === true }, restartDeferred: deferred };
     },

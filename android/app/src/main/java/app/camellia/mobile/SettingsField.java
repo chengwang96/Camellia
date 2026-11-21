@@ -23,6 +23,11 @@ final class SettingsField extends LinearLayout {
         this.input = input; style = new ChatStyle(getContext());
         settings = new SettingsStyle(getContext()); errorColor = settings.error;
         setOrientation(VERTICAL);
+        // Settings cards clip their children to a rounded outline. A field that
+        // spans the full card loses part of its 1dp border along every edge,
+        // most visibly at the corners while focused, so keep a hairline inset.
+        int inset = style.dp(2);
+        setPadding(inset, inset, inset, inset);
         input.setBackgroundTintList(null);
         input.setPadding(style.dp(16), style.dp(14), style.dp(16), style.dp(14));
         input.setMinimumHeight(style.dp(52));

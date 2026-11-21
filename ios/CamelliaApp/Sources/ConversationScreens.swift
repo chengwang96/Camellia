@@ -2444,6 +2444,7 @@ struct Composer: View {
                     ComposerField(text: draftBinding, height: $draftHeight, focus: $writing,
                                   sendOnReturn: model.preferences.enterMode == .send,
                                   maxUTF16Length: Self.draftLimit,
+                                  onLongPaste: { model.addPastedText($0) },
                                   onSubmit: { if canSend { model.send() } })
                         .disabled(model.hasPendingDetailOperation || model.commandBusy || model.isArchivedConversation)
                     // Android sets a hint on the same field rather than drawing

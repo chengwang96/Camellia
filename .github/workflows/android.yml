@@ -2,9 +2,9 @@ name: Android
 on:
   push:
     branches: [main]
-    paths: ['android/**', 'src/**', 'tests/**', 'scripts/android-ci-shards.cjs', 'assets/**', '.node-version', '.github/workflows/android.yml']
+    paths: ['android/**', 'src/**', 'tests/**', 'scripts/android-ci-shards.cjs', 'scripts/verify-tailnet-isolation.cjs', 'assets/**', '.node-version', '.github/workflows/android.yml']
   pull_request:
-    paths: ['android/**', 'src/**', 'tests/**', 'scripts/android-ci-shards.cjs', 'assets/**', '.node-version', '.github/workflows/android.yml']
+    paths: ['android/**', 'src/**', 'tests/**', 'scripts/android-ci-shards.cjs', 'scripts/verify-tailnet-isolation.cjs', 'assets/**', '.node-version', '.github/workflows/android.yml']
   workflow_dispatch:
 permissions:
   contents: read
@@ -48,9 +48,13 @@ jobs:
           restore-keys: ${{ runner.os }}-android-gradle-
       - name: Build embedded networking
         run: bash android/build-tailnet.sh
+      - name: Verify embedded network proxy isolation
+        run: node scripts/verify-tailnet-isolation.cjs android/app/libs/tailnet.aar
       - name: Android build, unit tests and lint
         working-directory: android
         run: bash gradlew assembleDebug testDebugUnitTest lintDebug assembleDebugAndroidTest
+      - name: Verify embedded network binary in APK
+        run: node scripts/verify-tailnet-isolation.cjs android/app/build/outputs/apk/debug/app-debug.apk
       - name: Remote protocol tests
         run: node --test tests/android-integration-cleanup.test.js tests/mobile-ui-consistency.test.js tests/remote-access.test.js tests/remote-desktop.test.js tests/remote-approvals.test.js tests/remote-discussions.test.js tests/remote-settings.test.js tests/remote-account-usage.test.js tests/remote-conversation-preview.test.js
       - name: Share instrumentation APKs

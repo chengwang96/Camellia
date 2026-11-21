@@ -1,5 +1,7 @@
 package app.camellia.mobile;
 
+import android.content.ClipData;
+import android.content.ClipboardManager;
 import android.content.Context;
 import android.os.SystemClock;
 import android.text.Editable;
@@ -12,12 +14,19 @@ import android.view.inputmethod.InputConnectionWrapper;
 
 final class ComposerInput extends EditorInput {
     private Runnable send;
+    private LongPasteHandler longPaste;
     private boolean enterDown, held;
     private long enterDownAt;
 
     ComposerInput(Context context) { super(context); }
 
     void setSendAction(Runnable action) { send = action; }
+
+    void setLongPasteHandler(LongPasteHandler handler) { longPaste = handler; }
+
+    interface LongPasteHandler {
+        void attach(CharSequence text);
+    }
 
     // Keyboards choose between their send key and a plain enter key from the editor info they are
     // handed. Flagging the editor as multi-line makes TextView add IME_FLAG_NO_ENTER_ACTION, which
@@ -97,6 +106,32 @@ final class ComposerInput extends EditorInput {
         return handleEnter(event) || super.onKeyUp(keyCode, event);
     }
 
+    @Override public boolean onTextContextMenuItem(int id) {
+        if (id == android.R.id.paste) {
+            ClipboardManager clipboard = (ClipboardManager) getContext().getSystemService(Context.CLIPBOARD_SERVICE);
+            ClipData clip = clipboard == null ? null : clipboard.getPrimaryClip();
+            ClipData.Item item = clip == null || clip.getItemCount() == 0 ? null : clip.getItemAt(0);
+            CharSequence text = item == null ? null : item.coerceToText(getContext());
+            if (handleLongPaste(text, false)) return true;
+        }
+        return super.onTextContextMenuItem(id);
+    }
+
+    private boolean handleLongPaste(CharSequence text, boolean onlyFromClipboard) {
+        if (longPaste == null || !isEnabled() || !LongPaste.shouldAttach(text)) return false;
+        if (onlyFromClipboard && !clipboardContains(text)) return false;
+        longPaste.attach(text);
+        return true;
+    }
+
+    private boolean clipboardContains(CharSequence text) {
+        ClipboardManager clipboard = (ClipboardManager) getContext().getSystemService(Context.CLIPBOARD_SERVICE);
+        ClipData clip = clipboard == null ? null : clipboard.getPrimaryClip();
+        if (clip == null || clip.getItemCount() == 0) return false;
+        CharSequence value = clip.getItemAt(0).coerceToText(getContext());
+        return value != null && text != null && value.toString().contentEquals(text.toString());
+    }
+
     @Override protected void onFocusChanged(boolean focused, int direction, android.graphics.Rect previous) {
         enterDown = false; held = false;
         super.onFocusChanged(focused, direction, previous);
@@ -115,15 +150,23 @@ final class ComposerInput extends EditorInput {
                 // hold-for-newline gesture of a send key; it never means "send the draft".
                 boolean newline = "\n".contentEquals(text);
                 if (newline && !isEnabled()) return true;
+                if (handleLongPaste(text, true)) return true;
                 return super.commitText(text, newCursorPosition);
             }
             @Override public boolean performEditorAction(int action) {
-                // IME_ACTION_NONE means the keyboard has no action for this field, which for a
-                // multi-line editor is a plain enter key: insert a line break instead of sending.
+                // A keyboard without an action for this field is showing its Enter key. Sogou
+                // reports its newline key as ACTION_UNSPECIFIED, so the two plain-enter modes
+                // must insert a line break instead of taking the default Send path.
+                String mode = enterMode();
+                boolean plainEnter = mode.equals("newline") || mode.equals("button");
                 if (action == EditorInfo.IME_ACTION_NONE) { if (isEnabled()) insertNewline(); return true; }
-                if (action == EditorInfo.IME_ACTION_SEND || action == EditorInfo.IME_ACTION_DONE
-                        || action == EditorInfo.IME_ACTION_UNSPECIFIED) {
+                if (action == EditorInfo.IME_ACTION_SEND || action == EditorInfo.IME_ACTION_DONE) {
                     sendFromKeyboard(); return true;
+                }
+                if (action == EditorInfo.IME_ACTION_UNSPECIFIED) {
+                    if (plainEnter) { if (isEnabled()) insertNewline(); }
+                    else sendFromKeyboard();
+                    return true;
                 }
                 return super.performEditorAction(action);
             }

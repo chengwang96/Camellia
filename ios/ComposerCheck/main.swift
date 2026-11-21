@@ -48,6 +48,11 @@ private enum ComposerCheck {
         expect(ComposerField.limited("abc🐱z", to: 5) == "abc🐱",
                "restored draft counts UTF-16 units")
 
+        expect(LongPaste.shouldAttach(String(repeating: "a", count: LongPaste.minLength)),
+               "the threshold reaches the attachment handler")
+        expect(!LongPaste.shouldAttach(String(repeating: "a", count: LongPaste.minLength - 1)),
+               "short text remains in the draft")
+
         let fullField = ComposerField(
             text: .constant("abcd"), height: .constant(0), focus: .constant(false),
             sendOnReturn: false, maxUTF16Length: 4, onSubmit: {})

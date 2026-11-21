@@ -484,7 +484,9 @@ function addStats(target, source) { for (const key of statsFields) target[key] +
 function localDay(date) { return `${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,'0')}-${String(date.getDate()).padStart(2,'0')}`; }
 function usageRows() {
   const result = [], series = [], range = $('usageRange').value, selectedModel = $('usageModel').value;
-  const earliest = new Date(); earliest.setDate(earliest.getDate() - (range === 'all' ? 89 : Number(range)-1));
+  const now = new Date(), today = localDay(now);
+  const earliest = range === 'month' ? new Date(now.getFullYear(), now.getMonth(), 1) : new Date(now);
+  if (range !== 'month') earliest.setDate(earliest.getDate() - (range === 'all' ? 89 : Number(range)-1));
   const min = localDay(earliest);
   for (const p of usageSources()) {
     if ($('usageProvider').value && $('usageProvider').value !== p.id) continue;
@@ -492,7 +494,7 @@ function usageRows() {
       if ($('usageKey').value && $('usageKey').value !== k.id) continue;
       const usage = k.usage || live.usage?.[k.id] || {}, totals = {}, modelDays = new Map();
       for (const [day, models] of Object.entries(usage.daily || {})) {
-        if (day < min) continue;
+        if (day < min || day > today) continue;
         for (const [model, stats] of Object.entries(models)) {
           if (selectedModel && model !== selectedModel) continue;
           totals[model] ||= blankStats(); addStats(totals[model], stats);

@@ -15,8 +15,7 @@ public class ComposerInputTest extends InstrumentationTestCase {
                 ComposerInput input = new ComposerInput(context);
                 input.useMultiLineInput();
                 int[] sends = {0}; input.setSendAction(() -> sends[0]++);
-                // The keyboard must see a plain text field, otherwise it replaces its send key
-                // (and its hold-for-newline gesture) with a plain enter key.
+                // Send mode keeps the keyboard's send key, so the view must look single-line to it.
                 assertEquals(0, input.getInputType() & android.text.InputType.TYPE_TEXT_FLAG_MULTI_LINE);
                 for (String mode : new String[]{"system", "send", "newline", "button"}) {
                     MobilePreferences.set(context, "enterMode", mode);
@@ -42,11 +41,15 @@ public class ComposerInputTest extends InstrumentationTestCase {
                     connection.performEditorAction(EditorInfo.IME_ACTION_SEND);
                     assertEquals(mode.equals("button") ? 0 : 1, sends[0]);
                     assertEquals(mode.equals("button") ? "draft\n" : "draft", input.getText().toString());
-                    // A keyboard without an action for this field inserts a line break instead.
-                    input.setText("draft"); input.setSelection(5); sends[0] = 0;
-                    connection.performEditorAction(EditorInfo.IME_ACTION_NONE);
-                    assertEquals(0, sends[0]);
-                    assertEquals("draft\n", input.getText().toString());
+                    // Sogou reports its newline key as ACTION_UNSPECIFIED. It must insert a line
+                    // break in the plain-enter modes, while Send mode keeps Gboard's send path.
+                    for (int action : new int[]{EditorInfo.IME_ACTION_NONE, EditorInfo.IME_ACTION_UNSPECIFIED}) {
+                        input.setText("draft"); input.setSelection(5); sends[0] = 0;
+                        connection.performEditorAction(action);
+                        boolean send = action == EditorInfo.IME_ACTION_UNSPECIFIED && shortSends;
+                        assertEquals(send ? 1 : 0, sends[0]);
+                        assertEquals(send ? "draft" : "draft\n", input.getText().toString());
+                    }
                     // A hold with bogus event timestamps still counts when the press arrival is old.
                     input.setText("draft"); input.setSelection(5); sends[0] = 0;
                     connection.sendKeyEvent(new KeyEvent(100, 100, KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_ENTER, 0));
@@ -89,17 +92,53 @@ public class ComposerInputTest extends InstrumentationTestCase {
     // composer itself still wraps newlines over several lines.
     public void testMultiLineDisplayWithKeyboardSendKey() throws Exception {
         var context = getInstrumentation().getTargetContext();
+        String previous = MobilePreferences.get(context, "enterMode");
+        getInstrumentation().runOnMainSync(() -> {
+            try {
+                ComposerInput input = new ComposerInput(context);
+                input.setLayoutParams(new android.widget.FrameLayout.LayoutParams(600, -2));
+                input.useMultiLineInput();
+                assertEquals(0, input.getInputType() & android.text.InputType.TYPE_TEXT_FLAG_MULTI_LINE);
+                assertNull(input.getTransformationMethod());
+                input.setText("first\nsecond");
+                input.measure(android.view.View.MeasureSpec.makeMeasureSpec(600, android.view.View.MeasureSpec.AT_MOST),
+                    android.view.View.MeasureSpec.makeMeasureSpec(2000, android.view.View.MeasureSpec.AT_MOST));
+                input.layout(0, 0, input.getMeasuredWidth(), input.getMeasuredHeight());
+                assertEquals(2, input.getLineCount());
+            } finally { MobilePreferences.set(context, "enterMode", previous); }
+        });
+    }
+
+    public void testLongPasteGoesToTheAttachmentHandler() throws Exception {
+        var context = getInstrumentation().getTargetContext();
+        String longText = "a".repeat(LongPaste.MIN_CHARS);
         getInstrumentation().runOnMainSync(() -> {
             ComposerInput input = new ComposerInput(context);
-            input.setLayoutParams(new android.widget.FrameLayout.LayoutParams(600, -2));
-            input.useMultiLineInput();
-            assertEquals(0, input.getInputType() & android.text.InputType.TYPE_TEXT_FLAG_MULTI_LINE);
-            assertNull(input.getTransformationMethod());
-            input.setText("first\nsecond");
-            input.measure(android.view.View.MeasureSpec.makeMeasureSpec(600, android.view.View.MeasureSpec.AT_MOST),
-                android.view.View.MeasureSpec.makeMeasureSpec(2000, android.view.View.MeasureSpec.AT_MOST));
-            input.layout(0, 0, input.getMeasuredWidth(), input.getMeasuredHeight());
-            assertEquals(2, input.getLineCount());
+            StringBuilder received = new StringBuilder();
+            input.setLongPasteHandler(received::append);
+            android.content.ClipboardManager clipboard = (android.content.ClipboardManager)
+                context.getSystemService(android.content.Context.CLIPBOARD_SERVICE);
+            clipboard.setPrimaryClip(android.content.ClipData.newPlainText("paste", longText));
+            assertTrue(input.onTextContextMenuItem(android.R.id.paste));
+            assertEquals(longText, received.toString());
+            assertEquals("", input.getText().toString());
+        });
+    }
+
+    public void testShortPasteStaysInTheDraft() throws Exception {
+        var context = getInstrumentation().getTargetContext();
+        String shortText = "short paste";
+        getInstrumentation().runOnMainSync(() -> {
+            ComposerInput input = new ComposerInput(context);
+            StringBuilder received = new StringBuilder();
+            input.setLongPasteHandler(received::append);
+            input.setText(shortText); input.setSelection(input.length());
+            android.content.ClipboardManager clipboard = (android.content.ClipboardManager)
+                context.getSystemService(android.content.Context.CLIPBOARD_SERVICE);
+            clipboard.setPrimaryClip(android.content.ClipData.newPlainText("paste", shortText));
+            input.onTextContextMenuItem(android.R.id.paste);
+            assertEquals("", received.toString());
+            assertTrue(input.getText().toString().contains(shortText));
         });
     }
 }

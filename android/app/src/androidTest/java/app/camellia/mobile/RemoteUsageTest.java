@@ -20,7 +20,7 @@ public class RemoteUsageTest extends InstrumentationTestCase {
                             "balances":[],"updatedAt":"2026-11-15T03:55:00.000Z","windows":[{"id":"5h","label":"5h","usedPercent":25,"resetsAt":"2026-11-15T08:00:00.000Z"}]}],
              "ranges":{"7":[{"accountId":"api:a","model":"deepseek-model","inputTokens":20,"outputTokens":10,"requests":3},
                                 {"accountId":"subscription:b","model":"codex-model","inputTokens":50,"outputTokens":20,"requests":4,"pricedTokens":70,"estimatedCostUsd":0.01}],
-                       "all":[{"accountId":"api:a","model":"","requests":10}],"1":[],"30":[]}}
+                       "all":[{"accountId":"api:a","model":"","requests":10}],"1":[],"30":[],"month":[]}}
             """);
     }
     private String text(View view) {
@@ -187,7 +187,7 @@ public class RemoteUsageTest extends InstrumentationTestCase {
               "outputTokens":12895895,"cacheWriteTokens":0,"requests":14072,"failures":1603,"unreported":1},
              {"accountId":"api:a","model":"deepseek-v4.1-flash:1017","inputTokens":27055375731,"requests":32083,"cancelled":11473}]
             """);
-        for (String period : new String[]{"7", "30", "all"}) data.getJSONObject("ranges").put(period, rows);
+        for (String period : new String[]{"7", "30", "month", "all"}) data.getJSONObject("ranges").put(period, rows);
         try {
             MobilePreferences.set(context, "language", language); MobilePreferences.set(context, "theme", theme);
             vault.save(new JSONObject()); cachedVault.save(new JSONObject());
@@ -232,6 +232,15 @@ public class RemoteUsageTest extends InstrumentationTestCase {
             });
             screenshot("quota-usage-compact-" + language + ".png");
             choose(current, "usageRange", 3);
+            getInstrumentation().runOnMainSync(() -> {
+                assertEquals(chinese ? "本月" : "This month", ((TextView) current.getWindow().getDecorView().findViewWithTag("usageRange")).getText().toString());
+                assertEquals(chinese ? "318.9亿" : "31.9B", ((TextView) current.getWindow().getDecorView().findViewWithTag("usageTotalTokens")).getText().toString());
+            });
+            screenshot("quota-usage-month-" + language + ".png");
+            choose(current, "usageRange", 2);
+            getInstrumentation().runOnMainSync(() -> assertEquals(chinese ? "最近 30 天" : "Last 30 days", ((TextView) current.getWindow().getDecorView().findViewWithTag("usageRange")).getText().toString()));
+            choose(current, "usageRange", 4);
+            getInstrumentation().runOnMainSync(() -> assertEquals(chinese ? "全部" : "All", ((TextView) current.getWindow().getDecorView().findViewWithTag("usageRange")).getText().toString()));
             getInstrumentation().runOnMainSync(() -> {
                 View root = current.getWindow().getDecorView();
                 assertEquals(chinese ? "318.9亿" : "31.9B", ((TextView) root.findViewWithTag("usageTotalTokens")).getText().toString());

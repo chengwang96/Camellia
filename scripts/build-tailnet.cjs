@@ -14,7 +14,10 @@ function buildTailnet({ root = path.resolve(__dirname, '..'), platform = process
   const go = process.env.CAMELLIA_GO || 'go';
   const run = args => execFileSync(go, args, options);
   const executable = path.join(target, platform === 'win32' ? 'camellia-tailnet.exe' : 'camellia-tailnet');
-  run(['build', '-mod=readonly', '-trimpath', '-ldflags=-s -w', '-o', executable, '.']);
+  // The embedded node is a private Tailnet transport, not a general Internet
+  // client. Compiling out system proxy support keeps a failed model proxy
+  // (including Windows WinHTTP) from taking remote access down with it.
+  run(['build', '-mod=readonly', '-trimpath', '-tags=ts_omit_useproxy', '-ldflags=-s -w', '-o', executable, '.']);
   const modules = JSON.parse('[' + run(['list', '-m', '-json', 'all']).trim().replace(/}\s*{/g, '},{') + ']');
   const notices = ['Camellia embedded networking — third-party notices', 'Tailscale is a separate service. Camellia is not an official Tailscale application.'];
   for (const entry of modules) {

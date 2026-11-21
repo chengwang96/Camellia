@@ -27,7 +27,7 @@ test('usage projection excludes credentials, endpoints, raw quotas, histories an
 test('periods include local today, filter future days, and preserve lifetime legacy and removed-key counters', () => {
   const view = accountUsageSnapshot(fixture(), now);
   const sum = range => view.ranges[range].filter(row => row.accountId === 'api:k').reduce((n, row) => n + row.requests, 0);
-  assert.equal(sum('1'), 1); assert.equal(sum('7'), 3); assert.equal(sum('30'), 6); assert.equal(sum('all'), 8);
+  assert.equal(sum('1'), 1); assert.equal(sum('7'), 3); assert.equal(sum('30'), 6); assert.equal(sum('month'), 6); assert.equal(sum('all'), 8);
   assert.equal(view.ranges.all.find(row => row.accountId === 'api:k' && row.model === '').inputTokens, 20);
   assert.equal(view.ranges.all.find(row => row.accountId === 'archive:old').requests, 1);
   assert.equal(view.ranges.all.find(row => row.accountId === 'subscription:codex:a').estimatedCostUsd, 1.5);
@@ -39,6 +39,17 @@ test('unsupported and unqueried balances stay distinct; router errors are never 
   input.insights.providers = {}; account = accountUsageSnapshot(input, now).accounts[0];
   assert.equal(account.supported, false);
   assert.throws(() => accountUsageSnapshot({ router: { ok: false, error: 'secret' } }), /unavailable/);
+});
+test('calendar month starts on the first local day and excludes the previous month', () => {
+  const input = fixture();
+  input.router.usage.k.daily = {
+    '2026-10-31': { model: { requests: 40 } }, '2026-11-01': { model: { requests: 5 } },
+    '2026-11-15': { model: { requests: 2 } }, '2026-11-16': { model: { requests: 99 } },
+  };
+  const view = accountUsageSnapshot(input, now);
+  const requests = range => view.ranges[range].filter(row => row.accountId === 'api:k').reduce((n, row) => n + row.requests, 0);
+  assert.equal(requests('month'), 7);
+  assert.equal(requests('30'), 47);
 });
 test('refresh is nonblocking, coalesced, rate limited and failure retains last good readings', async () => {
   let resolve, calls = 0, time = now.getTime();

@@ -9,6 +9,10 @@ public struct AccountUsage: Sendable {
               let ranges = json.object("ranges"), ["1", "7", "30", "all"].allSatisfy({ ranges.raw[$0] is [Any] }) else { return nil }
         self.json = json
     }
+    public func hasRange(_ range: String) -> Bool {
+        guard let ranges = json.object("ranges") else { return false }
+        return ranges.raw[range] is [Any]
+    }
     public func accounts(source: String = "") -> [JSONObject] {
         json.objects("accounts").filter { source.isEmpty || $0.text("source") == source }
     }

@@ -8,7 +8,7 @@ public class AccountUsageTest {
     @Test public void filtersPeriodsSourcesAccountsAndModelsWithoutAddingBalances() throws Exception {
         JSONObject data = new JSONObject("""
             {"version":1,"accounts":[{"id":"api:a","source":"api"},{"id":"subscription:b","source":"subscription"}],
-             "ranges":{"1":[],"30":[],"7":[{"accountId":"api:a","model":"model-a","requests":3,"inputTokens":30,"cacheReadTokens":20},
+             "ranges":{"1":[],"30":[],"month":[],"7":[{"accountId":"api:a","model":"model-a","requests":3,"inputTokens":30,"cacheReadTokens":20},
                                 {"accountId":"subscription:b","model":"model-b","requests":4,"outputTokens":50}],
                        "all":[{"accountId":"api:a","model":"","requests":10}]}}
             """);
@@ -21,6 +21,11 @@ public class AccountUsageTest {
         assertEquals(10, AccountUsage.sum(AccountUsage.rows(data, "all", "", "", ""), "requests"), 0);
         assertFalse(AccountUsage.valid(new JSONObject()));
         data.getJSONObject("ranges").remove("7"); assertFalse(AccountUsage.valid(data));
+        JSONObject legacy = new JSONObject("""
+            {"version":1,"accounts":[],"ranges":{"1":[],"7":[],"30":[],"all":[]}}
+            """);
+        assertTrue(AccountUsage.valid(legacy));
+        assertFalse(AccountUsage.hasRange(legacy, "month"));
     }
     @Test public void usageEndpointsDoNotAcceptArbitraryQueriesOrSubpaths() {
         Endpoint endpoint = new Endpoint("http://100.64.0.1:43127");

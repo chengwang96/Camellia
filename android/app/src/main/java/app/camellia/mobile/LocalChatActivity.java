@@ -739,6 +739,7 @@ public final class LocalChatActivity extends Activity {
             this::chooseModel, this::sendMessage,
             () -> finishRun(tr("已停止，部分回复已保留。", "Stopped; partial reply kept."), "stopped"), this::cancelEdit);
         composer = chatComposer.input; composer.setTag("localComposer");
+        chatComposer.longPasteHandler(this::attachPastedText);
         composer.setText(conversation.optString("draft")); composer.setSelection(composer.length());
         modelButton = chatComposer.model; modelButton.setTag("localModel");
         toolsButton = chatStyle.composerToolButton("search", tr("联网工具", "Web tools"), ink, this::configureTools);
@@ -916,6 +917,43 @@ public final class LocalChatActivity extends Activity {
             index -> { selectedImages.remove(index); renderImages(); persistDraft(); updateControls(); });
         ChatDocumentTray.append(this, imageTray, selectedDocuments, chinese,
             index -> { selectedDocuments.remove(index); renderImages(); persistDraft(); updateControls(); });
+    }
+
+    private void attachPastedText(CharSequence text) {
+        if (loadingImages || sendPending || runningId != null) {
+            status.setText(tr("正在处理消息，请稍后再粘贴。", "A message is in progress; paste again shortly."));
+            return;
+        }
+        if (selectedImages.size() + selectedDocuments.size() >= ChatAttachments.MAX_COUNT) {
+            status.setText(tr("每条消息最多 20 个附件。", "Up to 20 attachments per message."));
+            return;
+        }
+        String target = conversationId;
+        new Thread(() -> {
+            AttachmentMaintenance.Lease imported = AttachmentMaintenance.protect(this);
+            try {
+                JSONObject document;
+                try (AttachmentMaintenance.Import scope = imported.captureImports()) {
+                    document = LongPaste.attach(this, text);
+                }
+                JSONObject attached = document;
+                runOnUiThread(() -> {
+                    try {
+                        if (isFinishing() || isDestroyed() || !java.util.Objects.equals(target, conversationId)) {
+                            ChatAttachments.discard(this, List.of(), List.of(attached));
+                            return;
+                        }
+                        selectedDocuments.add(attached);
+                        imageConversation = conversationId;
+                        renderImages(); persistDraft(); updateControls();
+                        status.setText(LongPaste.notice(text.length(), chinese));
+                    } finally { imported.close(); }
+                });
+            } catch (Exception error) {
+                imported.close();
+                runOnUiThread(() -> failure(error));
+            }
+        }, "camellia-paste-text").start();
     }
 
     private void configureTools() {

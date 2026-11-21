@@ -27,7 +27,23 @@ struct ComposerField: UIViewRepresentable {
     /// limits the replacement at the caret, rather than clipping the draft's
     /// tail after every edit.
     var maxUTF16Length: Int
+    /// A long block pasted from the system clipboard becomes a text attachment
+    /// instead of being inserted into the draft, matching the desktop and
+    /// Android composers.
+    var onLongPaste: ((String) -> Void)? = nil
     var onSubmit: () -> Void
+
+    init(text: Binding<String>, height: Binding<CGFloat>, focus: Binding<Bool>,
+         sendOnReturn: Bool, maxUTF16Length: Int,
+         onLongPaste: ((String) -> Void)? = nil, onSubmit: @escaping () -> Void) {
+        _text = text
+        _height = height
+        self.focus = focus
+        self.sendOnReturn = sendOnReturn
+        self.maxUTF16Length = maxUTF16Length
+        self.onLongPaste = onLongPaste
+        self.onSubmit = onSubmit
+    }
 
     static let font = UIFont.systemFont(ofSize: 16)
 
@@ -57,6 +73,9 @@ struct ComposerField: UIViewRepresentable {
         view.delegate = context.coordinator
         view.onMeasure = { [weak coordinator = context.coordinator] wanted in
             coordinator?.report(wanted)
+        }
+        view.onLongPaste = { [weak coordinator = context.coordinator] text in
+            coordinator?.parent.onLongPaste?(text)
         }
         view.font = Self.font
         view.textColor = Palette.inkUI
@@ -171,6 +190,7 @@ struct ComposerField: UIViewRepresentable {
 /// the text, and the width it has to fit into.
 final class MeasuredTextView: UITextView {
     var onMeasure: ((CGFloat) -> Void)?
+    var onLongPaste: ((String) -> Void)?
     var isPasting = false
     /// The height the text last came to, so the field can be told whether it
     /// still fits inside the four lines.
@@ -178,6 +198,11 @@ final class MeasuredTextView: UITextView {
     private var measuredWidth: CGFloat = 0
 
     override func paste(_ sender: Any?) {
+        let pasted = UIPasteboard.general.string ?? ""
+        if LongPaste.shouldAttach(pasted), let handler = onLongPaste {
+            handler(pasted)
+            return
+        }
         isPasting = true
         defer { isPasting = false }
         super.paste(sender)

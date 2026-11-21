@@ -951,6 +951,7 @@
   "Dismiss": "忽略",  "Choose a conversation to compact first": "先选择要压缩的对话",
   "Last 30 days": "最近 30 天",
   "Last 90 days": "最近 90 天",
+  "This month": "本月",
   "Total": "累计",
   "Provider": "供应商",
   "Key": "密钥",

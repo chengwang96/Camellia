@@ -24,7 +24,11 @@ try {
     $env:PATH = $goBin + ';' + $env:PATH
     go test ./...
     if ($LASTEXITCODE) { throw 'Embedded network tests failed' }
-    & (Join-Path $goBin 'gomobile') bind "-target=$Targets" -androidapi 26 -ldflags '-s -w' -o $library .
+    # The mobile node is a private Tailnet transport. A phone's system proxy
+    # (for example a failed VPN or model proxy) must not take remote control
+    # down with it, so omit Tailscale's system proxy feature in the same way
+    # as the desktop helper.
+    & (Join-Path $goBin 'gomobile') bind "-target=$Targets" -androidapi 26 -tags ts_omit_useproxy -ldflags '-s -w' -o $library .
     if ($LASTEXITCODE) { throw 'Embedded network build failed' }
     & (Join-Path $module 'notices.ps1')
 } finally {

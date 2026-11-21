@@ -399,7 +399,15 @@ async function main() {
       await new Promise(resolve => setTimeout(resolve, 200));
     }
     await home.webContents.executeJavaScript('loadSettings()');
-    assert.equal(await home.webContents.executeJavaScript('currentConnection'), 'api');
+    const connectionDeadline = Date.now() + 30000;
+    for (;;) {
+      const connection = await home.webContents.executeJavaScript('currentConnection');
+      if (connection === 'api') break;
+      if (Date.now() >= connectionDeadline) {
+        assert.fail('Main window did not apply the saved api connection: ' + connection);
+      }
+      await new Promise(resolve => setTimeout(resolve, 200));
+    }
     diag('PASS Kimi subscription: real IPC, save, device code, cancel, account models, logout and API return; mocked OAuth only');
 
     const originalSettingsSize = engineSettings.getSize();

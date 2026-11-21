@@ -111,6 +111,10 @@ final class ChatComposer {
         tool.post(this::updateModelMaxWidth);
     }
 
+    void longPasteHandler(ComposerInput.LongPasteHandler handler) {
+        input.setLongPasteHandler(handler);
+    }
+
     void model(String name, String thinking, boolean enabled) {
         String label = ModelLabel.compact(name) + (thinking.isEmpty() ? "" : " · " + thinking);
         model.setText(label); model.setEnabled(enabled); model.setAlpha(enabled ? 1f : .45f);

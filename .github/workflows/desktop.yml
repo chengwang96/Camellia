@@ -57,6 +57,8 @@ jobs:
         run: go test ./...
       - name: Build embedded network helper
         run: npm run build:tailnet
+      - name: Verify embedded network proxy isolation
+        run: node scripts/verify-tailnet-isolation.cjs build/runtime-assets
       - name: Build macOS discussion supervisor
         if: matrix.platform == 'macos'
         run: node scripts/build-discussion-helper.cjs
@@ -190,6 +192,8 @@ jobs:
         run: node tests/portable-smoke.cjs
       - name: Prepare embedded network update assets
         run: npm run build:tailnet -- --release-assets
+      - name: Verify packaged embedded network proxy isolation
+        run: node scripts/verify-tailnet-isolation.cjs "$(node scripts/tailnet-runtime-path.cjs '${{ matrix.bundle }}' '${{ matrix.platform }}')"
       - name: Upload smoke diagnostics on failure
         if: failure()
         uses: actions/upload-artifact@v7
@@ -259,6 +263,10 @@ jobs:
       # runtime come from the build job's release ZIP, not npm lifecycle hooks.
       - name: Install package verification dependencies
         run: npm ci --ignore-scripts
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: integrations/tailnet/go.mod
+          cache-dependency-path: integrations/tailnet/go.sum
       - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
@@ -289,6 +297,8 @@ jobs:
           ditto -x -k "dist/$product-$version-macOS-${{ matrix.arch }}.zip" dist/mac-arm64
       - name: Verify downloaded package and download manifests
         run: node tests/verify-package.cjs "${{ matrix.bundle }}"
+      - name: Verify downloaded package proxy isolation
+        run: node scripts/verify-tailnet-isolation.cjs "$(node scripts/tailnet-runtime-path.cjs '${{ matrix.bundle }}' '${{ matrix.platform }}')"
       - name: Accept the packaged desktop GUI
         # Fresh and upgrade scenarios each use an empty profile and npm cache.
         # Allow cold Windows downloads to finish before checking the real GUI.
@@ -305,6 +315,9 @@ jobs:
       - name: Verify installed files match the build
         if: matrix.platform == 'windows'
         run: node tests/verify-package.cjs "${{ steps.installed.outputs.bundle }}"
+      - name: Verify installed package proxy isolation
+        if: matrix.platform == 'windows'
+        run: node scripts/verify-tailnet-isolation.cjs "$(node scripts/tailnet-runtime-path.cjs '${{ steps.installed.outputs.bundle }}' '${{ matrix.platform }}')"
       - name: Accept the installed GUI through its desktop shortcut
         if: matrix.platform == 'windows'
         timeout-minutes: 20

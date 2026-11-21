@@ -551,6 +551,7 @@
 "最近" = "Recent";
 "最近 30 天" = "Last 30 days";
 "最近 7 天" = "Last 7 days";
+"本月" = "This month";
 "有一项未确认操作 · 点击重试同一请求" = "Unconfirmed operation · tap to retry the same request";
 "有待处理授权，请回到电脑处理。" = "Approval is pending. Respond on the computer.";
 "服务商返回了非 HTTP 响应" = "Provider returned a non-HTTP response";

@@ -197,6 +197,7 @@ struct RemoteUsageView: View {
     }
     private func reconcileFilters(_ data: AccountUsage?) {
         guard let data else { return }
+        if range == "month" && !data.hasRange("month") { range = "7" }
         if !account.isEmpty && !data.accounts(source: source).contains(where: { $0.text("id") == account }) {
             account = ""
         }
@@ -252,7 +253,7 @@ struct RemoteUsageView: View {
             } else {
                 HStack(spacing: 8) {
                     textControl(rangeName, expanded: choice?.anchor == "时间") {
-                        select("时间", ["1", "7", "30", "all"], [t("今天", "Today"), t("最近 7 天", "Last 7 days"), t("最近 30 天", "Last 30 days"), t("全部", "Total")], range) { range = $0; model = "" }
+                        select("时间", rangeIds, rangeLabels, range) { range = $0; model = "" }
                     }.choiceDropdownAnchor("时间")
                     textControl(t("筛选", "Filters") + (activeFilters == 0 ? "" : " · \(activeFilters)"), expanded: filtersExpanded, highlighted: filtersExpanded || activeFilters > 0) { filtersExpanded.toggle() }
                         .accessibilityIdentifier("usageFiltersToggle")
@@ -264,6 +265,14 @@ struct RemoteUsageView: View {
     }
     private var sourceName: String { source == "api" ? "API" : source == "subscription" ? t("订阅", "Subscriptions") : t("全部类型", "All types") }
     private var activeFilters: Int { (source.isEmpty ? 0 : 1) + (account.isEmpty ? 0 : 1) + (model.isEmpty ? 0 : 1) }
+    private var rangeIds: [String] {
+        usage.data?.hasRange("month") == true ? ["1", "7", "30", "month", "all"] : ["1", "7", "30", "all"]
+    }
+    private var rangeLabels: [String] {
+        usage.data?.hasRange("month") == true
+            ? [t("今天", "Today"), t("最近 7 天", "Last 7 days"), t("最近 30 天", "Last 30 days"), t("本月", "This month"), t("全部", "Total")]
+            : [t("今天", "Today"), t("最近 7 天", "Last 7 days"), t("最近 30 天", "Last 30 days"), t("全部", "Total")]
+    }
     private func chooseSource() {
         select("类型", ["", "subscription", "api"], [t("全部类型", "All types"), t("订阅", "Subscriptions"), "API"], source) { source = $0; account = ""; model = "" }
     }
@@ -294,7 +303,7 @@ struct RemoteUsageView: View {
         }
     }
     private var rangeName: String {
-        switch range { case "1": return t("今天", "Today"); case "30": return t("最近 30 天", "Last 30 days"); case "all": return t("全部", "Total"); default: return t("最近 7 天", "Last 7 days") }
+        switch range { case "1": return t("今天", "Today"); case "30": return t("最近 30 天", "Last 30 days"); case "month": return t("本月", "This month"); case "all": return t("全部", "Total"); default: return t("最近 7 天", "Last 7 days") }
     }
     private func filterRow(_ title: String, _ value: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {

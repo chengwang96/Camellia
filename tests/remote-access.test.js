@@ -89,7 +89,9 @@ test('account usage requires full-device control, advertises capability, validat
   assert.equal((await request(h.gateway, '/v1/account-usage', { token })).status, 403);
   device.permission = 'control';
   assert.ok(h.gateway.connectionInfo(device).capabilities.includes('account-usage'));
-  assert.equal((await request(h.gateway, '/v1/account-usage', { token })).body.version, 1);
+  const usage = (await request(h.gateway, '/v1/account-usage', { token })).body;
+  assert.equal(usage.version, 1);
+  assert.deepEqual(usage.ranges, { all: [] });
   assert.equal((await request(h.gateway, '/v1/account-usage?key=private', { token })).status, 400);
   assert.equal((await request(h.gateway, '/v1/account-usage/refresh', { token })).status, 405);
   assert.equal((await request(h.gateway, '/v1/account-usage/refresh', { token, method: 'POST', payload: { provider: 'private' } })).status, 400);

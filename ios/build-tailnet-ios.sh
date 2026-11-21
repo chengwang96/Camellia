@@ -42,6 +42,7 @@ cd "$MODULE"
 
 gomobile bind \
   -target=ios,iossimulator \
+  -tags ts_omit_useproxy \
   -ldflags="-s -w" \
   -o "$ROOT/Frameworks/tailnet.xcframework" \
   .

@@ -387,7 +387,10 @@ public final class RemoteUsageActivity extends Activity {
         style.note(body, tr("额度由服务商提供，可能与其他设备共享。不同账号、Key 和币种的余额不合计。", "Provider quotas may be shared across devices. Balances are not summed across accounts, keys or currencies."));
     }
     private void history() {
-        String[] ranges = {"1", "7", "30", "all"}; String[] names = {tr("今天", "Today"), tr("最近 7 天", "Last 7 days"), tr("最近 30 天", "Last 30 days"), tr("全部", "All")};
+        boolean monthly = AccountUsage.hasRange(data, "month"); if (!monthly && range.equals("month")) range = "7";
+        String[] ranges = monthly ? new String[]{"1", "7", "30", "month", "all"} : new String[]{"1", "7", "30", "all"};
+        String[] names = monthly ? new String[]{tr("今天", "Today"), tr("最近 7 天", "Last 7 days"), tr("最近 30 天", "Last 30 days"), tr("本月", "This month"), tr("全部", "All")}
+            : new String[]{tr("今天", "Today"), tr("最近 7 天", "Last 7 days"), tr("最近 30 天", "Last 30 days"), tr("全部", "All")};
         LinearLayout controls = new LinearLayout(this); controls.setGravity(Gravity.CENTER_VERTICAL); controls.setPadding(0, 0, 0, dp(8));
         controls.addView(textControl(names[java.util.Arrays.asList(ranges).indexOf(range)], "usageRange", () -> choose("usageRange", tr("时间", "Period"), names, java.util.Arrays.asList(ranges).indexOf(range), false, i -> { range = ranges[i]; model = ""; render(); })), new LinearLayout.LayoutParams(0, -2, 1));
         int activeFilters = (source.isEmpty() ? 0 : 1) + (accountId.isEmpty() ? 0 : 1) + (model.isEmpty() ? 0 : 1);

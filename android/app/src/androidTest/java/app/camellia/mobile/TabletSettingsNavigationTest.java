@@ -134,6 +134,18 @@ public class TabletSettingsNavigationTest extends InstrumentationTestCase {
         ui(() -> find(settings, "tabletSettings:deviceName").performClick()); awaitSection(settings, "deviceName");
         ui(() -> {
             android.widget.EditText name = (android.widget.EditText) find(settings, "tabletDeviceNameInput");
+            android.view.ViewGroup group = (android.view.ViewGroup) find(settings, "settingsGroup");
+            int[] field = new int[2], card = new int[2];
+            name.getLocationOnScreen(field); group.getLocationOnScreen(card);
+            float density = settings.getResources().getDisplayMetrics().density; int margin = Math.round(density);
+            assertTrue("The field border must stay inside the card's clipping edge on the left",
+                field[0] - card[0] >= margin);
+            assertTrue("The field border must stay inside the card's clipping edge on top",
+                field[1] - card[1] >= margin);
+            assertTrue("The field border must stay inside the card's clipping edge on the right",
+                card[0] + group.getWidth() - (field[0] + name.getWidth()) >= margin);
+            assertTrue("The field border must stay inside the card's clipping edge on the bottom",
+                card[1] + group.getHeight() - (field[1] + name.getHeight()) >= margin);
             name.setText("Unsaved device name"); name.requestFocus(); name.setSelection(2, 5);
             settings.getSystemService(android.view.inputmethod.InputMethodManager.class).showSoftInput(name, 0);
         });

@@ -17,6 +17,7 @@ import (
 	"strconv"
 	"time"
 
+	"tailscale.com/feature"
 	"tailscale.com/ipn"
 	"tailscale.com/ipn/ipnstate"
 	"tailscale.com/tsnet"
@@ -99,6 +100,9 @@ func (service *helper) execute(request command) (any, error) {
 	if request.Action == "init" {
 		if service.node != nil || !filepath.IsAbs(request.Directory) {
 			return nil, errors.New("invalid initialization")
+		}
+		if feature.Registered()["useproxy"] {
+			return nil, errors.New("embedded network must not use a system proxy")
 		}
 		hostname, err := nodeHostname(request.Hostname)
 		if err != nil {

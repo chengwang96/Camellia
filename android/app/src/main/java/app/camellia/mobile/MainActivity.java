@@ -3658,6 +3658,57 @@ public final class MainActivity extends Activity {
             index -> { selectedDocuments.remove(index); renderImage(); persistDraft(); updateControls(); });
     }
 
+    private void attachPastedText(CharSequence text) {
+        if (archivedConversation != null) {
+            setStatusError(tr("已归档会话不可发送附件。", "Archived conversations cannot send attachments."));
+            return;
+        }
+        if (!canFileAttachments) {
+            setStatusError(tr("发送文档需要更新并重启电脑端。", "Update and restart the desktop to send documents."));
+            return;
+        }
+        if (loadingImages) {
+            setStatusError(tr("正在添加附件，请稍后再粘贴。", "Attachments are still being added; paste again shortly."));
+            return;
+        }
+        if (selectedImages.size() + selectedDocuments.size() >= ChatAttachments.MAX_COUNT) {
+            setStatusError(tr("每条消息最多 20 个附件。", "Up to 20 attachments per message."));
+            return;
+        }
+        String target = conversationId, computer = credentials.optString("address");
+        new Thread(() -> {
+            AttachmentMaintenance.Lease imported = AttachmentMaintenance.protect(this);
+            try {
+                JSONObject document;
+                try (AttachmentMaintenance.Import scope = imported.captureImports()) {
+                    document = LongPaste.attach(this, text);
+                }
+                JSONObject attached = document;
+                runOnUiThread(() -> {
+                    try {
+                        if (!java.util.Objects.equals(target, conversationId)
+                                || !java.util.Objects.equals(computer, credentials.optString("address"))) {
+                            ChatAttachments.discard(this, java.util.List.of(),
+                                java.util.List.of(attached));
+                            imageConversation = conversationId;
+                            imageComputer = credentials.optString("address");
+                            return;
+                        }
+                        selectedDocuments.add(attached);
+                        imageConversation = conversationId;
+                        imageComputer = credentials.optString("address");
+                        renderImage(); persistDraft(); updateControls();
+                        setStatusNotice(LongPaste.notice(text.length(), chinese));
+                    } finally { imported.close(); }
+                });
+            } catch (Exception error) {
+                imported.close();
+                runOnUiThread(() -> setStatusError(ErrorDetails.withSummary(
+                    tr("无法保存粘贴的文本。", "Could not save the pasted text."), error)));
+            }
+        }, "camellia-paste-text").start();
+    }
+
     private void watchList(RemoteApi client, int ticket) {
         listConnected();
         if (foreground && credentials.has("pendingCreate") && !commandBusy) {
@@ -3871,6 +3922,7 @@ public final class MainActivity extends Activity {
         chatComposer = new ChatComposer(composerBar, chatStyle, chinese, tr("发消息，继续任务…", "Message your computer…"), 16000,
             () -> showRemoteSettings(false), this::sendMessage, this::stopRun, this::cancelEdit);
         composer = chatComposer.input; composer.setTag("remoteComposer");
+        chatComposer.longPasteHandler(this::attachPastedText);
         modelButton = chatComposer.model; modelButton.setTag("remoteModelPicker");
         sendButton = chatComposer.send; stopButton = chatComposer.stop;
         sendButton.setTag("remoteSend"); stopButton.setTag("remoteStop");

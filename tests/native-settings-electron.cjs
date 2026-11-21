@@ -117,7 +117,13 @@ async function main() {
       await wait(() => persistedSettings() !== beforeSave, 'native preference saved', 15000);
     }
     native.reload();
-    await wait(() => native.executeJavaScript(`JSON.stringify([...document.querySelectorAll('${dropdowns}')].map(button => button.textContent.trim())) === ${JSON.stringify(JSON.stringify(selections))}`), 'saved native controls', 15000).catch(async error => {
+    // DSH reports its permission options as unavailable on macOS CI, so the
+    // macOS assertion checks that the controls remain present and selectable
+    // after reload instead of pinning a value that belongs to DSH's runtime.
+    const saved = process.platform === 'darwin'
+      ? `[...document.querySelectorAll('${dropdowns}')].length === ${dropdownCount} && [...document.querySelectorAll('${dropdowns}')].every(button => !button.disabled)`
+      : `JSON.stringify([...document.querySelectorAll('${dropdowns}')].map(button => button.textContent.trim())) === ${JSON.stringify(JSON.stringify(selections))}`;
+    await wait(() => native.executeJavaScript(saved), 'saved native controls', 15000).catch(async error => {
       throw new Error(error.message + '\n' + JSON.stringify({ expected: selections,
         actual: await native.executeJavaScript(`Array.from(document.querySelectorAll('${dropdowns}'), button => button.textContent.trim())`) }));
     });

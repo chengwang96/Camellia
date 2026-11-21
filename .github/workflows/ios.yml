@@ -6,6 +6,7 @@ on:
     paths:
       - 'ios/**'
       - 'android/tailnet/**'
+      - 'scripts/verify-tailnet-isolation.cjs'
       - 'android/app/src/main/java/**'
       - 'android/app/src/main/assets/third-party-notices.txt'
       - 'android/app/src/main/assets/markdown-notices.txt'
@@ -16,6 +17,7 @@ on:
     paths:
       - 'ios/**'
       - 'android/tailnet/**'
+      - 'scripts/verify-tailnet-isolation.cjs'
       - 'android/app/src/main/java/**'
       - 'android/app/src/main/assets/third-party-notices.txt'
       - 'android/app/src/main/assets/markdown-notices.txt'
@@ -48,6 +50,9 @@ jobs:
       GOFLAGS: -p=2
     steps:
       - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .node-version
       - uses: actions/setup-go@v6
         with:
           go-version-file: android/tailnet/go.mod
@@ -78,6 +83,8 @@ jobs:
       - name: Build embedded iOS network framework
         timeout-minutes: 20
         run: bash ios/build-tailnet-ios.sh
+      - name: Verify embedded network proxy isolation
+        run: node scripts/verify-tailnet-isolation.cjs ios/Frameworks/tailnet.xcframework
       - name: Check both apps for iOS 15 compatibility
         timeout-minutes: 10
         run: bash ios/check-client.sh

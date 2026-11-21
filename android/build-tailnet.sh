@@ -11,5 +11,5 @@ go install golang.org/x/mobile/cmd/gomobile@v0.0.0-20260908204917-8b95e45f8d3e
 go install golang.org/x/mobile/cmd/gobind@v0.0.0-20260908204917-8b95e45f8d3e
 go test ./...
 mkdir -p "$script_dir/app/libs"
-gomobile bind -target="${TARGETS:-android/arm64,android/amd64}" -androidapi 26 -ldflags '-s -w' -o "$script_dir/app/libs/tailnet.aar" .
+gomobile bind -target="${TARGETS:-android/arm64,android/amd64}" -androidapi 26 -tags ts_omit_useproxy -ldflags '-s -w' -o "$script_dir/app/libs/tailnet.aar" .
 pwsh -NoProfile -File "$script_dir/tailnet/notices.ps1"

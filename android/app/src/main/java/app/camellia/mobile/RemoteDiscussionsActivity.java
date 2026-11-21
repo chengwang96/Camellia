@@ -291,6 +291,7 @@ public final class RemoteDiscussionsActivity extends Activity {
             composer = new ChatComposer(bar, style, chinese, tr("提出问题，或粘贴讨论材料…", "Ask a question or paste discussion material…"), 16000,
                 this::chooseMode, this::send, () -> submit("stop", groupId, new JSONObject()), () -> {});
             composer.input.setTag("discussionComposer"); composer.send.setTag("discussionSend"); composer.stop.setTag("discussionStop");
+            composer.longPasteHandler(this::attachPastedText);
             ImageButton attach = style.lineButton("plus", tr("添加内容", "Add"), this::attachmentMenu); attach.setTag("discussionAttach"); composer.addTool(attach);
             boolean expandedPermission = MobileLayout.useExpandedComposerControls(getResources().getConfiguration());
             permissionButton = new PermissionTool(this, style, chinese, expandedPermission, this::showPermissionMenu);
@@ -814,6 +815,47 @@ public final class RemoteDiscussionsActivity extends Activity {
         ChatImageTray.fill(this, attachmentTray, images, style.surface, chinese, index -> { if (pending.length() == 0) { images.remove(index); renderAttachments(); saveDraft(); controls(); } });
         ChatDocumentTray.append(this, attachmentTray, documents, chinese, index -> { if (pending.length() == 0) { documents.remove(index); renderAttachments(); saveDraft(); controls(); } });
     }
+
+    private void attachPastedText(CharSequence text) {
+        if (!connected || groupId == null || loadingAttachments || pending.length() > 0
+                || images.size() + documents.size() >= 16) {
+            showError(images.size() + documents.size() >= 16
+                ? tr("讨论最多 16 个附件。", "Up to 16 discussion attachments.")
+                : tr("请等待当前操作完成。", "Wait for the current operation to finish."));
+            return;
+        }
+        if (!rich) {
+            showError(tr("请更新并重启主机以使用讨论附件。", "Update and restart the host for discussion attachments."));
+            return;
+        }
+        String target = groupId;
+        new Thread(() -> {
+            AttachmentMaintenance.Lease imported = AttachmentMaintenance.protect(this);
+            try {
+                JSONObject document;
+                try (AttachmentMaintenance.Import scope = imported.captureImports()) {
+                    document = LongPaste.attach(this, text);
+                }
+                JSONObject attached = document;
+                runOnUiThread(() -> {
+                    try {
+                        if (!java.util.Objects.equals(target, groupId) || !rich) {
+                            ChatAttachments.discard(this, List.of(), List.of(attached));
+                            return;
+                        }
+                        documents.add(attached);
+                        renderAttachments(); saveDraft(); controls();
+                        workStatus.notice(LongPaste.notice(text.length(), chinese));
+                    } finally { imported.close(); }
+                });
+            } catch (Exception error) {
+                imported.close();
+                runOnUiThread(() -> showError(ErrorDetails.withSummary(
+                    tr("无法保存粘贴的文本。", "Could not save the pasted text."), error)));
+            }
+        }, "camellia-paste-text").start();
+    }
+
     private void attachmentMenu() {
         if (groupId == null) return;
         AttachSheet sheet = new AttachSheet(this); LinearLayout panel = sheet.panel();

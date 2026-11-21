@@ -47,6 +47,11 @@ try:
         expect(filters).to_have_count(4)
         assert len({label.bounding_box()['y'] for label in filters.all()}) == 1
         expect(page.locator('#usageRange')).to_have_value('all')
+        assert page.locator('#usageRange option[value=month]').inner_text() == 'This month'
+        page.locator('#usageRange').select_option('month')
+        expect(page.locator('#usageRows tr')).to_have_count(3)
+        assert page.locator('#usageRows').inner_text().find('gpt-5.3-codex') == -1
+        assert page.evaluate("document.querySelector('#usageChartNotes').textContent.indexOf('90') === -1")
         page.locator('#usageRange').select_option('7')
         expect(page.locator('#usageRows tr')).to_have_count(3)
         # Explanatory copy stays in the tooltip; only exceptions are visible.

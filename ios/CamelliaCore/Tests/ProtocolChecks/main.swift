@@ -2586,6 +2586,14 @@ do {
     checkEqual(AttachmentLimits.imageMaxBytes, 4 * 1024 * 1024, "and at 4 MiB each")
     checkEqual(AttachmentLimits.documentMaxBytes, 10 * 1024 * 1024, "a document may be 10 MiB")
     checkEqual(AttachmentLimits.remoteMaxBytes, 32 * 1024 * 1024, "and a remote send 32 MiB in total")
+    checkEqual(LongPaste.minLength, 5000, "long pastes use the desktop threshold")
+    check(!LongPaste.shouldAttach(String(repeating: "a", count: LongPaste.minLength - 1)),
+          "one character under the threshold stays inline")
+    check(LongPaste.shouldAttach(String(repeating: "a", count: LongPaste.minLength)),
+          "the threshold itself becomes an attachment")
+    check(!LongPaste.shouldAttach("   \n\t  "), "whitespace alone is not a long paste")
+    check(LongPaste.fileName().hasPrefix("pasted-text-") && LongPaste.fileName().hasSuffix(".txt"),
+          "a pasted block is named like the desktop attachment")
 
     checkEqual(AttachmentRules.remoteCount(expanded: true, files: true, multiImage: true), 20,
                "the expanded flag means the full twenty")
@@ -7005,7 +7013,7 @@ do {
     }
     let json = JSONObject(dictionary: ["version": 1,
         "accounts": [["id": "a", "source": "api"], ["id": "b", "source": "subscription"]],
-        "ranges": ["1": [], "30": [], "7": [["accountId": "a", "model": "m1", "requests": 3, "inputTokens": 20, "cacheReadTokens": 10],
+        "ranges": ["1": [], "30": [], "month": [], "7": [["accountId": "a", "model": "m1", "requests": 3, "inputTokens": 20, "cacheReadTokens": 10],
                           ["accountId": "b", "model": "m2", "requests": 4, "outputTokens": 50]],
                    "all": [["accountId": "a", "model": "", "requests": 12]]]])
     let data = AccountUsage(json)!
@@ -7015,6 +7023,10 @@ do {
     check(data.rows(range: "7", source: "api", account: "b").isEmpty, "usage cannot mix an account from a different source")
     check(data.rows(range: "7", model: "unknown").isEmpty, "usage filters model exactly")
     checkEqual(AccountUsage.sum(data.rows(range: "all"), ["requests"]), 12, "usage retains ungrouped lifetime totals")
+    check(data.hasRange("month"), "usage exposes the optional calendar-month range")
+    let legacy = JSONObject(dictionary: ["version": 1, "accounts": [], "ranges": ["1": [], "30": [], "7": [], "all": []]])
+    check(AccountUsage(legacy) != nil, "usage accepts version-1 snapshots without a month range")
+    check(!(AccountUsage(legacy)?.hasRange("month") ?? true), "legacy usage does not claim a month range")
     check(AccountUsage(JSONObject()) == nil, "usage rejects an unsupported snapshot")
     let store = ComputerStore(vault: MemoryCredentialVault())
     let a = PairedComputer(address: "http://100.64.0.1:43127", token: String(repeating: "a", count: 43), deviceId: uuid)
