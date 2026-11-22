@@ -1,6 +1,6 @@
 # Desktop remote access and Android control
 
-Camellia's desktop gateway lets an approved Android device read and control desktop conversations over the embedded Tailscale network. The device can send text and supported attachments, stop a run, answer questions, approve or deny one tool request, and download files already referenced by an authorized conversation. It cannot browse arbitrary desktop files, run a terminal command through the gateway, or edit global desktop settings. See the [Android guide](../android/README.md) for the client.
+Camellia's desktop gateway lets an approved Android device read and control desktop conversations over the embedded Tailscale network or a pinned TLS connection on the same private LAN. The device can send text and supported attachments, stop a run, answer questions, approve or deny one tool request, and download files already referenced by an authorized conversation. It cannot browse arbitrary desktop files, run a terminal command through the gateway, or edit global desktop settings. See the [Android guide](../android/README.md) for the client.
 
 ## Pair a device
 
@@ -11,7 +11,33 @@ Camellia's desktop gateway lets an approved Android device read and control desk
 
 The QR code contains a versioned JSON object with `v`, `type`, `address`, and `code`. It does not carry the computer name or a device token. Existing restricted devices keep their scope until explicitly upgraded or paired again. Revoke a device in Mobile access to close its streams and reject future requests. Closing the settings panel does not close the gateway; fully quitting Camellia or sleeping the computer interrupts access. If trusted devices remain, the desktop may restore the gateway at startup with its saved login, without opening a browser or creating a new approval.
 
+## Local network mode
+
+For a household that only needs the same Wi-Fi, enable **Local network** in the same desktop window. Camellia generates a self-signed TLS identity, listens only on one selected private IPv4 address and an available local port, and advertises that port through mDNS/DNS-SD. The desktop does not need a Tailscale login for this mode.
+
+The Android client discovers `_camellia._tcp` services automatically. Enter the desktop's six-digit PIN once; the desktop verifies it, enrolls the phone and issues the same kind of 256-bit device token used by Tailscale pairing. The phone stores the TLS certificate fingerprint and reconnects automatically. The PIN is never advertised over mDNS, is stored as a scrypt verifier on the desktop, and is not used as a per-request credential.
+
+Android also sends a fixed UDP broadcast and multicast probe on port 52638 and falls back to mDNS. This keeps discovery working when a VPN owns the system mDNS network. The desktop replies directly to the phone with its computer identity, current LAN endpoint, certificate fingerprint and whether new devices may join. The reply never contains the PIN or a device token.
+
+On Windows, allow Camellia on private networks when the firewall asks. Guest Wi-Fi, hotel networks and some office access points isolate clients or block multicast; discovery then fails even though both devices have internet access.
+
+The desktop's **Allow new devices** switch controls enrollment. Turn it off after the household phones have joined. Revoking a device rejects its token; rotating the PIN prevents a removed device that still knows the old PIN from enrolling again. The same PIN can be configured on several household computers, but it is not synchronized by Camellia; device tokens and revocations remain per computer.
+
+An already paired computer can be moved to local direct from its phone management menu with **Connect with PIN**. The phone first asks the current route for the computer identity and any authenticated LAN descriptor, then uses mDNS discovery or that descriptor, prompts for the six-digit PIN, and verifies that the returned computer identity matches before changing the stored route. The desktop reuses the existing device token for a valid paired device, so this works even when **Allow new devices** is off and does not create a duplicate device entry.
+
+LAN and Tailscale endpoints belong to one computer identity. The phone prefers a discovered, certificate-matched LAN endpoint and falls back to Tailscale when available. A computer with no Tailscale enrollment remains visible as local-only and cannot be reached after the phone leaves the LAN. The phone does not silently substitute another computer. A network change invalidates the old LAN address; discovery updates it without re-pairing. The current iOS client still uses the Tailscale pairing flow only.
+
+A computer first trusted through Tailscale can enable **Automatic LAN direct** in its phone management menu. Once discovery finds the matching computer, the phone obtains or refreshes the LAN certificate fingerprint through the authenticated Tailscale route. It switches without a PIN only when both the computer identity and pinned certificate match. A computer discovered without that prior trust still requires the LAN PIN. A LAN-only paired computer can add a Tailscale route from the same menu by entering its address or scanning its QR code, without creating a second local profile. Adding the same computer's Tailscale route through **Add computer** merges the routes when the authenticated computer identity matches.
+
 While mobile access is enabled, the desktop checks helper status every five seconds. A failed status check closes the gateway, and the next retry stops any surviving helper before restarting it. Pairing and the encrypted node identity are retained. The status snapshot also carries control-plane `online` and `health` diagnostics; neither is treated as proof that a peer data path is unavailable.
+
+## Keep access recoverable
+
+**Settings → Mobile access → Background guard** starts a small native helper on Windows and macOS. The helper is enabled only after mobile access has at least one trusted device. It uses roughly 5–15 MB of memory, receives a heartbeat from the desktop every five seconds, and restarts Camellia with a hidden window after a crash or hang. The restart uses a 5, 10, 20, then 30 second retry delay.
+
+While the guard is active, Electron keeps the application and system from entering idle suspension. This is intended for a laptop that stays powered on while the user is away. Closing the lid, choosing Sleep, losing power or fully quitting Camellia still disconnects mobile devices. A deliberate quit writes a stop marker before Electron exits, so the guard does not fight the user's choice. Disabling mobile access pauses the guard, and enabling access again resumes it if trusted devices remain.
+
+Installed Windows and macOS builds add Camellia to login items when the guard is enabled, so a reboot can restore mobile access without opening the main window. Portable Windows builds keep the in-session guard but do not create a login item.
 
 ## Update the embedded component
 
@@ -37,9 +63,9 @@ A full-device control pairing can use **Remote control → computer menu → Res
 
 The desktop advertises `desktop-restart` only to full-device control devices. `POST /v1/desktop/restart` requires `confirmed: true`, a UUID `requestId`, and the current status `instanceId`. The receipt is persisted before acknowledgment, and restart starts after the acknowledgment is written. Repeating that same request after reconnecting returns its receipt without restarting again. The endpoint is unavailable to read-only and workspace-scoped pairings.
 
-- The packaged Go helper uses pinned `tsnet` 1.104.7. The Node gateway listens only on a random `127.0.0.1` port; the helper authenticates to it with a fresh 256-bit transport secret. There is no LAN or public HTTP listener.
+- The packaged Go helper uses pinned `tsnet` 1.104.7. The Tailscale gateway listens only on a random `127.0.0.1` port; the helper authenticates to it with a fresh 256-bit transport secret. The optional LAN gateway listens only on a private IPv4 address over TLS and is never exposed on a public interface.
 - Node identity is encrypted with AES-256-GCM and a key protected by Electron `safeStorage`. The gateway refuses to start if secure storage is unavailable. Device tokens are 256-bit random values, stored as SHA-256 digests on the desktop and encrypted with Android Keystore on the phone.
-- Application HTTP travels inside the Tailscale tunnel. The Android client accepts only an explicit Tailnet IPv4 address and port, does not follow redirects, and does not send its token through a system HTTP proxy. Host and Origin checks block cross-origin browser use.
+- Tailscale application HTTP travels inside the tunnel. LAN application HTTP uses TLS pinned to the certificate fingerprint learned from the desktop or its authenticated status response. The Android client accepts only an explicit Tailnet IPv4 address or a private LAN IPv4 address, does not follow redirects, and does not send its token through a system HTTP proxy. Host and Origin checks block cross-origin browser use.
 - Authorized devices can read conversation text and referenced artifact bytes. Secrets written in a message body are part of that body; Camellia does not redact them. API keys are absent from ordinary status and history responses.
 - An all-access control device can request a `camellia-api-routes` v2 export through `GET /v1/api-keys`; it contains plaintext provider keys. Android asks for confirmation before replacing its own encrypted provider configuration. The desktop configuration is not changed.
   Android and iOS local chat also import each model's `thinking.values` and `thinking.default`. Their menus use the reported values, including boolean switches and explicit empty lists; only missing or invalid metadata falls back to Low/Medium/High. Default omits thinking parameters. A selected level that is no longer supported falls back to Default after importing or switching models.
@@ -57,7 +83,7 @@ Clash `DIRECT` means a connection bypasses the upstream proxy; it does not estab
 
 ## Protocol v1
 
-The desktop displays the root address, for example `http://100.80.1.2:43127`. JSON writes require `Content-Type: application/json`. All requests except the two pairing endpoints require `Authorization: Bearer <token>`.
+The desktop displays the Tailscale root address, for example `http://100.80.1.2:43127`, or the LAN address, for example `https://192.168.1.8:49231`. JSON writes require `Content-Type: application/json`. All requests except the two one-time Tailscale pairing endpoints and `POST /v1/lan/join` require `Authorization: Bearer <token>`. The LAN join endpoint is reachable only on the private listener, requires the six-digit PIN, is rate limited, and returns the same device credential and scope as an approved Tailscale pairing.
 
 Live subscriptions are tracked internally by authenticated device ID and peer IP, independently for each phone or tablet. The gateway pushes authorized conversation changes over the existing event streams. List notifications include the current first page so Home and the chat sidebar can update without another request; clients with a longer visible range or a search still fetch that range. Closing the last subscription removes the device from the live registry. Socket errors and stalled writes also remove subscriptions, and reconnecting starts with the current snapshot. Pairing credentials remain saved while offline. This bookkeeping has no additional settings or user-facing notifications.
 
@@ -189,17 +215,20 @@ Building the desktop Tailnet helper from source requires Go 1.27.4 or a Go insta
 
 ```sh
 npm run build:tailnet
+npm run build:remote-guard
 ```
 
-Packaged Windows x64 and macOS arm64 builds include the helper and notices. To make an in-app update available, attach the matching `.bin` and `.txt` files from `dist/tailnet-updates/` in the accepted desktop artifacts to the same stable GitHub release.
+Packaged Windows x64 and macOS arm64 builds include both native helpers and their notices. To make an embedded Tailscale update available, attach the matching `.bin` and `.txt` files from `dist/tailnet-updates/` in the accepted desktop artifacts to the same stable GitHub release.
 
 Local checks include both the updater and the helper:
 
 ```sh
 node --test tests/embedded-network.test.js tests/remote-desktop.test.js tests/remote-access.test.js tests/tailnet-updates.test.js
+node --test tests/remote-guard.test.js
+node tests/remote-guard-process.cjs
 node tests/embedded-network-electron.cjs
 node tests/tailnet-update-restart-electron.cjs
 node tests/electron-smoke.cjs
 ```
 
-`go test ./...` runs from `integrations/tailnet`. The Android pairing, gateway, and discussion smoke scripts require a built APK and an explicitly selected disposable rooted emulator (`ADB` and `ANDROID_SERIAL`). Those loopback fixtures check protocol and UI behavior, but physical-device Tailnet connectivity, Wi-Fi/cellular handoff, sleep recovery, and iOS behavior still require separate acceptance.
+`go test ./...` runs from both `integrations/tailnet` and `integrations/remote-guard`. The process smoke test builds nothing on its own, so run `npm run build:remote-guard` first. The Android pairing, gateway, and discussion smoke scripts require a built APK and an explicitly selected disposable rooted emulator (`ADB` and `ANDROID_SERIAL`). Those loopback fixtures check protocol and UI behavior, but physical-device Tailnet connectivity, Wi-Fi/cellular handoff, sleep recovery, and iOS behavior still require separate acceptance.

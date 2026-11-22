@@ -61,10 +61,11 @@ function patchKimiSteer(source) {
     const status = loop?.snapshot();
     if (status?.state !== "running" || status.activeTurnId !== expectedTurnId || status.activePromptId === void 0)
       throw RequestError$1.invalidParams({ sessionId }, "The active turn changed or is unavailable");
-    const { id } = loop.${modern ? 'sendNow' : 'submit'}({
+    const instruction = {
       message: { role: "user", content: [...input] },
       meta: { origin: { kind: "user" }, tracked: true }
-    }${modern ? '' : ', { steerIfActive: true }'});
+    };
+    const { id } = loop.${modern ? 'sendNow' : 'submit'}(instruction${modern ? '' : ', { steerIfActive: true }'});
     const handle = loop.promptHandle(id);
     if (!handle || ["blocked", "failed", "cancelled"].includes(handle.state))
       throw new Error("Kimi did not accept the instruction for the expected turn. Check the conversation before retrying.");

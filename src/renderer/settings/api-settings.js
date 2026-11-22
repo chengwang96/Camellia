@@ -1540,7 +1540,7 @@ api.onAdvancedAnimationsChanged?.(enabled => {
 });
 api.onHoverHintsChanged?.(enabled => { $('showHoverHints').checked = enabled; });
 // General connection preference: serialized saves preserve the latest choice.
-let networkSaveQueue = Promise.resolve(), networkSaving = false;
+let networkSaveQueue = Promise.resolve(), networkSaving = false, networkReapplying = false;
 function renderNetworkModeHint(value = lastNetworkValue) {
   const t = window.CamelliaI18n.t;
   const mode = value?.configured || $('networkMode').value || 'direct';
@@ -1556,15 +1556,19 @@ function renderNetworkSettings(value) {
   $('networkMode').value = value.configured || (['auto', 'direct', 'system'].includes(value.mode) ? value.mode : 'direct');
   // A downgraded proxy is why the connection is direct-first even though the
   // saved choice was "Use system proxy"; say so instead of only listing it.
-  const status = value.degraded
-    ? t('The detected system proxy is not reachable, so connections are using Auto. Repair the proxy, then choose Use system proxy again.')
-    : value.autoFallback
-      ? t('Auto kept the system proxy because a direct connection did not work everywhere.')
-      : value.detectedUrl ? t('Detected system proxy') + ': ' + value.detectedUrl
-      : value.error ? t(value.error)
-      : t(value.unsupported ? 'The detected proxy protocol is not supported. Enable an HTTP or mixed proxy port.' : 'No system proxy detected. Enable the system proxy and detect again.');
+  const environmentStale = value.environmentConsistent === false;
+  const status = environmentStale
+    ? t('Network settings changed outside Camellia; reapply the network to update running engines.')
+    : value.degraded
+      ? t('The detected system proxy is not reachable, so connections are using Auto. Repair the proxy, then choose Use system proxy again.')
+      : value.autoFallback
+        ? t('Auto kept the system proxy because a direct connection did not work everywhere.')
+        : value.detectedUrl ? t('Detected system proxy') + ': ' + value.detectedUrl
+        : value.error ? t(value.error)
+        : t(value.unsupported ? 'The detected proxy protocol is not supported. Enable an HTTP or mixed proxy port.' : 'No system proxy detected. Enable the system proxy and detect again.');
   $('systemProxyStatus').textContent = status + (value.degraded || value.autoFallback ? (value.detectedUrl ? ' · ' + value.detectedUrl : '') : '');
-  $('systemProxyStatus').classList.toggle('bad', Boolean(value.degraded || value.error));
+  $('systemProxyStatus').classList.toggle('bad', Boolean(environmentStale || value.degraded || value.error));
+  $('networkReapply').classList.toggle('primary', environmentStale);
   renderNetworkModeHint(value);
 }
 function renderConnectivity(result) {
@@ -1595,7 +1599,7 @@ function renderConnectivity(result) {
 }
 let lastNetworkValue = null;
 async function loadDownloadSettings(focus) {
-  if (networkSaving) return;
+  if (networkSaving || networkReapplying) return;
   try {
     const value = await api.networkSettings();
     if (!value.ok) throw new Error(value.error);
@@ -1622,10 +1626,13 @@ $('networkTest').onclick = async () => {
   } finally { networkTesting = false; $('networkTest').disabled = false; }
 };
 $('networkMode').onchange = () => {
+  if (networkSaving || networkReapplying) return;
   const t = window.CamelliaI18n.t;
   const mode = $('networkMode').value;
   networkSaving = true;
   $('networkMode').disabled = true;
+  $('networkReapply').disabled = true;
+  $('detectSystemProxy').disabled = true;
   renderNetworkModeHint({ configured: mode });
   networkSaveQueue = networkSaveQueue.then(async () => {
     try {
@@ -1634,21 +1641,71 @@ $('networkMode').onchange = () => {
       renderNetworkSettings(value);
       // Say whether the change is already live, or waiting for a running
       // response to finish, rather than leaving the user to restart Camellia.
-      status(value.engineRestart ? t('Network connection saved and applied to running engines')
-        : t('Network connection saved; it applies once the current response finishes'));
+      status(value.restartRequired
+        ? t('Network connection saved, but some engines could not restart. Fully restart Camellia to finish applying the network.')
+        : value.engineRestart ? t('Network connection saved and applied to running engines')
+        : t('Network connection saved; it applies once the current response finishes'), value.restartRequired);
     } catch (error) { status(t(error.message), true); }
-    finally { networkSaving = false; $('networkMode').disabled = false; await loadDownloadSettings(); }
+    finally {
+      networkSaving = false;
+      $('networkMode').disabled = false;
+      $('networkReapply').disabled = false;
+      $('detectSystemProxy').disabled = false;
+      await loadDownloadSettings();
+    }
   });
 };
 $('detectSystemProxy').onclick = async () => {
+  if (networkSaving || networkReapplying) return;
   $('detectSystemProxy').disabled = true;
+  $('networkReapply').disabled = true;
   try {
     await loadDownloadSettings();
     if ($('networkMode').value !== 'direct') {
       $('networkMode').onchange();
       await networkSaveQueue;
     }
-  } finally { $('detectSystemProxy').disabled = false; }
+  } finally {
+    $('detectSystemProxy').disabled = false;
+    $('networkReapply').disabled = false;
+  }
+};
+$('networkReapply').onclick = () => {
+  if (networkSaving || networkReapplying) return;
+  const t = window.CamelliaI18n.t;
+  networkReapplying = true;
+  $('networkMode').disabled = true;
+  $('networkReapply').disabled = true;
+  $('detectSystemProxy').disabled = true;
+  status(t('Reapplying network…'));
+  networkSaveQueue = networkSaveQueue.then(async () => {
+    try {
+      const value = await api.networkReapply();
+      if (!value.ok) {
+        throw new Error(value.restartRequired
+          ? t('Network hot reload could not finish. Fully restart Camellia to apply the connection.') + (value.error ? ' ' + value.error : '')
+          : value.error);
+      }
+      lastNetworkValue = value;
+      renderNetworkSettings(value);
+      if (value.restartRequired) {
+        status(t('Network hot reload could not finish. Fully restart Camellia to apply the connection.'), true);
+      } else if (value.deferred?.length) {
+        status(t('Network reapplied. Restarting these engines when their current responses finish:') + ' ' + value.deferred.join(', '));
+      } else {
+        status(t('Network reapplied and running engines restarted'));
+      }
+      window.CamelliaNetworkNotice?.sync({ degraded: value.degraded, proxy: value.detectedUrl });
+    } catch (error) {
+      status(t(error.message), true);
+    } finally {
+      networkReapplying = false;
+      $('networkMode').disabled = false;
+      $('networkReapply').disabled = false;
+      $('detectSystemProxy').disabled = false;
+      await loadDownloadSettings();
+    }
+  });
 };
 function applyProviderInsights(state) {
   insight = state; insightsLoaded = true; insightsRevision++;

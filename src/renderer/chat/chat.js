@@ -160,7 +160,21 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     try { localStorage.removeItem(uiPrefix + 'pending-send:' + sessionId); } catch {}
   }
   const cleanupReferenceIdentities = { draft: '', queue: '' };
+  const draftPresence = new Map();
   const draftKey = (id = context.sessionId, workspace = context.workspaceId) => id || 'new:' + (workspace || 'standalone');
+  function draftValuePresent(value) {
+    return Boolean(value && (typeof value.text === 'string' && value.text.trim() || value.attachments?.length));
+  }
+  function cachedDraftPresence(id) {
+    const key = 'draft:' + draftKey(id);
+    if (!draftPresence.has(key)) draftPresence.set(key, draftValuePresent(readUi(key)));
+    return draftPresence.get(key);
+  }
+  function cacheDraftPresence(key, value) {
+    const present = draftValuePresent(value), changed = draftPresence.get(key) !== present;
+    draftPresence.set(key, present);
+    return changed;
+  }
   function readUi(key) {
     try { return JSON.parse(localStorage.getItem(uiPrefix + key)); } catch { return null; }
   }
@@ -180,7 +194,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       saved = false;
       setStatus('Could not save the draft on this computer. Keep this page open until you copy or send it.');
     }
-    if (kind === 'draft' && saved) sidebar.render();
+    if (kind === 'draft' && saved && cacheDraftPresence(key, value)) sidebar.draftChanged(key);
   }
   let draftSaveTimer = 0;
   function scheduleDraftSave() {
@@ -851,7 +865,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
   function modelLabel(id, connection = currentConnection) {
     const subscription = supportsAccounts() && connection === 'subscription';
     const m = (subscription && accountModels.find((x) => x.id === id))
-      || (!subscription && routeModels.includes(id) && { label: id })
+      || (!subscription && routeModels.includes(id) && { label: routeModelLabel(id) })
       || MODELS.find((x) => x.id === id) || accountModels.find((x) => x.id === id);
     return id ? (m?.label || m?.name || m?.displayName || id) : window.CamelliaI18n.t(m?.label || "Default model");
   }
@@ -1057,6 +1071,9 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     openPops.push(sub);
   }
 
+  function routeModelLabel(id) {
+    return routeModelCatalog.modelProfiles?.[id]?.name || id;
+  }
   function modelSections() {
     // Engines with subscriptions list account and API models together, so the
     // composer itself chooses the connection; a session cannot switch engines.
@@ -1065,12 +1082,12 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     // subscription with no usable account catalog (including a fresh install).
     if (!accountModels.length && !googleSubscription() && routeModels.length) return [{
       title: 'Model · Same-model failover', connection: 'api',
-      options: accountSubscription() ? routeModels.map(id => ({ id, label: id })) : MODELS,
+      options: accountSubscription() ? routeModels.map(id => ({ id, label: routeModelLabel(id) })) : MODELS,
     }];
     // With no account or API routes there is only the setup/saved-model list.
     if (!accountModels.length) return [{ title: 'Model · Same-model failover', options: MODELS }];
     const account = { title: 'Model · ' + accountName() + ' account', connection: 'subscription', options: visibleAccountModels().map(model => ({ id: model.id, label: model.name || model.displayName || model.id })) };
-    const api = { title: 'Model · Shared API routes', connection: 'api', options: routeModels.map(id => ({ id, label: id })) };
+    const api = { title: 'Model · Shared API routes', connection: 'api', options: routeModels.map(id => ({ id, label: routeModelLabel(id) })) };
     if (googleSubscription()) return account.options.length ? [account] : [];
     const sections = accountSubscription() ? [account, api] : [api, account];
     // Connection is part of a choice's identity: an API route must not hide
@@ -3574,7 +3591,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     if (usage?.context_window) details.push(translate('Engine window: {0} tokens').replace('{0}', fmtTokens(usage.context_window)));
     else if (limits?.contextWindow) details.push(translate('Configured window: {0} tokens').replace('{0}', fmtTokens(limits.contextWindow)));
     details.push(limits?.maxContext
-      ? translate('Model maximum (provider catalog): {0} tokens').replace('{0}', fmtTokens(limits.maxContext))
+      ? translate('Model maximum (catalog): {0} tokens').replace('{0}', fmtTokens(limits.maxContext))
       : translate('Model maximum: unknown'));
     ring.dataset.tip = details.join(' · ');
     if (ctxTip) ctxTip.textContent = ring.dataset.tip;
@@ -4430,11 +4447,17 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     { id: 'compact', label: '/compact', desc: 'Compact context; keep recent messages if summarization fails',
       icon: '<path d="M8 3H3v5M16 3h5v5M21 16v5h-5M8 21H3v-5"/>',
       run: () => void compactConversation() },
+    { id: 'compact-storage', label: '/compact-storage', desc: 'Remove transient tool snapshots from stored history',
+      icon: '<path d="M4 7h16M4 12h16M4 17h10"/>',
+      run: () => void compactStoredHistory() },
   ];
   let slashPop = null, slashIndex = 0;
   function slashMatches() {
-    const m = /^\/([a-z]*)$/i.exec(input.value);
-    return m ? SLASH_COMMANDS.filter(c => c.id.startsWith(m[1].toLowerCase())) : [];
+    const m = /^\/([a-z-]*)$/i.exec(input.value);
+    if (!m) return [];
+    const query = m[1].toLowerCase(), matches = SLASH_COMMANDS.filter(c => c.id.startsWith(query));
+    const exact = matches.find(c => c.id === query);
+    return exact ? [exact] : matches;
   }
   function closeSlash() { slashPop?.remove(); slashPop = null; }
   function renderSlash() {
@@ -4588,6 +4611,20 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       }
       return res;
     } catch (error) { setStatus(window.CamelliaContextOverflow.recoverySummary(error.message)); return { ok: false, error: error.message }; }
+    finally { switchingEngine = false; input.disabled = loadingSession; updateConversationControls(); }
+  }
+  async function compactStoredHistory() {
+    if (!context.sessionId) { setStatus('Start a conversation first, then compact its stored history.'); return; }
+    if (conversationBusy() || contextBusy() || sending || handoffForCurrentSession()) { setStatus('Available when this conversation stops working'); return; }
+    const sessionId = context.sessionId;
+    switchingEngine = true; input.disabled = true; updateConversationControls();
+    setStatus('Compacting stored history…');
+    try {
+      const res = await window.dshDesktop.conversationCommand({ engine: harnessId, action: 'compact-history-storage', payload: { sessionId } });
+      if (!res?.ok) setStatus(res?.error || 'Stored history compaction failed');
+      else setStatus(res.changed ? `Removed ${res.removedRows} transient tool snapshots from stored history.` : 'No transient tool snapshots found in stored history.');
+      return res;
+    } catch (error) { setStatus(error.message); return { ok: false, error: error.message }; }
     finally { switchingEngine = false; input.disabled = loadingSession; updateConversationControls(); }
   }
   input.addEventListener('keydown', (e) => {
@@ -5144,13 +5181,11 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
   }
   const sidebar = createClaudeSidebar({ $, context, contextBusy, canChangeContext, setStatus,
     canReadReply: () => !discussionVisible && !loadingSession && !restoringRun,
-    hasDraft: id => {
-      const saved = readUi('draft:' + (id || draftKey()));
-      return Boolean(saved && ((typeof saved.text === 'string' && saved.text.trim()) || saved.attachments?.length));
-    },
+    hasDraft: id => cachedDraftPresence(id),
     getDiscussionId: () => discussionVisible ? discussionSurface?.groupId : null, discussionVisible: () => discussionVisible, discussionOpening: () => discussionOpening,
     newSession, openHistorySession, openDiscussions, forkSession, openActionMenu, closePops,
     noteLocalDelete: (id) => {
+      draftPresence.delete('draft:' + id);
       for (const key of Object.keys(localStorage)) if (key.startsWith('camellia-chat-') && key.endsWith(':' + id)) localStorage.removeItem(key);
       selfDeletedIds.add(id);
       setTimeout(() => selfDeletedIds.delete(id), 5000);
@@ -5828,6 +5863,12 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
         modelCtxCaps.set(m.id, limits);
       }
     }
+    for (const [id, profile] of Object.entries(state?.modelProfiles || {})) {
+      const limits = { ...modelCtxCaps.get(id) };
+      if (!limits.effectiveWindow) limits.effectiveWindow = profile.contextWindow;
+      if (!limits.maxContext) limits.maxContext = profile.maxContext;
+      modelCtxCaps.set(id, limits);
+    }
     updateCtxRing();
     if (Array.isArray(state?.models)) routeModels = state.enabled ? state.models : [];
     applyApiLevels();
@@ -5837,7 +5878,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     const canonical = currentModel.replace(/:cloud$/, '');
     // Keep the saved selection ID on its canonical row, including legacy :cloud IDs.
     MODELS.splice(0, MODELS.length, ...(models.length ? [] : [{ id: '', label: "Configure models in Camellia first" }]),
-      ...models.map(id => ({ id: id === canonical ? currentModel : id, label: id })));
+      ...models.map(id => ({ id: id === canonical ? currentModel : id, label: routeModelLabel(id) })));
     if (currentModel && !models.includes(canonical)) {
       MODELS.push({ id: currentModel, label: canonical + " (no route configured)" });
     }

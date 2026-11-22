@@ -66,7 +66,9 @@ function patchKimiAcpTurns(source) {
             || (driver.camelliaActivePromptId ?? driver.promptId) !== event.activePromptId
             || !Array.isArray(event.promptIds)) return;
         for (const id of event.promptIds) {
-          if (typeof id === "string" && id.startsWith("task:")) (driver.camelliaTaskPrompts ||= new Set()).add(id);
+          if (typeof id !== "string") continue;
+          if (id.startsWith("task:")) (driver.camelliaTaskPrompts ||= new Set()).add(id);
+          else (driver.camelliaSteers ||= new Set()).add(id);
         }
       }), events.on("turn.started", event => {
         const driver = this.driver;

@@ -15,6 +15,7 @@ import java.util.Set;
 final class DownloadDirectory {
     static final int PICK_REQUEST = 706;
     private static final String URI_KEY = "downloadDirectoryUri", LABEL_KEY = "downloadDirectoryLabel";
+    private static final String ASK_KEY = "askDownloadLocationEachTime";
 
     private static android.content.SharedPreferences preferences(Context context) {
         return context.getSharedPreferences("mobile-preferences", Context.MODE_PRIVATE);
@@ -25,6 +26,18 @@ final class DownloadDirectory {
         if (value.isEmpty()) return null;
         Uri uri = Uri.parse(value);
         return "content".equals(uri.getScheme()) && DocumentsContract.isTreeUri(uri) ? uri : null;
+    }
+
+    static boolean asksEachTime(Context context) {
+        return preferences(context).getBoolean(ASK_KEY, selected(context) == null);
+    }
+
+    static void setAskEachTime(Context context, boolean enabled) {
+        preferences(context).edit().putBoolean(ASK_KEY, enabled).apply();
+    }
+
+    static Uri forAutomaticSave(Context context) {
+        return preferences(context).getBoolean(ASK_KEY, false) ? null : selected(context);
     }
 
     static String label(Context context) { return preferences(context).getString(LABEL_KEY, ""); }
@@ -63,7 +76,7 @@ final class DownloadDirectory {
 
     static void clear(Context context) {
         Uri previous = selected(context);
-        preferences(context).edit().remove(URI_KEY).remove(LABEL_KEY).apply();
+        preferences(context).edit().remove(URI_KEY).remove(LABEL_KEY).remove(ASK_KEY).apply();
         releaseUnused(context, previous);
     }
 

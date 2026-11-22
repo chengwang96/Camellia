@@ -10,6 +10,7 @@ const { StorageCleanup, PROTECTION_MS } = require('../src/main/storage-cleanup')
 const { DiscussionManager } = require('../src/engines/discussions/manager');
 const { WindowsJobJournal } = require('../src/engines/discussions/windows-job-journal');
 const { UnixJobJournal } = require('../src/engines/discussions/unix-job');
+const { ConversationHistory } = require('../src/engines/conversation-history');
 
 function setup(context) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'camellia-storage-test-'));
@@ -75,6 +76,28 @@ test('remote attachments retain paused and failed disk queues, archive, fork, na
   assert.equal(fs.existsSync(orphan), false);
   for (const file of retained) assert.ok(fs.existsSync(file));
   assert.ok(fs.existsSync(native));
+});
+
+test('automatic cleanup retains references found by incremental shared-history indexing', async t => {
+  const h = setup(t), retained = remoteAttachment(h), orphan = remoteAttachment(h);
+  h.conversation('live', { seq: 1 }, [{ seq: 1, role: 'user', text: 'Keep ' + retained }]);
+  const historyFile = path.join(h.dataDir, 'conversations/live.jsonl');
+  fs.appendFileSync(historyFile, '\n');
+  const indexer = new ConversationHistory(path.join(h.dataDir, 'conversations'));
+  t.after(() => indexer.close());
+  indexer.ensure('live');
+  const first = await h.cleaner.sweepAttachments();
+  assert.equal(first.files, 1);
+  assert.equal(fs.existsSync(retained), true);
+  assert.equal(fs.existsSync(orphan), false);
+  const later = remoteAttachment(h), nextOrphan = remoteAttachment(h);
+  indexer.append('live', { seq: 2, role: 'assistant', text: 'Keep ' + later });
+  const second = await h.cleaner.sweepAttachments();
+  assert.equal(second.files, 1);
+  assert.equal(fs.existsSync(later), true);
+  assert.equal(fs.existsSync(nextOrphan), false);
+  const saved = JSON.parse(fs.readFileSync(path.join(h.dataDir, 'conversations/.history-index/live.idx.refs.json'), 'utf8'));
+  assert.equal(saved.count, 2);
 });
 
 test('automatic cleanup only removes attachment copies and leaves other eligible storage for manual review', async t => {

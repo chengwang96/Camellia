@@ -1457,16 +1457,17 @@ test('unchanged streaming native bindings avoid per-delta writes and persist at 
   assert.equal(saved.segments.claude.nativeId, a.session.sessionId); assert.ok(saved.segments.claude.lastUsedAt);
 });
 
-test('streaming tool snapshots stay internal and an unfinished tool is published once as cancelled', async t => {
+test('streaming tool snapshots stay out of permanent history and an unfinished tool is published once as cancelled', async t => {
   const h = fixture(t), run = await h.manager.send('codex', { prompt: 'Inspect tool replay' });
   const c = h.manager.get(run.sessionId), runId = h.sent[0].session.gen;
   const emit = event => h.manager.capture('codex', { ...event, runId });
   emit({ type: 'gui:tool', id: 'done', name: 'Write', status: 'pending', output: '' });
-  emit({ type: 'gui:tool', id: 'done', name: 'Write', status: 'in_progress', output: 'DONE_PARTIAL' });
+  for (let index = 0; index < 1000; index++) emit({ type: 'gui:tool', id: 'done', name: 'Write', status: 'in_progress', output: 'DONE_PARTIAL_' + index });
   emit({ type: 'gui:tool', id: 'done', name: 'Write', status: 'completed', output: 'FINAL_OUTPUT' });
   emit({ type: 'gui:tool', id: 'open', name: 'Read', status: 'in_progress', output: 'OPEN_PARTIAL' });
   const tools = () => h.manager.rows(c).filter(row => row.role === 'tool');
-  assert.deepEqual(tools().map(row => row.internal), [true, true, false, true]);
+  assert.deepEqual(tools().map(row => row.internal), [false]);
+  assert.equal(h.manager.active.get(c.id).events.filter(event => event.type === 'gui:tool').length, 2);
   const activeReplay = h.manager.context(c, 'codex');
   assert.match(activeReplay, /FINAL_OUTPUT/);
   assert.doesNotMatch(activeReplay, /DONE_PARTIAL|OPEN_PARTIAL/);

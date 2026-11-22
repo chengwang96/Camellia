@@ -18,6 +18,7 @@ exports.default = async context => {
   const root = context.packager.projectDir;
   const version = readNodeVersion(root);
   require('./build-tailnet.cjs').buildTailnet({ root, platform, arch });
+  require('./build-remote-guard.cjs').buildRemoteGuard({ root, platform, arch });
   const target = path.join(root, 'build/runtime-assets');
   await bundleNode({ root, target, platform, arch, version });
   const node = path.join(target, platform === 'win32' ? 'node.exe' : 'node');

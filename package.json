@@ -21,6 +21,7 @@
     "dist": "electron-builder",
     "build:icons": "electron scripts/build-icons.cjs",
     "build:tailnet": "node scripts/build-tailnet.cjs",
+    "build:remote-guard": "node scripts/build-remote-guard.cjs",
     "build:discussions": "node scripts/build-discussion-helper.cjs",
     "setup:runtimes": "node scripts/prepare-runtimes.cjs",
     "postinstall": "node scripts/prepare-runtimes.cjs --check",
@@ -66,7 +67,10 @@
       {
         "from": "runtimes/grok",
         "to": "runtimes/grok",
-        "filter": ["package.json", "package-lock.json"]
+        "filter": [
+          "package.json",
+          "package-lock.json"
+        ]
       },
       {
         "from": "runtimes/kimi",
@@ -201,8 +205,9 @@
     ]
   },
   "dependencies": {
-    "@xmldom/xmldom": "^0.9.12",
     "@highlightjs/cdn-assets": "^11.12.0",
+    "@xmldom/xmldom": "^0.9.12",
+    "bonjour-service": "^1.4.4",
     "cheerio": "^1.2.0",
     "docx-preview": "^0.4.1",
     "jszip": "^3.10.1",
@@ -212,6 +217,7 @@
     "markdown-it-texmath": "^1.0.0",
     "monaco-editor": "0.57.0",
     "papaparse": "^5.5.3",
+    "selfsigned": "^2.4.1",
     "smol-toml": "^1.8.0",
     "ssf": "^0.11.2",
     "undici": "^8.10.2",

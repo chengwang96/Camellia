@@ -225,7 +225,9 @@ class RemoteCommands {
       const { queue, queueVersion, ...record } = result;
       entry.result = record; this.save(); return record;
     }, error => {
-      entry.result = { ok: false, state: 'failed', error: error.status ? error.message : 'Operation failed; inspect the conversation before sending another request.' };
+      entry.result = { ok: false, state: 'failed', error: error.status ? error.message
+        : QUEUE_ACTIONS.includes(entry.action) ? error.message || 'Operation failed'
+          : 'Operation failed; inspect the conversation before sending another request.' };
       this.save(); return entry.result;
     }).finally(() => { this.pending.delete(key); this.publish(); });
     this.pending.set(key, operation);

@@ -104,6 +104,19 @@ class RemoteAccess {
     }
     return { state: 'approved', deviceId: id, token: request.token, permission: 'control' };
   }
+  enroll(name, { workspaceIds = [], allWorkspaces = true, includeUnassigned = true } = {}) {
+    this.prune();
+    const deviceName = cleanName(name);
+    if (this.devices.length >= 32) fail(409, 'Revoke an existing device before adding another');
+    const id = randomUUID(), token = secret();
+    const createdAt = this.now();
+    const scope = this.scope(workspaceIds, { allWorkspaces, includeUnassigned });
+    this.save([...this.devices, { id, name: deviceName, tokenDigest: hash(token), ...scope,
+      createdAt, lastSeenAt: createdAt, permission: 'control' }]);
+    this.lastSeenAt.set(id, createdAt);
+    this.lastSeenPersistedAt.set(id, createdAt);
+    return { deviceId: id, token, permission: 'control' };
+  }
   authenticate(token) {
     const device = this.devices.find(device => matches(token, device.tokenDigest));
     if (!device) fail(401, 'Device authentication required');

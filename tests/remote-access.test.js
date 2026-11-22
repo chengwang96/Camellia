@@ -630,6 +630,24 @@ test('mobile queue retains failed instructions and attachments and rejects stale
   commands.queue.pause(visible.id); runs.finish(); await flushQueue();
 });
 
+test('mobile insert reports the native refusal reason instead of a generic operation failure', async context => {
+  const { manager, commands, gateway, access, pair, visible } = fixture(context);
+  const device = access.authenticate(pair().token), runs = queuedRuns(manager, visible.id);
+  await manager.send('codex', { sessionId: visible.id, prompt: 'Current task' });
+  const execute = (action, extra = {}) => commands.execute(device, visible.id, {
+    requestId: require('node:crypto').randomUUID(), instanceId: gateway.instanceId, action, ...extra,
+  }, gateway.instanceId);
+  const queued = await execute('send', { queue: true, prompt: 'Insert this now', expectedSeq: visible.seq });
+  const active = manager.active.get(visible.id);
+  active.session.steerUserMessage = async () => { throw new Error('The current reply is preparing background work; try again after it starts'); };
+  const result = await execute('queue-steer', { queueId: queued.queueId, runId: active.facade.gen });
+  assert.equal(result.ok, false);
+  assert.match(result.error, /preparing background work/);
+  assert.doesNotMatch(result.error, /Operation failed/);
+  assert.equal(commands.queue.view(visible.id)[0].error, 'The current reply is preparing background work; try again after it starts');
+  commands.queue.pause(visible.id); runs.finish(); await flushQueue();
+});
+
 test('committed mobile instructions never replay after a queue acknowledgement write fails or a restart', async context => {
   const { manager, commands, gateway, access, reader, pair, visible, root } = fixture(context);
   const device = access.authenticate(pair().token), runs = queuedRuns(manager, visible.id);

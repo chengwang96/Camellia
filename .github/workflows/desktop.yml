@@ -55,8 +55,15 @@ jobs:
       - name: Embedded network tests
         working-directory: integrations/tailnet
         run: go test ./...
+      - name: Remote guard tests
+        working-directory: integrations/remote-guard
+        run: go test ./...
       - name: Build embedded network helper
         run: npm run build:tailnet
+      - name: Build remote guard helper
+        run: npm run build:remote-guard
+      - name: Remote guard process recovery smoke test
+        run: node tests/remote-guard-process.cjs
       - name: Verify embedded network proxy isolation
         run: node scripts/verify-tailnet-isolation.cjs build/runtime-assets
       - name: Build macOS discussion supervisor

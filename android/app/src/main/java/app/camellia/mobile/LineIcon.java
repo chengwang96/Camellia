@@ -76,6 +76,12 @@ final class LineIcon extends Drawable {
                 path.moveTo(12, 2); path.lineTo(21, 6); path.lineTo(20, 15); path.quadTo(18, 20, 12, 23);
                 path.quadTo(6, 20, 4, 15); path.lineTo(3, 6); path.close(); canvas.drawPath(path, paint);
                 canvas.drawLine(8, 12, 11, 15, paint); canvas.drawLine(11, 15, 16, 9, paint); break;
+            case "wifi":
+                path.moveTo(3, 9); path.quadTo(12, 0, 21, 9);
+                path.moveTo(6.5f, 13); path.quadTo(12, 7, 17.5f, 13);
+                path.moveTo(9.5f, 17); path.quadTo(12, 14, 14.5f, 17);
+                canvas.drawPath(path, paint);
+                canvas.drawCircle(12, 20, 1.1f, paint); break;
             case "key":
                 canvas.drawCircle(8, 8, 4.5f, paint); path.moveTo(11.5f, 11.5f); path.lineTo(21, 21); path.moveTo(16, 16); path.lineTo(19, 13);
                 path.moveTo(18.5f, 18.5f); path.lineTo(21.5f, 15.5f); canvas.drawPath(path, paint); break;

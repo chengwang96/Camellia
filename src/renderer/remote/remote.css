@@ -48,6 +48,8 @@ main.mobile-access .device-heading { display: flex; flex-wrap: wrap; align-items
 main.mobile-access .device-heading h2 { margin: 0; }
 main.mobile-access .device-name-row { margin-top: 14px; }
 main.mobile-access .device-name-row input { flex: 0 1 208px; width: 208px; }
+main.mobile-access #lanPin { flex: 0 1 128px; width: 128px; font: var(--f-code); letter-spacing: .16em; }
+main.mobile-access #lanAddress:empty { display: none; }
 main.mobile-access .device-name-row .primary { margin-left: auto; }
 main.mobile-access .device-pair:has(#invitation:not([hidden])) .device-name-row { display: none; }
 main.mobile-access .pair-code-actions { margin-top: 10px; }

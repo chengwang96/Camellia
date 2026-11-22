@@ -46,6 +46,7 @@ with sync_playwright() as playwright:
                 page.wait_for_load_state('networkidle')
                 if embedded:
                     page.evaluate('window.mobileAccessUI.setVisible(true)')
+                expect(page.locator('.network-path > .device-heading')).to_have_count(0)
                 expect(node('relayUse')).to_be_enabled()
                 expect(node('relayUse')).not_to_be_checked()
                 node('relayUse').check()
@@ -54,7 +55,6 @@ with sync_playwright() as playwright:
                 expect(node('relayUse')).to_be_enabled()
                 expect(node('relayUse')).to_be_checked()
                 expect(node('relayChoice')).to_be_visible()
-                expect(node('pathSummary')).to_have_text('VPS relay' if language == 'en' else 'VPS 中继')
                 # Exercise two automatic state polls, then a new renderer.
                 page.wait_for_timeout(10500)
                 expect(node('relayUse')).to_be_checked()

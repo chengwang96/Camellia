@@ -180,7 +180,7 @@
     </section>
     <section id="networkPage" class="page" hidden>
       <div class="setting-row"><div><h2 data-i18n>Connection mode</h2><p class="hint" id="networkModeHint"></p></div><select id="networkMode" aria-label="Connection mode" aria-describedby="networkModeHint" data-i18n-attrs="aria-label"><option value="auto" data-i18n>Auto</option><option value="direct" data-i18n>Direct connection</option><option value="system" data-i18n>Use system proxy</option></select></div>
-      <div class="setting-row"><div><h2 data-i18n>System proxy</h2><p class="hint" id="systemProxyStatus" role="status"></p></div><button id="detectSystemProxy" type="button" aria-describedby="systemProxyStatus" data-i18n>Detect system proxy</button></div>
+      <div class="setting-row"><div><h2 data-i18n>System proxy</h2><p class="hint" id="systemProxyStatus" role="status"></p></div><div class="app-update-actions"><button id="networkReapply" type="button" aria-describedby="systemProxyStatus" data-i18n>Reapply network</button><button id="detectSystemProxy" type="button" aria-describedby="systemProxyStatus" data-i18n>Detect system proxy</button></div></div>
       <section id="networkWebToolsSection" class="section web-tools-section" aria-labelledby="networkWebToolsTitle">
         <div class="setting-row"><div><h2 id="networkWebToolsTitle" data-i18n>Web search and fetch</h2><p id="networkWebToolsHint" class="hint" aria-live="polite"></p></div><select id="networkWebToolsProvider" disabled aria-label="Web search and fetch" aria-describedby="networkWebToolsHint" data-i18n-attrs="aria-label"><option value="native" data-i18n>Engine default</option></select></div>
         <div class="setting-row" id="networkWebToolsFetchRow" hidden><div><h2 data-i18n>Page fetching</h2><p id="networkWebToolsFetchHint" class="hint"></p></div><select id="networkWebToolsFetchMode" disabled aria-label="Page fetching" aria-describedby="networkWebToolsFetchHint" data-i18n-attrs="aria-label"><option value="auto" data-i18n>Smart fallback (recommended)</option><option value="deepseek" data-i18n>DeepSeek only</option><option value="local" data-i18n>Local only</option></select></div>
@@ -213,6 +213,21 @@
           <button id="mobile-logout" hidden data-copy="logout">退出 Tailscale 登录</button>
         </details>
       </section>
+      <section class="device-section device-card device-lan" aria-labelledby="mobile-lanTitle">
+        <div class="device-heading"><h2 id="mobile-lanTitle" data-copy="lanTitle">局域网访问</h2><span id="mobile-lanStatus" class="device-status" role="status"></span></div>
+        <div class="relay-setting"><span id="mobile-lanToggleLabel" data-copy="lanToggleLabel">允许同一 Wi-Fi 的手机直连</span><input id="mobile-lanToggle" type="checkbox" role="switch" aria-labelledby="mobile-lanToggleLabel" aria-describedby="mobile-lanHint"></div>
+        <p id="mobile-lanHint" class="hint" data-copy="lanHint"></p>
+        <div class="device-name-row"><label for="mobile-lanPin" data-copy="lanPin">连接 PIN</label><input id="mobile-lanPin" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" autocomplete="one-time-code" spellcheck="false"><button id="mobile-lanSavePin" data-copy="lanSavePin">保存 PIN</button></div>
+        <p id="mobile-lanAddress" class="device-address"></p>
+        <p id="mobile-lanPinStatus" class="hint" role="status" aria-live="polite"></p>
+        <div class="relay-setting"><span id="mobile-lanJoinLabel" data-copy="lanAllowJoin">允许新设备加入</span><input id="mobile-lanAllowJoin" type="checkbox" role="switch" aria-labelledby="mobile-lanJoinLabel"></div>
+        <p class="hint" data-copy="lanSecurity"></p>
+      </section>
+      <section id="mobile-guardSection" class="device-section device-card" aria-labelledby="mobile-guardTitle" hidden>
+        <div class="device-heading"><h2 id="mobile-guardTitle" data-copy="guardTitle">后台守护</h2><span id="mobile-guardStatus" class="device-status" role="status"></span></div>
+        <div class="relay-setting"><span id="mobile-guardToggleLabel" data-copy="guardToggleLabel">自动恢复手机访问</span><input id="mobile-guardToggle" type="checkbox" role="switch" aria-labelledby="mobile-guardToggleLabel" aria-describedby="mobile-guardHint"></div>
+        <p id="mobile-guardHint" class="hint" data-copy="guardHint"></p>
+      </section>
       <section class="device-section device-card device-pair" aria-labelledby="mobile-pairTitle">
         <div class="device-heading"><h2 id="mobile-pairTitle" data-copy="pair">配对设备</h2><span id="mobile-pairSummary" class="device-status"></span></div>
         <div class="device-name-row"><label for="mobile-deviceName" data-copy="deviceName">本机名称</label><input id="mobile-deviceName" maxlength="80" autocomplete="off"><button id="mobile-saveDeviceName" data-copy="deviceNameSave">保存名称</button><button id="mobile-invite" disabled data-copy="generate" class="primary">生成配对码</button></div>
@@ -224,52 +239,54 @@
         <div id="mobile-pending"></div>
       </section>
       <section class="device-section device-card" aria-labelledby="mobile-devicesTitle"><div class="device-heading"><h2 id="mobile-devicesTitle" data-copy="devices">已授权设备</h2><span id="mobile-devicesSummary" class="device-status"></span></div><div id="mobile-devices"></div></section>
-      <section class="device-section device-card" aria-labelledby="mobile-tailnetUpdateTitle" hidden>
-        <div class="device-heading"><h2 id="mobile-tailnetUpdateTitle" data-copy="tailnetUpdateTitle">内置 Tailscale</h2><span id="mobile-tailnetVersion" class="device-status"></span></div>
-        <div class="device-toolbar"><p id="mobile-tailnetUpdateStatus" class="hint" role="status"></p><button id="mobile-tailnetUpdate" type="button" hidden data-copy="tailnetCheck">检查更新</button></div>
-      </section>
-      <section class="device-section device-card network-path" aria-labelledby="mobile-pathTitle">
-        <div class="device-heading"><h2 id="mobile-pathTitle" data-copy="pathTitle">网络路径</h2><span id="mobile-pathSummary" class="device-status"></span></div>
-        <p id="mobile-relayPathError" class="hint error" role="status" hidden></p>
-        <div id="mobile-relayConfig" class="relay-config">
-          <div class="relay-setting"><span id="mobile-relaySwitchLabel" data-copy="relayUse">使用中继</span><input id="mobile-relayUse" type="checkbox" role="switch" aria-labelledby="mobile-relaySwitchLabel" aria-describedby="mobile-pathHint"></div>
-          <p id="mobile-pathHint" class="hint sr-only" data-copy="pathHint">关闭时由 Tailscale 自动选路。</p>
-          <div class="relay-fields" id="mobile-relayChoice" hidden>
-            <label for="mobile-relayDevice" data-copy="relayDevice">选择中继设备</label>
-            <div class="relay-device-controls">
-              <select id="mobile-relayDevice"></select>
-              <input id="mobile-relayName" maxlength="63" autocomplete="off" spellcheck="false" aria-describedby="mobile-relayRenameHint mobile-relayStatus" hidden>
-              <button id="mobile-relayRename" type="button" data-copy="rename">重命名</button>
-              <button id="mobile-relayRenameSave" type="button" class="primary" data-copy="renameSave" hidden>保存</button>
-              <button id="mobile-relayRenameCancel" type="button" data-copy="renameCancel" hidden>取消</button>
-            </div>
-            <p id="mobile-relayRenameHint" class="hint relay-rename-hint" data-copy="relayRenameHint" hidden></p>
-          </div>
-          <p id="mobile-relayStatus" class="hint" role="status" aria-live="polite" hidden></p>
+      <section class="device-section device-card tailscale-settings-group" aria-labelledby="mobile-tailscaleSettingsTitle">
+        <div class="tailscale-settings-intro">
+          <div class="device-heading"><h2 id="mobile-tailscaleSettingsTitle" data-copy="tailnetUpdateTitle">内置 Tailscale</h2><span id="mobile-tailnetVersion" class="device-status"></span></div>
+          <div id="mobile-tailnetUpdateSection" class="device-toolbar" hidden><p id="mobile-tailnetUpdateStatus" class="hint" role="status"></p><button id="mobile-tailnetUpdate" type="button" hidden data-copy="tailnetCheck">检查更新</button></div>
         </div>
-      </section>
-      <details class="device-section device-card advanced-settings" aria-labelledby="mobile-tailscaleTitle">
-        <summary><span id="mobile-tailscaleTitle" data-copy="tailscaleTitle">Tailscale 管理 API</span><span id="mobile-tailscaleStatus" class="device-status" role="status"></span></summary>
-        <div class="advanced-body">
-          <div id="mobile-tailscaleDetails" class="tailscale-details"></div>
-          <div id="mobile-tailscaleForm" class="tailscale-form" hidden>
-            <label for="mobile-tailscaleClientId" data-copy="tailscaleClientId">OAuth Client ID</label>
-            <input id="mobile-tailscaleClientId" autocomplete="off" spellcheck="false" maxlength="200">
-            <label for="mobile-tailscaleClientSecret" data-copy="tailscaleClientSecret">OAuth Client Secret</label>
-            <input id="mobile-tailscaleClientSecret" type="password" autocomplete="new-password" spellcheck="false" maxlength="400">
-            <p class="hint" data-copy="tailscaleScopeHint">创建 OAuth Client 时选择 policy_file: write 和 devices:core: write。</p>
+        <section class="device-section device-card network-path" aria-labelledby="mobile-pathTitle">
+          <h2 id="mobile-pathTitle" class="sr-only" data-copy="pathTitle">网络路径</h2>
+          <p id="mobile-relayPathError" class="hint error" role="status" hidden></p>
+          <div id="mobile-relayConfig" class="relay-config">
+            <div class="relay-setting"><span id="mobile-relaySwitchLabel" data-copy="relayUse">使用中继</span><input id="mobile-relayUse" type="checkbox" role="switch" aria-labelledby="mobile-relaySwitchLabel" aria-describedby="mobile-pathHint"></div>
+            <p id="mobile-pathHint" class="hint sr-only" data-copy="pathHint">关闭时由 Tailscale 自动选路。</p>
+            <div class="relay-fields" id="mobile-relayChoice" hidden>
+              <label for="mobile-relayDevice" data-copy="relayDevice">选择中继设备</label>
+              <div class="relay-device-controls">
+                <select id="mobile-relayDevice"></select>
+                <input id="mobile-relayName" maxlength="63" autocomplete="off" spellcheck="false" aria-describedby="mobile-relayRenameHint mobile-relayStatus" hidden>
+                <button id="mobile-relayRename" type="button" data-copy="rename">重命名</button>
+                <button id="mobile-relayRenameSave" type="button" class="primary" data-copy="renameSave" hidden>保存</button>
+                <button id="mobile-relayRenameCancel" type="button" data-copy="renameCancel" hidden>取消</button>
+              </div>
+              <p id="mobile-relayRenameHint" class="hint relay-rename-hint" data-copy="relayRenameHint" hidden></p>
+            </div>
+            <p id="mobile-relayStatus" class="hint" role="status" aria-live="polite" hidden></p>
+          </div>
+        </section>
+        <details class="device-section device-card advanced-settings" aria-labelledby="mobile-tailscaleTitle">
+          <summary><span id="mobile-tailscaleTitle" data-copy="tailscaleTitle">Tailscale 管理 API</span><span id="mobile-tailscaleStatus" class="device-status" role="status"></span></summary>
+          <div class="advanced-body">
+            <div id="mobile-tailscaleDetails" class="tailscale-details"></div>
+            <div id="mobile-tailscaleForm" class="tailscale-form" hidden>
+              <label for="mobile-tailscaleClientId" data-copy="tailscaleClientId">OAuth Client ID</label>
+              <input id="mobile-tailscaleClientId" autocomplete="off" spellcheck="false" maxlength="200">
+              <label for="mobile-tailscaleClientSecret" data-copy="tailscaleClientSecret">OAuth Client Secret</label>
+              <input id="mobile-tailscaleClientSecret" type="password" autocomplete="new-password" spellcheck="false" maxlength="400">
+              <p class="hint" data-copy="tailscaleScopeHint">创建 OAuth Client 时选择 policy_file: write 和 devices:core: write。</p>
+              <div class="device-toolbar tailscale-actions">
+                <button id="mobile-tailscaleOpen" type="button" data-copy="tailscaleOpen">打开 Tailscale 凭据页</button>
+                <button id="mobile-tailscaleSave" type="button" class="primary" data-copy="tailscaleSave">验证并保存</button>
+              </div>
+            </div>
             <div class="device-toolbar tailscale-actions">
-              <button id="mobile-tailscaleOpen" type="button" data-copy="tailscaleOpen">打开 Tailscale 凭据页</button>
-              <button id="mobile-tailscaleSave" type="button" class="primary" data-copy="tailscaleSave">验证并保存</button>
+              <button id="mobile-tailscaleRefresh" type="button" data-copy="tailscaleRefresh">刷新状态</button>
+              <button id="mobile-tailscaleRemove" type="button" class="danger" data-copy="tailscaleRemove" hidden>移除凭证</button>
             </div>
+            <p id="mobile-tailscaleFeedback" class="hint" role="status" aria-live="polite"></p>
           </div>
-          <div class="device-toolbar tailscale-actions">
-            <button id="mobile-tailscaleRefresh" type="button" data-copy="tailscaleRefresh">刷新状态</button>
-            <button id="mobile-tailscaleRemove" type="button" class="danger" data-copy="tailscaleRemove" hidden>移除凭证</button>
-          </div>
-          <p id="mobile-tailscaleFeedback" class="hint" role="status" aria-live="polite"></p>
-        </div>
-      </details>
+        </details>
+      </section>
       <p id="mobile-error" class="device-feedback" role="alert"></p>
       <div class="mobile-page-actions"><button id="mobile-retry" hidden data-copy="retry">重试</button><button id="mobile-openPanel" hidden data-copy="openPanel">打开独立手机访问面板</button></div>
     </section>

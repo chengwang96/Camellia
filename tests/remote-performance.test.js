@@ -56,3 +56,20 @@ test('remote list refreshes bound configuration reads across many conversations 
   assert.equal(counts.get(configFile), 1, 'Different devices share file reads during one synchronous flush');
   assert.equal(counts.get(routerFile), 1);
 });
+
+test('active output projections are shared until the run event sequence changes', () => {
+  const reader = new RemoteReadModel({});
+  const active = { eventSeq: 1, events: [{ type: 'stream_event', event: {
+    type: 'content_block_start', index: 0, content_block: { type: 'text', text: 'Working' },
+  } }] };
+  const first = reader.activeOutput(active);
+  assert.equal(first.text, 'Working');
+  assert.equal(reader.activeOutput(active), first);
+  active.eventSeq++;
+  active.events.push({ type: 'stream_event', event: {
+    type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: ' more' },
+  } });
+  const next = reader.activeOutput(active);
+  assert.notEqual(next, first);
+  assert.equal(next.text, 'Working more');
+});

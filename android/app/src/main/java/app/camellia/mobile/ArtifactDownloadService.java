@@ -49,7 +49,7 @@ public final class ArtifactDownloadService extends Service {
         Job(JSONObject file, String token, Uri target, boolean inDirectory) throws Exception {
             name = file.getString("name"); address = file.getString("address"); this.token = token;
             path = "/v1/" + (file.optBoolean("discussion") ? "discussions/" : "conversations/") + file.getString("conversation") + "/artifacts/" + file.getString("id");
-            new Endpoint(address).uri(path);
+            new Endpoint(ComputerRoutes.route(address).url).uri(path);
             size = file.getLong("size");
             if (size < 0 || !token.matches("[A-Za-z0-9_-]{43}") || target == null || !"content".equals(target.getScheme())
                     || (inDirectory && !android.provider.DocumentsContract.isTreeUri(target))) throw new IOException("Invalid download");
@@ -117,6 +117,8 @@ public final class ArtifactDownloadService extends Service {
     @Override public void onCreate() {
         super.onCreate();
         EmbeddedNetwork.initialize(getApplicationContext());
+        try { ComputerRoutes.configure(new ComputerStore(new CredentialStore(this)).all()); }
+        catch (Exception error) { android.util.Log.w("CamelliaDownload", "Could not load LAN routes", error); }
         getSystemService(NotificationManager.class).createNotificationChannel(new NotificationChannel(CHANNEL,
             tr("文件下载", "File downloads"), NotificationManager.IMPORTANCE_LOW));
     }

@@ -124,6 +124,22 @@ test('Kimi keeps the reply open across a batch of task notifications and a chain
   assert.equal(h.native.driver, undefined);
 });
 
+test('Kimi tracks a user steer sent into a task-notification turn', { skip: !source }, async () => {
+  const h = await fixture();
+  const first = h.native.driveTurn([]);
+  const promptId = h.submissions[0].promptId;
+  h.emit('turn.started', { turnId: 1, promptId });
+  h.emit('prompt.steered', { activePromptId: promptId, promptIds: ['task:build:completed'] });
+  h.emit('turn.ended', { turnId: 1, reason: 'completed' });
+  await settle();
+  h.emit('turn.started', { turnId: 2, promptId: 'task:build:completed' });
+  h.emit('prompt.steered', { activePromptId: 'task:build:completed', promptIds: ['user:correction'] });
+  assert.deepEqual([...h.native.driver.camelliaSteers], ['user:correction']);
+  h.emit('turn.started', { turnId: 3, promptId: 'user:correction' });
+  h.emit('turn.ended', { turnId: 3, reason: 'completed' });
+  assert.equal((await first).stopReason, 'end_turn');
+});
+
 test('Kimi task handoff reports a failed follow-up through the original prompt', { skip: !source }, async () => {
   const h = await fixture();
   const first = h.native.driveTurn([]);

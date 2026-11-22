@@ -8,7 +8,8 @@ const vm = require('node:vm');
 
 const source = fs.readFileSync(path.join(__dirname, '../src/renderer/chat/workbench-sidebar.js'), 'utf8');
 const draftSource = source.slice(source.indexOf('  function sessionHasDraft('), source.indexOf('  function renderSessionSidebar('));
-const itemSource = draftSource + source.slice(source.indexOf('  function makeSessionItem(s)'), source.indexOf('  async function runMetaOp('));
+const draftStatusSource = source.slice(source.indexOf('  function updateDraftStatus('), source.indexOf('  function draftChanged('));
+const itemSource = draftSource + draftStatusSource + source.slice(source.indexOf('  function makeSessionItem(s)'), source.indexOf('  async function runMetaOp('));
 const buttonSource = source.slice(source.indexOf('  function sidebarButton('), source.indexOf('  function appendGroup('));
 
 function element() {

@@ -1,7 +1,7 @@
 'use strict';
 
 const diagnosticOutput = require('./diagnostic-output').installDiagnosticOutput();
-const { app, BrowserWindow, WebContentsView, ipcMain, dialog, shell, Menu, Tray, nativeImage, nativeTheme, screen, clipboard } = require('electron');
+const { app, BrowserWindow, WebContentsView, ipcMain, dialog, shell, Menu, Tray, nativeImage, nativeTheme, screen, clipboard, powerSaveBlocker, utilityProcess } = require('electron');
 const { spawn, spawnSync } = require('node:child_process');
 const { once } = require('node:events');
 const fs = require('node:fs');
@@ -36,6 +36,7 @@ const { createRuntimeUpdates } = require('./runtime-updates.js');
 const { createAppUpdates, packagedApplicationPath } = require('./app-updates.js');
 const { downloadSettings } = require('./download-network.js');
 const { subscriptionEnvironment } = require('./network-settings.js');
+const { restartNetworkEngines, networkChangeSummary, reapplyNetwork } = require('./network-recovery.js');
 const { createEngineSettings, backup } = require('../engines/engine-settings.js');
 const runtimePaths = require('./runtime-paths.js');
 const { SharedConversations, preferences: conversationPreferences, shortTitle } = require('../engines/shared-conversations');
@@ -61,7 +62,7 @@ const { attachInputContextMenu } = require('./input-context-menu');
 const { attachImageContextMenu } = require('./image-context-menu');
 const { attachLinkContextMenu } = require('./link-context-menu');
 const { attachExternalNavigation } = require('./external-navigation');
-const { describePreview, savePreviewText } = require('./file-preview');
+const { describePreview, describePreviewAsync, savePreviewText } = require('./file-preview');
 const { isDocx, readDocxEdit, saveDocxEdit, saveDocxStructure, readDocxCellPreview } = require('./docx-edit');
 const gitService = require('./git-service').createGitService();
 const { ENGINES: SUBSCRIPTION_MODEL_ENGINES } = require('../shared/subscription-models');
@@ -127,6 +128,7 @@ const EDITABLE_PREVIEW_PAGES = new Set(['chat/workbench.html', 'discussions/disc
   .map(page => pathToFileURL(path.join(RENDERER_ROOT, page)).href));
 const APP_NAME = 'Camellia';
 const APP_NAME_CLAUDE = 'Claude Code';
+let backgroundLaunch = process.argv.includes('--background');
 const windowChrome = require('./window-chrome').createWindowChrome({ ipcMain, Menu, nativeTheme, loadConfig, translate });
 const STARTUP_TIMEOUT_MS = 120_000;
 const DEFAULT_PORT = 3000;
@@ -344,6 +346,7 @@ const NETWORK_ENGINES = ['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'grok'
 // could not reach them yet. A turn in flight is never interrupted; the engine
 // joins this map and is stopped the moment it goes idle.
 const pendingEngineRestarts = new Map();
+let networkChangeQueue = Promise.resolve();
 function deferEngineRestart(engine, reason) {
   pendingEngineRestarts.set(engine, reason);
   log(`${engine}: restart deferred until idle (${reason})`);
@@ -358,16 +361,24 @@ function retirePendingEngines() {
 // Called after the network settings are applied. Idle engines are retired at
 // once; busy ones are retired when their current turn ends.
 function applyNetworkChange() {
-  // Every engine has to be replaced: an idle process still holds the old
-  // environment. Busy ones wait for their turn to finish.
-  for (const engine of NETWORK_ENGINES) {
-    if (engineBusy(engine)) deferEngineRestart(engine, 'network change');
-    else void stopEngine(engine).catch(error => log(`${engine}: network change restart failed: ${error.message}`));
-  }
-  retirePendingEngines();
-  const deferred = [...pendingEngineRestarts.keys()];
-  if (deferred.length) log('network change deferred until these engines are idle: ' + deferred.join(', '));
-  return deferred;
+  const run = async () => {
+    // Every engine has to be replaced: an idle process still holds the old
+    // environment. Busy ones wait for their turn to finish.
+    const result = await restartNetworkEngines({
+      engines: NETWORK_ENGINES,
+      isBusy: engineBusy,
+      stop: stopEngine,
+      defer: deferEngineRestart,
+      log,
+    });
+    retirePendingEngines();
+    const deferred = [...pendingEngineRestarts.keys()];
+    if (deferred.length) log('network change deferred until these engines are idle: ' + deferred.join(', '));
+    return { ...result, deferred };
+  };
+  const result = networkChangeQueue.then(run, run);
+  networkChangeQueue = result.catch(() => {});
+  return result;
 }
 function runtimes() {
   if (!runtimeManager) {
@@ -1434,7 +1445,28 @@ sharedConversations = new SharedConversations({ dir: path.join(app.getPath('user
   },
 });
 
-remoteDesktop = require('./remote/desktop').createRemoteDesktop({ app, BrowserWindow, ipcMain, nativeTheme, windowChrome,
+const remoteRuntime = app.isPackaged ? path.join(process.resourcesPath, 'runtime') : path.join(APP_ROOT, 'build', 'runtime-assets');
+const remoteGuard = new (require('./remote/guard').RemoteGuard)({
+  directory: path.join(app.getPath('userData'), 'remote', 'guard'),
+  executable: path.join(remoteRuntime, process.platform === 'win32' ? 'camellia-remote-guard.exe' : 'camellia-remote-guard'),
+  appCommand: {
+    executable: process.execPath,
+    args: app.isPackaged ? ['--background'] : [app.getAppPath(), '--background'],
+    cwd: app.isPackaged ? path.dirname(process.execPath) : app.getAppPath(),
+  },
+  powerSaveBlocker,
+  setAutoStart: enabled => {
+    if (!app.isPackaged || process.env.PORTABLE_EXECUTABLE_FILE) return;
+    app.setLoginItemSettings({
+      ...(process.platform === 'win32' ? { path: process.execPath, args: ['--background'] } : {}),
+      openAtLogin: enabled === true,
+    });
+  },
+  getAutoStart: () => app.isPackaged && !process.env.PORTABLE_EXECUTABLE_FILE
+    && app.getLoginItemSettings(process.platform === 'win32' ? { path: process.execPath, args: ['--background'] } : {}).openAtLogin === true,
+  log,
+});
+remoteDesktop = require('./remote/desktop').createRemoteDesktop({ app, BrowserWindow, ipcMain, nativeTheme, windowChrome, guard: remoteGuard,
   accountUsage: require('./remote/account-usage').createAccountUsage({
     read: () => ({ router: apiRouterState(), insights: accountInsights() }), refresh: () => refreshInsights({ force: true }),
   }),
@@ -1840,7 +1872,7 @@ function createMainWindow() {
   });
   mainWindow.on('closed', () => { mainWindow = null; });
   mainWindow.on('page-title-updated', event => event.preventDefault());
-  mainWindow.once('ready-to-show', () => { mainWindow.show(); });
+  mainWindow.once('ready-to-show', () => { if (!backgroundLaunch) mainWindow.show(); });
 
   attachExternalNavigation(mainWindow.webContents, {
     openExternal: url => shell.openExternal(url), onError: error => log(`External link: ${error.message}`),
@@ -2114,18 +2146,26 @@ if (!gotSingleInstanceLock) {
       runtimeReinstallPreviews.delete(engine);
       return runtimeUpdates().reinstall(engine, preview.plan);
     },
-    'network-settings': async () => ({ ok: true, ...await networkSettings().detect() }),
+    'network-settings': async () => {
+      const service = networkSettings();
+      const state = await service.detect();
+      const verification = service.verify();
+      return { ok: true, ...state, environmentConsistent: verification.consistent, verification };
+    },
     'network-test': () => networkSettings().testConnectivity(),
     'network-save-settings': async payload => {
-      const result = await networkSettings().save(payload);
+      const service = networkSettings();
+      const result = await service.save(payload);
       // Engine processes inherit the proxy environment, so they have to be
       // replaced for a change to take effect without restarting Camellia. The
       // embedded network node is left alone: rebuilding it would drop a phone
       // that is connected right now. Toggling mobile access off and on picks
       // up the new settings there.
-      const deferred = applyNetworkChange();
-      return { ok: true, ...result, engineRestart: deferred.length === 0, deferred };
+      const engines = await applyNetworkChange();
+      const verification = service.verify();
+      return { ok: true, ...result, ...networkChangeSummary(engines, verification), verification };
     },
+    'network-reapply': () => reapplyNetwork({ networkSettings: networkSettings(), restartEngines: applyNetworkChange, log }),
     'download-settings': () => ({ ok: true, ...downloadSettings(loadConfig().downloadProxy) }),
     'download-save-settings': payload => {
       const settings = downloadSettings(payload);
@@ -3170,10 +3210,18 @@ if (!gotSingleInstanceLock) {
     return path.isAbsolute(relative) || area === '..' || area === 'clipboard-attachments' || (area === 'discussions' && folder === 'work');
   }
 
+  const markdownRenderer = require('./markdown-render').createMarkdownRenderer({
+    fork: (modulePath, args, options) => utilityProcess.fork(modulePath, args, options),
+  });
+  ipcMain.handle('dsh:markdown-preview', (event, payload) => textPreviewFrame(event)
+    ? markdownRenderer.render(event.sender, payload) : { ok: false, error: 'Markdown preview is unavailable in this window.' });
+  ipcMain.handle('dsh:markdown-preview-cancel', (event, requestId) => textPreviewFrame(event)
+    ? markdownRenderer.cancel(event.sender, requestId) : { ok: false, error: 'Markdown preview is unavailable in this window.' });
+
   ipcMain.handle('dsh:preview-file', async (event, filePath) => {
     try {
       const frame = textPreviewFrame(event);
-      const file = describePreview(filePath, frame && (edit => {
+      const file = await describePreviewAsync(filePath, frame && (edit => {
         if (!canEditPreviewTarget(edit.target)) return null;
         const token = require('node:crypto').randomUUID();
         textPreviewEdits.set(frame, { token, edit });
@@ -3429,6 +3477,7 @@ if (!gotSingleInstanceLock) {
   // close-to-tray preference is on, closing the window only hides it; Quit
   // here is the real exit.
   function showMainWindow() {
+    backgroundLaunch = false;
     if (mainWindow && !mainWindow.isDestroyed()) {
       if (mainWindow.isMinimized()) mainWindow.restore();
       mainWindow.show();
@@ -3471,6 +3520,10 @@ if (!gotSingleInstanceLock) {
   app.on('activate', () => showMainWindow());
 
   app.whenReady().then(async () => {
+    if (process.platform === 'darwin') {
+      try { backgroundLaunch ||= app.getLoginItemSettings().wasOpenedAtLogin === true; }
+      catch (error) { log('Login launch state: ' + error.message); }
+    }
     settingsWindowSizes.start();
     windowChrome.start();
     try { await networkSettings().initialize(); }

@@ -123,7 +123,7 @@ final class ArtifactDownloads {
                     String statusText = rows.getChildCount() == 0 ? selectedReference != null
                         ? tr("此文件不可用，可能已被移动或删除。请更新并重启电脑端后重试。", "This file is unavailable. It may have been moved or deleted. Update and restart the desktop, then retry.")
                         : tr("未找到可下载文件。只显示此会话引用且仍存在的产物（含在其他目录中生成的文件）；若刚生成，请关闭后重新打开，或更新并重启电脑端。", "No downloadable files found. Only files this conversation referenced and that still exist are shown, including ones produced in another directory. Reopen this panel after generation, or update and restart the desktop.")
-                        : DownloadDirectory.selected(activity) != null
+                        : DownloadDirectory.forAutomaticSave(activity) != null
                             ? tr("保存到：", "Save to: ") + DownloadDirectory.label(activity)
                             : "";
                     status.setText(statusText);
@@ -154,7 +154,7 @@ final class ArtifactDownloads {
             return;
         }
         try {
-            Uri directory = DownloadDirectory.selected(activity);
+            Uri directory = DownloadDirectory.forAutomaticSave(activity);
             if (directory != null && DownloadDirectory.hasPermission(activity, directory)) {
                 JSONObject selected = new JSONObject(file.toString()).put("address", address).put("conversation", conversation).put("discussion", discussion);
                 try { ArtifactDownloadService.startInDirectory(activity, selected, token, directory); showProgress(); }

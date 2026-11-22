@@ -10,7 +10,7 @@ final class ConnectionFailure {
     enum Code {
         OFFLINE, LOGIN_REQUIRED, DEVICE_APPROVAL_REQUIRED, NETWORK_STOPPED, NETWORK_STARTING,
         CONNECT_TIMEOUT, RESPONSE_TIMEOUT, READ_TIMEOUT, TIMEOUT, CONNECTION_REFUSED, NETWORK_UNREACHABLE,
-        CANCELLED, PROTOCOL_ERROR, INVALID_CREDENTIAL, NETWORK_START_FAILED, CONNECTION_FAILED, STREAM_CLOSED
+        CANCELLED, PROTOCOL_ERROR, INVALID_CREDENTIAL, LAN_CERTIFICATE, NETWORK_START_FAILED, CONNECTION_FAILED, STREAM_CLOSED
     }
 
     static Code classify(Throwable error, boolean online) {
@@ -25,6 +25,7 @@ final class ConnectionFailure {
             if (cause instanceof SocketTimeoutException) return Code.TIMEOUT;
             if (cause instanceof NoRouteToHostException || cause instanceof UnknownHostException) return Code.NETWORK_UNREACHABLE;
             if (cause instanceof ConnectException) return Code.CONNECTION_FAILED;
+            if (message != null && message.contains("LAN certificate changed")) return Code.LAN_CERTIFICATE;
             if ("Unsupported protocol".equals(message) || "Invalid JSON".equals(message) || "Invalid snapshot".equals(message)
                     || "Unexpected content type".equals(message) || "Unexpected event stream".equals(message)
                     || "Unexpected stream type".equals(message)) return Code.PROTOCOL_ERROR;
@@ -53,6 +54,7 @@ final class ConnectionFailure {
             case CANCELLED -> chinese ? "连接已取消或因网络切换关闭，请等待重连或刷新。" : "Connection cancelled or closed during a network change. Wait for reconnection or refresh.";
             case PROTOCOL_ERROR -> chinese ? "电脑响应格式或协议不兼容，请更新并重启电脑端。" : "Incompatible desktop response or protocol. Update and restart the desktop app.";
             case INVALID_CREDENTIAL -> chinese ? "本地配对凭据格式无效，请重新配对电脑。" : "Invalid local pairing credential. Pair with the computer again.";
+            case LAN_CERTIFICATE -> chinese ? "局域网证书已变化，请在电脑重新开启局域网访问后重新配对。" : "The LAN certificate changed. Re-enable local access on the computer and pair again.";
             case NETWORK_START_FAILED -> chinese ? "手机内置网络启动失败，请重新打开 App；持续失败请检查网络设置。" : "The phone's embedded network failed to start. Reopen the app; check network settings if this persists.";
             case STREAM_CLOSED -> chinese ? "实时连接已关闭，正在恢复同步。" : "Live connection closed. Restoring sync.";
             default -> chinese ? "连接未完成，暂不能确定原因。请检查电脑端手机访问和两端网络；不要先删除配对。" : "Connection failed for an undetermined reason. Check desktop mobile access and both networks; keep your pairing.";

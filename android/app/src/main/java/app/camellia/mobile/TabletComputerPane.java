@@ -25,8 +25,8 @@ final class TabletComputerPane extends LinearLayout {
         void selected(String address);
         void open(JSONObject computer);
         void test(JSONObject computer);
-        void usage(JSONObject computer);
         void rename(JSONObject computer);
+        void lanPin(JSONObject computer);
         void restart(JSONObject computer);
         void forget(JSONObject computer);
         void add();
@@ -141,11 +141,9 @@ final class TabletComputerPane extends LinearLayout {
         TextView management = label(tr("电脑管理", "Computer management"), 14, style.ink); medium(management);
         management.setPadding(0, dp(22), 0, dp(10)); detail.addView(management);
         LinearLayout tiles = new ActionTiles();
-        LinearLayout usage = tile(tr("额度与用量", "Quota & usage"), "", tr("查看订阅额度、API 余额与调用记录", "View subscription quota, API balances and usage"),
-            "tabletComputerUsage", () -> listener.usage(computer));
         LinearLayout rename = tile(tr("显示名称", "Display name"), listener.name(computer), tr("仅在此设备显示，不修改电脑名称", "Used on this device; the computer's name stays unchanged"),
             "tabletComputerRename", () -> listener.rename(computer));
-        LayoutParams tile = new LayoutParams(0, -1, 1); tile.setMarginEnd(dp(12)); tiles.addView(usage, tile); tiles.addView(rename, new LayoutParams(0, -1, 1));
+        tiles.addView(rename, new LayoutParams(-1, -2));
         detail.addView(tiles);
         LinearLayout maintenance = group(dp(16));
         LinearLayout more = new LinearLayout(getContext()); more.setGravity(Gravity.CENTER_VERTICAL); more.setMinimumHeight(dp(54));
@@ -161,6 +159,9 @@ final class TabletComputerPane extends LinearLayout {
         restart = null;
         if (expanded) {
             maintenance.addView(divider(), new LayoutParams(-1, Math.max(1, dp(1))));
+            TextView lanPin = action(tr("使用 PIN 直连", "Connect with PIN"), "tabletComputerLanPin", () -> listener.lanPin(computer));
+            lanPin.setTextSize(14); lanPin.setPadding(0, dp(12), 0, dp(12)); lanPin.setGravity(Gravity.CENTER_VERTICAL); lanPin.setTextColor(style.ink);
+            maintenance.addView(lanPin, new LayoutParams(-1, -2));
             restart = action(tr("重启桌面端 Camellia", "Restart desktop Camellia"), "tabletComputerRestart", () -> listener.restart(computer));
             restart.setTextSize(14); restart.setPadding(0, dp(12), 0, dp(12)); restart.setGravity(Gravity.CENTER_VERTICAL); restart.setTextColor(style.ink); maintenance.addView(restart, new LayoutParams(-1, -2));
             TextView forget = action(tr("移除配对", "Forget pairing"), "tabletComputerForget", () -> listener.forget(computer));

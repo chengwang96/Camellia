@@ -2,6 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const { EventEmitter } = require('node:events');
 const { render } = require('../src/renderer/chat/markdown-preview');
 const baseUrl = 'file:///C:/project/README.md';
 
@@ -153,4 +154,41 @@ test('heading anchors match their links without regard to case', () => {
   const html = render('## Install (Windows)\n\n[Jump](#install-windows)', { baseUrl });
   assert.match(html, /data-preview-anchor="install-windows"/);
   assert.match(html, /href="#install-windows"/);
+});
+
+test('offloaded Markdown rendering forwards chunks and terminates its child', async () => {
+  const { createMarkdownRenderer } = require('../src/main/markdown-render');
+  const children = [], sent = [];
+  const sender = { isDestroyed: () => false, send: (channel, payload) => sent.push({ channel, ...payload }) };
+  const renderer = createMarkdownRenderer({ fork: () => {
+    const child = new EventEmitter();
+    child.postMessage = value => { child.input = value; };
+    child.kill = () => { child.killed = true; };
+    children.push(child);
+    return child;
+  } });
+  const pending = renderer.render(sender, { source: '# Heading', requestId: 'render-1', options: { sourceLines: true } });
+  const child = children[0];
+  assert.equal(child.input.source, '# Heading');
+  child.emit('message', { chunk: '<h1>Heading</h1>' });
+  child.emit('message', { done: true });
+  assert.deepEqual(await pending, { ok: true });
+  assert.deepEqual(sent, [{ channel: 'dsh:markdown-preview-chunk', requestId: 'render-1', chunk: '<h1>Heading</h1>' }]);
+  assert.equal(child.killed, true);
+});
+
+test('cancelling offloaded Markdown rendering rejects and terminates the matching child', async () => {
+  const { createMarkdownRenderer } = require('../src/main/markdown-render');
+  let child;
+  const sender = { isDestroyed: () => false, send() {} };
+  const renderer = createMarkdownRenderer({ fork: () => {
+    child = new EventEmitter();
+    child.postMessage = () => {};
+    child.kill = () => { child.killed = true; };
+    return child;
+  } });
+  const pending = renderer.render(sender, { source: 'body', requestId: 'render-cancel' });
+  assert.deepEqual(renderer.cancel(sender, 'render-cancel'), { ok: true });
+  await assert.rejects(pending, error => error.name === 'AbortError');
+  assert.equal(child.killed, true);
 });

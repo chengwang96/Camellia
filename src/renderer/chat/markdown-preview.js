@@ -202,5 +202,37 @@
     if (signal?.aborted) throw new DOMException('Preview rendering was cancelled.', 'AbortError');
     return chunks.join('');
   }
-  return { render, renderChunked, highlight, renderOptions };
+  async function renderChunkedOffloaded(source, options = {}) {
+    const desktop = globalThis.dshDesktop;
+    if (!desktop?.markdownPreview) return null;
+    const requestId = globalThis.crypto?.randomUUID?.() || String(Date.now()) + '-' + Math.random();
+    const chunks = [];
+    let rejectRender;
+    const unsubscribe = desktop.onMarkdownPreviewChunk(({ requestId: id, chunk }) => {
+      if (id !== requestId) return;
+      chunks.push(chunk);
+      options.onChunk?.(chunk, chunks.length);
+    });
+    const abort = () => {
+      void desktop.markdownPreviewCancel(requestId);
+      rejectRender?.(new DOMException('Preview rendering was cancelled.', 'AbortError'));
+    };
+    options.signal?.addEventListener('abort', abort, { once: true });
+    try {
+      const result = await new Promise((resolve, reject) => {
+        rejectRender = reject;
+        desktop.markdownPreview({ source: String(source), requestId, options: {
+          baseUrl: options.baseUrl || '', sourceLines: options.sourceLines === true,
+          blockBudget: options.blockBudget || 48 * 1024,
+        } }).then(resolve, reject);
+        if (options.signal?.aborted) abort();
+      });
+      if (!result?.ok) throw new Error(result?.error || 'Markdown rendering failed');
+      return chunks.join('');
+    } finally {
+      options.signal?.removeEventListener('abort', abort);
+      unsubscribe?.();
+    }
+  }
+  return { render, renderChunked, renderChunkedOffloaded, highlight, renderOptions };
 });

@@ -18,11 +18,14 @@ public class RemoteConversationStatusTest extends InstrumentationTestCase {
     }
 
     private void backgroundStopLayout(boolean zh, boolean unknown) {
+        String description = zh ? "Wait for the scheduled report to finish and verify its generated files before continuing"
+            : "等待定时报告完成，然后检查生成的文件并继续整理结果";
         ui(() -> {
             field("chinese", zh); field("conversationId", "status-test");
             var detail = MainActivity.class.getDeclaredMethod("detailScreen"); detail.setAccessible(true); detail.invoke(activity);
             field("displayedConversation", new JSONObject().put("id", "status-test").put("backgroundWork",
-                new JSONObject().put("tasks", new org.json.JSONArray().put(new JSONObject().put("id", "shell").put("engine", "kimi").put("runId", 7).put("canStop", true).put("status", unknown ? "unknown" : "running")))));
+                new JSONObject().put("tasks", new org.json.JSONArray().put(new JSONObject().put("id", "shell").put("engine", "kimi")
+                    .put("runId", 7).put("canStop", true).put("status", unknown ? "unknown" : "running").put("description", description)))));
             field("canStopBackgroundWork", true); field("connected", true); field("controlAllowed", true);
             var update = MainActivity.class.getDeclaredMethod("updateControls"); update.setAccessible(true); update.invoke(activity);
             // Inline work cards live inside the collapsible work strip; reveal it
@@ -44,11 +47,23 @@ public class RemoteConversationStatusTest extends InstrumentationTestCase {
             assertTrue(label.getWidth() > 0); assertNotNull(label.getLayout());
             for (int line = 0; line < label.getLayout().getLineCount(); line++) assertEquals(0, label.getLayout().getEllipsisCount(line));
             assertEquals(zh ? "停止后台任务" : "Stop background tasks", stop.getText().toString());
+            TextView footer = root.findViewWithTag("connectionStatus");
+            String summary = unknown ? (zh ? "后台状态未知 · 重试中" : "Background status unknown · retrying")
+                : (zh ? "1 个后台任务运行中" : "1 background task running");
+            assertEquals(summary + "  ›", footer.getText().toString());
+            assertEquals(1, footer.getLayout().getLineCount());
+            assertEquals(0, footer.getLayout().getEllipsisCount(0));
             android.graphics.Bitmap bitmap = android.graphics.Bitmap.createBitmap(root.getWidth(), root.getHeight(), android.graphics.Bitmap.Config.ARGB_8888);
             root.draw(new android.graphics.Canvas(bitmap));
             try (var output = new java.io.FileOutputStream(new java.io.File(activity.getExternalFilesDir(null), "background-work-" + (unknown ? "unknown-" : "") + (zh ? "zh" : "en") + ".png"))) {
                 assertTrue(bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, output));
             } finally { bitmap.recycle(); }
+            assertTrue(footer.performClick());
+            var workDialog = MainActivity.class.getDeclaredField("workDialog"); workDialog.setAccessible(true);
+            android.app.Dialog dialog = (android.app.Dialog) workDialog.get(activity);
+            TextView details = dialog.findViewById(android.R.id.content).findViewWithTag("workBackgroundDescriptions");
+            assertEquals(description, details.getText().toString());
+            dialog.dismiss();
         });
     }
 

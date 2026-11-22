@@ -162,11 +162,24 @@ public class EndpointTest {
         assertEquals("http://100.127.255.255:1", new Endpoint("http://100.127.255.255:1").origin());
     }
 
+    @Test public void acceptsPinnedPrivateLanAddressesOverHttps() {
+        Endpoint endpoint = new Endpoint("https://192.168.3.9:43127/");
+        assertEquals("https://192.168.3.9:43127", endpoint.origin());
+        assertEquals("192.168.3.9", endpoint.host());
+        assertEquals("43127", endpoint.port());
+        assertTrue(endpoint.isLan());
+        assertEquals(endpoint.origin() + "/v1/status", endpoint.uri("/v1/status").toString());
+        assertEquals("https://10.0.0.4:43127", new Endpoint("https://10.0.0.4:43127").origin());
+        assertEquals("https://172.16.0.4:1", new Endpoint("https://172.16.0.4:1").origin());
+    }
+
     @Test public void rejectsCredentialExfiltrationTargets() {
         String[] invalid = { "https://example.com:443", "http://127.0.0.1:43127", "http://192.168.1.1:80", "http://100.63.0.1:80",
             "http://100.128.0.1:80", "http://100.64.256.1:80", "http://100.64.0.1:0", "http://100.64.0.1:65536",
             "http://100.64.0.1:80@evil.example", "http://evil.example:80", "http://100.64.0.1:80/path", "http://100.64.0.1:80?token=secret",
-            "http://100.64.0.1:80#fragment", "http://100.064.0.1:80", "http://100.64.00.1:80", "http://user@100.64.0.1:80", "http://[::1]:80" };
+            "http://100.64.0.1:80#fragment", "http://100.064.0.1:80", "http://100.64.00.1:80", "http://user@100.64.0.1:80", "http://[::1]:80",
+            "https://192.168.1.1:80/path", "https://192.168.1.1:80?token=secret", "https://192.168.01.1:80",
+            "https://8.8.8.8:43127", "https://100.64.0.1:43127", "http://192.168.1.1:43127" };
         for (String address : invalid) assertThrows(address, IllegalArgumentException.class, () -> new Endpoint(address));
     }
 

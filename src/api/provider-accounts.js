@@ -2,6 +2,7 @@
 
 const { endpoint, modelId } = require('./api-router-config');
 const { normalizeThinking } = require('../shared/model-levels');
+const { GO_ROOT, isOpenCodeGoUrl, openCodeGoHeaders } = require('./opencode-go');
 const number = value => value === null || value === undefined || value === '' ? null : Number.isFinite(Number(value)) ? Number(value) : null;
 const labels = { session: "Current session", rolling: "5-hour", fiveHour: "5-hour", weekly: "Weekly", monthly: "Monthly", daily: "Daily" };
 const time = value => value && Number.isFinite(Date.parse(value)) ? new Date(value).toISOString() : null;
@@ -103,7 +104,7 @@ const adapters = [
   {
     id: 'opencode-go', label: "OpenCode Go subscription quota", source: 'client',
     docs: 'https://github.com/anomalyco/opencode/blob/dev/packages/console/app/src/routes/zen/go/v1/usage.ts',
-    matches: u => u.hostname === 'opencode.ai' && u.pathname.startsWith('/zen/go/'),
+    matches: isOpenCodeGoUrl,
     async query(u, get) {
       const data = await get(`${u.origin}/zen/go/v1/usage`), out = empty();
       for (const [id, usage] of Object.entries(data.usage || {})) {
@@ -211,9 +212,11 @@ function catalogModel(provider, entry) {
   try { id = modelId(id); } catch { return null; }
   const wire = typeof entry === 'object' && entry !== null ? entry.api || entry.protocol : '';
   const protocol = /anthropic|messages/i.test(wire) || (provider.type === 'commandcode' && /claude/.test(id)) ? 'anthropic' : 'auto';
-  // Catalogs like OpenRouter report the model's context limit; keep it as the cap.
+  // OpenRouter reports a top-level context limit; OpenCode nests it under
+  // limit.context. Keep either shape as the model's maximum.
   const maxContext = typeof entry === 'object' && entry !== null
-    ? Number(entry.context_length ?? entry.context_window ?? entry.max_context_length ?? entry.max_context ?? entry.max_input_tokens) || undefined : undefined;
+    ? Number(entry.context_length ?? entry.context_window ?? entry.max_context_length ?? entry.max_context
+      ?? entry.max_input_tokens ?? entry.limit?.context) || undefined : undefined;
   const thinking = catalogThinking(entry);
   return { id, upstream, protocol, ...(Number.isSafeInteger(maxContext) && maxContext >= 4096 ? { maxContext } : {}), ...(thinking ? { thinking } : {}) };
 }
@@ -302,7 +305,8 @@ function documentedThinking(provider, model) {
   }
 }
 async function fetchModels(provider, key, options = {}) {
-  const base = endpoint(provider.baseUrl);
+  const inferenceBase = endpoint(provider.baseUrl);
+  const base = isOpenCodeGoUrl(new URL(inferenceBase)) ? GO_ROOT + '/v1' : inferenceBase;
   const ollama = provider.type === 'ollama' || new URL(base).hostname === 'ollama.com';
   const commandcode = new URL(base).hostname === 'api.commandcode.ai' && new URL(base).pathname === '/provider/v1';
   let data;
@@ -378,8 +382,10 @@ async function fetchModels(provider, key, options = {}) {
 async function verifyModel(provider, key, model, options = {}) {
   const wire = model.protocol && model.protocol !== 'auto' ? model.protocol : provider.protocol === 'anthropic' ? 'anthropic' : 'openai';
   const base = endpoint(wire === 'anthropic' && provider.anthropicBaseUrl ? provider.anthropicBaseUrl : provider.baseUrl);
+  const headers = wire === 'anthropic' ? { 'x-api-key': key, 'anthropic-version': '2023-06-01' } : {};
+  if (isOpenCodeGoUrl(new URL(base))) Object.assign(headers, openCodeGoHeaders());
   const data = await requestJson(base + (wire === 'anthropic' ? '/messages' : '/chat/completions'), key, {
-    ...options, method: 'POST', headers: wire === 'anthropic' ? { 'x-api-key': key, 'anthropic-version': '2023-06-01' } : {},
+    ...options, method: 'POST', headers,
     body: { model: model.upstream, messages: [{ role: 'user', content: 'Reply OK.' }], max_tokens: 16, stream: false },
   });
   if (data.error || !(wire === 'anthropic' ? Array.isArray(data.content) : Array.isArray(data.choices) && data.choices.length)) throw new Error("The API did not return a valid model response");

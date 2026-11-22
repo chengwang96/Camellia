@@ -406,17 +406,7 @@ public final class SettingsActivity extends Activity {
         // actually have the hold gesture.
         settingsStyle.note(content, tr("回车发送模式会向键盘声明发送键：搜狗等输入法可长按发送键换行，而 Gboard 等没有长按手势的键盘需要改用回车换行并点击发送按钮。", "Enter-sends mode declares a send key. Keyboards such as Sogou insert a newline while it is held; keyboards without a hold gesture, such as Gboard, need newline mode and the send button."));
         settingsStyle.note(content, tr("以上设置仅作用于这台手机。", "These settings apply to this phone only."));
-        LinearLayout downloads = settingsStyle.group(content, tr("下载", "Downloads"));
-        android.net.Uri directory = DownloadDirectory.selected(this);
-        settingsStyle.action(downloads, tr("默认下载目录", "Default download folder"),
-            directory == null ? tr("每次询问保存位置", "Ask where to save each time") : DownloadDirectory.label(this),
-            "preference:downloadDirectory", false, () -> {
-                try { startActivityForResult(DownloadDirectory.picker(this), DownloadDirectory.PICK_REQUEST); }
-                catch (Exception error) { showStatus(tr("无法打开文件夹选择器。", "Cannot open the folder picker.")); }
-            });
-        if (directory != null) settingsStyle.action(downloads, tr("每次选择保存位置", "Choose a location each time"), "",
-            "downloadDirectoryClear", false, () -> { DownloadDirectory.clear(this); general(); });
-        settingsStyle.note(content, tr("选择并授权一次，后续下载自动保存；同名文件自动编号。", "Authorize a folder once to save future downloads there. Duplicate names receive a number."));
+        downloadSettings();
         LinearLayout remote = settingsStyle.group(content, tr("远程控制", "Remote control"));
         settingsStyle.toggle(remote, tr("短暂离开时保持连接", "Keep connection while away"),
             tr("后台最多保持 30 分钟，短暂切换应用后可直接继续。", "Keep the connection for up to 30 minutes in the background so you can return quickly."),
@@ -435,13 +425,46 @@ public final class SettingsActivity extends Activity {
         settingsStyle.note(content, tr("保持期间会显示通知，可能增加耗电；到时自动断开，返回应用后重新连接，系统也可能提前结束后台运行。", "A notification is shown while active, which may use more battery. The connection drops at the limit and reconnects when you return; Android may also end background activity earlier."));
     }
 
+    private void downloadSettings() {
+        LinearLayout downloads = settingsStyle.group(content, tr("下载", "Downloads"));
+        downloads.setTag("downloadSettings");
+        TextView note = settingsStyle.note(content, tr("选择并授权一次，后续下载自动保存；同名文件自动编号。", "Authorize a folder once to save future downloads there. Duplicate names receive a number."));
+        note.setTag("downloadDirectoryNote");
+        boolean ask = DownloadDirectory.asksEachTime(this);
+        settingsStyle.toggle(downloads, tr("每次选择保存位置", "Choose a location each time"), "",
+            "preference:askDownloadLocationEachTime", ask, (view, checked) -> {
+                DownloadDirectory.setAskEachTime(this, checked);
+                renderDownloadFolder(downloads, note, checked);
+            });
+        renderDownloadFolder(downloads, note, ask);
+    }
+
+    private void renderDownloadFolder(LinearLayout downloads, TextView note, boolean ask) {
+        // Keep the switch mounted while replacing the folder row and its divider.
+        downloads.removeViews(1, downloads.getChildCount() - 1);
+        note.setVisibility(ask ? View.GONE : View.VISIBLE);
+        if (ask) return;
+        String folder = DownloadDirectory.selected(this) == null
+            ? tr("选择文件夹", "Choose a folder") : DownloadDirectory.label(this);
+        settingsStyle.action(downloads, tr("默认下载目录", "Default download folder"), folder,
+            "preference:downloadDirectory", false, () -> {
+                try { startActivityForResult(DownloadDirectory.picker(this), DownloadDirectory.PICK_REQUEST); }
+                catch (Exception error) { showStatus(tr("无法打开文件夹选择器。", "Cannot open the folder picker.")); }
+            });
+    }
+
     @Override protected void onActivityResult(int request, int result, android.content.Intent data) {
         super.onActivityResult(request, result, data);
         if (request != DownloadDirectory.PICK_REQUEST || result != RESULT_OK || data == null) return;
         worker.execute(() -> {
             try {
                 DownloadDirectory.saveSelection(this, data);
-                runOnUiThread(() -> { if (!isDestroyed() && section.equals("general")) general(); });
+                runOnUiThread(() -> {
+                    if (isDestroyed() || !section.equals("general")) return;
+                    LinearLayout downloads = content.findViewWithTag("downloadSettings");
+                    if (downloads != null) renderDownloadFolder(downloads, content.findViewWithTag("downloadDirectoryNote"),
+                        DownloadDirectory.asksEachTime(this));
+                });
             } catch (Exception error) {
                 runOnUiThread(() -> { if (!isDestroyed()) showStatus(tr("无法保存下载目录，请选择可写入的文件夹并允许访问。", "Cannot save this folder. Select a writable folder and allow access.")); });
             }

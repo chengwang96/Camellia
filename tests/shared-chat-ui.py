@@ -1201,7 +1201,7 @@ with sync_playwright() as p:
     page.goto((repo/'src/renderer/chat/workbench.html').as_uri()+'?harness=claude',wait_until='networkidle')
     page.wait_for_function('uiReady')
     page.locator('#input').fill('/')
-    expect(page.locator('.slash-pop .slash-row')).to_have_count(6)
+    expect(page.locator('.slash-pop .slash-row')).to_have_count(7)
     expect(page.locator('.slash-pop')).to_contain_text('/find')
     expect(page.locator('.slash-pop')).to_contain_text('/attach')
     page.locator('#input').fill('/g')

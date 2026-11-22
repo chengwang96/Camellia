@@ -57,6 +57,30 @@ test('fetched thinking metadata survives config reload and drives conversation m
   assert.equal(normalizeConfig(restored).providers[0].models[0].thinking, undefined);
 });
 
+test('local Codex API profiles fill missing metadata without overriding route declarations', () => {
+  const config = normalizeConfig({ providers: [{ id: 'codex-pool', type: 'custom', baseUrl: 'https://pool.example/v1',
+    models: [{ id: 'gpt-6.2-sol', upstream: 'gpt-6.2-sol' }], keys: [{ id: 'key', key: 'secret' }] }] });
+  const values = ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
+  const state = publicState(config);
+  assert.deepEqual(state.modelThinking['gpt-6.2-sol'], { values, default: 'low' });
+  assert.deepEqual(state.modelProfiles['gpt-6.2-sol'], {
+    name: 'GPT-6.2-Sol', contextWindow: 872000, maxContext: 872000, thinking: { values, default: 'low' },
+  });
+  assert.deepEqual(conversationModels('codex', {}, { router: () => config }), [{
+    id: 'gpt-6.2-sol', name: 'GPT-6.2-Sol', thinking: values, contextWindow: 872000,
+  }]);
+  assert.equal(state.providers[0].models[0].contextWindow, undefined);
+  assert.equal(state.providers[0].models[0].thinking, undefined);
+
+  config.providers[0].models[0].contextWindow = 128000;
+  config.providers[0].models[0].thinking = { values: ['low', 'high'], default: 'high' };
+  const overridden = publicState(config);
+  assert.deepEqual(overridden.modelThinking['gpt-6.2-sol'], { values: ['low', 'high'], default: 'high' });
+  assert.deepEqual(conversationModels('codex', {}, { router: () => config }), [{
+    id: 'gpt-6.2-sol', name: 'GPT-6.2-Sol', thinking: ['low', 'high'], contextWindow: 128000,
+  }]);
+});
+
 test('subscription catalog uses account metadata, never API guesses or account secrets', () => {
   const sources = { codex: () => ({ account: { token: 'secret' }, models: [{ id: 'account-model', supportedReasoningEfforts: [{ reasoningEffort: 'high' }] }] }),
     kimi: () => ({ account: {}, models: [{ id: 'kimi-model', contextWindow: 100000,

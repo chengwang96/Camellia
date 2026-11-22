@@ -697,7 +697,6 @@
 "每 " = "every ";
 "每次最多选择 100 个会话。" = "Select at most 100 chats at a time.";
 "每次询问" = "Ask every time";
-"每次询问保存位置" = "Ask where to save each time";
 "每次选择保存位置" = "Choose a location each time";
 "永久删除" = "Delete permanently";
 "永久删除此会话？" = "Permanently delete this chat?";
@@ -1019,6 +1018,7 @@
 "选择回答者：" = "Select respondent: ";
 "选择并授权一次，后续下载自动保存；同名文件自动编号。" = "Choose and authorize a folder once. Future downloads save there automatically, with numbered names for duplicates.";
 "选择执行引擎，沿用电脑端的连接设置。" = "Choose an engine using your desktop connection settings.";
+"选择文件夹" = "Choose a folder";
 "选择模型" = "Choose a model";
 "选择电脑" = "Choose a computer";
 "通用" = "General";

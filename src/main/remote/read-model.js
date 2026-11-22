@@ -156,7 +156,18 @@ function mobileGoal(goal, rows, info) {
 }
 
 class RemoteReadModel {
-  constructor(manager) { this.manager = manager; this.previewCache = new WeakMap(); this.compactions = new WeakMap(); }
+  constructor(manager) {
+    this.manager = manager;
+    this.previewCache = new WeakMap(); this.compactions = new WeakMap(); this.activeOutputs = new WeakMap();
+  }
+  activeOutput(active) {
+    if (!active) return null;
+    const previous = this.activeOutputs.get(active);
+    if (previous && previous.eventSeq === active.eventSeq && previous.events === active.events) return previous.output;
+    const output = active.events?.length ? projectOutput(active.events) : null;
+    this.activeOutputs.set(active, { eventSeq: active.eventSeq, events: active.events, output });
+    return output;
+  }
   observeCompaction(update) {
     if (!update?.compaction && update?.type !== 'gui:compaction') return;
     const conversation = this.manager.items.get(update?.sessionId || update?.session_id);
@@ -329,7 +340,7 @@ class RemoteReadModel {
     const saved = unchanged ? {} : info ? this.manager.historyStore.projection(id, 'remote:' + (before ?? 'latest'), build) : build();
     const { messages, nextBefore } = saved;
     const active = this.manager.recovering.get(id) || this.manager.active.get(id);
-    const output = active?.events?.length ? projectOutput(active.events) : null;
+    const output = this.activeOutput(active);
     const live = !before && active && !active.internal ? { runId: active.facade.gen, eventSeq: active.eventSeq,
       startedAt: active.startedAt, userSeq: active.userSeq, ...text(output ? output.text : active.text || active.assistant.join('\n\n')),
       ...(output?.process.length ? { process: output.process } : {}),

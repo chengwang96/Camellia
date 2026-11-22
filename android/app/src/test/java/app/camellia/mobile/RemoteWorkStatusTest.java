@@ -10,12 +10,12 @@ public class RemoteWorkStatusTest {
         JSONObject task = new JSONObject().put("id", "task").put("status", "unknown").put("engine", "kimi").put("runId", 7).put("canStop", true);
         JSONObject conversation = new JSONObject().put("backgroundWork", new JSONObject().put("tasks", new JSONArray().put(task)));
         assertTrue(RemoteWorkStatus.backgroundUnknown(conversation));
-        assertEquals("Background task status unknown · retrying · task", RemoteWorkStatus.background(conversation, false));
-        assertEquals("后台任务状态未知 · 正在重试 · task", RemoteWorkStatus.background(conversation, true));
+        assertEquals("Background status unknown · retrying", RemoteWorkStatus.background(conversation, false));
+        assertEquals("后台状态未知 · 重试中", RemoteWorkStatus.background(conversation, true));
         assertEquals(1, RemoteWorkStatus.stoppableBackgroundTasks(conversation).length());
         task.put("status", "running");
         assertFalse(RemoteWorkStatus.backgroundUnknown(conversation));
-        assertEquals("Background work still running · task", RemoteWorkStatus.background(conversation, false));
+        assertEquals("1 background task running", RemoteWorkStatus.background(conversation, false));
     }
     @Test public void backgroundStopTargetsKeepOnlyExplicitlyControllableNativeIdentities() throws Exception {
         JSONArray tasks = new JSONArray()
@@ -90,10 +90,13 @@ public class RemoteWorkStatusTest {
         JSONObject work = new JSONObject().put("engine", "kimi").put("tasks", new JSONArray().put(first));
         JSONObject conversation = new JSONObject().put("backgroundWork", work);
         assertEquals(1, RemoteWorkStatus.backgroundCount(conversation));
-        assertEquals("Background work still running · Run the analysis",
+        assertEquals("1 background task running",
             RemoteWorkStatus.conversation(conversation, null, null, false));
-        assertEquals("后台工作仍在运行 · Run the analysis",
+        assertEquals("1 个后台任务运行中",
             RemoteWorkStatus.conversation(conversation, null, null, true));
+        assertEquals("Run the analysis", RemoteWorkStatus.backgroundDescriptions(conversation));
+        first.put("description", "生成报告");
+        assertEquals("1 background task running", RemoteWorkStatus.conversation(conversation, null, null, false));
         // A live reply, or a request waiting for the person at the computer,
         // owns the one-line dock even while background work continues.
         assertEquals("Replying…", RemoteWorkStatus.conversation(
@@ -103,13 +106,14 @@ public class RemoteWorkStatusTest {
         // Several tasks are counted rather than naming one arbitrarily, and an
         // entry without an id is malformed the way the desktop's filter reads it.
         work.getJSONArray("tasks").put(new JSONObject().put("id", "t2"));
-        assertEquals("后台工作仍在运行 · 2 个任务", RemoteWorkStatus.conversation(conversation, null, null, true));
-        work.getJSONArray("tasks").put(new JSONObject());
+        assertEquals("2 个后台任务运行中", RemoteWorkStatus.conversation(conversation, null, null, true));
+        assertEquals("2 background tasks running", RemoteWorkStatus.conversation(conversation, null, null, false));
+        work.getJSONArray("tasks").put(new JSONObject()).put(new JSONObject().put("id", JSONObject.NULL));
         assertEquals(2, RemoteWorkStatus.backgroundCount(conversation));
-        // A task with no description falls back to its id rather than drawing a separator alone.
-        assertEquals("Background work still running · t1", RemoteWorkStatus.conversation(
-            new JSONObject().put("backgroundWork", new JSONObject().put("tasks",
-                new JSONArray().put(new JSONObject().put("id", "t1")))), null, null, false));
+        assertEquals("生成报告\n\nt2", RemoteWorkStatus.backgroundDescriptions(conversation));
+        JSONObject countOnly = new JSONObject().put("backgroundTaskCount", 3);
+        assertEquals("3 个后台任务运行中", RemoteWorkStatus.background(countOnly, true));
+        assertEquals("", RemoteWorkStatus.backgroundDescriptions(countOnly));
     }
 
     @Test public void discussionVerifyingAndStoppingAreNotGenericReplies() throws Exception {

@@ -67,6 +67,7 @@ class KimiSession extends AcpSession {
 }
 
 const MANAGED_PROVIDER = 'managed:kimi-code';
+const DYNAMIC_TOOL_CAPABILITY = 'dynamically_loaded_tools';
 const DIRECT_HOSTS = ['api.kimi.com', 'auth.kimi.com', 'www.kimi.com', 'kimi.com', '.kimi.com',
   'api.kimi.ai', 'auth.kimi.ai', 'www.kimi.ai', 'kimi.ai', '.kimi.ai'];
 function kimiEnvironment(home, inherited = process.env) {
@@ -95,7 +96,10 @@ function managedKimiConfig(home) {
       || authUrl.protocol !== 'https:' || !['auth.kimi.com', 'auth.kimi.ai'].includes(authUrl.hostname) || authUrl.username || authUrl.password || authUrl.port) {
     throw new Error('The Kimi subscription profile must use the official Kimi service. Sign in again.');
   }
-  const models = Object.fromEntries(Object.entries(config.models || {}).filter(([, value]) => value.provider === MANAGED_PROVIDER));
+  const models = Object.fromEntries(Object.entries(config.models || {}).filter(([, value]) => value.provider === MANAGED_PROVIDER)
+    .map(([id, value]) => [id, Array.isArray(value.capabilities) && value.capabilities.includes(DYNAMIC_TOOL_CAPABILITY)
+      ? { ...value, capabilities: value.capabilities.filter(capability => capability !== DYNAMIC_TOOL_CAPABILITY) }
+      : value]));
   return { ...config, providers: { [MANAGED_PROVIDER]: { ...provider, api_key: '' } }, models };
 }
 

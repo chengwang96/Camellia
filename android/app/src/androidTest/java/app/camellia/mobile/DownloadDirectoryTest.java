@@ -7,6 +7,8 @@ import android.net.Uri;
 import android.provider.DocumentsContract;
 import android.test.InstrumentationTestCase;
 import android.view.View;
+import android.widget.LinearLayout;
+import android.widget.Switch;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicReference;
@@ -50,10 +52,17 @@ public class DownloadDirectoryTest extends InstrumentationTestCase {
         assertFalse("The test download must be removed", DownloadDirectoryFixture.files(getInstrumentation().getTargetContext()).contains(file));
     }
 
-    public void testSettingsChooseRememberAndClearDirectory() throws Exception {
+    public void testSettingsChooseRememberAndToggleDirectory() throws Exception {
         activity = LocalChatFixture.start(getInstrumentation(), new Intent(getInstrumentation().getTargetContext(), SettingsActivity.class)
             .putExtra("section", "general").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
-        await(() -> activity.getWindow().getDecorView().findViewWithTag("preference:downloadDirectory") != null);
+        await(() -> askEachTimeSwitch() != null);
+        ui(() -> {
+            Switch ask = askEachTimeSwitch();
+            assertFalse("The folder saved by older versions keeps automatic downloads enabled", ask.isChecked());
+            View folder = folderRow();
+            LinearLayout card = (LinearLayout) folder.getParent();
+            assertTrue(card.indexOfChild((View) ask.getParent()) < card.indexOfChild(folder));
+        });
         final int[] picked = {0};
         monitor = new Instrumentation.ActivityMonitor() {
             @Override public Instrumentation.ActivityResult onStartActivity(Intent intent) {
@@ -64,35 +73,59 @@ public class DownloadDirectoryTest extends InstrumentationTestCase {
             }
         };
         getInstrumentation().addMonitor(monitor);
-        ui(() -> activity.getWindow().getDecorView().findViewWithTag("preference:downloadDirectory").performClick());
-        await(() -> DownloadDirectoryFixture.TREE.equals(DownloadDirectory.selected(activity))
-            && activity.getWindow().getDecorView().findViewWithTag("downloadDirectoryClear") != null);
+        View previousFolder = folderRow();
+        ui(previousFolder::performClick);
+        await(() -> folderRow() != null && folderRow() != previousFolder);
+        assertTrue(folderRow().getContentDescription().toString().contains(DownloadDirectoryFixture.PATH));
         assertEquals(1, picked[0]);
         assertTrue(DownloadDirectory.hasPermission(activity, DownloadDirectoryFixture.TREE));
-        assertEquals(DownloadDirectoryFixture.PATH, DownloadDirectory.label(activity));
         assertEquals(DownloadDirectoryFixture.TREE, DownloadDirectory.picker(activity).getParcelableExtra(DocumentsContract.EXTRA_INITIAL_URI));
+        captureSettings(folderRow(), "default-download-settings");
+        ui(() -> {
+            Switch ask = askEachTimeSwitch();
+            ask.performClick();
+            assertSame("The switch stays in place as the folder row is hidden", ask, askEachTimeSwitch());
+            assertTrue(ask.isChecked());
+            assertNull(folderRow());
+        });
+        assertNull(DownloadDirectory.forAutomaticSave(activity));
+        assertTrue(DownloadDirectory.hasPermission(activity, DownloadDirectoryFixture.TREE));
+        captureSettings(askEachTimeSwitch(), "ask-download-location-settings");
         ui(activity::finish); await(() -> activity.isDestroyed());
         activity = LocalChatFixture.start(getInstrumentation(), new Intent(getInstrumentation().getTargetContext(), SettingsActivity.class)
             .putExtra("section", "general").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
-        await(() -> activity.getWindow().getDecorView().findViewWithTag("downloadDirectoryClear") != null);
+        await(() -> askEachTimeSwitch() != null);
         ui(() -> {
-            View row = activity.getWindow().getDecorView().findViewWithTag("preference:downloadDirectory");
+            Switch ask = askEachTimeSwitch();
+            assertTrue(ask.isChecked());
+            assertNull(folderRow());
+            ask.performClick();
+            assertFalse(ask.isChecked());
+            assertTrue(folderRow().getContentDescription().toString().contains(DownloadDirectoryFixture.PATH));
+        });
+        assertEquals(DownloadDirectoryFixture.TREE, DownloadDirectory.forAutomaticSave(activity));
+        assertEquals(1, picked[0]);
+    }
+
+    private Switch askEachTimeSwitch() {
+        return activity.getWindow().getDecorView().findViewWithTag("preference:askDownloadLocationEachTime");
+    }
+
+    private View folderRow() {
+        return activity.getWindow().getDecorView().findViewWithTag("preference:downloadDirectory");
+    }
+
+    private void captureSettings(View row, String name) throws Exception {
+        ui(() -> {
             row.requestRectangleOnScreen(new android.graphics.Rect(0, 0, row.getWidth(), row.getHeight()), true);
         });
         getInstrumentation().waitForIdleSync();
         var screenshot = getInstrumentation().getUiAutomation().takeScreenshot();
         if (screenshot != null) {
-            try (var output = new java.io.FileOutputStream(new java.io.File(activity.getExternalFilesDir(null), "default-download-settings.png"))) {
+            try (var output = new java.io.FileOutputStream(new java.io.File(activity.getExternalFilesDir(null), name + ".png"))) {
                 screenshot.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, output);
             } finally { screenshot.recycle(); }
         }
-        ui(() -> {
-            View row = activity.getWindow().getDecorView().findViewWithTag("preference:downloadDirectory");
-            assertTrue(row.getContentDescription().toString().contains(DownloadDirectoryFixture.PATH));
-            activity.getWindow().getDecorView().findViewWithTag("downloadDirectoryClear").performClick();
-        });
-        assertNull(DownloadDirectory.selected(activity));
-        assertFalse(DownloadDirectory.hasPermission(activity, DownloadDirectoryFixture.TREE));
     }
 
     public void testDuplicatesCreateNewFilesWithoutReplacingOriginal() throws Exception {
@@ -124,6 +157,14 @@ public class DownloadDirectoryTest extends InstrumentationTestCase {
         DownloadDirectory.saveSelection(getInstrumentation().getTargetContext(), DownloadDirectoryFixture.selection());
         DownloadDirectory.clear(getInstrumentation().getTargetContext());
         assertNull(DownloadDirectory.selected(getInstrumentation().getTargetContext()));
+        assertSavePicker();
+    }
+
+    public void testAskEachTimeUsesSavePickerWithFolderStillAuthorized() throws Exception {
+        var context = getInstrumentation().getTargetContext();
+        DownloadDirectory.setAskEachTime(context, true);
+        assertEquals(DownloadDirectoryFixture.TREE, DownloadDirectory.selected(context));
+        assertTrue(DownloadDirectory.hasPermission(context, DownloadDirectoryFixture.TREE));
         assertSavePicker();
     }
 

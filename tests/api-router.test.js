@@ -93,6 +93,36 @@ test('API transport honors proxy bypass rules and never proxies local HTTP provi
   assert.equal(proxyFor(url, { https_proxy: 'http://lower.test:7890', HTTPS_PROXY: 'http://upper.test:7890' }), 'http://lower.test:7890');
 });
 
+test('OpenCode Go forwards stable session IDs on subscription routes only', async t => {
+  const transport = require('../src/api/api-transport');
+  const upstreams = [];
+  const harness = await fixture(t, (request, res) => reply(res, 200, completion(request.body.model)), url => {
+    const go = PRESETS.find(p => p.type === 'opencode-go');
+    t.mock.method(transport, 'request', (target, options, callback) => {
+      upstreams.push(target.origin + target.pathname);
+      return http.request(url + target.pathname, options, callback);
+    });
+    return [
+      { ...provider('go', go.baseUrl), ...go, models: [mapping()] },
+      { ...provider('paid', 'https://opencode.ai/inference/openai/v1', ['paid-key'], [mapping('paid-model')]), type: go.type },
+    ];
+  }, { quotaCheck: { enabled: false } });
+  assert.equal((await harness.post({}, '/session/first/v1/chat/completions')).status, 200);
+  assert.equal((await harness.post({}, '/session/first/v1/chat/completions')).status, 200);
+  assert.equal((await harness.post({}, '/session/second/v1/chat/completions')).status, 200);
+  assert.equal((await harness.post({ model: 'paid-model' }, '/session/first/v1/chat/completions')).status, 200);
+  assert.deepEqual(upstreams, [
+    ...Array(3).fill('https://opencode.ai/inference/go/openai/v1/chat/completions'),
+    'https://opencode.ai/inference/openai/v1/chat/completions',
+  ]);
+  const [first, second, third, fourth] = harness.requests.map(request => request.headers);
+  assert.match(first['user-agent'], /^Camellia\//);
+  assert.match(first['x-opencode-session'], /^ses_[0-9a-f]{32}$/);
+  assert.equal(second['x-opencode-session'], first['x-opencode-session']);
+  assert.notEqual(third['x-opencode-session'], first['x-opencode-session']);
+  assert.equal(fourth['x-opencode-session'], undefined);
+});
+
 test('router uses the current HTTPS proxy through CONNECT instead of a stale direct transport', async t => {
   const names = ['HTTP_PROXY', 'http_proxy', 'HTTPS_PROXY', 'https_proxy', 'NO_PROXY', 'no_proxy'];
   const previous = Object.fromEntries(names.map(name => [name, process.env[name]]));

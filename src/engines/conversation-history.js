@@ -13,6 +13,7 @@ const { INLINE_CHARS, projectRow, isStreamingToolRow } = require('./tool-history
 // without loading an entire conversation's index into the heap.
 const HEADER = 4096, RECORD = 80, BLOCK = RECORD * 512, READ = 128 * 1024;
 const VERSION = 5;
+const REFERENCE_IDS = /[a-f0-9]{64}|[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}/gi;
 const FLAGS = { public: 1, visible: 2, remote: 4, user: 8, summary: 16, preview: 32, sequence: 64, tool: 128, file: 256 };
 const signature = stat => stat ? [stat.dev, stat.ino, stat.size, stat.mtimeMs, stat.ctimeMs].join(':') : 'missing';
 const tokens = text => {
@@ -29,6 +30,18 @@ function checksum(buffer, offset = 0) {
   let hash = 2166136261;
   for (let i = 0; i < RECORD; i += 4) if (i !== 60) hash = Math.imul(hash ^ buffer.readUInt32LE(offset + i), 16777619);
   return hash >>> 0;
+}
+function collectReferenceIds(value, found) {
+  const pending = [value];
+  while (pending.length) {
+    const current = pending.pop();
+    if (typeof current === 'string') {
+      for (const match of current.matchAll(REFERENCE_IDS)) found.add(match[0].toLowerCase());
+    } else if (Array.isArray(current)) for (const item of current) pending.push(item);
+    else if (current && typeof current === 'object') {
+      for (const [key, item] of Object.entries(current)) pending.push(key, item);
+    }
+  }
 }
 function readAt(fd, size, offset) {
   const buffer = Buffer.alloc(size);
@@ -153,7 +166,7 @@ class ConversationHistory {
   report(error) { try { this.onCacheError(error); } catch {} }
   // Only an unterminated invalid tail is repairable. An invalid complete line
   // remains an error, and the original torn file is retained before truncation.
-  scan(id, consume, start = 0) {
+  scan(id, consume, start = 0, repair = true) {
     const file = this.file(id), before = stat(file);
     if (!before) return { source: null, tail: null, repaired: false };
     const fd = openSync(file, 'r'), chunk = Buffer.alloc(READ);
@@ -164,14 +177,14 @@ class ConversationHistory {
       let row;
       try { row = JSON.parse(buffer.toString('utf8')); this.metrics.parsedRows++; }
       catch (error) {
-        if (complete) throw Object.assign(new Error('Conversation history is damaged: ' + id), { historyDamage: true });
+        if (complete || !repair) throw Object.assign(new Error('Conversation history is damaged: ' + id), { historyDamage: true });
         // Check the opened file and pathname still describe the same source.
         if (signature(fs.fstatSync(fd)) !== signature(before) || signature(stat(file)) !== signature(before))
           throw new Error('Conversation history changed while reading');
         fs.copyFileSync(file, file + '.torn-' + Date.now()); fs.truncateSync(file, lineStart); repaired = true;
         return;
       }
-      consume(row, lineStart, end - lineStart);
+      consume(row, lineStart, end - lineStart, buffer);
       if (!complete) tail = lineStart;
       parts = []; length = 0;
     };
@@ -274,6 +287,51 @@ class ConversationHistory {
         this.report(error); return this.rebuild(id, true);
       }
       throw error;
+    }
+  }
+  compactStreaming(id) {
+    const source = this.file(id), before = stat(source);
+    if (!before?.size) return { changed: false, removedRows: 0, removedBytes: 0, sizeBefore: before?.size || 0, sizeAfter: before?.size || 0 };
+    fs.mkdirSync(this.indexDir, { recursive: true });
+    const index = this.index(id); this.checkIndex(index, true);
+    const token = randomUUID(), pendingSource = source + '.stream-' + token + '.tmp', pendingIndex = index + '.' + token + '.tmp';
+    let sourceFd, indexFd, committed = false;
+    let previousGeneration;
+    try { previousGeneration = this.readIndex(id).generation; } catch {}
+    const value = this.empty(id, before), newline = Buffer.from('\n');
+    let removedRows = 0, removedBytes = 0, offset = 0;
+    try {
+      sourceFd = openSync(pendingSource, 'wx+', 0o600); indexFd = openSync(pendingIndex, 'wx+', 0o600);
+      const scanned = this.scan(id, (row, originalOffset, length, buffer) => {
+        if (isStreamingToolRow(row)) { removedRows++; removedBytes += length + 1; return; }
+        writeAt(sourceFd, buffer, offset); writeAt(sourceFd, newline, offset + length);
+        this.add(indexFd, value, row, offset, length);
+        offset += length + 1;
+      }, 0, false);
+      if (!removedRows) return { changed: false, removedRows: 0, removedBytes: 0, sizeBefore: before.size, sizeAfter: before.size };
+      if (signature(stat(source)) !== signature(before)) throw new Error('Conversation history changed while compacting');
+      fs.ftruncateSync(sourceFd, offset); fs.fsyncSync(sourceFd); fs.closeSync(sourceFd); sourceFd = undefined;
+      fs.ftruncateSync(indexFd, HEADER + value.count * RECORD);
+      const backup = source + '.pre-stream-compact-' + Date.now() + '-' + token;
+      fs.copyFileSync(source, backup, fs.constants.COPYFILE_EXCL);
+      if (signature(stat(source)) !== signature(before)) throw new Error('Conversation history changed while compacting');
+      fs.renameSync(pendingSource, source);
+      const after = stat(source);
+      value.source = signature(after); value.size = after.size; value.tail = null; value.repaired = scanned.repaired;
+      this.header(indexFd, value); fs.fsyncSync(indexFd); fs.closeSync(indexFd); indexFd = undefined;
+      fs.renameSync(pendingIndex, index);
+      const result = { ...value, index, indexStamp: signature(stat(index)) };
+      this.forget(id); this.put(id + ':meta', result, HEADER);
+      this.pruneToolProjections(result, previousGeneration);
+      committed = true;
+      return { changed: true, removedRows, removedBytes, sizeBefore: before.size, sizeAfter: after.size, backup };
+    } finally {
+      if (sourceFd !== undefined) fs.closeSync(sourceFd);
+      if (indexFd !== undefined) fs.closeSync(indexFd);
+      if (!committed) {
+        try { fs.unlinkSync(pendingSource); } catch {}
+        try { fs.unlinkSync(pendingIndex); } catch {}
+      }
     }
   }
   append(id, row) { this.appendAll(id, [row]); }
@@ -504,11 +562,55 @@ class ConversationHistory {
     if (cost === undefined) { const text = fs.readFileSync(summary.file, 'utf8'); cost = tokens(text); this.put(key, cost, 256); }
     return cost + remaining;
   }
+  referenceIds(id, { existingOnly = false } = {}) {
+    let value;
+    if (existingOnly) {
+      try {
+        value = this.readIndex(id);
+        if (value.source !== signature(stat(this.file(id)))) return null;
+      } catch { return null; }
+    } else value = this.ensure(id);
+    const file = value.index + '.refs.json';
+    let saved;
+    try { saved = JSON.parse(fs.readFileSync(file, 'utf8')); }
+    catch (error) { if (error.code !== 'ENOENT') this.report(error); }
+    const incremental = saved?.version === 1 && saved.id === id && saved.generation === value.generation
+      && Number.isSafeInteger(saved.count) && saved.count >= 0 && saved.count <= value.count
+      && Array.isArray(saved.ids) && saved.ids.every(id => typeof id === 'string');
+    const ids = new Set(incremental ? saved.ids : []);
+    if (incremental) {
+      const sourceFd = openSync(this.file(id), 'r');
+      let indexFd;
+      try {
+        indexFd = openSync(value.index, 'r');
+        for (let i = saved.count; i < value.count; i++) {
+          const indexed = readAt(indexFd, RECORD, HEADER + i * RECORD);
+          if (checksum(indexed) !== indexed.readUInt32LE(60)) throw new Error('Invalid conversation index record');
+          const record = unpack(indexed), buffer = readAt(sourceFd, record.length, record.offset);
+          this.metrics.historyBytes += buffer.length; this.metrics.parsedRows++;
+          collectReferenceIds(JSON.parse(buffer.toString('utf8')), ids);
+        }
+      } finally {
+        if (indexFd !== undefined) fs.closeSync(indexFd);
+        fs.closeSync(sourceFd);
+      }
+    } else this.scan(id, row => collectReferenceIds(row, ids), 0, false);
+    let current;
+    if (existingOnly) {
+      try { current = this.readIndex(id); } catch { return null; }
+    } else current = this.ensure(id);
+    if (current.generation !== value.generation || current.count !== value.count || current.source !== value.source)
+      if (existingOnly) return null;
+      else throw new Error('Conversation history changed while indexing references');
+    writeText(file, JSON.stringify({ version: 1, id, generation: value.generation, count: value.count, ids: [...ids].sort() }));
+    return ids;
+  }
   remove(id) {
     this.forget(id);
     const temporary = this.tempById.get(id);
     if (temporary) { try { fs.unlinkSync(temporary); } catch {} this.temporary.delete(temporary); this.tempById.delete(id); }
     try { fs.unlinkSync(this.index(id)); } catch (error) { if (error.code !== 'ENOENT') this.report(error); }
+    try { fs.unlinkSync(this.index(id) + '.refs.json'); } catch (error) { if (error.code !== 'ENOENT') this.report(error); }
     try {
       for (const name of fs.readdirSync(this.indexDir))
         if (name.startsWith(id + '.idx.') && /^[a-f0-9-]{36}\.\d+\.tool$/.test(name.slice(id.length + 5)))
@@ -523,6 +625,7 @@ class ConversationHistory {
       this.temporary.delete(temporary); this.tempById.delete(id);
     }
     try { await fs.promises.unlink(this.index(id)); } catch (error) { if (error.code !== 'ENOENT') this.report(error); }
+    try { await fs.promises.unlink(this.index(id) + '.refs.json'); } catch (error) { if (error.code !== 'ENOENT') this.report(error); }
     try {
       for (const name of await fs.promises.readdir(this.indexDir))
         if (name.startsWith(id + '.idx.') && /^[a-f0-9-]{36}\.\d+\.tool$/.test(name.slice(id.length + 5)))

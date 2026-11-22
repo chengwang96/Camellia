@@ -879,8 +879,8 @@ struct StreamBar: View {
 
     var body: some View {
         Group {
-            if let note {
-                Button { model.statusDetails = note } label: {
+            if let note = streamNote() {
+                Button { model.statusDetails = streamNote(includeBackgroundDetails: true) ?? note } label: {
                     Text(verbatim: note)
                         .font(.system(size: Palette.textTiny))
                         .foregroundColor(Palette.muted)
@@ -906,7 +906,7 @@ struct StreamBar: View {
     /// this while a fetch is in flight over rows it already has, and keeps it
     /// up when the fetch cannot start at all, which is the case that would
     /// otherwise leave the screen silently claiming the list is current.
-    private var note: String? {
+    private func streamNote(includeBackgroundDetails: Bool = false) -> String? {
         if model.listLoading, !model.conversations.isEmpty {
             return model.usesChinese ? "显示上次缓存，正在同步…"
                 : "Showing cached conversations; syncing…"
@@ -927,7 +927,8 @@ struct StreamBar: View {
             // computer is still busy.
             return model.transcript.conversation?.backgroundNote(
                 chinese: model.usesChinese,
-                replying: model.transcript.live != nil || model.transcript.preparation != nil)
+                replying: model.transcript.live != nil || model.transcript.preparation != nil,
+                includeDetails: includeBackgroundDetails)
         case .reconnecting(let delay, _):
             return model.usesChinese
                 ? "正在重连（\(Int(delay)) 秒后），当前显示上次同步内容。"

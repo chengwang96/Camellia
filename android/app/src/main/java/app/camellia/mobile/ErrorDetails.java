@@ -45,7 +45,10 @@ final class ErrorDetails {
     }
 
     static void bindStatus(final Context context, final TextView status, final boolean chinese) {
-        status.setOnClickListener(view -> show(context, chinese, status.getText().toString()));
+        status.setOnClickListener(view -> {
+            String message = status.getText() == null ? "" : status.getText().toString().trim();
+            if (!TextUtils.isEmpty(message)) show(context, chinese, message);
+        });
     }
 
     static CamelliaDialog show(final Context context, boolean chinese, String message) {

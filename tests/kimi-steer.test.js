@@ -88,7 +88,12 @@ test('Kimi 2.6 steering uses native immediate input and tracks its continuation 
   assert.deepEqual(await api.steer(server, { sessionId: 'session', prompt: [{ type: 'text', text: 'Correction' }] }),
     { turnId: 7, promptId: 'steer-prompt' });
   assert.equal(calls.submitted[0].length, 1);
-  assert.equal(calls.submitted[0][0].message.content[0].text, 'Correction');
+  assert.deepEqual(calls.submitted[0][0], {
+    message: { role: 'user', content: [
+      { type: 'text', text: 'Correction' }, { type: 'image', attachment: 'native-image' },
+    ] },
+    meta: { origin: { kind: 'user' }, tracked: true },
+  });
   assert.deepEqual([...driver.camelliaSteers], ['steer-prompt']);
 });
 

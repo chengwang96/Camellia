@@ -9,6 +9,7 @@ with sync_playwright() as playwright:
     page.on("pageerror", lambda error: errors.append(str(error)))
     bridge = """
       window.savedPreferences = {}; window.hiddenModels = {};
+      window.networkReapplyCalls = 0; window.networkEnvironmentStale = true;
       const empty = { ok: true, result: {}, engines: [], providers: [], models: [], config: { providers: [], usage: {}, active: {} }, state: {} };
       window.dshDesktop = new Proxy({}, { get: (_target, name) => {
         if (String(name).startsWith('on')) return () => () => {};
@@ -30,6 +31,14 @@ with sync_playwright() as playwright:
         if (name === 'kimiAccountState') return async () => ({ok:true,models:[{id:'kimi-a',name:'Kimi A',supportedReasoningEfforts:['low','high','max'],defaultReasoningEffort:'high'}]});
         if (name === 'grokAccountState') return async () => ({ok:true,models:[{id:'grok-a',name:'Grok A'}]});
         if (name === 'antigravityAccountState') return async () => ({ok:true,models:[{id:'google-a',name:'Google A'}]});
+        if (name === 'networkSettings') return async () => ({ok:true, mode:'auto', configured:'auto',
+          detectedUrl:'http://127.0.0.1:7897/', environmentConsistent: !window.networkEnvironmentStale});
+        if (name === 'networkReapply') return async () => {
+          window.networkReapplyCalls += 1;
+          window.networkEnvironmentStale = false;
+          return {ok:true, mode:'auto', configured:'auto', detectedUrl:'http://127.0.0.1:7897/',
+            environmentConsistent:true, engineRestart:true, deferred:[], failed:[], restartRequired:false};
+        };
         if (name === 'networkTest') return async () => {
           const results = [
             {id:'off.example:443',kind:'provider',label:'Disabled API',host:'off.example',port:443,models:['off-1'],direct:false,proxy:true},
@@ -216,6 +225,11 @@ with sync_playwright() as playwright:
     expect(page.locator("#networkPage")).to_be_visible()
     expect(page.locator("#generalPage")).to_be_hidden()
     expect(page.locator("#networkMode")).to_be_visible()
+    expect(page.locator("#networkReapply")).to_have_text("Reapply network")
+    expect(page.locator("#systemProxyStatus")).to_contain_text("changed outside Camellia")
+    page.locator("#networkReapply").click()
+    expect(page.locator("#status")).to_contain_text("Network reapplied and running engines restarted")
+    assert page.evaluate("window.networkReapplyCalls") == 1
     expect(page.locator("#networkTest")).to_have_text("Test all connections")
     page.locator("#networkTest").click()
     expect(page.locator("#networkResults .connectivity-row")).to_have_count(5)

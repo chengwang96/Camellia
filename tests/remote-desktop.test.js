@@ -11,7 +11,7 @@ const { createRemoteDesktop } = require('../src/main/remote/desktop');
 const { assetStem, createTailnetUpdates } = require('../src/main/remote/tailnet-updates');
 const { removeTree } = require('./test-fs.cjs');
 
-function startupHarness(context, devices = [], initialState = 'Running') {
+function startupHarness(context, devices = [], initialState = 'Running', options = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'remote-startup-'));
   context.after(() => removeTree(root));
   const file = path.join(root, 'remote', 'devices.json');
@@ -32,7 +32,8 @@ function startupHarness(context, devices = [], initialState = 'Running') {
     BrowserWindow: class { constructor() { assert.fail('Automatic startup must not open a window'); } },
     ipcMain: { handle: (channel, callback) => handlers.set(channel, callback) },
     manager: { workspaces: { sessionMeta: () => ({ workspaces: [] }) } }, loadConfig: () => ({}),
-    getSettingsWindow: () => settings, networkFactory: () => network, log: message => logs.push(message) });
+    getSettingsWindow: () => settings, networkFactory: () => network, guard: options.guard || null,
+    log: message => logs.push(message) });
   context.after(() => controller.close());
   const command = (action, payload) => handlers.get('dsh:remote-control')({ sender: settings.webContents, senderFrame: settings.webContents.mainFrame }, { action, payload });
   return { controller, command, network, calls, file, logs };
@@ -60,6 +61,47 @@ test('startup leaves mobile access disabled without a saved valid trusted device
     assert.equal(calls.start, 0); assert.equal(calls.listen, 0);
     assert.equal((await command('state')).result.enabled, false);
   }
+});
+
+test('background guard follows mobile access and trusted-device lifecycle', async context => {
+  const calls = [];
+  let enabled = true;
+  const guard = {
+    enabled: () => enabled,
+    start() { calls.push('start'); return enabled; },
+    pause() { calls.push('pause'); },
+    ensureStarted() { calls.push('ensure'); },
+    enable() { enabled = true; calls.push('enable'); },
+    disable() { enabled = false; calls.push('disable'); },
+    view() { return { supported: true, available: true, enabled, running: enabled, retrying: false }; },
+  };
+  const { controller, command } = startupHarness(context, [trustedPhone()], 'Running', { guard });
+  await controller.startTrustedDevices();
+  assert.ok(calls.includes('start'));
+  await command('state');
+  assert.ok(calls.includes('ensure'));
+  assert.equal((await command('stop')).ok, true);
+  assert.equal(calls.at(-1), 'pause');
+  assert.equal((await command('start')).ok, true);
+  assert.equal(calls.filter(call => call === 'start').length, 2);
+  assert.equal((await command('guard-disable')).result.guard.enabled, false);
+  assert.equal(calls.at(-1), 'disable');
+  assert.equal((await command('guard-enable')).result.guard.enabled, true);
+  assert.equal(calls.at(-1), 'enable');
+  assert.equal((await command('revoke', { id: 'trusted-phone' })).ok, true);
+  assert.equal(calls.at(-1), 'pause');
+  assert.equal((await command('stop')).ok, true);
+  assert.match((await command('guard-enable')).error, /Enable mobile access first/);
+
+  const emptyCalls = [];
+  const emptyGuard = {
+    enabled: () => true, start() { emptyCalls.push('start'); },
+    pause() { emptyCalls.push('pause'); }, ensureStarted() {},
+    view: () => ({ supported: true, available: true, enabled: true, running: false }),
+  };
+  const empty = startupHarness(context, [], 'Running', { guard: emptyGuard });
+  await empty.controller.startTrustedDevices();
+  assert.deepEqual(emptyCalls, ['pause']);
 });
 
 test('expired login waits for manual authorization; connecting nodes can become ready later', async context => {

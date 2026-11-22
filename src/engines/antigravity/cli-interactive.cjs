@@ -242,7 +242,7 @@ class InteractiveCli {
   async prompt(parts) {
     await this.cancelling;
     if (this.turn) throw new Error('A response is already running');
-    const turn = this.turn = { controller: new AbortController(), sent: new Map(), tools: new Map(), permissions: new Set(), usage: {}, canceled: false,
+    const turn = this.turn = { controller: new AbortController(), sent: new Map(), thoughts: new Map(), tools: new Map(), permissions: new Set(), usage: {}, canceled: false,
       childResults: new Map(), childErrors: new Map() };
     try {
       await this.prepare();
@@ -308,6 +308,7 @@ class InteractiveCli {
     const key = trajectory.trajectoryId || trajectory.id || this.session.conversationId;
     const id = key + ':' + index;
     const response = step.plannerResponse?.modifiedResponse || step.plannerResponse?.response || '';
+    const thinking = step.plannerResponse?.thinking || '';
     const old = turn.sent.get(id) || '';
     const tool = step.metadata?.toolCall;
     const child = cascadeId !== this.session.conversationId;
@@ -321,6 +322,14 @@ class InteractiveCli {
         this.childUpdate(cascadeId, { progress: response });
       }
       if (step.errorMessage?.error || step.error && !tool) turn.childErrors.set(cascadeId, stepOutput(step));
+    }
+    if (!this.config.discussion && cascadeId === this.session.conversationId && thinking && thinking !== response) {
+      turn.thoughts ||= new Map();
+      const previous = turn.thoughts.get(id) || '';
+      if (thinking.startsWith(previous) && thinking.length > previous.length) {
+        turn.thoughts.set(id, thinking);
+        this.update({ sessionUpdate: 'camellia_progress', content: { type: 'text', text: thinking.slice(previous.length) } });
+      }
     }
     if (cascadeId === this.session.conversationId && response.startsWith(old) && response.length > old.length) {
       this.update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: response.slice(old.length) } }); turn.sent.set(id, response);

@@ -82,8 +82,9 @@ test('OpenCode Zen and Go parse nested efforts, toggles and defaults without inv
       { id: 'malformed', capabilities: { reasoning: { effort: ['high', 10] } } },
     ];
     const p = preset(type);
+    const expected = type === 'opencode-go' ? 'https://opencode.ai/inference/go/v1/models' : p.baseUrl + '/models';
     const models = await fetchModels(p, 'fixture-key', { fetchImpl: async url =>
-      url.endsWith('/models') ? response({ data: entries }) : response({}, 404) });
+      url === expected ? response({ data: entries }) : response({}, 404) });
     assert.deepEqual(models.map(model => levelsFor(model.id, model)), [named, ['none', ...named], ['none', 'high'], named, [], [], []]);
     assert.equal(models[3].thinking.default, 'max');
     assert.equal(labelFor('high', models[2].id, models[2]), 'On');

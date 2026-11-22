@@ -35,9 +35,9 @@
 "管理" = "Manage";
 "还没有可用的模型。到 设置 → 供应商与 Key 导入配置。" = "No models are available. Import a configuration in Settings → Providers & keys.";
 "下载过程中请保持面板打开并让应用停留前台；完成后保存到默认目录，或选择保存位置。" = "Keep this panel open and the app in the foreground while downloading. Files go to your default folder, or you can choose a location.";
-"每次询问保存位置" = "Ask where to save each time";
 "选择并授权一次，后续下载自动保存；同名文件自动编号。" = "Choose and authorize a folder once. Future downloads save there automatically, with numbered names for duplicates.";
 "已保存到 %@" = "Saved to %@";
+"已切换到局域网直连。" = "Switched to local direct.";
 "停止结果尚未确认，请查询同一请求。" = "The stop result is unconfirmed. Check the same request again.";
 "等待停止确认超时；可查询同一请求。" = "Stop confirmation timed out. You can check the same request again.";
 "不属于任何工作区" = "No workspace";

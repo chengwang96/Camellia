@@ -37,8 +37,9 @@ const { createSkillRegistry } = require('./portable-skills');
 const { createReviewController } = require('./review-control');
 const { createVisualizeStore } = require('./visualize-store');
 const { embedWorkspaceImages, embedWorkspaceVideos, embedWorkspaceData } = require('./visualize-assets');
-const { retainEvent, isStreamingToolEvent } = require('./tool-history');
+const { retainEvent, isStreamingToolEvent, replaceToolSnapshot } = require('./tool-history');
 const { appendText } = require('../shared/file-open');
+const { compactHistoryInWorker } = require('./history-compaction-worker');
 const { fullAccess } = require('./permission-levels');
 
 const ENGINES = ['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'grok'];
@@ -286,6 +287,7 @@ class SharedConversations {
     this.subagentSessions = new Map();
     fs.mkdirSync(dir, { recursive: true });
     this.items = new Map(); this.legacyConversations = new Map(); this.active = new Map(); this.facades = new Map(); this.switching = new Map(); this.goals = new Map(); this.recovering = new Map(); this.sequence = 0; this.clock = 0;
+    this.pendingSaves = new Map();
     this.stopping = new Map(); this.deleting = new Set(); this.stopTimeoutMs = stopTimeoutMs;
     this.titleRequests = new Set(); this.titleFollowUps = new Map();
     this.onGoal = onGoal;
@@ -511,6 +513,7 @@ class SharedConversations {
   pauseGoals() { for (const goal of this.goals.values()) { if (goal.armed) goal.setPhase('paused'); else goal.cancelTimer(); } }
 
   closeGoalTools() {
+    this.flushPendingSaves();
     this.historyStore.close();
     this.remoteQueue?.close();
     this.tasks.close();
@@ -893,10 +896,38 @@ class SharedConversations {
   get(id) { const c = this.items.get(id); if (!c) throw new Error('Conversation not found'); return c; }
   head(id) { const c = this.get(id); return { title: c.title, summary: '', cwd: c.cwd }; }
   save(c) {
+    const pending = this.pendingSaves.get(c.id);
+    if (pending) { clearTimeout(pending.timer); this.pendingSaves.delete(c.id); }
     if (c.updatedAt > this.clock) this.clock = c.updatedAt;
     try { writeJson(this.file(c.id), c); }
     catch (error) { error.persistence = true; throw error; }
     this.items.set(c.id, c);
+  }
+  saveSoon(c, onError) {
+    const previous = this.pendingSaves.get(c.id);
+    if (previous) clearTimeout(previous.timer);
+    const pending = { c, timer: null, onError: onError || previous?.onError };
+    pending.timer = setTimeout(() => {
+      if (this.pendingSaves.get(c.id) !== pending) return;
+      this.pendingSaves.delete(c.id);
+      if (this.items.get(c.id) !== c) return;
+      try { this.save(c); }
+      catch (error) {
+        if (pending.onError) pending.onError(error);
+        else this.log('Deferred conversation save failed: ' + error.message);
+      }
+    }, 100);
+    pending.timer.unref?.();
+    this.pendingSaves.set(c.id, pending);
+  }
+  flushPendingSaves() {
+    for (const pending of [...this.pendingSaves.values()]) {
+      clearTimeout(pending.timer);
+      this.pendingSaves.delete(pending.c.id);
+      if (this.items.get(pending.c.id) !== pending.c) continue;
+      try { this.save(pending.c); }
+      catch (error) { this.log('Deferred conversation save failed: ' + error.message); }
+    }
   }
   // Session lists order by "most recently updated", but wall-clock milliseconds
   // are not unique: two conversations touched in the same millisecond would be
@@ -2377,15 +2408,11 @@ class SharedConversations {
       const previous = c.subagents;
       const replaced = new Set(Array.isArray(event.replacesIds) ? event.replacesIds : []);
       c.subagents = [...(previous || []).filter(row => row.engine !== engine || row.id !== task.id && !replaced.has(row.id)), task].slice(-128);
-      try { this.save(c); }
-      catch (error) { c.subagents = previous; this.log('Could not save subtask status: ' + error.message); return false; }
+      this.saveSoon(c);
       // A child's reported total belongs to the request that launched it. The
       // task list is pruned independently, so the aggregate must outlive it.
       const requestUsage = this.recordChildUsage(c, engine, task);
-      if (requestUsage) {
-        try { this.save(c); }
-        catch (error) { this.log('Could not save child usage: ' + error.message); }
-      }
+      if (requestUsage) this.saveSoon(c);
       this.onEvent({ type: 'gui:subagent', session_id: c.id, engine, tasks: this.subagentView(c.id),
         ...(requestUsage ? { userSeq: task.userSeq, requestUsage } : {}) });
       return true;
@@ -2636,11 +2663,13 @@ class SharedConversations {
         if (Number.isFinite(usage?.context_window) && usage.context_window > 0 && segment.nativeContextWindow !== usage.context_window) {
           segment.nativeContextWindow = usage.context_window; changed = true;
         }
-        if (changed) this.save(c);
+        if (changed) this.saveSoon(c, error => {
+          if (!a.finished) this.failCapturedRun(a, error);
+        });
       }
     }
-    if (event.type === 'gui:tool' || event.type === 'gui:plan' || event.type === 'user') {
-      this.append(c, { role: 'tool', engine, text: JSON.stringify(event), internal: a.internal || isStreamingToolEvent(event) });
+    if ((event.type === 'gui:tool' || event.type === 'gui:plan' || event.type === 'user') && !isStreamingToolEvent(event)) {
+      this.append(c, { role: 'tool', engine, text: JSON.stringify(event), internal: a.internal });
     }
     if (event.type === 'gui:permission' && fullAccess(engine, a.settings.permissionMode) && !event.questions?.length
         && a.session?.answerPermission(event.requestId, true)) return true;
@@ -2677,7 +2706,7 @@ class SharedConversations {
         && Number.isInteger(out.event.index) && prev.event.index === out.event.index
         && prevDelta?.type === delta.type && typeof delta[key] === 'string' && typeof prevDelta[key] === 'string') {
         prevDelta[key] += delta[key]; prev.eventSeq = out.eventSeq;
-      } else a.events.push(structuredClone(out));
+      } else if (!replaceToolSnapshot(a.events, out)) a.events.push(structuredClone(out));
       if (event.type !== 'result') { this.onEvent(out); managedSubagents.notify(this, c.id); }
     } else if (event.type === 'gui:permission') this.onEvent({ ...out, handoff: true });
     if (event.type === 'result') {
@@ -3354,6 +3383,20 @@ class SharedConversations {
     const retained = new Set(kept.map(row => row.seq));
     return { markdown: render(kept), omittedRows: count - retained.size,
       truncatedRows: kept.filter(row => row.text !== row.originalText).length };
+  }
+  async compactHistoryStorage(id) {
+    const c = this.get(id);
+    if (this.workInProgress(id) || this.stopping.has(id) || this.deleting.has(id))
+      throw new Error('Wait for this conversation to finish or stop it before compacting storage');
+    const abort = new AbortController(), operation = { cancelled: false, abort, storage: true };
+    this.switching.set(c.id, operation); this.publishActivity(c.id);
+    try {
+      const result = await compactHistoryInWorker({ dir: this.dir, id: c.id }, abort.signal);
+      return { ok: true, ...result };
+    } finally {
+      if (this.switching.get(c.id) === operation) this.switching.delete(c.id);
+      if (this.items.has(c.id)) this.publishActivity(c.id);
+    }
   }
   async compact(id, { automatic = false, recovery, allowGoal = false, controlStart, scheduledTaskId, history, trigger, portable = false, destination, manualFallback = false, localOnly = false } = {}) {
     if (this.controlStarts.has(id) && this.controlStarts.get(id) !== controlStart && !recovery) throw new Error('Child response is starting');
@@ -4186,6 +4229,11 @@ class SharedConversations {
         const id = payload?.sessionId;
         if (!id) throw new Error('Choose a conversation to compact first');
         return this.compact(id, { manualFallback: true });
+      }
+      case 'compact-history-storage': {
+        const id = payload?.sessionId;
+        if (!id) throw new Error('Choose a conversation to compact first');
+        return this.compactHistoryStorage(id);
       }
       case 'find': {
         const id = payload?.sessionId || this.create(engine, payload?.workspaceId,

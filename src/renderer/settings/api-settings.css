@@ -87,7 +87,6 @@ small { font-size: 12px; color: var(--dsw-alias-label-secondary); line-height: 1
 #mobile-tailscaleStatus { color: var(--dsw-alias-label-tertiary); }
 #mobile-tailscaleStatus.connected { color: var(--dsw-alias-state-success-primary); }
 #mobile-tailscaleStatus.error { color: var(--dsw-alias-state-error-primary); }
-#mobile-pathSummary.error { color: var(--dsw-alias-state-error-primary); }
 #mobilePage .tailscale-details { display: grid; gap: 6px; margin-top: 12px; padding: 12px; border-radius: 10px; background: var(--dsw-alias-bg-soft); }
 #mobilePage .tailscale-details p { margin: 0; }
 #mobilePage .tailscale-form { display: grid; gap: 8px; margin-top: 12px; }
@@ -232,6 +231,7 @@ th { text-align: left; font-weight: 400; color: var(--dsw-alias-label-tertiary);
 td { border-top: 1px solid var(--dsw-alias-border-l2); padding: 10px 8px; overflow-wrap: anywhere; }
 .model-table td { border: 0; padding: 4px; }
 .model-table input, .model-table select { font-size: 12px; width: 100%; padding: 7px 9px; }
+.model-table input[data-field="id"]::-webkit-calendar-picker-indicator { opacity: 0; pointer-events: none; }
 .model-table td button { padding: 0 6px; border: 0; }
 .model-table td:nth-child(1), .model-table td:nth-child(2) { width: 34%; }
 .model-chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }

@@ -139,6 +139,15 @@ public final class MobilePreferences {
         set { store.set(newValue ? "enabled" : "disabled", for: "hapticFeedback") }
     }
 
+    public var askDownloadLocationEachTime: Bool {
+        get { store.string("askDownloadLocationEachTime").map { $0 == "enabled" } ?? (downloadDirectoryBookmark == nil) }
+        set { store.set(newValue ? "enabled" : "disabled", for: "askDownloadLocationEachTime") }
+    }
+
+    public var automaticDownloadDirectoryBookmark: Data? {
+        askDownloadLocationEachTime ? nil : downloadDirectoryBookmark
+    }
+
     public var downloadDirectoryBookmark: Data? {
         get { store.string("downloadDirectoryBookmark").flatMap { Data(base64Encoded: $0) } }
         set { store.set(newValue?.base64EncodedString(), for: "downloadDirectoryBookmark") }

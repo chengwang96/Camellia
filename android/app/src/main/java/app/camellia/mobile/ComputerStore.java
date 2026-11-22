@@ -34,6 +34,14 @@ final class ComputerStore {
         return result;
     }
 
+    JSONObject findByComputerId(String computerId) throws Exception {
+        if (computerId == null || computerId.isEmpty()) return null;
+        for (JSONObject computer : all()) {
+            if (computerId.equals(computer.optString("computerId"))) return computer;
+        }
+        return null;
+    }
+
     void save(JSONObject value) throws Exception {
         JSONObject profiles = profiles(store.load());
         JSONObject current = new JSONObject(value.toString());
@@ -61,6 +69,16 @@ final class ComputerStore {
         String address = value.optString("address");
         JSONObject previous = profiles.optJSONObject(address);
         if (previous == null || !previous.optString("token").equals(value.optString("token"))) return false;
+        JSONObject current = new JSONObject(value.toString()); current.remove("computers");
+        profiles.put(address, current);
+        if (address.equals(saved.optString("address"))) saved = new JSONObject(current.toString());
+        saved.put("computers", profiles); store.save(saved); return true;
+    }
+
+    boolean saveProfileByAddress(JSONObject value) throws Exception {
+        JSONObject saved = store.load(), profiles = profiles(saved);
+        String address = value.optString("address");
+        if (address.isEmpty() || !profiles.has(address)) return false;
         JSONObject current = new JSONObject(value.toString()); current.remove("computers");
         profiles.put(address, current);
         if (address.equals(saved.optString("address"))) saved = new JSONObject(current.toString());

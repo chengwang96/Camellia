@@ -5,8 +5,8 @@ const embedded = Boolean(document.getElementById('mobilePage'));
 const root = embedded ? document.getElementById('mobilePage') : document.querySelector('main');
 let visible = !embedded;
 const copy = {
-  zh: { title: '手机访问', intro: '通过 Tailscale 连接手机。', connection: '连接', pair: '配对设备', devices: '已授权设备', connectionHelp: '连接与权限说明',
-    network: '已内置 Tailscale，无需另装客户端。首次开启后登录与手机相同的 Tailnet；不开放局域网或公网端口。每次启动 Camellia 后需要手动开启。',
+  zh: { title: '手机访问', intro: '通过 Tailscale 或同一 Wi-Fi 局域网连接手机。', connection: '连接', pair: '配对设备', devices: '已授权设备', connectionHelp: '连接与权限说明',
+    network: '已内置 Tailscale，无需另装客户端。也可在家庭 Wi-Fi 使用 6 位 PIN 直连；局域网模式不开放公网端口。首次需要手动开启；有可信设备时，后续启动会自动恢复。',
     generate: '生成配对码',
     pairHint: '在手机输入地址和一次性配对码，再在此确认授权。',
     footer: '授权设备可发送指令、停止任务和处理工具审批。操作在电脑执行，并沿用会话当前权限；仅授权可信设备。', online: '运行中', offline: '已关闭',
@@ -15,8 +15,8 @@ const copy = {
     tray: '关闭窗口可驻留托盘；退出应用或电脑休眠会断开连接。', noTray: '请保持窗口打开，或在设置中启用关闭到托盘。退出应用或电脑休眠会断开连接。',
     noDevices: '尚未授权任何设备。', approve: '授权设备', reject: '拒绝', revoke: '撤销',
     expires: '配对码失效时间：', expired: '配对码已过期，请重新生成。' },
-  en: { title: 'Mobile access', intro: 'Connect your phone with Tailscale.', connection: 'Connection', pair: 'Pair a device', devices: 'Authorized devices', connectionHelp: 'Connection and permissions',
-    network: 'Tailscale is built in; no separate client needed. Sign in to the same tailnet as your phone. No LAN or public listener. Enable manually after each Camellia restart.',
+  en: { title: 'Mobile access', intro: 'Connect your phone with Tailscale or the same Wi-Fi.', connection: 'Connection', pair: 'Pair a device', devices: 'Authorized devices', connectionHelp: 'Connection and permissions',
+    network: 'Tailscale is built in; no separate client needed. On a home Wi-Fi you can also pair with a six-digit PIN. Local mode never opens a public listener. Enable it once; later starts restore access automatically when a trusted device remains.',
     generate: 'Generate pairing code',
     pairHint: 'Enter the address and one-time code on your phone, then approve it here.',
     footer: 'Authorized devices can send instructions, stop tasks and respond to tool approvals. Tasks execute on this computer under the conversation’s existing permissions; authorize trusted devices only.', online: 'Online', offline: 'Off',
@@ -26,6 +26,30 @@ const copy = {
     noDevices: 'No authorized devices yet.', approve: 'Authorize device', reject: 'Reject', revoke: 'Revoke',
     expires: 'Pairing code expires at: ', expired: 'The pairing code expired. Generate another.' },
 };
+Object.assign(copy.zh, {
+  lanTitle: '局域网访问', lanToggleLabel: '允许同一 Wi-Fi 的手机直连',
+  lanHint: '手机会自动发现这台电脑。第一次连接时输入相同的 6 位 PIN，之后会自动重连。',
+  lanPin: '连接 PIN', lanSavePin: '保存 PIN', lanAllowJoin: '允许新设备加入',
+  lanSecurity: 'PIN 不会通过 mDNS 广播。家庭网络之外不建议开启新设备加入。',
+  lanOnline: '运行中', lanOffline: '已关闭', lanAddress: '连接地址：',
+  lanError: '启动失败',
+  lanPinNeeded: '还未设置 PIN。保存一个 6 位数字后即可使用。',
+  lanPinHidden: 'PIN 已设置。若系统安全存储不可用，输入新的 6 位 PIN 可以替换。',
+  lanPinSaved: 'PIN 已保存。', lanPinInvalid: 'PIN 必须是 6 位数字。',
+  lanNoNetwork: '未找到可用的私网 IPv4 地址。',
+});
+Object.assign(copy.en, {
+  lanTitle: 'Local network', lanToggleLabel: 'Allow phones on the same Wi-Fi to connect directly',
+  lanHint: 'Phones discover this computer automatically. Enter the same six-digit PIN once; later connections resume automatically.',
+  lanPin: 'Connection PIN', lanSavePin: 'Save PIN', lanAllowJoin: 'Allow new devices',
+  lanSecurity: 'The PIN is never advertised over mDNS. Leave new-device joins off outside a trusted home network.',
+  lanOnline: 'Running', lanOffline: 'Off', lanAddress: 'Address: ',
+  lanError: 'Start failed',
+  lanPinNeeded: 'No PIN yet. Save six digits before using local access.',
+  lanPinHidden: 'A PIN is set. If secure storage is unavailable, enter six digits to replace it.',
+  lanPinSaved: 'PIN saved.', lanPinInvalid: 'The PIN must contain exactly six digits.',
+  lanNoNetwork: 'No private IPv4 address is available.',
+});
 const element = id => document.getElementById(embedded ? `mobile-${id}` : id);
 Object.assign(copy.zh, { login: '登录 Tailscale', openLogin: '打开浏览器授权', logout: '退出 Tailscale 登录', confirmLogout: '退出内置 Tailscale 登录？手机会断开连接。下次使用时需重新登录 Tailscale。',
   connecting: '正在连接内置网络…', needsLogin: '请登录 Tailscale', needsApproval: '请在 Tailscale 管理后台批准此设备', networkError: '内置网络已断开，请重新开启', networkReady: '内置网络已连接', networkOff: '内置网络已关闭', renameSaving: '正在保存名称…' });
@@ -97,7 +121,7 @@ Object.assign(copy.en, { pathTitle: 'Network path', pathHint: 'Off selects paths
   tailscaleSaved: 'Verified and saved with encrypted storage.', tailscaleRemoved: 'Credentials removed.', tailscaleOpened: 'Opened the Tailscale credentials page in the browser.',
   tailscaleReady: 'Admin API connected', tailscaleNeedsSetup: 'Admin API not configured',
   tailscaleUnlock: 'Secure system storage is unavailable. Unlock your system keychain first.' });
-let state = null, language = 'zh', working = false, invitationExpiry = 0, invitationDeviceIds = new Set(), pairingRequestId = '', pairingRequestSeen = false, pairedDeviceId = '', relayError = '';
+let state = null, language = 'zh', working = false, invitationExpiry = 0, invitationDeviceIds = new Set(), pairingRequestId = '', pairingRequestSeen = false, pairedDeviceId = '', relayError = '', lanPinNotice = '';
 Object.assign(copy.zh, {
   tailnetUpdateTitle: '内置 Tailscale', tailnetCheck: '检查更新', tailnetInstall: '升级至 {0}', tailnetApply: '重试启用',
   tailnetChecking: '正在检查更新…', tailnetInstalling: '正在下载、校验并启用…', tailnetApplying: '正在重启手机访问组件…', tailnetCurrent: '已是最新版本。',
@@ -109,6 +133,22 @@ Object.assign(copy.en, {
   tailnetChecking: 'Checking for updates…', tailnetInstalling: 'Downloading, verifying and activating…', tailnetApplying: 'Restarting the mobile access component…', tailnetCurrent: 'Up to date.',
   tailnetUpdated: '{0} is active.', tailnetUpdateReconnected: '{0} is active and mobile access has been restored.', tailnetUnpublished: 'No component update is published for this computer yet.', tailnetPending: '{0} is downloaded and verified. Select Retry activation to finish.',
   tailnetFailed: 'Update failed.', tailnetHint: 'Updates come from official Camellia releases. Only mobile access briefly reconnects; active replies are not interrupted.',
+});
+Object.assign(copy.zh, {
+  guardTitle: '后台守护', guardToggleLabel: '自动恢复手机访问',
+  guardHint: '开启后约占用 5–15 MB 内存，并阻止电脑因空闲而休眠',
+  guardOnlyDesktop: '仅桌面版支持。', guardUnavailable: '守护组件缺失，请重新安装 Camellia。',
+  guardNeedsAccess: '开启手机访问后可启用。', guardNeedsDevice: '先配对一台可信设备，再开启守护。',
+  guardOff: '未开启。', guardRunning: '守护中', guardStarting: '守护正在启动…',
+  guardRetrying: '守护正在重试…', guardPaused: '手机访问关闭时暂停；重新开启后自动恢复。',
+});
+Object.assign(copy.en, {
+  guardTitle: 'Background guard', guardToggleLabel: 'Recover mobile access automatically',
+  guardHint: 'Uses about 5–15 MB of memory and prevents idle sleep.',
+  guardOnlyDesktop: 'Available on desktop only.', guardUnavailable: 'The guard component is missing. Reinstall Camellia.',
+  guardNeedsAccess: 'Enable mobile access first.', guardNeedsDevice: 'Pair a trusted device before enabling the guard.',
+  guardOff: 'Off.', guardRunning: 'Watching', guardStarting: 'Starting the guard…',
+  guardRetrying: 'The guard is retrying…', guardPaused: 'Paused while mobile access is off; resumes when it is enabled again.',
 });
 let tailnetUpdateAction = '', tailnetUpdateNotice = '', tailnetUpdateError = '';
 let renameEditor = null;
@@ -171,7 +211,8 @@ function renderTailnetUpdate() {
   const button = element('tailnetUpdate');
   if (!button) return;
   const info = state?.tailnetUpdate;
-  element('tailnetUpdateTitle').closest('section').hidden = !info;
+  const section = element('tailnetUpdateSection');
+  if (section) section.hidden = !info;
   if (!info) return;
   element('tailnetVersion').textContent = info.current || '';
   button.hidden = !info.supported;
@@ -186,6 +227,54 @@ function renderTailnetUpdate() {
   else if (tailnetUpdateError) feedback.textContent = translate('tailnetFailed') + ' ' + tailnetUpdateError;
   else if (info.pending) feedback.textContent = translate('tailnetPending').replace('{0}', info.pending);
   else feedback.textContent = translate(info.available ? 'tailnetHint' : tailnetUpdateNotice || 'tailnetHint');
+}
+function renderGuard() {
+  const section = element('guardSection');
+  if (!section) return;
+  const info = state?.guard;
+  section.hidden = !info;
+  if (!info) return;
+  const toggle = element('guardToggle'), status = element('guardStatus');
+  const hasDevice = Array.isArray(state.devices) && state.devices.length > 0;
+  toggle.checked = Boolean(info.enabled);
+  toggle.disabled = working || !info.supported || !info.available
+    || (!info.enabled && (!state.enabled || !hasDevice));
+  let label = 'guardOff';
+  if (!info.supported) label = 'guardOnlyDesktop';
+  else if (!info.available) label = 'guardUnavailable';
+  else if (info.enabled && !state.enabled) label = 'guardPaused';
+  else if (!info.enabled && !state.enabled) label = 'guardNeedsAccess';
+  else if (!hasDevice) label = 'guardNeedsDevice';
+  else if (info.enabled && info.retrying) label = 'guardRetrying';
+  else if (info.enabled && info.running) label = 'guardRunning';
+  else if (info.enabled) label = 'guardStarting';
+  status.textContent = translate(label);
+  status.classList.toggle('online', Boolean(info.enabled && info.running));
+  status.classList.toggle('error', Boolean(!info.supported || !info.available));
+}
+function renderLan() {
+  const info = state?.lan;
+  if (!info) return;
+  const toggle = element('lanToggle'), allow = element('lanAllowJoin'), pin = element('lanPin');
+  if (!toggle || !allow || !pin) return;
+  toggle.checked = Boolean(info.enabled);
+  toggle.disabled = working;
+  const status = element('lanStatus');
+  status.textContent = translate(info.error ? 'lanError' : info.running ? 'lanOnline' : info.enabled ? 'connecting' : 'lanOffline');
+  status.classList.toggle('online', Boolean(info.running));
+  status.classList.toggle('error', Boolean(info.error));
+  element('lanAddress').textContent = info.address ? translate('lanAddress') + info.address : '';
+  if (pin && document.activeElement !== pin) pin.value = info.pin || '';
+  pin.disabled = working;
+  pin.setAttribute('aria-invalid', pin.value && !/^\d{6}$/.test(pin.value) ? 'true' : 'false');
+  const save = element('lanSavePin');
+  save.disabled = working || !/^\d{6}$/.test(pin.value);
+  allow.checked = info.allowJoin !== false;
+  allow.disabled = working || !info.enabled;
+  const notice = element('lanPinStatus');
+  notice.classList.toggle('error', Boolean(info.error));
+  notice.textContent = info.error || lanPinNotice
+    || (!info.hasPin ? translate('lanPinNeeded') : info.pin ? '' : translate('lanPinHidden'));
 }
 function showError(error) {
   const legacy = embedded && error.message === 'Local remote-access window required';
@@ -219,6 +308,7 @@ function renderUnavailable(error) {
   renderQr(element('qr'), '');
   if (element('deviceName')) element('deviceName').value = '';
   if (element('relayConfig')) element('relayConfig').hidden = true;
+  if (element('guardSection')) element('guardSection').hidden = true;
   relayError = '';
   renderTailscale();
   renderTailnetUpdate();
@@ -380,18 +470,11 @@ function renderRelayPath() {
   const view = state?.tailscale;
   const config = element('relayConfig'), select = element('relayDevice'), status = element('relayStatus');
   const toggle = element('relayUse'), choice = element('relayChoice');
-  const summary = element('pathSummary');
   if (!config) return;
   const connected = view?.state === 'connected';
   const relays = configuredRelays(view);
   const selected = relays.find(device => device.relaySelected);
   config.hidden = false;
-  if (summary) summary.textContent = connected ? (selected ? translate('relayOnShort') : translate('relayOffShort'))
-    : view?.state === 'checking' ? translate('relayChecking')
-      : view?.state === 'scope' ? translate('tailscaleScope')
-        : view?.state === 'invalid' ? translate('tailscaleInvalid')
-        : view?.configured ? translate('tailscaleError') : translate('tailscaleUnconfigured');
-  if (summary) summary.classList.toggle('error', Boolean(view?.configured && !connected && view?.state !== 'checking'));
   const pathError = element('relayPathError');
   if (pathError) {
     pathError.textContent = !connected && view?.configured && view?.state !== 'checking'
@@ -711,6 +794,8 @@ function render() {
   if (pairSummary) pairSummary.textContent = pairedDeviceId ? translate('pairSuccess') : '';
   renderDevices(element('pending'), state.pending, true);
   renderDevices(element('devices'), state.devices, false);
+  renderLan();
+  renderGuard();
   renderTailscale();
   renderRelayPath();
   renderTailnetUpdate();
@@ -761,6 +846,46 @@ if (embedded) element('openPanel').addEventListener('click', async () => {
   } catch (error) { showError(error); }
 });
 element('toggle').addEventListener('click', () => run(() => call(state.enabled || state.running ? 'stop' : 'start')));
+function validateLanPin() {
+  const pin = element('lanPin');
+  const valid = /^\d{6}$/.test(pin.value);
+  pin.setAttribute('aria-invalid', pin.value && !valid ? 'true' : 'false');
+  element('lanSavePin').disabled = working || !valid;
+  if (pin.value && !valid) {
+    lanPinNotice = '';
+    element('lanPinStatus').classList.add('error');
+    element('lanPinStatus').textContent = translate('lanPinInvalid');
+  } else {
+    element('lanPinStatus').classList.remove('error');
+    element('lanPinStatus').textContent = lanPinNotice;
+  }
+}
+element('lanToggle')?.addEventListener('change', () => {
+  const enabled = element('lanToggle').checked;
+  lanPinNotice = '';
+  void run(() => call(enabled ? 'lan-enable' : 'lan-disable'));
+});
+element('lanSavePin')?.addEventListener('click', () => {
+  const pin = element('lanPin').value;
+  if (!/^\d{6}$/.test(pin)) { validateLanPin(); return; }
+  lanPinNotice = '';
+  void run(async () => {
+    await call('lan-set-pin', { pin });
+    lanPinNotice = translate('lanPinSaved');
+  });
+});
+element('lanAllowJoin')?.addEventListener('change', () => {
+  const allowJoin = element('lanAllowJoin').checked;
+  void run(() => call('lan-allow-join', { allowJoin }));
+});
+element('lanPin')?.addEventListener('input', () => {
+  lanPinNotice = '';
+  validateLanPin();
+});
+element('guardToggle')?.addEventListener('change', () => {
+  const enabled = element('guardToggle').checked;
+  void run(() => call(enabled ? 'guard-enable' : 'guard-disable'), showError);
+});
 element('login').addEventListener('click', () => run(() => call(state.network?.loginUrl ? 'open-login' : 'login')));
 element('logout').addEventListener('click', () => {
   if (working || root.querySelector('dialog.mobile-logout')) return;

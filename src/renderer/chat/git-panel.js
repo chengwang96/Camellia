@@ -9,7 +9,7 @@ window.CamelliaGitPanel = { create({ context, getCwd, setStatus, fileViewer, clo
   let open = false, selected = null, diff = null, diffLoading = false, statusTicket = 0, diffTicket = 0, actionTicket = 0, directoryTicket = 0;
   let commitMessage = '', commitFocusPending = false, wrapDiff = false, lastStatusAt = 0;
   let directoryFiles = null, directoryParent = '', directoryLoading = '', directoryError = '';
-  const diffScroll = new Map(), diffCache = new Map();
+  const diffScroll = new Map(), diffCache = new Map(), diffHighlightCache = new Map();
 
   function commandButton(label, run, className = 'work-action', focus) {
     const node = el('button', className, t(label)); node.type = 'button'; node.disabled = Boolean(busy);
@@ -298,6 +298,17 @@ window.CamelliaGitPanel = { create({ context, getCwd, setStatus, fileViewer, clo
       yml: 'yaml', yaml: 'yaml', java: 'java', c: 'c', h: 'c', cpp: 'cpp', cs: 'csharp', go: 'go', rs: 'rust', rb: 'ruby', php: 'php', sql: 'sql' }[extension] || extension;
   }
 
+  function highlightDiff(language, source) {
+    const key = language + '\0' + source;
+    let value = diffHighlightCache.get(key);
+    if (value === undefined) {
+      value = window.CamelliaMarkdownPreview.highlight(language, source);
+      if (diffHighlightCache.size >= 4000) diffHighlightCache.delete(diffHighlightCache.keys().next().value);
+      diffHighlightCache.set(key, value);
+    }
+    return value;
+  }
+
   function appendDiff(body, entry) {
     const scroll = el('div', 'git-diff' + (wrapDiff ? ' is-wrapped' : '')); scroll.dataset.gitDiff = entry.key;
     if (diffLoading && !diff) { scroll.append(el('p', 'git-diff-empty', t('Loading diff…'))); body.append(scroll); return; }
@@ -328,7 +339,7 @@ window.CamelliaGitPanel = { create({ context, getCwd, setStatus, fileViewer, clo
       row.append(el('span', 'git-new-line', className === 'deletion' ? '' : String(newNumber)));
       row.append(el('span', 'git-diff-sign', type));
       const code = el('code', 'git-diff-code');
-      code.innerHTML = window.CamelliaMarkdownPreview.highlight(language, line.slice(1));
+      code.innerHTML = highlightDiff(language, line.slice(1));
       row.append(code); scroll.append(row); rendered++;
     }
     if (diff.truncated || truncatedByView) scroll.append(el('p', 'git-diff-notice', t('The diff is too large to display completely.')));
@@ -429,7 +440,7 @@ window.CamelliaGitPanel = { create({ context, getCwd, setStatus, fileViewer, clo
   function reset() {
     statusTicket++; diffTicket++; actionTicket++; directoryTicket++; if (open) closeFilePreview();
     status = null; repositoryError = null; operationError = ''; notice = ''; loading = false; busy = ''; loadedCwd = ''; lastStatusAt = 0;
-    selected = null; diff = null; commitMessage = ''; commitFocusPending = false; diffScroll.clear(); diffCache.clear();
+    selected = null; diff = null; commitMessage = ''; commitFocusPending = false; diffScroll.clear(); diffCache.clear(); diffHighlightCache.clear();
     directoryFiles = null; directoryParent = ''; directoryLoading = ''; directoryError = ''; markClosed();
   }
   window.addEventListener('focus', () => { if ((status || open) && !busy) void refresh(); });

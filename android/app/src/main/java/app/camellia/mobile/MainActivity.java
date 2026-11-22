@@ -39,6 +39,7 @@ public final class MainActivity extends Activity {
     private static final int TAKE_PHOTO_REQUEST = 43;
     private static final int PICK_DOCUMENT_REQUEST = 45;
     private static final int SCAN_QR_REQUEST = 44;
+    private static final int SCAN_TAILSCALE_QR_REQUEST = 46;
     private static final long COMMAND_CONFIRM_TIMEOUT_MS = 30_000;
     private static final long COMMAND_POLL_INTERVAL_MS = 1_500;
     private static final long FOREGROUND_STREAM_GRACE_MS = 5_000;
@@ -156,9 +157,18 @@ public final class MainActivity extends Activity {
     private int pendingScrollPosition;
     private long messageScrollRevision;
     private EditText addressInput, portInput, nameInput, codeInput;
-    private Button pairButton, scanButton;
-    private boolean pendingScannedPairing, pairingBusy;
+    private Button pairButton, scanButton, lanScanButton;
+    private TextView lanNetworkHint;
+    private boolean pendingScannedPairing, pairingBusy, lanConnectBusy, lanPairScanning;
+    private long lanScanStartedAt;
+    private int lanDiscoveryError = Integer.MIN_VALUE;
+    private final Runnable lanScanRefresh = this::refreshLanScanStatus;
     private Bundle pairingDraft;
+    private LinearLayout lanPairList;
+    private final ArrayList<LanDiscovery.Service> lanServices = new ArrayList<>();
+    private LanDiscovery lanDiscovery;
+    private android.net.ConnectivityManager.NetworkCallback lanNetworkCallback;
+    private String activeRouteSignature = "";
     private String conversationId;
     private String conversationTitle = "";
     private String detailReturn = "list";
@@ -265,6 +275,8 @@ public final class MainActivity extends Activity {
     private final Runnable searchRemote = () -> { if (conversationListAvailable()) loadList(false); };
     private final LinkedHashMap<String, String> computerStates = new LinkedHashMap<>();
     private final LinkedHashMap<String, String> computerRoutes = new LinkedHashMap<>();
+    private final java.util.Set<String> autoLanChecks = new java.util.HashSet<>();
+    private String tailscaleMergeAddress = "";
     private final java.util.Set<RemoteApi> statusClients = java.util.concurrent.ConcurrentHashMap.newKeySet();
     private final java.util.function.Function<String, RemoteApi> statusClientFactory = address -> new RemoteApi(this, address);
     private final java.util.function.Function<String, RemoteApi> homeClientFactory = address -> new RemoteApi(this, address);
@@ -276,7 +288,7 @@ public final class MainActivity extends Activity {
     private LinearLayout settingsRowMobileAccess;
     // The pairing page's Tailscale row, refreshed when that page is shown and
     // when the network state changes underneath it.
-    private LinearLayout pairNetworkRow;
+    private TextView pairNetworkValue, lanScanStatus;
     // The Mobile access page's own state line, above its content. `status` is
     // shared with every screen and filtered per screen, so it cannot be the only
     // place this page's answer appears.
@@ -359,7 +371,11 @@ public final class MainActivity extends Activity {
 
     @Override public void onCreate(Bundle saved) {
         super.onCreate(saved);
-        if (saved != null) { tabletComputerAddress = saved.getString("tabletComputerAddress", ""); tabletComputerExpanded = saved.getBoolean("tabletComputerExpanded"); }
+        if (saved != null) {
+            tabletComputerAddress = saved.getString("tabletComputerAddress", "");
+            tabletComputerExpanded = saved.getBoolean("tabletComputerExpanded");
+            tailscaleMergeAddress = saved.getString("tailscaleMergeAddress", "");
+        }
         MobileOrientation.lockPhonePortrait(this);
         composerAttachments = AttachmentMaintenance.protect(this);
         EmbeddedNetwork.initialize(getApplicationContext());
@@ -372,12 +388,26 @@ public final class MainActivity extends Activity {
         getWindow().setStatusBarColor(background); getWindow().setNavigationBarColor(background);
         if (android.os.Build.VERSION.SDK_INT >= 27 && !dark) getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR | View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR);
         store = new ComputerStore(new CredentialStore(this));
+        lanDiscovery = new LanDiscovery(this, new LanDiscovery.Listener() {
+            @Override public void onLanServices(java.util.List<LanDiscovery.Service> services) {
+                MainActivity.this.onLanServices(services);
+            }
+
+            @Override public void onLanDiscoveryStarted() {
+                MainActivity.this.onLanDiscoveryStarted();
+            }
+
+            @Override public void onLanDiscoveryFailed(int errorCode) {
+                MainActivity.this.onLanDiscoveryFailed(errorCode);
+            }
+        });
         listCache = RemoteListCache.get(this);
         homeCache = RemoteListCache.workbench(this);
         conversationCache = RemoteConversationCache.get(this);
         String recovery = null;
         try {
             credentials = store.load();
+            ComputerRoutes.configure(store.all());
             if (credentials.has("address")) new Endpoint(credentials.getString("address"));
         } catch (Exception error) {
             credentials = new JSONObject();
@@ -420,6 +450,20 @@ public final class MainActivity extends Activity {
         RemoteKeepAliveService.finish(this, true);
         EmbeddedNetwork.setNetworkListener(this::networkRouteChanged);
         EmbeddedNetwork.foreground();
+        syncLanDiscoveryForScreen();
+        if (lanNetworkCallback == null) {
+            lanNetworkCallback = new android.net.ConnectivityManager.NetworkCallback() {
+                @Override public void onAvailable(android.net.Network network) { restartLanDiscovery(); }
+                @Override public void onLost(android.net.Network network) { restartLanDiscovery(); }
+            };
+            try {
+                ((android.net.ConnectivityManager) getSystemService(android.content.Context.CONNECTIVITY_SERVICE))
+                    .registerDefaultNetworkCallback(lanNetworkCallback);
+            } catch (Exception error) {
+                android.util.Log.w("CamelliaLan", "Could not watch network changes", error);
+                lanNetworkCallback = null;
+            }
+        }
         resumePendingCommands();
         if (retained) {
             if (screen.equals("detail")) { resumeDetail(); return; }
@@ -434,6 +478,7 @@ public final class MainActivity extends Activity {
         // connected.
         if (screen.equals("settings")) { refreshMobileAccessRow(); return; }
         if (screen.equals("pair")) {
+            renderLanPairList();
             if (!pendingScannedPairing && credentials.has("claim")) waitForApproval();
             return;
         }
@@ -471,6 +516,429 @@ public final class MainActivity extends Activity {
                 refreshDetailSidebar();
             } else loadList(false);
         }
+    }
+
+    private void onLanServices(java.util.List<LanDiscovery.Service> services) {
+        lanServices.clear();
+        if (services != null) lanServices.addAll(services);
+        if (!lanServices.isEmpty()) {
+            lanDiscoveryError = Integer.MIN_VALUE;
+            handler.removeCallbacks(lanScanRefresh);
+        }
+        if (!foreground) return;
+        if (screen.equals("pair")) renderLanPairList();
+        applyLanRoutes();
+    }
+
+    private void onLanDiscoveryStarted() {
+        lanDiscoveryError = Integer.MIN_VALUE;
+        if (foreground && screen.equals("pair")) renderLanPairList();
+    }
+
+    private void onLanDiscoveryFailed(int errorCode) {
+        lanDiscoveryError = errorCode;
+        if (foreground && screen.equals("pair")) renderLanPairList();
+    }
+
+    private boolean hasLanPairedComputer() {
+        try {
+            for (JSONObject computer : store.all()) {
+                if (computer.has("token") && !computer.optString("lanAddress").isEmpty()
+                        && LanTls.validFingerprint(computer.optString("lanFingerprint"))
+                        && (computer.optBoolean("autoLan", false)
+                            || computer.optBoolean("lanPaired", ComputerRoutes.LAN.equals(computer.optString("activeTransport")))))
+                    return true;
+            }
+        } catch (Exception ignored) { }
+        return false;
+    }
+
+    private boolean hasAutoLanComputer() {
+        try {
+            for (JSONObject computer : store.all()) {
+                if (computer.has("token") && computer.optBoolean("autoLan", false) && hasTailscaleRoute(computer))
+                    return true;
+            }
+        } catch (Exception ignored) { }
+        return false;
+    }
+
+    private void syncLanDiscoveryForScreen() {
+        if (lanDiscovery == null) return;
+        if ("pair".equals(screen)) {
+            if (lanPairScanning) {
+                if (!lanDiscovery.isRunning()) lanDiscovery.start();
+            } else if (lanDiscovery.isRunning()) {
+                lanDiscovery.stop(false);
+            }
+            return;
+        }
+        if (hasLanPairedComputer() || hasAutoLanComputer()) {
+            if (!lanDiscovery.isRunning()) lanDiscovery.start();
+            applyLanRoutes();
+        } else if (lanDiscovery.isRunning()) {
+            lanDiscovery.stop(true);
+        }
+    }
+
+    private void startLanPairScan() {
+        if (!foreground || !screen.equals("pair") || pairingBusy) return;
+        lanPairScanning = true;
+        lanScanStartedAt = android.os.SystemClock.elapsedRealtime();
+        lanDiscoveryError = Integer.MIN_VALUE;
+        lanServices.clear();
+        if (lanDiscovery != null) lanDiscovery.restart(true);
+        handler.removeCallbacks(lanScanRefresh);
+        handler.postDelayed(lanScanRefresh, 8_000);
+        renderLanPairList();
+    }
+
+    private void stopLanPairScan() {
+        lanPairScanning = false;
+        lanScanStartedAt = 0;
+        lanDiscoveryError = Integer.MIN_VALUE;
+        handler.removeCallbacks(lanScanRefresh);
+        if (lanDiscovery != null) lanDiscovery.stop(false);
+        renderLanPairList();
+    }
+
+    private String lanDiscoveryFailureText(int errorCode) {
+        if (errorCode < 0) return tr("系统局域网发现不可用", "System local discovery is unavailable");
+        return tr("系统局域网发现失败，错误码 " + errorCode,
+            "System local discovery failed with code " + errorCode);
+    }
+
+    private String lanNetworkSummary() {
+        java.util.List<String> addresses = wifiIpv4Addresses();
+        if (addresses.isEmpty()) {
+            return tr("手机未连接 Wi-Fi，请先连接与电脑相同的 Wi-Fi",
+                "This phone is not on Wi-Fi. Connect it to the same Wi-Fi as the computer");
+        }
+        String address = addresses.get(0);
+        java.util.Set<String> expected = expectedLanPrefixes();
+        if (expected.isEmpty()) {
+            return tr("手机 Wi-Fi：" + address + "。请确认电脑也连接此 Wi-Fi",
+                "Phone Wi-Fi: " + address + ". Make sure the computer uses the same Wi-Fi");
+        }
+        String prefix = lanPrefix(address);
+        if (prefix != null && expected.contains(prefix)) {
+            return tr("手机 Wi-Fi：" + address + "。与电脑属于同一网段",
+                "Phone Wi-Fi: " + address + ". This is the computer's subnet");
+        }
+        java.util.List<String> networks = new java.util.ArrayList<>();
+        for (String item : expected) networks.add(item + ".x");
+        return tr("手机 Wi-Fi：" + address + "。电脑在 " + String.join("、", networks)
+                + "，当前不在同一网段",
+            "Phone Wi-Fi: " + address + ". The computer is on " + String.join(", ", networks)
+                + ", so this is a different subnet");
+    }
+
+    private java.util.List<String> wifiIpv4Addresses() {
+        java.util.LinkedHashSet<String> addresses = new java.util.LinkedHashSet<>();
+        try {
+            android.net.ConnectivityManager connectivity =
+                (android.net.ConnectivityManager) getSystemService(CONNECTIVITY_SERVICE);
+            if (connectivity == null) return new java.util.ArrayList<>();
+            for (android.net.Network network : connectivity.getAllNetworks()) {
+                android.net.NetworkCapabilities capabilities = connectivity.getNetworkCapabilities(network);
+                if (capabilities == null || !capabilities.hasTransport(android.net.NetworkCapabilities.TRANSPORT_WIFI))
+                    continue;
+                android.net.LinkProperties properties = connectivity.getLinkProperties(network);
+                if (properties == null) continue;
+                for (android.net.LinkAddress link : properties.getLinkAddresses()) {
+                    java.net.InetAddress value = link.getAddress();
+                    if (value instanceof java.net.Inet4Address && !value.isLoopbackAddress()) {
+                        addresses.add(value.getHostAddress());
+                    }
+                }
+            }
+        } catch (Exception ignored) { }
+        return new java.util.ArrayList<>(addresses);
+    }
+
+    private java.util.Set<String> expectedLanPrefixes() {
+        java.util.LinkedHashSet<String> prefixes = new java.util.LinkedHashSet<>();
+        try {
+            for (JSONObject computer : store.all()) {
+                addLanPrefix(prefixes, computer.optString("lanAddress"));
+                try {
+                    Endpoint endpoint = new Endpoint(computer.optString("address"));
+                    if (endpoint.isLan()) addLanPrefix(prefixes, endpoint.origin());
+                } catch (IllegalArgumentException ignored) { }
+            }
+        } catch (Exception ignored) { }
+        return prefixes;
+    }
+
+    private static void addLanPrefix(java.util.Set<String> prefixes, String url) {
+        if (url == null || url.isEmpty()) return;
+        try {
+            String value = lanPrefix(new Endpoint(url).host());
+            if (value != null) prefixes.add(value);
+        } catch (IllegalArgumentException ignored) { }
+    }
+
+    private static String lanPrefix(String address) {
+        String[] parts = address.split("\\.");
+        if (parts.length != 4) return null;
+        return parts[0] + "." + parts[1] + "." + parts[2];
+    }
+
+    private LanDiscovery.Service lanServiceFor(String computerId) {
+        if (computerId == null || computerId.isEmpty()) return null;
+        for (LanDiscovery.Service service : lanServices) if (computerId.equals(service.computerId)) return service;
+        return null;
+    }
+
+    private boolean hasTailscaleRoute(JSONObject computer) {
+        if (!computer.optString("tailscaleAddress").isEmpty()) return true;
+        try { return !new Endpoint(computer.optString("address")).isLan(); }
+        catch (IllegalArgumentException error) { return false; }
+    }
+
+    private void applyLanRoutes() {
+        if (store == null) return;
+        try {
+            java.util.List<JSONObject> computers = store.all();
+            if (computers.isEmpty()) return;
+            ComputerRoutes.configure(computers);
+            String current = credentials.optString("address");
+            ComputerRoutes.Route before = ComputerRoutes.route(current);
+            boolean changed = false;
+            for (JSONObject computer : computers) {
+                String key = computer.optString("address");
+                String identity = computer.optString("computerId");
+                if (key.isEmpty() || identity.isEmpty()) continue;
+                LanDiscovery.Service service = lanServiceFor(identity);
+                boolean legacyLan = !computer.has("lanPaired")
+                    && ComputerRoutes.LAN.equals(computer.optString("activeTransport"));
+                boolean lanPaired = computer.optBoolean("lanPaired", legacyLan);
+                boolean autoLan = computer.optBoolean("autoLan", false);
+                boolean verifiedLan = service != null
+                    && LanTls.validFingerprint(computer.optString("lanFingerprint"))
+                    && computer.optString("lanFingerprint").equalsIgnoreCase(service.fingerprint);
+                if (legacyLan) {
+                    computer.put("lanPaired", true); lanPaired = true; changed = true;
+                }
+                if (verifiedLan && (lanPaired || autoLan)) {
+                    if (!service.url.equals(computer.optString("lanAddress"))) {
+                        computer.put("lanAddress", service.url); changed = true;
+                    }
+                    if (!ComputerRoutes.LAN.equals(computer.optString("activeTransport"))) {
+                        computer.put("activeTransport", ComputerRoutes.LAN); changed = true;
+                    }
+                } else if (service != null && computer.has("token") && autoLan
+                        && hasTailscaleRoute(computer)) {
+                    verifyTrustedLan(computer, service, true, false);
+                    if (!ComputerRoutes.TAILSCALE.equals(computer.optString("activeTransport"))) {
+                        computer.put("activeTransport", ComputerRoutes.TAILSCALE); changed = true;
+                    }
+                } else if (hasTailscaleRoute(computer)) {
+                    if (!ComputerRoutes.TAILSCALE.equals(computer.optString("activeTransport"))) {
+                        computer.put("activeTransport", ComputerRoutes.TAILSCALE); changed = true;
+                    }
+                }
+            }
+            if (changed) {
+                for (JSONObject computer : computers) store.saveProfile(computer);
+                credentials = store.load();
+                ComputerRoutes.configure(store.all());
+            }
+            ComputerRoutes.Route after = ComputerRoutes.route(current);
+            if (!java.util.Objects.equals(before.url, after.url) || !java.util.Objects.equals(before.transport, after.transport)) {
+                lanConnectionChanged();
+            }
+        } catch (Exception error) {
+            android.util.Log.w("CamelliaLan", "Could not apply LAN route", error);
+        }
+    }
+
+    private void verifyTrustedLan(JSONObject computer, LanDiscovery.Service service,
+                                  boolean enableAuto, boolean userInitiated) {
+        if (computer == null || service == null) return;
+        final String address = computer.optString("address");
+        if (address.isEmpty() || !autoLanChecks.add(address)) return;
+        if (!computer.has("token")) {
+            autoLanChecks.remove(address);
+            return;
+        }
+        if (LanTls.validFingerprint(computer.optString("lanFingerprint"))
+                && computer.optString("lanFingerprint").equalsIgnoreCase(service.fingerprint)) {
+            autoLanChecks.remove(address);
+            activateVerifiedLan(computer, service, enableAuto, userInitiated);
+            return;
+        }
+        final String tailscale = tailscaleUrl(computer);
+        if (tailscale.isEmpty()) {
+            autoLanChecks.remove(address);
+            if (userInitiated) setStatusNotice(tr("先在管理菜单添加这台电脑的 Tailscale 连接，或输入 PIN 直连。",
+                "Add this computer's Tailscale connection in Manage, or connect with the PIN."));
+            return;
+        }
+        final String token = computer.optString("token");
+        statusWorker.submit(() -> {
+            JSONObject info = null;
+            Exception failure = null;
+            RemoteApi client = null;
+            try {
+                client = RemoteApi.explicit(this, tailscale);
+                statusClients.add(client);
+                info = client.json("/v1/status", token, null);
+            } catch (Exception error) {
+                failure = error;
+            } finally {
+                if (client != null) statusClients.remove(client);
+                if (client != null) client.cancel();
+            }
+            JSONObject found = info;
+            Exception error = failure;
+            handler.post(() -> {
+                autoLanChecks.remove(address);
+                if (!foreground) return;
+                JSONObject current = storedComputer(address);
+                if (current == null) return;
+                JSONObject transports = found == null ? null : found.optJSONObject("transports");
+                JSONObject lan = transports == null ? null : transports.optJSONObject("lan");
+                String postedFingerprint = lan == null ? "" : lan.optString("fingerprint");
+                String postedId = found == null ? "" : found.optString("computerId");
+                if (found == null || !service.computerId.equals(postedId)
+                        || !service.fingerprint.equalsIgnoreCase(postedFingerprint)) {
+                    if (userInitiated) {
+                        String detail = error == null
+                            ? tr("Tailscale 返回的局域网证书与刚发现的电脑不一致，已拒绝自动切换。",
+                                "Tailscale returned a different LAN certificate, so automatic switching was refused.")
+                            : RemoteApi.failureMessage(error, chinese);
+                        new CamelliaDialog.Builder(this)
+                            .setTitle(tr("无法安全验证局域网", "Could not verify the local network"))
+                            .setMessage(detail + "\n" + tr("你仍可在扫描结果中输入 PIN 手动连接。",
+                                "You can still use the PIN from the scan result to connect manually."))
+                            .setPositiveButton(tr("知道了", "OK"), null).show();
+                    } else if (lanServiceFor(service.computerId) != null) {
+                        handler.postDelayed(this::applyLanRoutes, 15_000);
+                    }
+                    return;
+                }
+                observeTransportInfo(found, address);
+                JSONObject refreshed = storedComputer(address);
+                if (refreshed == null) return;
+                activateVerifiedLan(refreshed, service, enableAuto, userInitiated);
+            });
+        });
+    }
+
+    private String tailscaleUrl(JSONObject computer) {
+        if (computer == null) return "";
+        String saved = computer.optString("tailscaleAddress");
+        if (!saved.isEmpty()) return saved;
+        try {
+            Endpoint endpoint = new Endpoint(computer.optString("address"));
+            return endpoint.isLan() ? "" : endpoint.origin();
+        } catch (IllegalArgumentException error) {
+            return "";
+        }
+    }
+
+    private void activateVerifiedLan(JSONObject computer, LanDiscovery.Service service,
+                                     boolean enableAuto, boolean userInitiated) {
+        if (computer == null || service == null) return;
+        try {
+            String address = computer.optString("address");
+            JSONObject next = new JSONObject(computer.toString());
+            next.put("lanAddress", service.url)
+                .put("lanFingerprint", LanTls.normalize(service.fingerprint))
+                .put("activeTransport", ComputerRoutes.LAN);
+            if (!next.has("lanPaired")) next.put("lanPaired", false);
+            if (enableAuto) next.put("autoLan", true);
+            if (next.optString("computerName").isEmpty()) next.put("computerName", service.name);
+            if (userInitiated && screen.equals("pair")) {
+                store.save(next);
+                credentials = store.load();
+                ComputerRoutes.configure(store.all());
+                pairingDraft = null; pendingScannedPairing = false;
+                listScreen(); loadList(false);
+                return;
+            }
+            if (!store.saveProfileByAddress(next)) throw new IOException("Computer was removed");
+            credentials = store.load();
+            ComputerRoutes.configure(store.all());
+            if (userInitiated) {
+                android.widget.Toast.makeText(this,
+                    enableAuto ? tr("已启用自动局域网直连。", "Automatic LAN direct is enabled.")
+                        : tr("已切换到局域网直连。", "Switched to LAN direct."),
+                    android.widget.Toast.LENGTH_SHORT).show();
+            }
+            lanConnectionChanged();
+        } catch (Exception error) {
+            if (userInitiated) reportError("无法切换到局域网直连。", "Could not switch to LAN direct.", error);
+        }
+    }
+
+    private void lanConnectionChanged() {
+        if (!foreground) return;
+        if (screen.equals("computers")) { refreshComputers(); return; }
+        if (screen.equals("home")) { refreshHomeConversations(); return; }
+        if (screen.equals("pair")) { renderLanPairList(); return; }
+        if (!credentials.has("token")) return;
+        if (screen.equals("list")) loadList(false);
+        else if (screen.equals("detail")) { connectEvents(); refreshDetailSidebar(); }
+    }
+
+    private boolean observeTransportInfo(JSONObject info, String address) {
+        if (info == null || address == null || address.isEmpty()) return false;
+        try {
+            JSONObject transports = info.optJSONObject("transports");
+            JSONObject profile = null;
+            for (JSONObject candidate : store.all()) {
+                if (address.equals(candidate.optString("address"))) { profile = candidate; break; }
+            }
+            if (profile == null || !profile.has("token")) return false;
+            boolean changed = false;
+            String identity = info.optString("computerId");
+            if (!identity.isEmpty() && !identity.equals(profile.optString("computerId"))) {
+                profile.put("computerId", identity); changed = true;
+            }
+            JSONObject lan = transports == null ? null : transports.optJSONObject("lan");
+            if (lan != null) {
+                String url = lan.optString("url"), fingerprint = lan.optString("fingerprint");
+                try {
+                    if (!new Endpoint(url).isLan()) throw new IllegalArgumentException();
+                    if (LanTls.validFingerprint(fingerprint)) {
+                        if (!url.equals(profile.optString("lanAddress"))) { profile.put("lanAddress", url); changed = true; }
+                        if (!LanTls.normalize(fingerprint).equals(profile.optString("lanFingerprint"))) {
+                            profile.put("lanFingerprint", LanTls.normalize(fingerprint)); changed = true;
+                        }
+                    }
+                } catch (IllegalArgumentException ignored) { }
+            }
+            JSONObject tailscale = transports == null ? null : transports.optJSONObject("tailscale");
+            if (tailscale != null) {
+                String url = tailscale.optString("url");
+                try {
+                    if (!new Endpoint(url).isLan() && !url.equals(profile.optString("tailscaleAddress"))) {
+                        profile.put("tailscaleAddress", url); changed = true;
+                    }
+                } catch (IllegalArgumentException ignored) { }
+            }
+            if (changed) {
+                store.saveProfile(profile);
+                credentials = store.load();
+                ComputerRoutes.configure(store.all());
+            }
+            return changed;
+        } catch (Exception error) {
+            android.util.Log.w("CamelliaLan", "Could not update transport descriptors", error);
+            return false;
+        }
+    }
+
+    private void restartLanDiscovery() {
+        handler.postDelayed(() -> {
+            if (!foreground || lanDiscovery == null) return;
+            lanServices.clear();
+            lanDiscovery.stop();
+            syncLanDiscoveryForScreen();
+            if (screen.equals("pair")) renderLanPairList();
+        }, 600);
     }
 
     @Override public void onConfigurationChanged(android.content.res.Configuration configuration) {
@@ -533,6 +1001,18 @@ public final class MainActivity extends Activity {
         persistDraft();
         if (listCache != null) listCache.flush();
         if (homeCache != null) homeCache.flush();
+        lanPairScanning = false;
+        lanScanStartedAt = 0;
+        lanDiscoveryError = Integer.MIN_VALUE;
+        handler.removeCallbacks(lanScanRefresh);
+        if (lanDiscovery != null) lanDiscovery.stop();
+        if (lanNetworkCallback != null) {
+            try {
+                ((android.net.ConnectivityManager) getSystemService(android.content.Context.CONNECTIVITY_SERVICE))
+                    .unregisterNetworkCallback(lanNetworkCallback);
+            } catch (Exception ignored) { }
+            lanNetworkCallback = null;
+        }
         if (conversationCache != null) conversationCache.flush();
         artifactDownloads.stop();
         if (conversationPopup != null) conversationPopup.dismiss();
@@ -588,6 +1068,7 @@ public final class MainActivity extends Activity {
         artifactDownloads.save(saved);
         saved.putString("tabletComputerAddress", tabletComputerAddress);
         saved.putBoolean("tabletComputerExpanded", tabletComputerPane != null ? tabletComputerPane.expanded() : tabletComputerExpanded);
+        saved.putString("tailscaleMergeAddress", tailscaleMergeAddress);
         saved.putString("screen", screen); saved.putString("networkReturn", networkReturn);
         saved.putString("detailReturn", detailReturn);
         if (screen.equals("pair")) rememberPairingDraft();
@@ -1634,8 +2115,8 @@ public final class MainActivity extends Activity {
      * stopping them — it is the page that has to report it.
      */
     private void refreshPairNetworkRow() {
-        if (pairNetworkRow == null || !screen.equals("pair")) return;
-        new SettingsStyle(this).setRowValue(pairNetworkRow, mobileAccessState());
+        if (pairNetworkValue == null || !screen.equals("pair")) return;
+        pairNetworkValue.setText(mobileAccessState());
     }
 
     private void editDeviceName() {
@@ -1671,6 +2152,7 @@ public final class MainActivity extends Activity {
     private void computersScreen() {
         persistDraft();
         stopNetwork(); screen = "computers"; networkScreen = false; conversationId = null;
+        syncLanDiscoveryForScreen();
         clearHistory(); conversations.clear();
         shell(tr("电脑与连接", "Computers & connections"), "");
         root.setClipChildren(false);
@@ -1685,8 +2167,8 @@ public final class MainActivity extends Activity {
                         public void selected(String address) { tabletComputerAddress = address; }
                         public void open(JSONObject computer) { openComputer(computer); }
                         public void test(JSONObject computer) { testComputerConnection(computer); }
-                        public void usage(JSONObject computer) { openAccountUsage(computer); }
                         public void rename(JSONObject computer) { renameComputer(computer); }
+                        public void lanPin(JSONObject computer) { connectComputerWithPin(computer); }
                         public void restart(JSONObject computer) { restartComputer(computer); }
                         public void forget(JSONObject computer) { MainActivity.this.forget(computer); }
                         public void add() { addComputer(); }
@@ -1778,12 +2260,64 @@ public final class MainActivity extends Activity {
     private void manageComputer(JSONObject computer) {
         SettingsStyle style = new SettingsStyle(this);
         String address = computer.optString("address"), state = computerStates.getOrDefault(address, "");
-        LinearLayout panel = computerDialogPanel(computerName(computer), address + (state.isEmpty() ? "" : "\n" + state));
+        String activeTransport = ComputerRoutes.activeTransport(address);
+        String currentRoute = ComputerRoutes.LAN.equals(activeTransport) ? tr("当前线路：局域网直连", "Current route: LAN direct")
+            : ComputerRoutes.TAILSCALE.equals(activeTransport) ? tr("当前线路：Tailscale", "Current route: Tailscale") : "";
+        LinearLayout panel = computerDialogPanel(computerName(computer),
+            address + (state.isEmpty() ? "" : "\n" + state) + (currentRoute.isEmpty() ? "" : "\n" + currentRoute));
         android.app.Dialog dialog = createComputerDialog(panel);
         LinearLayout group = style.group(panel, "");
-        if (computer.has("token")) style.action(group, tr("额度与用量", "Quota & usage"),
-            tr("查看这台电脑的订阅额度、API 余额和调用记录", "View subscription quota, API balances and usage on this computer"),
-            "manageUsage", false, () -> { dialog.dismiss(); openAccountUsage(computer); });
+        boolean persistentLan = computer.has("lanPaired") ? computer.optBoolean("lanPaired", false)
+            : ComputerRoutes.LAN.equals(computer.optString("activeTransport")) && !computer.has("autoLan");
+        if (computer.has("token") && hasTailscaleRoute(computer) && !persistentLan) {
+            style.toggle(group, tr("自动局域网直连", "Automatic LAN direct"),
+                tr("已通过 Tailscale 配对；发现同一 Wi-Fi 后自动切换，不再输入 PIN",
+                    "Already trusted through Tailscale. Switch automatically on the same Wi-Fi without a PIN"),
+                "manageAutoLan", computer.optBoolean("autoLan", false), (button, checked) -> {
+                    try {
+                        JSONObject next = new JSONObject(computer.toString()).put("autoLan", checked);
+                        boolean lanPaired = computer.optBoolean("lanPaired",
+                            ComputerRoutes.LAN.equals(computer.optString("activeTransport")));
+                        if (!checked && !lanPaired && ComputerRoutes.LAN.equals(computer.optString("activeTransport"))
+                                && hasTailscaleRoute(computer)) {
+                            next.put("activeTransport", ComputerRoutes.TAILSCALE);
+                        }
+                        store.saveProfileByAddress(next);
+                        computer.put("autoLan", checked);
+                        credentials = store.load();
+                        ComputerRoutes.configure(store.all());
+                        syncLanDiscoveryForScreen();
+                        applyLanRoutes();
+                        if (checked) {
+                            android.widget.Toast.makeText(this,
+                                tr("已开启，正在查找同一 Wi-Fi 下的电脑。", "Enabled. Looking for the computer on this Wi-Fi."),
+                                android.widget.Toast.LENGTH_SHORT).show();
+                        } else if (screen.equals("computers")) {
+                            refreshComputers();
+                        }
+                    } catch (Exception error) {
+                        button.setChecked(!checked);
+                        reportError("无法保存自动局域网设置。", "Could not save automatic LAN settings.", error);
+                    }
+                });
+        }
+        if (computer.has("token")) style.action(group, tr("使用 PIN 直连", "Connect with PIN"),
+            tr("在同一 Wi-Fi 下切换到局域网直连，不经过 Tailscale", "Switch to local direct on the same Wi-Fi without Tailscale"),
+            "manageLanPin", false, () -> { dialog.dismiss(); connectComputerWithPin(computer); });
+        if (computer.has("token") && hasTailscaleRoute(computer) && !ComputerRoutes.TAILSCALE.equals(activeTransport)) {
+            style.action(group, tr("使用 Tailscale", "Use Tailscale"),
+                tr("验证现有设备凭据并切换到点对点连接", "Verify the existing device credential and switch to the peer-to-peer route"),
+                "manageUseTailscale", false, () -> {
+                    dialog.dismiss();
+                    connectExistingTailscale(computer, tailscaleUrl(computer), true);
+                });
+        }
+        if (computer.has("token") && !hasTailscaleRoute(computer)) {
+            style.action(group, tr("添加 Tailscale 连接", "Add Tailscale"),
+                tr("输入 Tailscale 地址，或扫描电脑二维码，沿用当前设备凭据",
+                    "Enter the Tailscale address or scan the computer QR, reusing this device credential"),
+                "manageAddTailscale", false, () -> { dialog.dismiss(); promptAddTailscale(computer); });
+        }
         style.action(group, tr("连接稳定性测试", "Connection stability test"), tr("检测手机与电脑的连接，约 30 秒", "Test the phone-to-computer connection for about 30 seconds"),
             "manageConnectionTest", false, () -> { dialog.dismiss(); testComputerConnection(computer); });
         if (computer.has("token")) style.action(group, tr("重启桌面端 Camellia", "Restart desktop Camellia"),
@@ -1794,6 +2328,297 @@ public final class MainActivity extends Activity {
         style.action(group, tr("移除电脑", "Forget computer"), tr("删除手机上的凭据，电脑上的会话不受影响", "Deletes the credentials on this phone; chats stay on the computer"),
             "manageForget", true, () -> { dialog.dismiss(); forget(computer); });
         showComputerDialog(dialog);
+    }
+
+    private void promptAddTailscale(JSONObject computer) {
+        if (!foreground || computer == null || !computer.has("token")) return;
+        String address = computer.optString("address");
+        LinearLayout panel = column();
+        EditText host = input(panel, tr("Tailscale 地址", "Tailscale address"), "100.x.y.z",
+            InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI);
+        EditText port = input(panel, tr("端口", "Port"), "43127", InputType.TYPE_CLASS_NUMBER);
+        port.setFilters(new android.text.InputFilter[]{new android.text.InputFilter.LengthFilter(5)});
+        new CamelliaDialog.Builder(this)
+            .setTitle(tr("添加 Tailscale 连接", "Add Tailscale"))
+            .setMessage(tr("沿用这台电脑现有的设备凭据，不需要重新配对。也可以扫描电脑端二维码自动填写。",
+                "Reuse this computer's existing device credential without pairing again, or scan its QR code."))
+            .setView(panel)
+            .setNeutralButton(tr("扫描二维码", "Scan QR code"), (dialog, which) -> {
+                try {
+                    tailscaleMergeAddress = address;
+                    startActivityForResult(new android.content.Intent(this, QrScanActivity.class), SCAN_TAILSCALE_QR_REQUEST);
+                } catch (Exception error) {
+                    tailscaleMergeAddress = "";
+                    reportError("无法打开二维码扫描", "Cannot open the QR scanner", error);
+                }
+            })
+            .setNegativeButton(tr("取消", "Cancel"), null)
+            .setPositiveButton(tr("连接", "Connect"), (dialog, which) -> {
+                try {
+                    Endpoint endpoint = new Endpoint(host.getText().toString(), port.getText().toString());
+                    if (endpoint.isLan()) throw new IllegalArgumentException("Tailscale address required");
+                    connectExistingTailscale(computer, endpoint.origin(), true);
+                } catch (IllegalArgumentException error) {
+                    setStatusNotice(tr("请输入电脑端显示的 Tailscale IPv4 地址和端口。",
+                        "Enter the Tailscale IPv4 address and port shown on the computer."));
+                }
+            }).show();
+        host.requestFocus();
+    }
+
+    private void connectExistingTailscale(JSONObject computer, String url, boolean switchRoute) {
+        if (!foreground || lanConnectBusy || computer == null || !computer.has("token")) return;
+        final Endpoint endpoint;
+        try {
+            endpoint = new Endpoint(url);
+            if (endpoint.isLan()) throw new IllegalArgumentException("Tailscale address required");
+        } catch (IllegalArgumentException error) {
+            setStatusNotice(tr("这台电脑还没有可用的 Tailscale 地址。", "This computer has no usable Tailscale address."));
+            return;
+        }
+        lanConnectBusy = true;
+        final String address = computer.optString("address"), token = computer.optString("token");
+        final String expectedId = computer.optString("computerId");
+        statusWorker.submit(() -> {
+            JSONObject info;
+            RemoteApi client = null;
+            try {
+                client = RemoteApi.explicit(this, endpoint.origin());
+                statusClients.add(client);
+                info = client.json("/v1/status", token, null);
+            } catch (Exception error) {
+                handler.post(() -> {
+                    lanConnectBusy = false;
+                    if (!foreground) return;
+                    String detail = error instanceof RemoteApi.Failure failure && failure.status == 401
+                        ? tr("当前设备凭据不能通过 Tailscale 使用。请在“添加电脑”中重新配对这台电脑。",
+                            "This device credential cannot be used over Tailscale. Pair this computer again from Add computer.")
+                        : RemoteApi.failureMessage(error, chinese);
+                    new CamelliaDialog.Builder(this)
+                        .setTitle(tr("Tailscale 连接失败", "Tailscale connection failed"))
+                        .setMessage(detail).setPositiveButton(tr("知道了", "OK"), null).show();
+                });
+                return;
+            } finally {
+                if (client != null) statusClients.remove(client);
+                if (client != null) client.cancel();
+            }
+            JSONObject found = info;
+            handler.post(() -> {
+                lanConnectBusy = false;
+                if (!foreground) return;
+                try {
+                    if (found.optInt("protocol") != 1) throw new IOException("Unsupported protocol");
+                    String returnedId = found.optString("computerId");
+                    if (!expectedId.isEmpty() && !returnedId.isEmpty() && !expectedId.equals(returnedId)) {
+                        throw new IOException(tr("Tailscale 地址对应的电脑与当前电脑不一致。",
+                            "The computer at this Tailscale address does not match the current computer."));
+                    }
+                    JSONObject current = storedComputer(address);
+                    if (current == null) throw new IOException("Computer was removed");
+                    JSONObject next = new JSONObject(current.toString());
+                    next.put("tailscaleAddress", endpoint.origin());
+                    if (!returnedId.isEmpty()) next.put("computerId", returnedId);
+                    if (switchRoute) next.put("activeTransport", ComputerRoutes.TAILSCALE);
+                    JSONObject transports = found.optJSONObject("transports");
+                    JSONObject lan = transports == null ? null : transports.optJSONObject("lan");
+                    if (lan != null && LanTls.validFingerprint(lan.optString("fingerprint"))
+                            && !lan.optString("url").isEmpty()) {
+                        next.put("lanAddress", lan.optString("url"))
+                            .put("lanFingerprint", LanTls.normalize(lan.optString("fingerprint")));
+                    }
+                    if (!store.saveProfileByAddress(next)) throw new IOException("Computer was removed");
+                    credentials = store.load();
+                    ComputerRoutes.configure(store.all());
+                    android.widget.Toast.makeText(this, tr("Tailscale 连接已保存。", "Tailscale connection saved."),
+                        android.widget.Toast.LENGTH_SHORT).show();
+                    if (screen.equals("computers")) refreshComputers();
+                    else if (address.equals(credentials.optString("address"))) lanConnectionChanged();
+                } catch (Exception error) {
+                    reportError("无法保存 Tailscale 连接。", "Could not save the Tailscale connection.", error);
+                }
+            });
+        });
+    }
+
+    private JSONObject storedComputer(String address) {
+        try {
+            for (JSONObject computer : store.all()) if (address.equals(computer.optString("address"))) return computer;
+        } catch (Exception ignored) { }
+        return null;
+    }
+
+    private void connectComputerWithPin(JSONObject computer) {
+        if (!foreground || lanConnectBusy) return;
+        if (computer == null || !computer.has("token")) {
+            android.widget.Toast.makeText(this, tr("请先完成这台电脑的配对。", "Pair this computer first."), android.widget.Toast.LENGTH_SHORT).show();
+            return;
+        }
+        lanConnectBusy = true;
+        final String address = computer.optString("address"), token = computer.optString("token");
+        android.widget.Toast.makeText(this, tr("正在查找这台电脑的局域网入口…", "Looking for this computer on the local network…"),
+            android.widget.Toast.LENGTH_SHORT).show();
+        try {
+        statusWorker.submit(() -> {
+            JSONObject info = null;
+            RemoteApi client = null;
+            try {
+                client = new RemoteApi(this, address);
+                statusClients.add(client);
+                info = client.json("/v1/status", token, null);
+            } catch (Exception ignored) {
+                // mDNS discovery can still work when the current route is unavailable.
+            } finally {
+                if (client != null) { statusClients.remove(client); client.cancel(); }
+            }
+            JSONObject found = info;
+            handler.post(() -> {
+                lanConnectBusy = false;
+                if (!foreground) return;
+                JSONObject current = storedComputer(address);
+                if (current == null) current = computer;
+                if (found != null) {
+                    observeTransportInfo(found, address);
+                    current = storedComputer(address);
+                    if (current == null) current = computer;
+                }
+                String identity = current.optString("computerId");
+                LanDiscovery.Service service = lanServiceFor(identity);
+                JSONObject transports = found == null ? null : found.optJSONObject("transports");
+                JSONObject lan = transports == null ? null : transports.optJSONObject("lan");
+                if (service == null && lan == null && identity.isEmpty() && !lanServices.isEmpty()) {
+                    chooseLanService(current);
+                    return;
+                }
+                boolean statusLan = lan != null && LanTls.validFingerprint(lan.optString("fingerprint"));
+                String url = statusLan ? lan.optString("url") : service == null ? "" : service.url;
+                String fingerprint = statusLan ? lan.optString("fingerprint") : service == null ? "" : service.fingerprint;
+                try {
+                    if (!new Endpoint(url).isLan() || !LanTls.validFingerprint(fingerprint)) throw new IllegalArgumentException();
+                } catch (IllegalArgumentException error) {
+                    new CamelliaDialog.Builder(this)
+                        .setTitle(tr("没有找到局域网入口", "Local entry not found"))
+                        .setMessage(tr("请确认电脑已开启「局域网访问」，手机和电脑连接同一个 Wi-Fi，并允许新设备加入。",
+                            "Enable Local network on the computer, connect both devices to the same Wi-Fi, and allow new devices."))
+                        .setPositiveButton(tr("知道了", "OK"), null).show();
+                    return;
+                }
+                promptComputerPin(current, url, fingerprint,
+                    service != null && !service.name.isEmpty() ? service.name : computerName(current));
+            });
+        });
+        } catch (Exception error) {
+            lanConnectBusy = false;
+            reportError("无法查找局域网电脑。", "Could not look for the local computer.", error);
+        }
+    }
+
+    private void chooseLanService(JSONObject computer) {
+        java.util.List<LanDiscovery.Service> choices = new ArrayList<>(lanServices);
+        CharSequence[] labels = new CharSequence[choices.size()];
+        for (int index = 0; index < choices.size(); index++) {
+            LanDiscovery.Service service = choices.get(index);
+            labels[index] = (service.name.isEmpty() ? service.computerId : service.name) + "\n" + service.url;
+        }
+        new CamelliaDialog.Builder(this)
+            .setTitle(tr("选择同一 Wi-Fi 下的电脑", "Choose a computer on this Wi-Fi"))
+            .setItems(labels, (dialog, which) -> {
+                LanDiscovery.Service service = choices.get(which);
+                promptComputerPin(computer, service.url, service.fingerprint,
+                    service.name.isEmpty() ? computerName(computer) : service.name);
+            })
+            .setNegativeButton(tr("取消", "Cancel"), null)
+            .show();
+    }
+
+    private void promptComputerPin(JSONObject computer, String url, String fingerprint, String label) {
+        if (!foreground || lanConnectBusy) return;
+        LinearLayout panel = column();
+        EditText pin = input(panel, tr("6 位连接 PIN", "Six-digit connection PIN"), "",
+            InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_VARIATION_PASSWORD);
+        pin.setFilters(new android.text.InputFilter[]{new android.text.InputFilter.LengthFilter(6)});
+        pin.setGravity(Gravity.CENTER);
+        new CamelliaDialog.Builder(this)
+            .setTitle(tr("使用 PIN 直连", "Connect with PIN"))
+            .setMessage(label + "\n" + tr("输入电脑「局域网访问」中显示的 6 位 PIN。已有配对会沿用原设备凭据。",
+                "Enter the six-digit PIN shown under Local network on the computer. Existing pairing keeps its credential."))
+            .setView(panel)
+            .setNegativeButton(tr("取消", "Cancel"), null)
+            .setPositiveButton(tr("连接", "Connect"), (dialog, which) -> {
+                String value = pin.getText().toString();
+                if (!value.matches("\\d{6}")) {
+                    android.widget.Toast.makeText(this, tr("请输入 6 位数字 PIN。", "Enter the six-digit PIN."), android.widget.Toast.LENGTH_SHORT).show();
+                    return;
+                }
+                joinComputerLan(computer, url, fingerprint, value);
+            }).show();
+        pin.requestFocus();
+    }
+
+    private void joinComputerLan(JSONObject computer, String url, String fingerprint, String pin) {
+        if (!foreground || lanConnectBusy || computer == null) return;
+        lanConnectBusy = true;
+        final String address = computer.optString("address");
+        final String expectedId = computer.optString("computerId");
+        final String token = computer.optString("token");
+        RemoteApi client = new RemoteApi(this, url, fingerprint);
+        try {
+            JSONObject payload = new JSONObject().put("pin", pin)
+                .put("name", MobilePreferences.deviceName(this));
+            if (!token.isEmpty()) payload.put("token", token);
+            worker.submit(() -> {
+                try {
+                    JSONObject result = client.json("/v1/lan/join", null, payload);
+                    handler.post(() -> {
+                        lanConnectBusy = false;
+                        if (!foreground) return;
+                        try {
+                            String returnedToken = result.getString("token");
+                            if (!returnedToken.matches("[A-Za-z0-9_-]{43}")) throw new IOException();
+                            String returnedId = result.optString("computerId");
+                            if (!expectedId.isEmpty() && !returnedId.isEmpty() && !expectedId.equals(returnedId))
+                                throw new IOException(tr("局域网电脑与当前管理的电脑不一致，已取消切换。",
+                                    "The LAN computer does not match the managed computer; the switch was cancelled."));
+                            JSONObject next = new JSONObject(computer.toString());
+                            next.put("token", returnedToken)
+                                .put("deviceId", result.optString("deviceId", computer.optString("deviceId")))
+                                .put("permission", result.optString("permission", computer.optString("permission", "control")))
+                                .put("lanAddress", url).put("lanFingerprint", fingerprint)
+                                .put("lanPaired", true)
+                                .put("activeTransport", ComputerRoutes.LAN);
+                            if (!returnedId.isEmpty()) next.put("computerId", returnedId);
+                            JSONObject transports = result.optJSONObject("transports");
+                            JSONObject tailscale = transports == null ? null : transports.optJSONObject("tailscale");
+                            if (tailscale != null && !tailscale.optString("url").isEmpty()) next.put("tailscaleAddress", tailscale.optString("url"));
+                            if (!store.saveProfileByAddress(next)) throw new IOException(tr("这台电脑已被移除。", "This computer was removed."));
+                            credentials = store.load();
+                            ComputerRoutes.configure(store.all());
+                            android.widget.Toast.makeText(this, tr("已切换到局域网直连。", "Switched to local direct."),
+                                android.widget.Toast.LENGTH_SHORT).show();
+                            if (address.equals(credentials.optString("address"))) {
+                                if (screen.equals("detail")) { connectEvents(); refreshDetailSidebar(); }
+                                else if (screen.equals("list")) loadList(false);
+                                else if (screen.equals("computers")) refreshComputers();
+                            } else if (screen.equals("computers")) refreshComputers();
+                        } catch (Exception error) {
+                            reportError("无法切换到局域网直连。", "Could not switch to local direct.", error);
+                        }
+                    });
+                } catch (Exception error) {
+                    handler.post(() -> {
+                        lanConnectBusy = false;
+                        String detail = error instanceof RemoteApi.Failure failure && failure.status == 401
+                            ? tr("PIN 不正确或尝试次数过多。", "Incorrect PIN or too many attempts.")
+                            : RemoteApi.failureMessage(error, chinese);
+                        new CamelliaDialog.Builder(this).setTitle(tr("局域网连接失败", "Local connection failed"))
+                            .setMessage(detail).setPositiveButton(tr("知道了", "OK"), null).show();
+                    });
+                }
+            });
+        } catch (Exception error) {
+            lanConnectBusy = false;
+            reportError("无法发起局域网连接。", "Could not start the local connection.", error);
+        }
     }
 
     private void testComputerConnection(JSONObject computer) {
@@ -1958,9 +2783,11 @@ public final class MainActivity extends Activity {
                         info = client.json("/v1/status", token, null);
                         if (info.optInt("protocol") != 1) throw new IOException("Unsupported protocol");
                         result = tr("已连接", "Connected");
-                        if (EmbeddedNetwork.enabled()) {
+                        if (ComputerRoutes.LAN.equals(ComputerRoutes.activeTransport(address))) {
+                            // No Tailscale path diagnostic is meaningful for a LAN route.
+                        } else if (EmbeddedNetwork.enabled()) {
                             try {
-                                String host = java.net.URI.create(address).getHost();
+                                String host = java.net.URI.create(ComputerRoutes.route(address).url).getHost();
                                 if (host != null) probeComputerPath(ticket, address, host);
                             } catch (Exception ignored) { /* path is diagnostic, not connection state */ }
                         }
@@ -1973,7 +2800,10 @@ public final class MainActivity extends Activity {
                     boolean unauthorized = revoked;
                     deliver(ticket, () -> {
                         if (metadata == null) computerInformation.remove(address); else computerInformation.put(address, metadata);
+                        if (observeTransportInfo(metadata, address)) handler.post(this::applyLanRoutes);
                         if (unauthorized) { listCache.remove(computer); homeCache.remove(computer); prefetch.remove(computer, null); conversationCache.remove(computer, null); }
+                        if (ComputerRoutes.LAN.equals(ComputerRoutes.activeTransport(address)))
+                            computerRoutes.put(address, tr("局域网直连", "LAN direct"));
                         updateComputerState(address, state);
                         if (--remaining[0] == 0) {
                             ((RefreshScrollView) scroll).setRefreshing(false);
@@ -2015,42 +2845,140 @@ public final class MainActivity extends Activity {
         updateComputerState(address, computerStates.getOrDefault(address, tr("正在检查…", "Checking…")));
     }
 
+    private LinearLayout pairingCardBody(SettingsStyle style, LinearLayout parent, String icon, String title, String subtitle) {
+        LinearLayout card = style.group(parent, "");
+        card.setPadding(dp(18), dp(16), dp(18), dp(16));
+        LinearLayout.LayoutParams params = (LinearLayout.LayoutParams) card.getLayoutParams();
+        params.bottomMargin = dp(12);
+        card.setLayoutParams(params);
+        LinearLayout header = new LinearLayout(this);
+        header.setGravity(Gravity.CENTER_VERTICAL);
+        ImageView iconView = new ImageView(this);
+        iconView.setImageDrawable(new LineIcon(icon, style.accent));
+        iconView.setBackground(style.round(style.palette().controlFill, 12));
+        iconView.setPadding(dp(9), dp(9), dp(9), dp(9));
+        iconView.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+        header.addView(iconView, new LinearLayout.LayoutParams(dp(40), dp(40)));
+        LinearLayout copy = column();
+        copy.setPadding(dp(12), 0, 0, 0);
+        TextView heading = text(title, Palette.TEXT_CARD, style.ink);
+        heading.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        heading.setPadding(0, 0, 0, dp(2));
+        if (android.os.Build.VERSION.SDK_INT >= 28) heading.setAccessibilityHeading(true);
+        copy.addView(heading);
+        TextView sub = text(subtitle, Palette.TEXT_SMALL, style.secondary);
+        sub.setPadding(0, 0, 0, 0);
+        copy.addView(sub);
+        header.addView(copy, new LinearLayout.LayoutParams(0, -2, 1));
+        card.addView(header);
+        LinearLayout body = column();
+        body.setPadding(0, dp(12), 0, 0);
+        card.addView(body);
+        return body;
+    }
+
+    private Button compactButton(String label, boolean primary) {
+        Button button = new Button(this);
+        button.setText(label);
+        ActionStyle.page(button, primary);
+        button.setMinWidth(dp(104));
+        return button;
+    }
+
     private void pairScreen() {
+        boolean enteringPair = !"pair".equals(screen);
         stopNetwork();
         closeCommandClients();
         screen = "pair";
+        if (enteringPair) {
+            lanPairScanning = false;
+            lanScanStartedAt = 0;
+            lanDiscoveryError = Integer.MIN_VALUE;
+            handler.removeCallbacks(lanScanRefresh);
+            lanServices.clear();
+            if (lanDiscovery != null) lanDiscovery.stop(true);
+        }
+        syncLanDiscoveryForScreen();
         networkScreen = false;
         conversationId = null;
         shell(tr("配对电脑", "Pair computer"), "");
         root.setFocusableInTouchMode(true); root.requestFocus();
         SettingsStyle style = new SettingsStyle(this);
-        LinearLayout network = style.group(content, "");
-        // The state, not "Sign in / Settings". A row whose value is the name of
-        // the page it opens tells the reader nothing they cannot find out by
-        // going there — and on this page in particular they may not be able to
-        // pair at all until this is sorted, so it has to say so here.
-        style.row(network, "shield", tr("Tailscale 网络", "Tailscale network"),
-            mobileAccessState(), "pairNetwork", this::showNetwork);
-        pairNetworkRow = (LinearLayout) network.findViewWithTag("pairNetwork");
-        style.note(content, tr("手机与电脑需登录同一个 Tailscale 网络。", "Sign into the same Tailscale network on both devices."));
+        TextView intro = text(tr("选择一种方式连接电脑。同一 Wi-Fi 更快，外出时使用 Tailscale。",
+            "Choose how to connect. Same Wi-Fi is faster; use Tailscale when you are away."),
+            Palette.TEXT_BODY, style.secondary);
+        intro.setPadding(dp(4), 0, dp(4), dp(12));
+        content.addView(intro);
 
-        LinearLayout scanner = style.group(content, "");
-        scanner.setPadding(dp(18), dp(16), dp(18), dp(12));
-        LinearLayout scanHeading = new LinearLayout(this); scanHeading.setGravity(Gravity.CENTER_VERTICAL);
-        ImageView scanIcon = new ImageView(this); scanIcon.setImageDrawable(new LineIcon("camera", style.accent));
-        scanIcon.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
-        scanHeading.addView(scanIcon, new LinearLayout.LayoutParams(dp(26), dp(26)));
-        TextView scanTitle = text(tr("扫描电脑二维码", "Scan your computer's QR"), Palette.TEXT_ROW_STRONG, style.ink);
-        scanTitle.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL)); scanTitle.setPadding(dp(12), 0, 0, 0);
-        scanHeading.addView(scanTitle, new LinearLayout.LayoutParams(0, -2, 1)); scanner.addView(scanHeading);
-        TextView scanHint = text(tr("打开电脑「手机访问」生成二维码。\n扫描后自动发起配对。", "Generate a QR code in desktop Mobile access.\nScanning starts pairing automatically."), Palette.TEXT_BODY, style.secondary);
-        scanHint.setPadding(0, dp(12), 0, dp(8)); scanner.addView(scanHint);
+        LinearLayout tailscale = pairingCardBody(style, content, "shield",
+            tr("Tailscale 网络", "Tailscale network"),
+            tr("跨网络连接，适合离开家后使用", "Works across networks when you are away"));
+        LinearLayout networkRow = new LinearLayout(this);
+        networkRow.setGravity(Gravity.CENTER_VERTICAL);
+        networkRow.setMinimumHeight(dp(48));
+        networkRow.setFocusable(true);
+        networkRow.setTag("pairNetwork");
+        networkRow.setBackground(new RippleDrawable(ColorStateList.valueOf(Palette.RIPPLE_ON_CARD),
+            null, style.round(Color.WHITE, 10)));
+        networkRow.setOnClickListener(view -> showNetwork());
+        TextView networkLabel = text(tr("连接状态", "Connection status"), Palette.TEXT_BODY, style.ink);
+        networkLabel.setPadding(0, 0, dp(12), 0);
+        networkRow.addView(networkLabel, new LinearLayout.LayoutParams(0, -2, 1));
+        pairNetworkValue = text(mobileAccessState(), Palette.TEXT_SMALL, style.secondary);
+        pairNetworkValue.setTag("pairNetworkValue");
+        networkRow.addView(pairNetworkValue);
+        ImageView networkArrow = new ImageView(this);
+        networkArrow.setImageDrawable(new LineIcon("right", style.secondary));
+        networkArrow.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+        LinearLayout.LayoutParams networkArrowParams = new LinearLayout.LayoutParams(dp(18), dp(18));
+        networkArrowParams.setMarginStart(dp(8));
+        networkRow.addView(networkArrow, networkArrowParams);
+        tailscale.addView(networkRow);
+        TextView networkNote = text(tr("手机与电脑需登录同一个 Tailscale 网络。",
+            "Sign into the same Tailscale network on both devices."), Palette.TEXT_SMALL, style.secondary);
+        networkNote.setPadding(0, dp(8), 0, 0);
+        tailscale.addView(networkNote);
+
+        LinearLayout lan = pairingCardBody(style, content, "wifi",
+            tr("同一 Wi-Fi 直连", "Same Wi-Fi direct"),
+            tr("局域网发现，速度更快；首次输入电脑端的 6 位 PIN",
+                "Faster on this Wi-Fi; enter the computer's six-digit PIN once"));
+        LinearLayout lanScanRow = new LinearLayout(this);
+        lanScanRow.setGravity(Gravity.CENTER_VERTICAL);
+        lanScanRow.setMinimumHeight(dp(48));
+        lanScanStatus = text(tr("尚未扫描", "Not scanned"), Palette.TEXT_SMALL, style.secondary);
+        lanScanStatus.setMaxLines(1);
+        lanScanStatus.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        lanScanRow.addView(lanScanStatus, new LinearLayout.LayoutParams(0, -2, 1));
+        lanScanButton = compactButton(tr("开始扫描", "Start scanning"), false);
+        lanScanButton.setTag("pairLanScan");
+        lanScanButton.setOnClickListener(view -> {
+            if (lanPairScanning) stopLanPairScan(); else startLanPairScan();
+        });
+        LinearLayout.LayoutParams lanScanButtonParams = new LinearLayout.LayoutParams(-2, -2);
+        lanScanButtonParams.setMarginStart(dp(12));
+        lanScanRow.addView(lanScanButton, lanScanButtonParams);
+        lan.addView(lanScanRow);
+        lanNetworkHint = text(lanNetworkSummary(), Palette.TEXT_SMALL, style.secondary);
+        lanNetworkHint.setPadding(0, dp(8), 0, 0);
+        lan.addView(lanNetworkHint);
+        lanPairList = column();
+        lanPairList.setPadding(0, dp(10), 0, 0);
+        lanPairList.setTag("pairLanList");
+        lan.addView(lanPairList);
+        renderLanPairList();
+
+        LinearLayout qr = pairingCardBody(style, content, "camera",
+            tr("扫码配对", "Scan to pair"),
+            tr("扫描电脑端二维码，自动填入地址和一次性码",
+                "Scan the computer's QR to fill in its address and one-time code"));
         scanButton = button(tr("扫描二维码", "Scan QR code"), this::scanPairingCode, false);
-        scanButton.setBackgroundTintList(enabledColors(style.divider, style.card));
-        scanButton.setTag("pairScan"); scanner.addView(scanButton);
+        scanButton.setTag("pairScan"); qr.addView(scanButton);
 
-        LinearLayout fields = style.group(content, tr("配对信息 · 也可手动填写", "Pairing details · or enter manually"));
-        fields.setPadding(dp(18), dp(8), dp(18), dp(18));
+        LinearLayout fields = pairingCardBody(style, content, "edit",
+            tr("手动配对", "Pair manually"),
+            tr("填写 Tailscale 地址、端口和一次性码",
+                "Enter the Tailscale address, port and one-time code"));
         Endpoint savedEndpoint = credentials.has("address") ? new Endpoint(credentials.optString("address")) : null;
         LinearLayout endpointRow = new LinearLayout(this); endpointRow.setGravity(Gravity.TOP);
         LinearLayout host = column(), port = column();
@@ -2072,7 +3000,10 @@ public final class MainActivity extends Activity {
             codeInput.setText(pairingDraft.getString("code", ""));
             if (pairingDraft.getBoolean("customName", false)) nameInput.setText(pairingDraft.getString("name", MobilePreferences.deviceName(this)));
         }
-        style.note(content, tr("请求发出后，在电脑端确认授权即可连接。", "After sending the request, approve it on your computer to connect."));
+        TextView manualNote = text(tr("请求发出后，在电脑端确认授权即可连接。",
+            "After sending the request, approve it on your computer to connect."), Palette.TEXT_SMALL, style.secondary);
+        manualNote.setPadding(0, dp(10), 0, 0);
+        fields.addView(manualNote);
         status.setTextSize(Palette.TEXT_NOTE); status.setTextColor(style.secondary); status.setPadding(dp(8), dp(8), dp(8), dp(4));
         pairButton = button(tr("请求配对", "Request pairing"), () -> {
             if (credentials.has("claim") && codeInput.getText().toString().trim().isEmpty()) waitForApproval(); else requestPairing();
@@ -2146,6 +3077,7 @@ public final class MainActivity extends Activity {
         pairButton.setText(busy ? waiting ? tr("等待电脑确认…", "Waiting for approval…") : tr("正在请求配对…", "Requesting pairing…")
             : waiting ? tr("继续等待电脑确认", "Resume pairing request") : tr("请求配对", "Request pairing"));
         if (scanButton != null) scanButton.setEnabled(!busy);
+        if (lanScanButton != null) lanScanButton.setEnabled(!busy);
         for (EditText field : new EditText[]{addressInput, portInput, nameInput, codeInput}) if (field != null) field.setEnabled(!busy);
     }
 
@@ -2172,6 +3104,202 @@ public final class MainActivity extends Activity {
         rememberPairingDraft();
         setStatusNotice(tr("已填入二维码中的地址和配对码。", "Address and pairing code filled in from the QR code."));
         pendingScannedPairing = true;
+    }
+
+    private void refreshLanScanStatus() {
+        if (lanPairScanning && "pair".equals(screen)) renderLanPairList();
+    }
+
+    private void renderLanPairList() {
+        if (lanPairList == null) return;
+        lanPairList.removeAllViews();
+        if (lanScanButton != null) {
+            lanScanButton.setText(lanPairScanning ? tr("停止扫描", "Stop scanning")
+                : lanServices.isEmpty() ? tr("开始扫描", "Start scanning") : tr("重新扫描", "Scan again"));
+            lanScanButton.setContentDescription(lanScanButton.getText());
+        }
+        if (lanNetworkHint != null) lanNetworkHint.setText(lanNetworkSummary());
+        if (lanScanStatus != null) {
+            if (lanPairScanning) {
+                if (!lanServices.isEmpty()) {
+                    lanScanStatus.setText(tr("已发现 " + lanServices.size() + " 台，继续扫描中",
+                        "Found " + lanServices.size() + ", still scanning"));
+                } else if (lanDiscoveryError != Integer.MIN_VALUE) {
+                    lanScanStatus.setText(lanDiscoveryFailureText(lanDiscoveryError));
+                } else if (lanScanStartedAt > 0
+                        && android.os.SystemClock.elapsedRealtime() - lanScanStartedAt >= 8_000) {
+                    lanScanStatus.setText(tr("仍在扫描，暂未发现电脑",
+                        "Still scanning. No computer found yet"));
+                } else {
+                    lanScanStatus.setText(tr("正在扫描…", "Scanning…"));
+                }
+            } else {
+                lanScanStatus.setText(lanServices.isEmpty()
+                    ? tr("尚未扫描", "Not scanned")
+                    : tr("已发现 " + lanServices.size() + " 台电脑", "Found " + lanServices.size() + " computers"));
+            }
+        }
+        if (lanServices.isEmpty()) {
+            return;
+        }
+        try {
+            for (LanDiscovery.Service service : lanServices) {
+                JSONObject paired = store.findByComputerId(service.computerId);
+                boolean verified = paired != null && !paired.optString("lanFingerprint").isEmpty()
+                    && paired.optString("lanFingerprint").equalsIgnoreCase(service.fingerprint);
+                boolean trustedTailscale = paired != null && paired.has("token") && hasTailscaleRoute(paired)
+                    && !verified;
+                LinearLayout row = new LinearLayout(this);
+                row.setGravity(Gravity.CENTER_VERTICAL);
+                row.setPadding(0, dp(10), 0, dp(10));
+                LinearLayout copy = column();
+                TextView title = text(service.name.isEmpty() ? service.computerId : service.name, Palette.TEXT_ROW_STRONG, ink);
+                title.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+                copy.addView(title);
+                TextView meta = text(service.url + (verified ? tr(" · 已配对", " · Paired")
+                    : trustedTailscale ? tr(" · 可用 Tailscale 验证", " · Verify with Tailscale") : ""),
+                    Palette.TEXT_SMALL, muted);
+                copy.addView(meta);
+                row.addView(copy, new LinearLayout.LayoutParams(0, -2, 1));
+                if (verified) {
+                    Button use = compactButton(tr("使用", "Use"), false);
+                    use.setOnClickListener(view -> activateExistingLan(paired, service));
+                    LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-2, -2);
+                    params.setMarginStart(dp(10));
+                    row.addView(use, params);
+                } else if (trustedTailscale) {
+                    Button verify = compactButton(tr("验证并直连", "Verify and connect"), false);
+                    verify.setOnClickListener(view -> verifyTrustedLan(paired, service, true, true));
+                    LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-2, -2);
+                    params.setMarginStart(dp(10));
+                    row.addView(verify, params);
+                } else if (!service.joinable) {
+                    TextView locked = text(tr("未允许加入", "Joining off"), Palette.TEXT_SMALL, muted);
+                    locked.setPadding(dp(8), 0, 0, 0);
+                    row.addView(locked);
+                } else {
+                    Button connect = compactButton(tr("连接", "Connect"), false);
+                    connect.setOnClickListener(view -> promptLanPin(service));
+                    LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-2, -2);
+                    params.setMarginStart(dp(10));
+                    row.addView(connect, params);
+                }
+                lanPairList.addView(row);
+            }
+        } catch (Exception error) {
+            lanPairList.addView(text(ErrorDetails.withSummary(tr("无法读取电脑列表。", "Could not read computers."), error),
+                Palette.TEXT_SMALL, muted));
+        }
+    }
+
+    private void activateExistingLan(JSONObject paired, LanDiscovery.Service service) {
+        if (!foreground || paired == null || !paired.has("token")) return;
+        try {
+            JSONObject next = new JSONObject(paired.toString());
+            next.put("lanAddress", service.url);
+            next.put("lanFingerprint", service.fingerprint);
+            next.put("lanPaired", true);
+            next.put("activeTransport", ComputerRoutes.LAN);
+            if (next.optString("computerName").isEmpty()) next.put("computerName", service.name);
+            store.save(next);
+            credentials = store.load();
+            ComputerRoutes.configure(store.all());
+            pairingDraft = null; pendingScannedPairing = false;
+            setStatusNotice(tr("已切换到局域网直连。", "Switched to local direct."));
+            listScreen(); loadList(false);
+        } catch (Exception error) {
+            reportError("无法切换到局域网直连。", "Could not switch to local direct.", error);
+        }
+    }
+
+    private void promptLanPin(LanDiscovery.Service service) {
+        if (!foreground || pairingBusy) return;
+        LinearLayout panel = column();
+        panel.setPadding(dp(4), dp(4), dp(4), dp(4));
+        EditText pin = input(panel, tr("6 位连接 PIN", "Six-digit connection PIN"), "",
+            InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_VARIATION_PASSWORD);
+        pin.setFilters(new android.text.InputFilter[]{new android.text.InputFilter.LengthFilter(6)});
+        pin.setGravity(Gravity.CENTER);
+        CamelliaDialog dialog = new CamelliaDialog.Builder(this)
+            .setTitle(service.name.isEmpty() ? tr("连接电脑", "Connect to computer") : service.name)
+            .setMessage(tr("在电脑「局域网访问」中查看 6 位 PIN。", "See the six-digit PIN in Local network on the computer."))
+            .setView(panel)
+            .setNegativeButton(tr("取消", "Cancel"), null)
+            .setPositiveButton(tr("连接", "Connect"), (ignored, which) -> {
+                String value = pin.getText().toString();
+                if (!value.matches("\\d{6}")) {
+                    setStatusNotice(tr("请输入 6 位数字 PIN。", "Enter the six-digit PIN."));
+                    return;
+                }
+                joinLanService(service, value);
+            }).create();
+        dialog.show();
+        pin.requestFocus();
+    }
+
+    private void joinLanService(LanDiscovery.Service service, String pin) {
+        if (!foreground || pairingBusy || service == null) return;
+        pairingBusy = true;
+        setPairingBusy(true);
+        setStatusNotice(tr("正在通过局域网连接…", "Connecting over the local network…"));
+        final int ticket = generation;
+        final String deviceName = nameInput == null || nameInput.getText().toString().trim().isEmpty()
+            ? MobilePreferences.deviceName(this) : nameInput.getText().toString().trim();
+        RemoteApi client = new RemoteApi(this, service.url, service.fingerprint);
+        try {
+            JSONObject payload = new JSONObject().put("pin", pin).put("name", deviceName);
+            job = worker.submit(() -> {
+                try {
+                    JSONObject result = client.json("/v1/lan/join", null, payload);
+                    deliver(ticket, () -> {
+                        try {
+                            String token = result.getString("token");
+                            if (!token.matches("[A-Za-z0-9_-]{43}")) throw new IOException();
+                            String computerId = result.optString("computerId");
+                            JSONObject existing = store.findByComputerId(computerId);
+                            JSONObject transports = result.optJSONObject("transports");
+                            JSONObject lan = result.optJSONObject("lan");
+                            JSONObject tailscale = transports == null ? null : transports.optJSONObject("tailscale");
+                            String lanUrl = lan == null ? service.url : lan.optString("url", service.url);
+                            String lanFingerprint = lan == null ? service.fingerprint : lan.optString("fingerprint", service.fingerprint);
+                            String tailscaleUrl = tailscale == null ? "" : tailscale.optString("url");
+                            String address = existing != null && !existing.optString("address").isEmpty()
+                                ? existing.optString("address")
+                                : !tailscaleUrl.isEmpty() ? tailscaleUrl : lanUrl;
+                            JSONObject next = existing == null ? new JSONObject() : new JSONObject(existing.toString());
+                            next.put("address", address).put("name", deviceName).put("computerName", service.name)
+                                .put("token", token).put("deviceId", result.getString("deviceId"))
+                                .put("permission", result.optString("permission", "control"))
+                                .put("computerId", computerId)
+                                .put("lanAddress", lanUrl).put("lanFingerprint", lanFingerprint)
+                                .put("lanPaired", true)
+                                .put("activeTransport", ComputerRoutes.LAN);
+                            if (!tailscaleUrl.isEmpty()) next.put("tailscaleAddress", tailscaleUrl);
+                            store.save(next);
+                            credentials = store.load();
+                            ComputerRoutes.configure(store.all());
+                            pairingDraft = null; pendingScannedPairing = false;
+                            setPairingBusy(false);
+                            listScreen(); loadList(false);
+                        } catch (Exception error) {
+                            setPairingBusy(false);
+                            reportError("无法保存局域网连接。", "Could not save the local connection.", error);
+                        }
+                    });
+                } catch (Exception error) {
+                    deliver(ticket, () -> {
+                        setPairingBusy(false);
+                        String detail = error instanceof RemoteApi.Failure failure && failure.status == 401
+                            ? tr("PIN 不正确或尝试次数过多。", "Incorrect PIN or too many attempts.")
+                            : RemoteApi.failureMessage(error, chinese);
+                        setStatusNotice(detail);
+                    });
+                }
+            });
+        } catch (Exception error) {
+            setPairingBusy(false);
+            reportError("无法发起局域网连接。", "Could not start the local connection.", error);
+        }
     }
 
     private void requestPairing() {
@@ -2251,10 +3379,37 @@ public final class MainActivity extends Activity {
                     try {
                         String token = result.getString("token");
                         if (!token.matches("[A-Za-z0-9_-]{43}") || !(result.optString("permission").equals("control") || result.optString("permission").equals("read"))) throw new IOException();
-                        JSONObject next = new JSONObject().put("address", credentials.getString("address")).put("name", credentials.getString("name"))
-                            .put("token", token).put("deviceId", result.getString("deviceId"));
-                        if (credentials.has("computerName")) next.put("computerName", credentials.getString("computerName"));
-                        store.save(next); credentials = next; pairingDraft = null; listScreen(); loadList(false);
+                        JSONObject status = null;
+                        try { status = client.json("/v1/status", token, null); }
+                        catch (Exception ignored) { /* Pairing is already authorized; enrich the route when possible. */ }
+                        String entered = credentials.getString("address");
+                        String computerId = status == null ? result.optString("computerId") : status.optString("computerId");
+                        JSONObject transports = status == null ? result.optJSONObject("transports") : status.optJSONObject("transports");
+                        JSONObject lan = transports == null ? null : transports.optJSONObject("lan");
+                        JSONObject tailscale = transports == null ? null : transports.optJSONObject("tailscale");
+                        String tailscaleUrl = tailscale == null ? "" : tailscale.optString("url");
+                        if (tailscaleUrl.isEmpty()) {
+                            try { if (!new Endpoint(entered).isLan()) tailscaleUrl = entered; }
+                            catch (IllegalArgumentException ignored) { }
+                        }
+                        JSONObject existing = store.findByComputerId(computerId);
+                        JSONObject next = existing == null ? new JSONObject() : new JSONObject(existing.toString());
+                        String address = existing != null && !existing.optString("address").isEmpty()
+                            ? existing.optString("address") : !tailscaleUrl.isEmpty() ? tailscaleUrl : entered;
+                        next.put("address", address).put("name", credentials.getString("name"))
+                            .put("token", token).put("deviceId", result.getString("deviceId"))
+                            .put("permission", result.optString("permission", "control"));
+                        if (!computerId.isEmpty()) next.put("computerId", computerId);
+                        if (!tailscaleUrl.isEmpty()) next.put("tailscaleAddress", tailscaleUrl);
+                        if (lan != null && !lan.optString("url").isEmpty() && LanTls.validFingerprint(lan.optString("fingerprint"))) {
+                            next.put("lanAddress", lan.optString("url"))
+                                .put("lanFingerprint", LanTls.normalize(lan.optString("fingerprint")));
+                        }
+                        next.put("activeTransport", !tailscaleUrl.isEmpty() ? ComputerRoutes.TAILSCALE : ComputerRoutes.LAN);
+                        if (credentials.has("computerName") && next.optString("computerName").isEmpty())
+                            next.put("computerName", credentials.getString("computerName"));
+                        store.save(next); credentials = store.load(); ComputerRoutes.configure(store.all());
+                        pairingDraft = null; listScreen(); loadList(false);
                     } catch (Exception error) { setPairingBusy(false); reportError("无法安全保存凭据，请重试领取。", "Could not securely save credentials. Resume pairing to retry.", error); }
                 });
             } catch (Exception error) {
@@ -3189,6 +4344,7 @@ public final class MainActivity extends Activity {
                 }
                 deliver(ticket, () -> {
                     updateCapabilities(info);
+                    if (observeTransportInfo(page, credentials.optString("address"))) handler.post(this::applyLanRoutes);
                     remoteListQuery = modern ? page.optString("query") : "";
                     listCursor = append ? -1 : pageCursor;
                     applyConversationPage(page, append);
@@ -3589,6 +4745,30 @@ public final class MainActivity extends Activity {
         super.onActivityResult(request, result, data);
         if (request == ArtifactDownloads.SAVE_REQUEST) {
             artifactDownloads.result(result, data, credentials.optString("address"), credentials.optString("token")); return;
+        }
+        if (request == SCAN_TAILSCALE_QR_REQUEST) {
+            String target = tailscaleMergeAddress;
+            tailscaleMergeAddress = "";
+            if (result != RESULT_OK || data == null) return;
+            String scanned = data.getStringExtra(QrScanActivity.EXTRA_ADDRESS);
+            if (scanned == null || target.isEmpty()) return;
+            try {
+                Endpoint endpoint = new Endpoint(scanned);
+                if (endpoint.isLan()) {
+                    setStatusNotice(tr("二维码是局域网地址，不是 Tailscale 地址。",
+                        "The QR code contains a LAN address, not a Tailscale address."));
+                    return;
+                }
+                JSONObject profile = storedComputer(target);
+                if (profile == null) {
+                    setStatusNotice(tr("这台电脑已从手机中移除。", "This computer was removed from the phone."));
+                    return;
+                }
+                connectExistingTailscale(profile, endpoint.origin(), true);
+            } catch (IllegalArgumentException error) {
+                setStatusNotice(tr("二维码中的 Tailscale 地址无效。", "The QR code's Tailscale address is invalid."));
+            }
+            return;
         }
         if (request == SCAN_QR_REQUEST) {
             if (result != RESULT_OK || data == null) return;
@@ -5330,7 +6510,6 @@ public final class MainActivity extends Activity {
         heading.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
         panel.addView(heading);
         JSONArray approvalRows = lastLive == null ? null : lastLive.optJSONArray("approvals");
-        int backgroundCount = RemoteWorkStatus.backgroundCount(displayedConversation);
         boolean added = false;
         workApprovalSection = column();
         workApprovalSignature = "";
@@ -5355,11 +6534,18 @@ public final class MainActivity extends Activity {
         if (remoteGoal != null || remoteTasks.length() > 0) {
             added = true;
         }
-        if (RemoteWorkStatus.backgroundCount(displayedConversation) > 0) {
+        String background = RemoteWorkStatus.background(displayedConversation, chinese);
+        if (!background.isEmpty()) {
             added = true;
-            panel.addView(sheetSection(tr("后台任务", "Background tasks")));
-            TextView count = text(tr(backgroundCount + " 个后台任务正在运行", backgroundCount + " background tasks are running"), Palette.TEXT_SMALL, muted);
-            count.setPadding(0, dp(6), 0, dp(8)); panel.addView(count);
+            panel.addView(sheetSection(background));
+            String descriptions = RemoteWorkStatus.backgroundDescriptions(displayedConversation);
+            if (!descriptions.isEmpty()) {
+                TextView detail = text(descriptions, Palette.TEXT_SMALL, muted);
+                detail.setTag("workBackgroundDescriptions");
+                detail.setPadding(0, dp(6), 0, dp(8));
+                detail.setTextIsSelectable(true);
+                panel.addView(detail);
+            }
             Button stop = button(tr("停止后台任务", "Stop background tasks"), () -> {
                 dialog.dismiss();
                 stopBackgroundWork();
@@ -6877,6 +8063,11 @@ public final class MainActivity extends Activity {
         }
         else if (screen.equals("pair")) {
             pendingScannedPairing = false; pairingDraft = null;
+            lanPairScanning = false;
+            lanScanStartedAt = 0;
+            lanDiscoveryError = Integer.MIN_VALUE;
+            handler.removeCallbacks(lanScanRefresh);
+            if (lanDiscovery != null) lanDiscovery.stop(true);
             computersScreen(); refreshComputers();
         }
         else if (screen.equals("list")) homeScreen();

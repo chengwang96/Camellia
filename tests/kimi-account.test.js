@@ -326,6 +326,17 @@ test('subscription spawn keeps official account models and search without API ov
   assert.throws(() => kimiSpawnSpec({ home: f.home, connection: 'subscription', model: 'api-model' }), /not available/);
 });
 
+test('subscription spawn disables Kimi dynamic tool selection for Camellia MCP tools', t => {
+  const f = fixture(t), config = managedConfig();
+  config.models['kimi-code/coding'].capabilities.push('dynamically_loaded_tools');
+  config.models['kimi-code/fast'].capabilities = ['tool_use', 'dynamically_loaded_tools'];
+  f.put(config);
+  kimiSpawnSpec({ home: f.home, runtime: 'fixture', connection: 'subscription', model: 'kimi-code/coding' });
+  const spawned = TOML.parse(fs.readFileSync(path.join(f.home, 'config.toml'), 'utf8'));
+  assert.deepEqual(spawned.models['kimi-code/coding'].capabilities, ['thinking', 'always_thinking', 'image_in']);
+  assert.deepEqual(spawned.models['kimi-code/fast'].capabilities, ['tool_use']);
+});
+
 test('subscription output limits reach the native request budget', t => {
   const f = fixture(t); f.put(managedConfig());
   const account = accountModels(managedKimiConfig(f.home));

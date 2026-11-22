@@ -6,7 +6,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { removeTree } = require('./test-fs.cjs');
-const { MAX_TEXT_BYTES, describePreview, savePreviewText, previewKind } = require('../src/main/file-preview');
+const { MAX_TEXT_BYTES, describePreview, describePreviewAsync, savePreviewText, previewKind } = require('../src/main/file-preview');
 
 function editablePreview(filePath) {
   let edit;
@@ -43,6 +43,17 @@ test('text previews are bounded and local media receives file URLs', t => {
   assert.equal(video.kind, 'video');
   assert.match(video.url, /^file:\/\//);
   assert.equal(video.name, 'clip.mp4');
+});
+
+test('asynchronous text preview preserves content and edit metadata', async t => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'camellia-preview-async-'));
+  t.after(() => removeTree(directory));
+  const filePath = path.join(directory, 'notes.md');
+  fs.writeFileSync(filePath, '# Async preview\n\nSome text.\n');
+  const file = await describePreviewAsync(filePath, () => 'async-token');
+  assert.equal(file.text, '# Async preview\n\nSome text.\n');
+  assert.equal(file.editToken, 'async-token');
+  assert.equal(file.kind, 'text');
 });
 
 test('preview saves UTF-8 edits in place and retains the BOM, line endings and mode', t => {

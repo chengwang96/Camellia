@@ -308,6 +308,25 @@ test('streaming text and per-turn usage do not duplicate repeated native polls',
   assert.equal(turn.usage.input_tokens, 12); assert.equal(turn.usage.output_tokens, 7);
 });
 
+test('planner thinking streams as live progress without duplicate polls', () => {
+  const { bridge, turn, messages } = fixture();
+  for (const thinking of ['Reading files', 'Reading files and checking config', 'Reading files and checking config']) bridge.step(turn, {
+    trajectoryId: 'trajectory',
+  }, { plannerResponse: { thinking }, status: 'CORTEX_STEP_STATUS_DONE' }, 1);
+  assert.equal(messages.filter(message => message.params.update?.sessionUpdate === 'camellia_progress')
+    .map(message => message.params.update.content.text).join(''), 'Reading files and checking config');
+  assert.equal(messages.some(message => message.params.update?.sessionUpdate === 'agent_message_chunk'), false);
+});
+
+test('discussion transport keeps planner thinking out of the streamed answer', () => {
+  const { bridge, turn, messages } = fixture();
+  bridge.config = { discussion: true };
+  bridge.step(turn, { trajectoryId: 'trajectory' }, {
+    plannerResponse: { thinking: 'Private planning' }, status: 'CORTEX_STEP_STATUS_DONE',
+  }, 1);
+  assert.equal(messages.some(message => message.params.update?.sessionUpdate === 'camellia_progress'), false);
+});
+
 test('prepared interactive sessions reject a different identity before native work', async () => {
   const { bridge, calls } = fixture();
   await assert.rejects(bridge.handle('session/prompt', { sessionId: 'wrong', prompt: [] }), /identity mismatch/);

@@ -8,7 +8,7 @@ const CHAT_PROFILES = {
   kimi: { name: 'Kimi Code', shortName: 'Kimi', permission: 'ask' },
   claude: { name: 'Claude Code', shortName: 'Claude', permission: 'auto' },
   dsh: { name: 'DeepSeek Harness', shortName: 'DSH', permission: 'auto' },
-  antigravity: { name: 'Antigravity', shortName: 'Antigravity', permission: 'ask', supportsImages: false },
+  antigravity: { name: 'Antigravity', shortName: 'Antigravity', permission: 'ask' },
 };
 let harnessId = Object.hasOwn(CHAT_PROFILES, requestedHarness) ? requestedHarness : 'claude';
 let chatProfile = CHAT_PROFILES[harnessId];

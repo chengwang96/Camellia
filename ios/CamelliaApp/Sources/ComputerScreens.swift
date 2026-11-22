@@ -1176,6 +1176,7 @@ private struct GeneralSettingsView: View {
     }
 
     var body: some View {
+        let askEachTime = model.preferences.askDownloadLocationEachTime
         ScrollView(showsIndicators: false) {
             VStack(spacing: 0) {
                 SettingsCard {
@@ -1202,24 +1203,30 @@ private struct GeneralSettingsView: View {
 
                 SettingsGroupLabel(title: "下载")
                 SettingsCard {
-                    Button { folderError = nil; pickingFolder = true } label: {
-                        SettingsRowLabel(icon: "folder", title: "默认下载目录",
-                                         detail: savingFolder ? "正在保存…" : downloadFolderLabel)
+                    Toggle(isOn: Binding(get: { model.preferences.askDownloadLocationEachTime }, set: { enabled in
+                        folderError = nil
+                        model.setAskDownloadLocationEachTime(enabled)
+                    })) {
+                        SettingsRowLabel(icon: "", title: "每次选择保存位置", showsChevron: false)
                     }
-                    .buttonStyle(.plain)
-                    .disabled(savingFolder)
-                    .accessibilityIdentifier("download-directory")
-                    if model.preferences.downloadDirectoryBookmark != nil {
-                        SettingsDivider()
-                        Button { model.clearDownloadDirectory(); folderError = nil } label: {
-                            SettingsRowLabel(icon: "", title: "每次选择保存位置", showsChevron: false)
+                    .toggleStyle(SettingsToggleStyle())
+                    .padding(.trailing, 16)
+                    .accessibilityIdentifier("ask-download-location")
+                    if !askEachTime {
+                        SettingsDivider(leading: 16)
+                        Button { folderError = nil; pickingFolder = true } label: {
+                            SettingsRowLabel(icon: "folder", title: "默认下载目录",
+                                             detail: savingFolder ? "正在保存…" : downloadFolderLabel)
                         }
                         .buttonStyle(.plain)
-                        .accessibilityIdentifier("download-directory-clear")
+                        .disabled(savingFolder)
+                        .accessibilityIdentifier("download-directory")
                     }
                 }
-                if let folderError { StatusLine(text: folderError, tone: .bad).padding(.horizontal, 8) }
-                SettingsNote(text: "选择并授权一次，后续下载自动保存；同名文件自动编号。")
+                if !askEachTime {
+                    if let folderError { StatusLine(text: folderError, tone: .bad).padding(.horizontal, 8) }
+                    SettingsNote(text: "选择并授权一次，后续下载自动保存；同名文件自动编号。")
+                }
 
                 SettingsGroupLabel(title: "远程控制")
                 SettingsCard {
@@ -1294,7 +1301,7 @@ private struct GeneralSettingsView: View {
 
     private var downloadFolderLabel: String {
         model.preferences.downloadDirectoryBookmark == nil
-            ? "每次询问保存位置" : model.preferences.downloadDirectoryLabel
+            ? "选择文件夹" : model.preferences.downloadDirectoryLabel
     }
 
     private func choiceTitle(_ choice: Choice) -> String {

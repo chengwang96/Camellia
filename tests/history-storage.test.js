@@ -5,6 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { randomUUID } = require('node:crypto');
 const { ConversationHistory, FLAGS, tokens, contextRow } = require('../src/engines/conversation-history');
 const { SharedConversations, ENGINES } = require('../src/engines/shared-conversations');
 const { RemoteReadModel } = require('../src/main/remote/read-model');
@@ -108,6 +109,90 @@ test('legacy and appended streaming tool snapshots stay out of public replay and
   h.history.append('sample', { seq: 8, role: 'tool', text: event('search', 'failed', 'SEARCH_ERROR') });
   assert.deepEqual(h.history.rows('sample', { mask: FLAGS.public }).map(row => row.seq), [1, 4, 5, 6, 8]);
   assert.deepEqual(h.history.rows('sample').map(row => row.seq), [1, 2, 3, 4, 5, 6, 7, 8]);
+});
+
+test('streaming history compaction preserves retained bytes and rebuilds a usable index', t => {
+  const h = fixture(t), event = (id, status, output) => JSON.stringify({ type: 'gui:tool', id, status, output });
+  const source = [{ seq: 1, role: 'user', text: 'Inspect the result', attachments: [{ path: ' retained.txt' }] },
+    { seq: 2, role: 'tool', internal: true, text: event('write', 'pending', '') },
+    { seq: 3, role: 'tool', internal: true, text: event('write', 'in_progress', 'PARTIAL_OUTPUT') },
+    { seq: 4, role: 'tool', text: event('write', 'completed', 'FINAL_OUTPUT') },
+    { seq: 5, role: 'tool', internal: true, text: 'Internal evidence' },
+    { seq: 6, role: 'assistant', text: 'Finished' }];
+  h.seed(source);
+  const file = path.join(h.root, 'sample.jsonl'), original = fs.readFileSync(file);
+  h.history.page('sample');
+  const result = h.history.compactStreaming('sample');
+  assert.equal(result.changed, true);
+  assert.equal(result.removedRows, 2);
+  assert.equal(fs.readFileSync(result.backup).equals(original), true);
+  const retained = [source[0], source[3], source[4], source[5]];
+  assert.deepEqual(fs.readFileSync(file), Buffer.from(retained.map(row => JSON.stringify(row) + '\n').join('')));
+  assert.deepEqual(h.history.rows('sample').map(row => row.seq), [1, 4, 5, 6]);
+  assert.deepEqual(h.history.rows('sample', { mask: FLAGS.public }).map(row => row.seq), [1, 4, 6]);
+  h.history.append('sample', { seq: 7, role: 'assistant', text: 'After compaction' });
+  assert.deepEqual(h.history.page('sample').rows.map(row => row.seq), [1, 6, 7]);
+  assert.equal(h.history.compactStreaming('sample').changed, false);
+});
+
+test('streaming history compaction refuses to replace a source that changes before commitment', t => {
+  const h = fixture(t);
+  h.seed([{ seq: 1, role: 'user', text: 'Keep' },
+    { seq: 2, role: 'tool', internal: true, text: JSON.stringify({ type: 'gui:tool', id: 'write', status: 'running', output: 'temporary' }) }]);
+  const file = path.join(h.root, 'sample.jsonl'), original = fs.readFileSync(file), copy = fs.copyFileSync;
+  t.mock.method(fs, 'copyFileSync', (source, target, mode) => {
+    copy(source, target, mode);
+    if (source === file && target.includes('.pre-stream-compact-'))
+      fs.appendFileSync(file, JSON.stringify({ seq: 3, role: 'assistant', text: 'Concurrent reply' }) + '\n');
+  });
+  assert.throws(() => h.history.compactStreaming('sample'), /changed while compacting/);
+  assert.deepEqual(fs.readFileSync(file), Buffer.concat([original, Buffer.from(JSON.stringify({ seq: 3, role: 'assistant', text: 'Concurrent reply' }) + '\n')]));
+  assert.equal(h.history.rows('sample').at(-1).text, 'Concurrent reply');
+  assert.equal(fs.readdirSync(h.root).some(name => name.includes('.stream-') && name.endsWith('.tmp')), false);
+});
+
+test('shared history compaction runs in a worker while blocking new sends', async t => {
+  const { manager, conversation: c } = managerFixture(t);
+  manager.append(c, { role: 'user', text: 'Keep this request' });
+  manager.append(c, { role: 'tool', internal: true, text: JSON.stringify({ type: 'gui:tool', id: 'write', status: 'running', output: 'temporary' }) });
+  manager.append(c, { role: 'tool', text: JSON.stringify({ type: 'gui:tool', id: 'write', status: 'completed', output: 'final' }) });
+  manager.save(c);
+  const pending = manager.command('codex', 'compact-history-storage', { sessionId: c.id });
+  assert.equal(manager.busy(c.id), true);
+  await assert.rejects(manager.send('codex', { sessionId: c.id, prompt: 'Do not interleave' }), /Wait for this conversation/);
+  const result = await pending;
+  assert.equal(result.ok, true);
+  assert.equal(result.removedRows, 1);
+  assert.equal(manager.busy(c.id), false);
+  assert.deepEqual(manager.rows(c).map(row => row.seq), [1, 3]);
+});
+
+test('high-frequency conversation saves coalesce and immediate saves cancel pending work', async t => {
+  const { manager, conversation: c } = managerFixture(t);
+  const persist = manager.save.bind(manager);
+  let writes = 0;
+  manager.save = conversation => { writes++; return persist(conversation); };
+  manager.saveSoon(c); manager.saveSoon(c);
+  assert.equal(writes, 0);
+  manager.save(c);
+  assert.equal(writes, 1);
+  manager.saveSoon(c); manager.saveSoon(c);
+  await new Promise(resolve => setTimeout(resolve, 150));
+  assert.equal(writes, 2);
+});
+
+test('reference indexing reads only appended rows within the same generation', t => {
+  const h = fixture(t), first = 'a'.repeat(64), second = randomUUID(), third = 'b'.repeat(64);
+  h.seed([{ seq: 1, role: 'user', text: 'Retain ' + first }, { seq: 2, role: 'assistant', text: 'Also retain ' + second }]);
+  assert.deepEqual([...h.history.referenceIds('sample')].sort(), [first, second.toLowerCase()].sort());
+  const before = { ...h.history.metrics };
+  h.history.append('sample', { seq: 3, role: 'assistant', text: 'New reference ' + third });
+  assert.deepEqual([...h.history.referenceIds('sample')].sort(), [first, second.toLowerCase(), third].sort());
+  assert.equal(h.history.metrics.parsedRows - before.parsedRows, 1);
+  assert.ok(h.history.metrics.historyBytes - before.historyBytes < 200);
+  h.history.append('sample', { seq: 4, role: 'revision', replacesSeq: 1, text: 'Replace the request' });
+  assert.equal(h.history.referenceIds('sample').has(first), true);
+  assert.equal(h.history.referenceIds('sample').has(third), true);
 });
 
 test('fork persists the copied transcript in one batch', t => {

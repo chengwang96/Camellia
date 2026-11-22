@@ -2,6 +2,8 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { explicitContextCap } = require('../api/context-capacity');
+const { codexApiProfile } = require('../shared/codex-api-profiles');
+const { routedModelId } = require('../shared/codex-tool-model');
 
 const CODEX_API_TOOL_PROFILE = 'native-apply-patch-v3';
 const nativeCatalog = require('./codex-metadata/models.json');
@@ -10,7 +12,8 @@ const toolAwareFallbackPrompt = fallbackPrompt.replace(/^## (?:Planning|`update_
 
 function nativeModel(model) {
   const suffix = /^[a-zA-Z0-9_-]+\/([^/]+)$/.exec(model)?.[1];
-  return nativeCatalog.models.find(entry => model.startsWith(entry.slug) || suffix?.startsWith(entry.slug));
+  return codexApiProfile(model)
+    || nativeCatalog.models.find(entry => model.startsWith(entry.slug) || suffix?.startsWith(entry.slug));
 }
 
 function needsApiToolProfile(model) {
@@ -45,9 +48,11 @@ function configureApiModel(config, home, model, contextWindow) {
   // Match 0.169.0's unknown-model defaults, adding only its native patch tool.
   // Without this metadata Codex invokes apply_patch.bat through PowerShell;
   // Windows batch argument parsing truncates valid multiline patches.
+  const profile = nativeModel(routedModelId(model));
   const fallback = {
     slug: model, display_name: model, description: null,
-    default_reasoning_level: null, supported_reasoning_levels: [],
+    default_reasoning_level: profile?.default_reasoning_level || null,
+    supported_reasoning_levels: profile?.supported_reasoning_levels || [],
     shell_type: 'unified_exec', visibility: 'none', supported_in_api: true, priority: 99,
     model_messages: { instructions_template: toolAwareFallbackPrompt },
     include_skills_usage_instructions: false, include_plugin_usage_instructions: false, include_apps_usage_instructions: false,
@@ -55,7 +60,8 @@ function configureApiModel(config, home, model, contextWindow) {
     supports_parallel_tool_calls: false,
     support_verbosity: false, apply_patch_tool_type: 'freeform',
     truncation_policy: { mode: 'bytes', limit: 10000 },
-    context_window: contextWindow || 272000, max_context_window: contextWindow || 272000, effective_context_window_percent: 95,
+    context_window: contextWindow || profile?.context_window || 272000,
+    max_context_window: contextWindow || profile?.max_context_window || 272000, effective_context_window_percent: 95,
     experimental_supported_tools: [], input_modalities: ['text', 'image'],
   };
   writeModelCatalog(target, { models: [...nativeCatalog.models, fallback] });

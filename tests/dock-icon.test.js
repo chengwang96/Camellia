@@ -18,6 +18,7 @@ const dockStartup = source.slice(readyStart + readyMarker.length, startupEnd);
 
 function runDockStartup(context) {
   return vm.runInNewContext('(async () => {' + dockStartup + '\n})()', {
+    backgroundLaunch: false,
     networkSettings: () => ({ initialize: async () => {} }),
     settingsWindowSizes: { start() {} },
     windowChrome: { start() {} },
@@ -33,7 +34,8 @@ for (const isPackaged of [false, true]) {
     const icons = [];
     await runDockStartup({
       process: { platform: 'darwin' },
-      app: { isPackaged, dock: { setIcon(icon) { icons.push(icon); } } },
+      app: { isPackaged, getLoginItemSettings: () => ({ wasOpenedAtLogin: false }),
+        dock: { setIcon(icon) { icons.push(icon); } } },
     });
     assert.deepEqual(icons, [path.join(root, 'assets/icon-1024.png')]);
   });
@@ -50,7 +52,8 @@ for (const platform of ['win32', 'linux']) {
 
 test('startup tolerates an unavailable Dock API', async () => {
   await runDockStartup({
-    process: { platform: 'darwin' }, app: {},
+    process: { platform: 'darwin' },
+    app: { getLoginItemSettings: () => ({ wasOpenedAtLogin: false }) },
   });
 });
 
@@ -60,7 +63,8 @@ test('Dock setup waits for asynchronous network initialization', async () => {
   const initialized = new Promise(resolve => { finishInitialization = resolve; });
   const pending = runDockStartup({
     process: { platform: 'darwin' },
-    app: { dock: { setIcon(icon) { icons.push(icon); } } },
+    app: { getLoginItemSettings: () => ({ wasOpenedAtLogin: false }),
+      dock: { setIcon(icon) { icons.push(icon); } } },
     networkSettings: () => ({ initialize: () => initialized }),
   });
   assert.deepEqual(icons, []);
@@ -73,7 +77,8 @@ test('network initialization failure is logged without preventing Dock setup', a
   const icons = [], logs = [];
   await runDockStartup({
     process: { platform: 'darwin' },
-    app: { dock: { setIcon(icon) { icons.push(icon); } } },
+    app: { getLoginItemSettings: () => ({ wasOpenedAtLogin: false }),
+      dock: { setIcon(icon) { icons.push(icon); } } },
     networkSettings: () => ({ initialize: async () => { throw new Error('Network unavailable'); } }),
     log: message => logs.push(message),
   });

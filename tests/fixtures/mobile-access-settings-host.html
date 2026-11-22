@@ -19,6 +19,16 @@
         <button id="mobile-logout" hidden data-copy="logout">退出 Tailscale 登录</button>
       </details>
     </section>
+    <section class="device-section device-card device-lan" aria-labelledby="mobile-lanTitle">
+      <div class="device-heading"><h2 id="mobile-lanTitle" data-copy="lanTitle">局域网访问</h2><span id="mobile-lanStatus" class="device-status" role="status"></span></div>
+      <div class="relay-setting"><span id="mobile-lanToggleLabel" data-copy="lanToggleLabel">允许同一 Wi-Fi 的手机直连</span><input id="mobile-lanToggle" type="checkbox" role="switch" aria-labelledby="mobile-lanToggleLabel" aria-describedby="mobile-lanHint"></div>
+      <p id="mobile-lanHint" class="hint" data-copy="lanHint"></p>
+      <div class="device-name-row"><label for="mobile-lanPin" data-copy="lanPin">连接 PIN</label><input id="mobile-lanPin" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" autocomplete="one-time-code" spellcheck="false"><button id="mobile-lanSavePin" data-copy="lanSavePin">保存 PIN</button></div>
+      <p id="mobile-lanAddress" class="device-address"></p>
+      <p id="mobile-lanPinStatus" class="hint" role="status" aria-live="polite"></p>
+      <div class="relay-setting"><span id="mobile-lanJoinLabel" data-copy="lanAllowJoin">允许新设备加入</span><input id="mobile-lanAllowJoin" type="checkbox" role="switch" aria-labelledby="mobile-lanJoinLabel"></div>
+      <p class="hint" data-copy="lanSecurity"></p>
+    </section>
     <section class="device-section device-card device-pair" aria-labelledby="mobile-pairTitle">
       <div class="device-heading"><h2 id="mobile-pairTitle" data-copy="pair">配对设备</h2><span id="mobile-pairSummary" class="device-status"></span></div>
       <div class="device-name-row"><label for="mobile-deviceName" data-copy="deviceName">本机名称</label><input id="mobile-deviceName" maxlength="80" autocomplete="off"><button id="mobile-saveDeviceName" data-copy="deviceNameSave">保存名称</button><button id="mobile-invite" disabled data-copy="generate" class="primary">生成配对码</button></div>
@@ -30,8 +40,12 @@
       <div id="mobile-pending"></div>
     </section>
     <section class="device-section device-card" aria-labelledby="mobile-devicesTitle"><div class="device-heading"><h2 id="mobile-devicesTitle" data-copy="devices">已授权设备</h2><span id="mobile-devicesSummary" class="device-status"></span></div><div id="mobile-devices"></div></section>
+    <section class="device-section device-card tailscale-settings-group" aria-labelledby="mobile-tailscaleSettingsTitle">
+      <div class="tailscale-settings-intro">
+        <div class="device-heading"><h2 id="mobile-tailscaleSettingsTitle" data-copy="tailnetUpdateTitle">Embedded Tailscale</h2></div>
+      </div>
     <section class="device-section device-card network-path" aria-labelledby="mobile-pathTitle">
-      <div class="device-heading"><h2 id="mobile-pathTitle" data-copy="pathTitle">网络路径</h2><span id="mobile-pathSummary" class="device-status"></span></div>
+      <h2 id="mobile-pathTitle" class="sr-only" data-copy="pathTitle">网络路径</h2>
       <p id="mobile-relayPathError" class="hint error" role="status" hidden></p>
       <div id="mobile-relayConfig" class="relay-config">
         <div class="relay-setting"><span id="mobile-relaySwitchLabel" data-copy="relayUse">使用中继</span><input id="mobile-relayUse" type="checkbox" role="switch" aria-labelledby="mobile-relaySwitchLabel" aria-describedby="mobile-pathHint"></div>
@@ -72,6 +86,7 @@
         <p id="mobile-tailscaleFeedback" class="hint" role="status" aria-live="polite"></p>
       </div>
     </details>
+    </section>
     <p id="mobile-error" class="device-feedback" role="alert"></p>
     <div class="mobile-page-actions"><button id="mobile-retry" hidden data-copy="retry">重试</button><button id="mobile-openPanel" hidden data-copy="openPanel">打开独立手机访问面板</button></div>
   </section>

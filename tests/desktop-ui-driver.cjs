@@ -51,7 +51,7 @@ const methods = {
   providerInsights: 'provider-insights', providerRefresh: 'provider-refresh', providerModels: 'provider-models', providerVerify: 'provider-verify',
   engineSettingsGet: 'engine-settings-get', engineSettingsSave: 'engine-settings-save', runtimeState: 'runtime-state', runtimeEnsure: 'runtime-ensure',
   runtimePythonState: 'runtime-python-state',
-  networkSettings: 'network-settings', networkSaveSettings: 'network-save-settings',
+  networkSettings: 'network-settings', networkSaveSettings: 'network-save-settings', networkReapply: 'network-reapply',
   downloadSettings: 'download-settings', downloadSaveSettings: 'download-save-settings',
   runtimeSetPath: 'runtime-set-path',
   subscriptionPreferencesGet: 'subscription-preferences-get', subscriptionPreferencesSave: 'subscription-preferences-save',

@@ -14,6 +14,10 @@
 }
 .device-settings .device-section { min-width: 0; margin: 0; }
 .device-settings .device-card { padding: 20px; border: 1px solid var(--dsw-alias-border-l2); border-radius: 14px; background: var(--dsw-alias-bg-layer-1); }
+.device-settings .device-card.tailscale-settings-group { padding: 0; overflow: hidden; }
+.device-settings .tailscale-settings-intro { padding: 20px; }
+.device-settings .tailscale-settings-group > .device-card { margin: 0; border: 0; border-top: 1px solid var(--dsw-alias-border-l2); border-radius: 0; background: transparent; }
+.device-settings .tailscale-settings-group > .advanced-settings { padding: 0; }
 .device-settings .device-heading { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 16px; }
 .device-settings h2 { margin: 0; font-size: 15px; font-weight: 600; }
 .device-settings p { overflow-wrap: anywhere; }
@@ -39,6 +43,8 @@
 .device-settings .device-name-row label { margin: 0; }
 .device-settings .device-name-row input { flex: 0 1 208px; width: 208px; max-width: 100%; padding: 8px 12px; }
 .device-settings .relay-config { margin-top: 16px; }
+.device-settings .network-path .relay-config { margin-top: 0; }
+.device-settings .network-path .relay-config > .relay-setting:first-child { padding-top: 0; }
 .device-settings .relay-setting { display: flex; align-items: center; justify-content: space-between; gap: 16px; min-height: 36px; padding: 12px 0; color: var(--dsw-alias-label-primary); font-size: 14px; line-height: 22px; }
 .device-settings .relay-setting > input[type=checkbox] { margin: 0; }
 .device-settings .relay-fields { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 12px 0; border-top: 1px solid var(--dsw-alias-border-l2); }
@@ -136,6 +142,7 @@ dialog.mobile-logout::backdrop { background: var(--dsw-alias-bg-mask-1); }
 .mobile-logout-actions .danger { color: var(--dsw-alias-state-error-primary); }
 @media (max-width: 760px) {
   .device-settings .device-card { padding: 16px; }
+  .device-settings .tailscale-settings-intro { padding: 16px; }
   .device-settings .device-row { gap: 12px; }
   .device-settings .device-actions { flex: 1 1 100%; }
 }

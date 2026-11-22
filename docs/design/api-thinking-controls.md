@@ -4,6 +4,7 @@ Audited 2026-10-31. Scope: every built-in API preset in `api-router-config.js`.
 Custom providers and subscription-account catalogs are outside this audit.
 
 The composer and quick-switch menus consume the router's `modelThinking`.
+Exact local Codex API aliases in `src/shared/codex-api-profiles.js` expose their native context, display name and thinking metadata through `modelProfiles` when the provider does not report capabilities. Reported route metadata and explicit context settings take precedence.
 Missing metadata means the provider default, not that the model cannot reason.
 A model that reasons does not necessarily expose a switch or effort levels.
 For an enabled custom route whose catalog cannot report capabilities, the
@@ -69,7 +70,7 @@ an automatic-delegation mode and is not inferred from a single parent request.
 ## Evidence
 
 - [Command Code Provider API](https://commandcode.ai/docs/provider) documents the standard catalog and native request formats. The richer `?view=client` catalog was verified against the public endpoint and the published official `command-code` npm package, v1.88.2. No npm package code was executed.
-- [OpenCode Zen catalog](https://opencode.ai/zen/v1/models) and [Go catalog](https://opencode.ai/zen/go/v1/models) were read directly without credentials. Representative model shapes are covered in `tests/builtin-provider-thinking.test.js`.
+- [OpenCode Zen catalog](https://opencode.ai/zen/v1/models) and [Go catalog](https://opencode.ai/inference/go/v1/models) were read directly without credentials. Representative model shapes are covered in `tests/builtin-provider-thinking.test.js`.
 - [Ollama thinking metadata](https://docs.ollama.com/capabilities/thinking).
 - [Kimi thinking models](https://platform.kimi.ai/docs/guide/use-thinking-models) and [Kimi Code model configuration](https://www.kimi.com/code/docs/en/kimi-code/models.html).
 - [DeepSeek thinking mode](https://api-docs.deepseek.com/guides/thinking_mode/).

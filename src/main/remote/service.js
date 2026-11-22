@@ -9,10 +9,12 @@ const { RemoteCommands } = require('./commands');
 const { RemoteMessageQueue } = require('./message-queue');
 const { TailscaleAPI } = require('./tailscale-api');
 const { tailscaleHostname } = require('./embedded-network');
+const { LanAccess, LanDiscovery, LanIdentity, addressSignature, chooseLanAddress } = require('./lan');
 
 function createRemoteService({ dataDir, manager, networkFactory, apiRoutes = null, desktopRestart = null, getDiscussions = null, accountUsage = null,
-  preferences = () => ({}), setComputerName = () => '', safeStorage = null, openExternal = null, log = () => {} }) {
-  let gateway = null, access = null, network = null, busy = false, enabled = false, closed = false;
+  guard = null, preferences = () => ({}), setComputerName = () => '', safeStorage = null, openExternal = null, log = () => {} }) {
+  let gateway = null, lanGateway = null, access = null, network = null, busy = false, enabled = false, closed = false;
+  let lanAccess = null, lanIdentity = null, lanDiscovery = null, lanRuntime = null, lanMonitor = null, lanSignature = '';
   let startupChecked = false, monitor = null, attachmentMaintenance = null, retryDelay = 1000, retryAt = 0;
   let recovering = null, diagnosing = false, sourceDeviceId = '', sourceAddress = '';
   const tailscale = new TailscaleAPI({ file: path.join(dataDir, 'remote', 'tailscale-oauth.json'), safeStorage, openExternal });
@@ -56,18 +58,144 @@ function createRemoteService({ dataDir, manager, networkFactory, apiRoutes = nul
     active: Boolean(gateway?.commands?.pendingAttachments.size || gateway?.discussions?.pendingAttachments.size),
   });
   const reader = new RemoteReadModel(manager);
+  function lanView() {
+    const identity = lanIdentity?.peek() || {};
+    return {
+      ...(lanAccess?.view() || { enabled: false, allowJoin: false, hasPin: false, pin: '', computerId: identity.computerId || '' }),
+      running: Boolean(lanGateway?.server),
+      address: lanGateway?.url || null,
+      host: lanRuntime?.address || null,
+      port: lanRuntime?.port || null,
+      fingerprint: identity.fingerprint || '',
+      computerId: identity.computerId || lanAccess?.computerId?.() || '',
+      ...(lanRuntime?.error ? { error: lanRuntime.error } : {}),
+    };
+  }
+  function transportInfo() {
+    const transports = {};
+    if (lanGateway?.server) transports.lan = {
+      protocol: 1,
+      url: lanGateway.url,
+      fingerprint: lanIdentity?.peek().fingerprint || '',
+    };
+    if (network?.snapshot?.state === 'Running' && sourceAddress) transports.tailscale = {
+      protocol: 1,
+      url: `http://${sourceAddress}:43127`,
+      address: sourceAddress,
+    };
+    return Object.keys(transports).length ? transports : null;
+  }
+  function publishAll(update) {
+    gateway?.publish(update);
+    lanGateway?.publish(update);
+  }
+  async function stopTailscaleGateway() {
+    if (!gateway) return;
+    await gateway.stop({ shared: Boolean(lanGateway?.server) });
+  }
+  async function stopLanGateway(shared = true) {
+    lanDiscovery?.stop();
+    if (lanGateway?.server) await lanGateway.stop({ shared });
+    lanRuntime = null;
+  }
+  async function startLanGateway() {
+    if (closed || !lanAccess?.enabled()) return;
+    const address = chooseLanAddress();
+    if (!address) {
+      lanRuntime = { error: 'No private IPv4 network is available' };
+      return;
+    }
+    if (lanGateway?.server && lanRuntime?.address === address) return;
+    await stopLanGateway(true);
+    const identity = lanIdentity.get();
+    try {
+      // The LAN port is advertised over mDNS, so it does not need to share the
+      // virtual Tailscale authority port and can avoid unrelated port use.
+      await lanGateway.start(address, 0, {
+        mode: 'lan',
+        certificate: identity.certificate,
+        privateKey: identity.privateKey,
+      });
+      const port = lanGateway.server.address().port;
+      lanRuntime = { address, port, url: lanGateway.url };
+      lanSignature = addressSignature();
+      lanDiscovery.start({
+        address,
+        port,
+        computerId: identity.computerId,
+        fingerprint: identity.fingerprint,
+        computerName: preferences().computerName || 'Camellia desktop',
+        allowJoin: lanAccess.view().allowJoin,
+      });
+    } catch (error) {
+      lanRuntime = { error: error.message };
+      throw error;
+    }
+  }
+  async function refreshLan() {
+    if (closed) return;
+    if (!lanAccess?.enabled()) { await stopLanGateway(true); return; }
+    const address = chooseLanAddress();
+    if (!address) {
+      if (lanGateway?.server) await stopLanGateway(true);
+      lanRuntime = { error: 'No private IPv4 network is available' };
+      return;
+    }
+    if (lanGateway?.server && lanRuntime?.address === address) {
+      lanDiscovery.update({
+        address,
+        port: lanRuntime.port,
+        computerId: lanIdentity.peek().computerId,
+        fingerprint: lanIdentity.peek().fingerprint,
+        computerName: preferences().computerName || 'Camellia desktop',
+        allowJoin: lanAccess.view().allowJoin,
+      });
+      lanSignature = addressSignature();
+      return;
+    }
+    await startLanGateway();
+  }
+  function scheduleLanMonitor() {
+    clearInterval(lanMonitor);
+    if (closed || !lanAccess?.enabled()) return;
+    lanMonitor = setInterval(() => {
+      if (closed || !lanAccess?.enabled() || lanGateway?.server && lanSignature === addressSignature()) return;
+      void refreshLan().catch(error => log('LAN access network check failed: ' + error.message));
+    }, 5000);
+    lanMonitor.unref();
+  }
+  function hasTrustedDevices() {
+    return Boolean(access?.devices.some(device => typeof device.id === 'string' && device.id
+      && typeof device.tokenDigest === 'string' && /^[a-f0-9]{64}$/.test(device.tokenDigest)));
+  }
+  function startGuard() {
+    if (!guard || !hasTrustedDevices()) return false;
+    try { return guard.start(); }
+    catch (error) { log('Mobile access guard: ' + error.message); return false; }
+  }
+  function syncGuard() {
+    if (enabled && guard?.enabled() && hasTrustedDevices()) startGuard();
+    else guard?.pause();
+  }
   function initialize() {
     if (gateway) return;
-    access = new RemoteAccess({ file: path.join(dataDir, 'remote', 'devices.json'), onRevoke: id => gateway.revoke(id) });
+    access = new RemoteAccess({ file: path.join(dataDir, 'remote', 'devices.json'),
+      onRevoke: id => { gateway?.revoke(id); lanGateway?.revoke(id); } });
+    lanAccess = new LanAccess({ file: path.join(dataDir, 'remote', 'lan-access.json'), access, safeStorage, log });
+    lanIdentity = new LanIdentity({ file: path.join(dataDir, 'remote', 'lan-identity.json'), log, computerId: lanAccess.computerId() });
+    lanDiscovery = new LanDiscovery({ log });
     const commands = new RemoteCommands({ file: path.join(dataDir, 'remote', 'commands.json'), reader, access, queue: messageQueue,
-      publish: () => { gateway.publish(); attachmentMaintenance?.markDirty(); } });
+      publish: () => { publishAll(); attachmentMaintenance?.markDirty(); } });
     const discussions = getDiscussions ? new (require('./discussions').RemoteDiscussions)({
       file: path.join(dataDir, 'remote', 'discussion-commands.json'), getService: getDiscussions, access,
-      publish: () => { gateway?.publish(); attachmentMaintenance?.markDirty(); } }) : null;
-    gateway = new RemoteGateway({ access, reader, commands, apiRoutes, desktopRestart, discussions, accountUsage });
+      publish: () => { publishAll(); attachmentMaintenance?.markDirty(); } }) : null;
+    gateway = new RemoteGateway({ access, reader, commands, apiRoutes, desktopRestart, discussions, accountUsage,
+      computerId: lanIdentity.peek().computerId, transportInfo });
+    lanGateway = new RemoteGateway({ access, reader, commands, apiRoutes, desktopRestart, discussions, accountUsage,
+      computerId: lanIdentity.peek().computerId, transportInfo, lanAccess });
     try { network = networkFactory({ onFailure: () => {
       if (closed || !enabled) return;
-      recovering = gateway.stop();
+      recovering = stopTailscaleGateway();
       retryAt = Date.now() + retryDelay;
       scheduleMonitor();
     }, hostname: () => tailscaleHostname(preferences().computerName) }); }
@@ -77,12 +205,16 @@ function createRemoteService({ dataDir, manager, networkFactory, apiRoutes = nul
     const view = access.view();
     return { ...preferences(), running: Boolean(gateway?.server), enabled, network: { ...network.snapshot },
       address: gateway?.url || null, ...view, workspaces: reader.workspaces(),
+      lan: lanView(),
       diagnosticsAvailable: typeof network.diagnosePeer === 'function',
+      ...(guard ? { guard: guard.view() } : {}),
       ...(tailscaleView ? { tailscale: tailscaleView } : {}),
       devices: view.devices.map(device => ({ ...device, peerAddress: gateway.peerAddresses.get(device.id) || null })) };
   }
   async function refreshNetwork() {
     if (!enabled) return;
+    if (hasTrustedDevices()) await guard?.ensureStarted();
+    else guard?.pause();
     if (recovering) { await recovering; recovering = null; }
     if (Date.now() < retryAt) return;
     if (['Stopped', 'Error'].includes(network.snapshot.state)) {
@@ -98,26 +230,28 @@ function createRemoteService({ dataDir, manager, networkFactory, apiRoutes = nul
     setSourceDeviceId(status.deviceId, status.address);
     if (!enabled || closed) return;
     if (status.state !== 'Running' || !status.address) {
-      if (gateway.server) await gateway.stop();
+      if (gateway.server) await stopTailscaleGateway();
       return;
     }
     if (gateway.server) {
       if (gateway.url === `http://${status.address}:43127`) return;
-      await gateway.stop();
+      await stopTailscaleGateway();
     }
     try {
       const token = randomBytes(32).toString('hex');
       await gateway.start('127.0.0.1', 0, { address: status.address, token });
-      if (!enabled || closed) { await gateway.stop(); return; }
+      if (!enabled || closed) { await stopTailscaleGateway(); return; }
       await network.listen(`http://127.0.0.1:${gateway.server.address().port}`, token);
-      if (!enabled || closed) { await network.stop(); await gateway.stop(); }
+      if (!enabled || closed) { await network.stop(); await stopTailscaleGateway(); }
       else { retryDelay = 1000; retryAt = 0; }
-    } catch (error) { await gateway.stop(); throw error; }
+    } catch (error) { await stopTailscaleGateway(); throw error; }
   }
   async function startAccess(interactive) {
     try {
       enabled = true;
       retryAt = 0;
+      if (hasTrustedDevices()) startGuard();
+      else guard?.pause();
       await network.start();
       if (closed || !enabled) { await network.stop(); return; }
       const status = await network.status();
@@ -126,7 +260,7 @@ function createRemoteService({ dataDir, manager, networkFactory, apiRoutes = nul
       await refreshNetwork();
       scheduleMonitor();
     } catch (error) {
-      await gateway.stop();
+      await stopTailscaleGateway();
       retryAt = Date.now() + retryDelay;
       network.snapshot.state = 'Error';
       throw error;
@@ -141,7 +275,7 @@ function createRemoteService({ dataDir, manager, networkFactory, apiRoutes = nul
         try { await refreshNetwork(); }
         catch (error) {
           log('Mobile access network check failed: ' + error.message);
-          await gateway.stop(); network.snapshot.state = 'Error';
+          await stopTailscaleGateway(); network.snapshot.state = 'Error';
           retryAt = Date.now() + retryDelay; retryDelay = Math.min(30_000, retryDelay * 2);
         }
         finally { busy = false; }
@@ -160,7 +294,7 @@ function createRemoteService({ dataDir, manager, networkFactory, apiRoutes = nul
     try {
       initialize();
       previous = network.executable || null;
-      await gateway.stop();
+      await stopTailscaleGateway();
       await network.stop();
       network.executable = executable;
       retryAt = 0;
@@ -171,7 +305,7 @@ function createRemoteService({ dataDir, manager, networkFactory, apiRoutes = nul
     } catch (error) {
       let rollbackError = null;
       try {
-        await gateway?.stop();
+        await stopTailscaleGateway();
         await network?.stop();
         if (network) network.executable = previous || null;
         retryAt = 0;
@@ -223,6 +357,44 @@ function createRemoteService({ dataDir, manager, networkFactory, apiRoutes = nul
           return { ok: true, result };
         } catch (error) { return { ok: false, error: error.message }; }
       }
+      if (['lan-state', 'lan-enable', 'lan-disable', 'lan-set-pin', 'lan-allow-join'].includes(action)) {
+        if (busy) return { ok: false, error: 'Please wait for the current operation' };
+        busy = true;
+        try {
+          initialize();
+          if (action === 'lan-enable') {
+            lanAccess.setEnabled(true);
+            lanAccess.ensurePin();
+            await refreshLan();
+            scheduleLanMonitor();
+          } else if (action === 'lan-disable') {
+            lanAccess.setEnabled(false);
+            await stopLanGateway(true);
+            scheduleLanMonitor();
+          } else if (action === 'lan-set-pin') {
+            lanAccess.setPin(payload?.pin);
+            if (lanAccess.enabled()) await refreshLan();
+          } else if (action === 'lan-allow-join') {
+            lanAccess.setAllowJoin(payload?.allowJoin === true);
+            if (lanGateway?.server) {
+              lanDiscovery.update({
+                ...lanRuntime,
+                computerId: lanIdentity.peek().computerId,
+                fingerprint: lanIdentity.peek().fingerprint,
+                computerName: preferences().computerName || 'Camellia desktop',
+                allowJoin: lanAccess.view().allowJoin,
+              });
+            }
+          }
+          return { ok: true, result: state() };
+        } catch (error) {
+          log('LAN access ' + action + ' failed: ' + error.message);
+          return { ok: false, error: error.message };
+        } finally {
+          busy = false;
+          scheduleLanMonitor();
+        }
+      }
       if (action === 'diagnose') {
         if (diagnosing) return { ok: false, error: 'A connection probe is already running' };
         diagnosing = true;
@@ -242,7 +414,8 @@ function createRemoteService({ dataDir, manager, networkFactory, apiRoutes = nul
       }
       if (busy && (action === 'stop' || action === 'logout')) {
         enabled = false; retryAt = 0;
-        await gateway?.stop();
+        guard?.pause();
+        await stopTailscaleGateway();
         try { if (action === 'logout') await network?.logout(); }
         finally { await network?.stop(); }
         return { ok: true, result: state() };
@@ -258,7 +431,8 @@ function createRemoteService({ dataDir, manager, networkFactory, apiRoutes = nul
         else if (action === 'open-login') { if (!enabled) throw new Error('Enable mobile access first'); await network.openLogin(); result = state(); }
         else if (action === 'stop' || action === 'logout') {
           enabled = false;
-          await gateway.stop();
+          guard?.pause();
+          await stopTailscaleGateway();
           try { if (action === 'logout') await network.logout(); }
           finally { await network.stop(); }
           result = state();
@@ -271,6 +445,15 @@ function createRemoteService({ dataDir, manager, networkFactory, apiRoutes = nul
           const requested = typeof payload?.name === 'string' ? payload.name.trim() : '';
           if (!requested || requested.length > 80) throw new Error('Enter a name of 1–80 characters');
           const savedName = setComputerName(requested);
+          if (lanGateway?.server && lanRuntime) {
+            lanDiscovery.update({
+              ...lanRuntime,
+              computerId: lanIdentity.peek().computerId,
+              fingerprint: lanIdentity.peek().fingerprint,
+              computerName: savedName,
+              allowJoin: lanAccess.view().allowJoin,
+            });
+          }
           // The embedded node always receives the OS-safe form of the name;
           // the management API accepts the display name when it is already a
           // valid DNS label and otherwise reports that control-plane sync was
@@ -293,9 +476,20 @@ function createRemoteService({ dataDir, manager, networkFactory, apiRoutes = nul
         } else if (action === 'approve') {
           const request = access.pending.get(payload?.id);
           if (!request || (!request.allWorkspaces && request.workspaceIds.some(id => !reader.workspaces().some(workspace => workspace.id === id)))) throw new Error('The workspace selection is no longer available');
-          access.approve(payload.id); result = state();
+          access.approve(payload.id); syncGuard(); result = state();
         } else if (action === 'reject') { access.reject(payload?.id); result = state(); }
-        else if (action === 'revoke') { access.revoke(payload?.id); result = state(); }
+        else if (action === 'revoke') { access.revoke(payload?.id); syncGuard(); result = state(); }
+        else if (action === 'guard-enable') {
+          if (!guard) throw new Error('Background guard is unavailable');
+          if (!enabled) throw new Error('Enable mobile access first');
+          if (!hasTrustedDevices()) throw new Error('Pair a trusted device first');
+          guard.enable();
+          result = state();
+        } else if (action === 'guard-disable') {
+          if (!guard) throw new Error('Background guard is unavailable');
+          guard.disable();
+          result = state();
+        }
         else throw new Error('Unsupported remote-access action');
         return { ok: true, result };
       } catch (error) {
@@ -315,8 +509,11 @@ function createRemoteService({ dataDir, manager, networkFactory, apiRoutes = nul
       busy = true;
       try {
         initialize();
-        if (!access.devices.some(device => typeof device.id === 'string' && device.id
-          && typeof device.tokenDigest === 'string' && /^[a-f0-9]{64}$/.test(device.tokenDigest))) return;
+        if (lanAccess?.enabled()) {
+          await refreshLan().catch(error => log('LAN access auto-start failed: ' + error.message));
+          scheduleLanMonitor();
+        }
+        if (!hasTrustedDevices()) { guard?.pause(); return; }
         await startAccess(false);
       } finally { busy = false; scheduleMonitor(); }
     },
@@ -340,14 +537,18 @@ function createRemoteService({ dataDir, manager, networkFactory, apiRoutes = nul
       attachmentMaintenance = new AttachmentMaintenance({ log, cleanup: backgroundCleanup, sweep: () => backgroundCleanup.sweepRetention() });
     },
     publish(update) {
-      reader.observeCompaction(update); gateway?.publish(update);
+      reader.observeCompaction(update); publishAll(update);
       if (!update || update.type?.startsWith('conversation:')) attachmentMaintenance?.markDirty();
     },
     async close() {
-      closed = true; enabled = false; clearTimeout(monitor);
+      closed = true; enabled = false; clearTimeout(monitor); clearInterval(lanMonitor);
+      guard?.pause();
       await attachmentMaintenance?.close();
       try { await network?.stop(); }
-      finally { await gateway?.stop(); }
+      finally {
+        try { await stopTailscaleGateway(); }
+        finally { await stopLanGateway(false); }
+      }
     },
   };
 }

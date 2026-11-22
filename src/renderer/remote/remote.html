@@ -20,12 +20,27 @@
       <div id="networkControls" hidden><p id="networkState" class="hint" role="status"></p><button id="login" hidden data-copy="login">登录 Tailscale</button></div>
       <details class="mobile-help">
         <summary data-copy="connectionHelp">连接与权限说明</summary>
-        <p class="hint" data-copy="network">已内置 Tailscale，无需另装客户端。此身份与设置里的「CLI 设备」共用，登录一次两处生效；关闭访问会同时断开 CLI 设备连接。</p>
+        <p class="hint" data-copy="network">已内置 Tailscale，也可在家庭 Wi-Fi 使用 6 位 PIN 直连。首次需要手动开启；有可信设备时，后续启动会自动恢复。</p>
         <p class="hint" data-copy="keysImport"></p>
         <p id="lifetime" class="hint"></p>
         <p class="hint" data-copy="footer"></p>
         <button id="logout" hidden data-copy="logout">退出 Tailscale 登录</button>
       </details>
+    </section>
+    <section class="device-section device-card device-lan" aria-labelledby="lanTitle">
+      <div class="heading device-heading"><h2 id="lanTitle" data-copy="lanTitle">局域网访问</h2><span id="lanStatus" class="status device-status" role="status"></span></div>
+      <div class="relay-setting"><span id="lanToggleLabel" data-copy="lanToggleLabel">允许同一 Wi-Fi 的手机直连</span><input id="lanToggle" type="checkbox" role="switch" aria-labelledby="lanToggleLabel" aria-describedby="lanHint"></div>
+      <p id="lanHint" class="hint" data-copy="lanHint">手机会自动发现这台电脑。第一次连接时输入相同的 6 位 PIN，之后会自动重连。</p>
+      <div class="device-name-row"><label for="lanPin" data-copy="lanPin">连接 PIN</label><input id="lanPin" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" autocomplete="one-time-code" spellcheck="false"><button id="lanSavePin" data-copy="lanSavePin">保存 PIN</button></div>
+      <p id="lanAddress" class="address"></p>
+      <p id="lanPinStatus" class="hint" role="status" aria-live="polite"></p>
+      <div class="relay-setting"><span id="lanJoinLabel" data-copy="lanAllowJoin">允许新设备加入</span><input id="lanAllowJoin" type="checkbox" role="switch" aria-labelledby="lanJoinLabel"></div>
+      <p class="hint" data-copy="lanSecurity">PIN 不会通过 mDNS 广播。家庭网络之外不建议开启新设备加入。</p>
+    </section>
+    <section id="guardSection" class="device-section device-card" aria-labelledby="guardTitle" hidden>
+      <div class="heading device-heading"><h2 id="guardTitle" data-copy="guardTitle">后台守护</h2><span id="guardStatus" class="status device-status" role="status"></span></div>
+      <div class="relay-setting"><span id="guardToggleLabel" data-copy="guardToggleLabel">自动恢复手机访问</span><input id="guardToggle" type="checkbox" role="switch" aria-labelledby="guardToggleLabel" aria-describedby="guardHint"></div>
+      <p id="guardHint" class="hint" data-copy="guardHint"></p>
     </section>
     <section class="device-section device-card device-pair" aria-labelledby="pairTitle">
       <div class="heading device-heading"><h2 id="pairTitle" data-copy="pair">配对设备</h2><span id="pairSummary" class="status device-status"></span></div>
@@ -38,48 +53,53 @@
       <div id="pending"></div>
     </section>
     <section class="device-section" aria-labelledby="devicesTitle"><div class="heading device-heading"><h2 id="devicesTitle" data-copy="devices">已授权设备</h2><span id="devicesSummary" class="status device-status"></span></div><div id="devices"></div></section>
-    <section class="device-section device-card network-path" aria-labelledby="pathTitle">
-      <div class="heading device-heading"><h2 id="pathTitle" data-copy="pathTitle">网络路径</h2><span id="pathSummary" class="status device-status"></span></div>
-      <p id="relayPathError" class="hint error" role="status" hidden></p>
-      <div id="relayConfig" class="relay-config">
-        <div class="relay-setting"><span id="relaySwitchLabel" data-copy="relayUse">使用中继</span><input id="relayUse" type="checkbox" role="switch" aria-labelledby="relaySwitchLabel" aria-describedby="pathHint"></div>
-        <p id="pathHint" class="hint sr-only" data-copy="pathHint">关闭时由 Tailscale 自动选路。</p>
-        <div class="relay-fields" id="relayChoice" hidden>
-          <label for="relayDevice" data-copy="relayDevice">选择中继设备</label>
-          <div class="relay-device-controls">
-            <select id="relayDevice"></select>
-            <input id="relayName" maxlength="63" autocomplete="off" spellcheck="false" aria-describedby="relayRenameHint relayStatus" hidden>
-            <button id="relayRename" type="button" data-copy="rename">重命名</button>
-            <button id="relayRenameSave" type="button" class="primary" data-copy="renameSave" hidden>保存</button>
-            <button id="relayRenameCancel" type="button" data-copy="renameCancel" hidden>取消</button>
+    <section class="device-section device-card tailscale-settings-group" aria-labelledby="tailscaleSettingsTitle">
+      <div class="tailscale-settings-intro">
+        <div class="heading device-heading"><h2 id="tailscaleSettingsTitle" data-copy="tailnetUpdateTitle">内置 Tailscale</h2></div>
+      </div>
+      <section class="device-section device-card network-path" aria-labelledby="pathTitle">
+        <h2 id="pathTitle" class="sr-only" data-copy="pathTitle">网络路径</h2>
+        <p id="relayPathError" class="hint error" role="status" hidden></p>
+        <div id="relayConfig" class="relay-config">
+          <div class="relay-setting"><span id="relaySwitchLabel" data-copy="relayUse">使用中继</span><input id="relayUse" type="checkbox" role="switch" aria-labelledby="relaySwitchLabel" aria-describedby="pathHint"></div>
+          <p id="pathHint" class="hint sr-only" data-copy="pathHint">关闭时由 Tailscale 自动选路。</p>
+          <div class="relay-fields" id="relayChoice" hidden>
+            <label for="relayDevice" data-copy="relayDevice">选择中继设备</label>
+            <div class="relay-device-controls">
+              <select id="relayDevice"></select>
+              <input id="relayName" maxlength="63" autocomplete="off" spellcheck="false" aria-describedby="relayRenameHint relayStatus" hidden>
+              <button id="relayRename" type="button" data-copy="rename">重命名</button>
+              <button id="relayRenameSave" type="button" class="primary" data-copy="renameSave" hidden>保存</button>
+              <button id="relayRenameCancel" type="button" data-copy="renameCancel" hidden>取消</button>
+            </div>
+            <p id="relayRenameHint" class="hint relay-rename-hint" data-copy="relayRenameHint" hidden></p>
           </div>
-          <p id="relayRenameHint" class="hint relay-rename-hint" data-copy="relayRenameHint" hidden></p>
+          <p id="relayStatus" class="hint" role="status" aria-live="polite" hidden></p>
         </div>
-        <p id="relayStatus" class="hint" role="status" aria-live="polite" hidden></p>
-      </div>
-    </section>
-    <details class="device-section device-card advanced-settings" aria-labelledby="tailscaleTitle">
-      <summary><span id="tailscaleTitle" data-copy="tailscaleTitle">Tailscale 管理 API</span><span id="tailscaleStatus" class="status device-status" role="status"></span></summary>
-      <div class="advanced-body">
-      <div id="tailscaleDetails" class="tailscale-details"></div>
-      <div id="tailscaleForm" class="tailscale-form" hidden>
-        <label for="tailscaleClientId" data-copy="tailscaleClientId">OAuth Client ID</label>
-        <input id="tailscaleClientId" autocomplete="off" spellcheck="false" maxlength="200">
-        <label for="tailscaleClientSecret" data-copy="tailscaleClientSecret">OAuth Client Secret</label>
-        <input id="tailscaleClientSecret" type="password" autocomplete="new-password" spellcheck="false" maxlength="400">
-        <p class="hint" data-copy="tailscaleScopeHint">创建 OAuth Client 时选择 policy_file: write 和 devices:core: write，可加 tag:camellia-desktop。</p>
+      </section>
+      <details class="device-section device-card advanced-settings" aria-labelledby="tailscaleTitle">
+        <summary><span id="tailscaleTitle" data-copy="tailscaleTitle">Tailscale 管理 API</span><span id="tailscaleStatus" class="status device-status" role="status"></span></summary>
+        <div class="advanced-body">
+        <div id="tailscaleDetails" class="tailscale-details"></div>
+        <div id="tailscaleForm" class="tailscale-form" hidden>
+          <label for="tailscaleClientId" data-copy="tailscaleClientId">OAuth Client ID</label>
+          <input id="tailscaleClientId" autocomplete="off" spellcheck="false" maxlength="200">
+          <label for="tailscaleClientSecret" data-copy="tailscaleClientSecret">OAuth Client Secret</label>
+          <input id="tailscaleClientSecret" type="password" autocomplete="new-password" spellcheck="false" maxlength="400">
+          <p class="hint" data-copy="tailscaleScopeHint">创建 OAuth Client 时选择 policy_file: write 和 devices:core: write，可加 tag:camellia-desktop。</p>
+          <div class="tailscale-actions">
+            <button id="tailscaleOpen" type="button" data-copy="tailscaleOpen">打开 Tailscale 凭据页</button>
+            <button id="tailscaleSave" type="button" class="primary" data-copy="tailscaleSave">验证并保存</button>
+          </div>
+        </div>
         <div class="tailscale-actions">
-          <button id="tailscaleOpen" type="button" data-copy="tailscaleOpen">打开 Tailscale 凭据页</button>
-          <button id="tailscaleSave" type="button" class="primary" data-copy="tailscaleSave">验证并保存</button>
+          <button id="tailscaleRefresh" type="button" data-copy="tailscaleRefresh">刷新状态</button>
+          <button id="tailscaleRemove" type="button" class="danger" data-copy="tailscaleRemove" hidden>移除凭证</button>
         </div>
-      </div>
-      <div class="tailscale-actions">
-        <button id="tailscaleRefresh" type="button" data-copy="tailscaleRefresh">刷新状态</button>
-        <button id="tailscaleRemove" type="button" class="danger" data-copy="tailscaleRemove" hidden>移除凭证</button>
-      </div>
-      <p id="tailscaleFeedback" class="hint" role="status" aria-live="polite"></p>
-      </div>
-    </details>
+        <p id="tailscaleFeedback" class="hint" role="status" aria-live="polite"></p>
+        </div>
+      </details>
+    </section>
     <p id="error" role="alert"></p>
     <button id="retry" hidden data-copy="retry">重试</button>
   </main>

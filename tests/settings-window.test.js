@@ -91,7 +91,7 @@ test('the size is cached at startup and refreshed in the background when display
 
 test('the settings size cache is prepared before the main window and every other startup task', () => {
   const ready = /app\.whenReady\(\)\.then\(async \(\) => \{([\s\S]*?)createMainWindow\(\);/.exec(main)[1];
-  assert.match(ready, /^\s+settingsWindowSizes\.start\(\);/);
+  assert.match(ready, /settingsWindowSizes\.start\(\);\n\s+windowChrome\.start\(\);\n\s+try \{ await networkSettings\(\)\.initialize\(\);/);
 });
 
 test('the settings window is not shown before its renderer has painted', () => {
@@ -110,10 +110,10 @@ test('navigation to an existing settings window waits for its renderer to finish
   assert.match(openSettings, /existingSettingsWindow\.webContents\.send\('dsh:settings-navigate', target\);/);
 });
 
-test('the main window keeps the same hidden-until-ready pattern', () => {
+test('the main window stays hidden until ready and when launched in the background', () => {
   const createMain = /function createMainWindow\(\) \{([\s\S]*?)\n\}/.exec(main)[1];
   assert.match(createMain, /\n    show: false,\n/);
-  assert.match(createMain, /mainWindow\.once\('ready-to-show', \(\) => \{ mainWindow\.show\(\); \}\);/);
+  assert.match(createMain, /mainWindow\.once\('ready-to-show', \(\) => \{ if \(!backgroundLaunch\) mainWindow\.show\(\); \}\);/);
 });
 
 test('native caption painting is yielded before the backdrop and refreshed before modal construction', async () => {

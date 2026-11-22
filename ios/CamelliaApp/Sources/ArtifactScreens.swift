@@ -320,7 +320,7 @@ struct ArtifactSheetView: View {
         downloadedBytes = 0
         failure = nil
         savedFile = nil
-        let bookmark = model.preferences.downloadDirectoryBookmark
+        let bookmark = model.preferences.automaticDownloadDirectoryBookmark
         downloadTransfer = model.downloadArtifact(artifact, filename: DownloadDirectory.filename(artifact.name),
                                                   progress: { received, _ in downloadedBytes = received }) { result in
             downloadTransfer = nil

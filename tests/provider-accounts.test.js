@@ -117,6 +117,30 @@ test('unsupported relay/Zen hosts never forward secrets to an official balance e
   assert.equal(result.status,'unsupported');
   await assert.rejects(queryAccount(provider('https://api.deepseek.com/v1'),'sk-secret',{fetchImpl:async()=>response({error:'sk-secret'},401)}), e => !e.message.includes('sk-secret') && e.message.includes('401'));
 });
+
+test('OpenCode Go validation uses the subscription endpoints and quota adapter', async () => {
+  const go = {
+    ...provider('https://opencode.ai/inference/go/openai/v1', 'opencode-go'),
+    anthropicBaseUrl: 'https://opencode.ai/inference/go/anthropic/v1',
+  };
+  assert.equal(accountCapability(go).id, 'opencode-go');
+  const paid = { ...go, baseUrl: 'https://opencode.ai/inference/openai/v1', anthropicBaseUrl: '' };
+  assert.equal(accountCapability(paid).supported, false);
+  const upstream = 'deepseek-v4.1-flash';
+  for (const protocol of ['openai', 'anthropic']) {
+    await verifyModel(go, 'fixture-key', { id: upstream, upstream, protocol }, {
+      fetchImpl: async (url, request) => {
+        const path = protocol === 'openai' ? 'openai/v1/chat/completions' : 'anthropic/v1/messages';
+        assert.equal(url, 'https://opencode.ai/inference/go/' + path);
+        assert.match(request.headers['user-agent'], /^Camellia\//);
+        assert.match(request.headers['x-opencode-session'], /^ses_[0-9a-f]{32}$/);
+        assert.equal(request.headers.Authorization, 'Bearer fixture-key');
+        assert.equal(JSON.parse(request.body).model, upstream);
+        return response(protocol === 'openai' ? { choices: [{ message: { content: 'OK' } }] } : { content: [{ text: 'OK' }] });
+      },
+    });
+  }
+});
 test('model discovery deduplicates exact model aliases without merging versions; validation requires a real response', async () => {
   const p=provider('https://api.commandcode.ai/provider/v1','commandcode');
   const models=await fetchModels(p,'secret',{fetchImpl:async()=>response({data:[{id:'moonshotai/kimi-k3',context_length:262144},{id:'moonshotai/kimi-k3'},{id:'moonshotai/kimi-k2.6'},{id:'claude-sonnet-4-6'}]})});
@@ -147,15 +171,16 @@ test('Command Code complete endpoint URLs use one base for discovery and validat
   }
 });
 
-test('model discovery leaves absent or malformed context limits unknown', async () => {
+test('model discovery reads top-level and nested context limits and leaves malformed values unknown', async () => {
   const entries = [{ id: 'missing' }, { id: 'negative', context_length: -10000 },
     { id: 'fraction', context_length: 128000.5 }, { id: 'infinite', context_length: 'Infinity' },
-    { id: 'valid', context_window: '1000000' }];
+    { id: 'valid', context_window: '1000000' }, { id: 'nested', limit: { context: 1000000, output: 384000 } }];
   const models = await fetchModels(provider('https://relay.example/v1'), 'secret', {
     fetchImpl: async () => response({ data: entries }),
   });
   for (const model of models.slice(0, 4)) assert.equal(model.maxContext, undefined);
   assert.equal(models[4].maxContext, 1000000);
+  assert.equal(models[5].maxContext, 1000000);
 });
 
 test('catalog discovery normalizes relay names without discarding distinct upstream aliases', async () => {

@@ -2,7 +2,7 @@
 
 const http = require('node:http');
 const fs = require('node:fs');
-const { createHash } = require('node:crypto');
+const { createHash, randomUUID } = require('node:crypto');
 const { modelId, modelRoutes, normalizeConfig, loadConfig, writeConfig, publicState, DEFAULT_PORT, PRESETS } = require('./api-router-config');
 const { convertRequest, convertResponse, SSEParser, StreamConverter, frame } = require('./api-protocol');
 const { BufferedToolStream } = require('./buffered-tool-stream');
@@ -16,6 +16,7 @@ const { canonicalModelId } = require('../shared/model-names');
 const { accountCapability, queryAccount } = require('./provider-accounts');
 const { createModelDiscovery } = require('./model-discovery');
 const { parseSessionAffinityPath, requestSessionKey } = require('./session-affinity');
+const { isOpenCodeGoUrl, openCodeGoHeaders } = require('./opencode-go');
 const apiTransport = require('./api-transport');
 
 function retryDelay(headers = {}, now = Date.now()) {
@@ -363,7 +364,7 @@ function startApiRouter({ configPath, log = () => {}, onState = () => {}, onCont
     changed();
   }
 
-  function forward(route, clientProtocol, body, pathname, downstream, clientHeaders, bufferTools = false, thinkingEffort) {
+  function forward(route, clientProtocol, body, pathname, downstream, clientHeaders, bufferTools, thinkingEffort, sessionKey) {
     const source = route.protocol;
     let payload, responseTools;
     const isGemini = source === 'openai' && (route.provider.type === 'gemini' || new URL(route.provider.baseUrl).hostname === 'generativelanguage.googleapis.com');
@@ -420,6 +421,7 @@ function startApiRouter({ configPath, log = () => {}, onState = () => {}, onCont
     const url = new URL(base + (count ? '/messages/count_tokens' : source === 'anthropic' ? '/messages' : '/chat/completions'));
     const encoded = Buffer.from(JSON.stringify(payload));
     const headers = { 'content-type': 'application/json', 'content-length': encoded.length, 'accept-encoding': 'identity', authorization: `Bearer ${route.key.key}` };
+    if (isOpenCodeGoUrl(url)) Object.assign(headers, openCodeGoHeaders(sessionKey));
     if (source === 'anthropic') { headers['x-api-key'] = route.key.key; headers['anthropic-version'] = '2023-06-01'; }
     if (source === 'anthropic' && clientProtocol === 'anthropic') {
       if (clientHeaders['anthropic-version']) headers['anthropic-version'] = clientHeaders['anthropic-version'];
@@ -597,6 +599,7 @@ function startApiRouter({ configPath, log = () => {}, onState = () => {}, onCont
     try { body = JSON.parse(Buffer.concat(chunks).toString('utf8')); model = modelId(routedModelId(modelId(body.model))); }
     catch { return apiError(res, 400, "Requests require valid JSON and an explicit model ID", protocol); }
     const sessionKey = requestSessionKey(req, body, affinity.sessionKey);
+    const upstreamSessionKey = sessionKey || randomUUID();
     if (scope?.toolPolicy === 'none' && !pathname.endsWith('/count_tokens')) { delete body.tools; delete body.tool_choice; }
     if (scope && model !== scope.model) return apiError(res, 400, 'Scoped requests must use the selected model', protocol, 'scope_model_mismatch');
     const routes = candidates(model, protocol).filter(route => !scope || (route.provider.id === scope.providerId
@@ -629,7 +632,7 @@ function startApiRouter({ configPath, log = () => {}, onState = () => {}, onCont
       keyRequests.set(identity, (keyRequests.get(identity) || 0) + 1);
       let pending, result;
       try {
-        pending = forward(route, protocol, body, pathname, res, req.headers, bufferTools, thinking.effort);
+        pending = forward(route, protocol, body, pathname, res, req.headers, bufferTools, thinking.effort, upstreamSessionKey);
         scope?.pending.add(pending);
         result = await pending;
       } finally {

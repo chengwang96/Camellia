@@ -1,7 +1,7 @@
 'use strict';
 const fs = require('node:fs');
 const path = require('node:path');
-const { retainEvent } = require('./tool-history');
+const { retainEvent, replaceToolSnapshot } = require('./tool-history');
 const { appendText } = require('../shared/file-open');
 const { validSessionId } = require('./claude-history');
 
@@ -68,7 +68,7 @@ class StreamingSession {
         && typeof delta[key] === 'string' && typeof last.event.delta[key] === 'string') {
         last.event.delta[key] += delta[key];
         last.eventSeq = message.eventSeq;
-      } else this.replayEvents.push(structuredClone(message));
+      } else if (!replaceToolSnapshot(this.replayEvents, message)) this.replayEvents.push(structuredClone(message));
     }
     // A throwing subscriber must not wedge the engine's event loop.
     try { this.onEvent(message); }

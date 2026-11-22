@@ -11,6 +11,7 @@ import java.net.Proxy;
 import java.nio.charset.StandardCharsets;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import javax.net.ssl.HttpsURLConnection;
 
 public class RemoteApi {
     static String failureMessage(Exception error, boolean chinese) {
@@ -28,7 +29,7 @@ public class RemoteApi {
             String detail = ((Failure) error).detail;
             return message + " [HTTP " + code + "]" + (detail.isEmpty() ? "" : "\n" + (chinese ? "电脑返回详情：" : "Desktop detail: ") + detail);
         }
-        return ConnectionFailure.message(error, EmbeddedNetwork.online(), chinese);
+        return ConnectionFailure.message(error, !EmbeddedNetwork.enabled() || EmbeddedNetwork.online(), chinese);
     }
 
     public static final class Failure extends IOException {
@@ -43,6 +44,7 @@ public class RemoteApi {
     public interface SnapshotListener { void onSnapshot(JSONObject snapshot) throws IOException; }
     public interface DownloadProgress { void update(long received, long total); }
     private final Endpoint endpoint;
+    private final String fingerprint;
     private final android.content.Context context;
     private final Set<HttpURLConnection> connections = ConcurrentHashMap.newKeySet();
     private volatile boolean cancelled;
@@ -55,14 +57,41 @@ public class RemoteApi {
     boolean embeddedCapable() { return context != null; }
     private final Set<tailnet.Response> embeddedResponses = ConcurrentHashMap.newKeySet();
 
-    public RemoteApi(String address) { this(null, address); }
-    public RemoteApi(android.content.Context context, String address) {
-        endpoint = new Endpoint(address); this.context = context == null ? null : context.getApplicationContext();
+    public RemoteApi(String address) { this((android.content.Context) null, address, null); }
+    public RemoteApi(android.content.Context context, String address) { this(context, address, null); }
+    public RemoteApi(android.content.Context context, String address, String explicitFingerprint) {
+        this.context = context == null ? null : context.getApplicationContext();
+        ComputerRoutes.Route route = ComputerRoutes.route(address);
+        if ((explicitFingerprint == null || explicitFingerprint.isEmpty()) && route.fingerprint.isEmpty()
+                && route.isLan() && this.context != null) {
+            try {
+                ComputerRoutes.configure(new ComputerStore(new CredentialStore(this.context)).all());
+                route = ComputerRoutes.route(address);
+            } catch (Exception ignored) { /* The caller will receive the clear fingerprint error below. */ }
+        }
+        endpoint = new Endpoint(route.url);
+        String selected = explicitFingerprint == null || explicitFingerprint.isEmpty() ? route.fingerprint : explicitFingerprint;
+        fingerprint = endpoint.isLan() ? LanTls.normalize(selected) : "";
+    }
+
+    private RemoteApi(android.content.Context context, Endpoint explicitEndpoint, String explicitFingerprint) {
+        this.context = context == null ? null : context.getApplicationContext();
+        endpoint = explicitEndpoint;
+        fingerprint = endpoint.isLan() ? LanTls.normalize(explicitFingerprint) : "";
+    }
+
+    static RemoteApi explicit(android.content.Context context, String url) {
+        return new RemoteApi(context, new Endpoint(url), "");
     }
 
     private HttpURLConnection open(String path, String token) throws IOException {
         if (cancelled) throw new IOException("Cancelled");
         HttpURLConnection connection = (HttpURLConnection) endpoint.uri(path).toURL().openConnection(Proxy.NO_PROXY);
+        if (endpoint.isLan()) {
+            HttpsURLConnection secure = (HttpsURLConnection) connection;
+            secure.setSSLSocketFactory(LanTls.socketFactory(fingerprint));
+            secure.setHostnameVerifier((host, session) -> true);
+        }
         connection.setInstanceFollowRedirects(false);
         connection.setConnectTimeout(10_000);
         connection.setReadTimeout(25_000);
@@ -80,7 +109,7 @@ public class RemoteApi {
     public void download(String path, String token, java.io.OutputStream output, long expectedSize, DownloadProgress progress) throws IOException {
         if (expectedSize < 0) throw new IOException("Invalid file size");
         long[] received = { 0 };
-        boolean embedded = EmbeddedNetwork.enabled();
+        boolean embedded = !endpoint.isLan() && EmbeddedNetwork.enabled();
         java.io.OutputStream counted = new java.io.OutputStream() {
             @Override public void write(int value) throws IOException {
                 try { output.write(value); received[0]++; }
@@ -98,7 +127,7 @@ public class RemoteApi {
                 else downloadAt(path, token, counted, expectedSize, received[0], progress);
                 return;
             } catch (IOException error) {
-                if (cancelled || Thread.currentThread().isInterrupted() || embedded != EmbeddedNetwork.enabled()
+                if (cancelled || Thread.currentThread().isInterrupted() || embedded && embedded != EmbeddedNetwork.enabled()
                         || error instanceof DownloadValidationFailure || error instanceof DownloadWriteFailure || retries >= 5) throw error;
                 if (error instanceof Failure failure && failure.status != 429 && failure.status != 502
                         && failure.status != 503 && failure.status != 504) throw error;
@@ -127,7 +156,7 @@ public class RemoteApi {
     }
 
     void downloadAt(String path, String token, java.io.OutputStream output, long expectedSize, long offset, DownloadProgress progress) throws IOException {
-        if (EmbeddedNetwork.enabled()) {
+        if (!endpoint.isLan() && EmbeddedNetwork.enabled()) {
             tailnet.Response response = embeddedOpen(path, token, null, offset);
             try (InputStream source = input(response)) {
                 validateDownload(response.statusCode(), response.contentType(), response.contentLength(), response.contentRange(), expectedSize, offset);
@@ -191,7 +220,7 @@ public class RemoteApi {
 
     JSONObject json(String path, String token, JSONObject payload, int responseLimit) throws IOException {
         try (AttachmentMaintenance.Lease uploading = context == null ? null : AttachmentMaintenance.protect(context, payload)) {
-        if (EmbeddedNetwork.enabled()) return embeddedJson(path, token, payload, responseLimit);
+        if (!endpoint.isLan() && EmbeddedNetwork.enabled()) return embeddedJson(path, token, payload, responseLimit);
         HttpURLConnection connection = open(path, token);
         try {
             if (payload != null) {
@@ -215,7 +244,7 @@ public class RemoteApi {
 
     public byte[] bytes(String path, String token, int limit) throws IOException {
         if (limit < 1) throw new IOException("Invalid response limit");
-        if (EmbeddedNetwork.enabled()) {
+        if (!endpoint.isLan() && EmbeddedNetwork.enabled()) {
             tailnet.Response response = embeddedOpen(path, token, null);
             try (InputStream input = input(response)) {
                 if (!"application/octet-stream".equals(response.contentType())) throw new IOException("Unexpected response type");
@@ -290,7 +319,7 @@ public class RemoteApi {
     }
 
     private void eventsAt(String path, String token, SnapshotListener listener, SseReader.HeartbeatListener heartbeat) throws IOException {
-        if (EmbeddedNetwork.enabled()) { embeddedEvents(path, token, listener, heartbeat); return; }
+        if (!endpoint.isLan() && EmbeddedNetwork.enabled()) { embeddedEvents(path, token, listener, heartbeat); return; }
         HttpURLConnection connection = open(path, token);
         try {
             connection.setRequestProperty("Accept", "text/event-stream");

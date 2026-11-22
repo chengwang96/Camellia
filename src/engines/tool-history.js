@@ -4,8 +4,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { createHash } = require('node:crypto');
 
-// Tool payloads are evidence, not conversation prose. Keep the full event on
-// disk, but never clone, render or replay megabytes of XML/diffs as a message.
+// Tool payloads are evidence, not conversation prose. Keep the full terminal
+// event on disk, but never clone, render or replay megabytes of XML/diffs as a message.
 const INLINE_CHARS = 128 * 1024;
 const PREVIEW_CHARS = 32 * 1024;
 const STRING_CHARS = 8 * 1024;
@@ -65,15 +65,19 @@ function projectEvent(event, reference) {
   // was consumed by tool arguments.
   for (const key of ['type', 'id', 'name', 'status', 'is_error', 'runId', 'eventSeq', 'session_id', 'conversationId'])
     if (event[key] !== undefined) result[key] = event[key];
-  result.fullOutput = reference;
-  result.output = (typeof result.output === 'string' ? result.output : '')
-    + '\n[Tool preview shortened. Complete record: ' + reference.path
-    + (reference.offset === undefined ? '' : '; byte offset ' + reference.offset + ', length ' + reference.length) + ']';
+  if (reference) {
+    result.fullOutput = reference;
+    result.output = (typeof result.output === 'string' ? result.output : '')
+      + '\n[Tool preview shortened. Complete record: ' + reference.path
+      + (reference.offset === undefined ? '' : '; byte offset ' + reference.offset + ', length ' + reference.length) + ']';
+  } else result.output = (typeof result.output === 'string' ? result.output : '')
+    + '\n[Tool preview shortened. The complete record is retained when the tool finishes.]';
   return result;
 }
 
 function retainEvent(event, directory) {
   if (event.type !== 'gui:tool' || !oversized(event)) return event;
+  if (isStreamingToolEvent(event)) return projectEvent(event);
   const text = JSON.stringify(event);
   const hash = createHash('sha256').update(text).digest('hex');
   fs.mkdirSync(directory, { recursive: true });
@@ -90,6 +94,36 @@ function retainEvent(event, directory) {
   return projectEvent(event, { path: file });
 }
 
+const toolSnapshotIndexes = new WeakMap();
+function replaceToolSnapshot(events, event) {
+  if (event?.type !== 'gui:tool' || !['string', 'number'].includes(typeof event.id)) return false;
+  let indexes = toolSnapshotIndexes.get(events);
+  if (!indexes) {
+    indexes = new Map();
+    for (let index = 0; index < events.length; index++) {
+      const previous = events[index];
+      if (previous?.type === 'gui:tool' && ['string', 'number'].includes(typeof previous.id) && !indexes.has(previous.id))
+        indexes.set(previous.id, index);
+    }
+    toolSnapshotIndexes.set(events, indexes);
+  }
+  let index = indexes.get(event.id);
+  if (index === undefined) {
+    indexes.set(event.id, events.length);
+    return false;
+  }
+  if (events[index]?.type !== 'gui:tool' || events[index]?.id !== event.id) {
+    index = events.findIndex(previous => previous?.type === 'gui:tool' && previous.id === event.id);
+    if (index < 0) {
+      indexes.set(event.id, events.length);
+      return false;
+    }
+    indexes.set(event.id, index);
+  }
+  events[index] = structuredClone(event);
+  return true;
+}
+
 function projectRow(row, reference) {
   if (row.role !== 'tool' || typeof row.text !== 'string' || row.text.length <= INLINE_CHARS) return row;
   let event;
@@ -100,4 +134,4 @@ function projectRow(row, reference) {
   return { ...row, text: JSON.stringify(projectEvent(event, reference)) };
 }
 
-module.exports = { INLINE_CHARS, PREVIEW_CHARS, oversized, retainEvent, projectRow, isStreamingToolEvent, isStreamingToolRow };
+module.exports = { INLINE_CHARS, PREVIEW_CHARS, oversized, retainEvent, projectRow, isStreamingToolEvent, isStreamingToolRow, replaceToolSnapshot };

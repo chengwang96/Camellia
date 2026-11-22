@@ -210,12 +210,15 @@ function createClaudeSidebar({ $, context, contextBusy, canChangeContext, canRea
   function sessionHasDraft(session) {
     return Boolean(hasDraft(session ? session.id : null));
   }
-  function renderSessionSidebar(force = false) {
-    if (drag?.active || renamingDiscussionId || renamingWorkspaceId) return;
-    const nextKey = JSON.stringify([sessionHistory, workspaces, pagination, importableCount,
+  function currentSidebarKey() {
+    return JSON.stringify([sessionHistory, workspaces, pagination, importableCount,
       context.sessionId, context.workspaceId, $('headerTitle').textContent, discussionVisible(), getDiscussionId(),
       discussionGroups, harnessId, window.CamelliaI18n.language, Math.floor(Date.now() / 60000),
       hasDraft(null), sessionHistory.map(sessionHasDraft)]);
+  }
+  function renderSessionSidebar(force = false) {
+    if (drag?.active || renamingDiscussionId || renamingWorkspaceId) return;
+    const nextKey = currentSidebarKey();
     if (!force && nextKey === sidebarRenderKey) { updateWorkspaceLabel(); return; }
     sidebarRenderKey = nextKey;
     const list = $('sessionList');
@@ -360,9 +363,25 @@ function createClaudeSidebar({ $, context, contextBusy, canChangeContext, canRea
     });
     container.appendChild(button);
   }
+  function updateDraftStatus(item, session) {
+    const activity = session?.activity;
+    const background = !activity && Boolean(session?.backgroundWork?.tasks?.length);
+    const uncertain = background && session.backgroundWork.tasks.some(task => task.status === 'unknown');
+    const draft = sessionHasDraft(session);
+    const status = item.querySelector('.session-item-time');
+    status.textContent = activity === 'permission' ? 'Needs approval' : activity === 'question' ? 'Needs input' : activity ? 'Working' : uncertain ? 'Background status unknown' : background ? 'Background tasks' : draft ? 'Draft' : session ? relTime(session.mtimeMs) : 'Now';
+    status.classList.toggle('is-draft', Boolean(draft && !activity && !background));
+  }
+  function draftChanged(key) {
+    const id = String(key || '').replace(/^draft:/, ''), newDraft = id.startsWith('new:');
+    if (newDraft && (context.sessionId || id !== 'new:' + (context.workspaceId || 'standalone'))) return;
+    const item = $('sessionList').querySelector(newDraft ? '#sessionCurrent' : '[data-sid="' + CSS.escape(id) + '"]');
+    if (!item) return;
+    updateDraftStatus(item, newDraft ? null : sessionHistory.find(session => session.id === id) || { id });
+    sidebarRenderKey = currentSidebarKey();
+  }
   function makeSessionItem(s) {
     const active = s ? s.id === context.sessionId : !context.sessionId;
-    const draft = sessionHasDraft(s);
     const item = document.createElement('div');
     item.className = 'session-item' + (active ? ' active' : '');
     item.tabIndex = 0;
@@ -388,9 +407,7 @@ function createClaudeSidebar({ $, context, contextBusy, canChangeContext, canRea
     const uncertain = background && s.backgroundWork.tasks.some(task => task.status === 'unknown');
     item.dataset.activity = activity || '';
     item.dataset.background = uncertain ? 'unknown' : background ? 'running' : '';
-    const status = item.querySelector('.session-item-time');
-    status.textContent = activity === 'permission' ? 'Needs approval' : activity === 'question' ? 'Needs input' : activity ? 'Working' : uncertain ? 'Background status unknown' : background ? 'Background tasks' : draft ? 'Draft' : s ? relTime(s.mtimeMs) : 'Now';
-    status.classList.toggle('is-draft', Boolean(draft && !activity && !background));
+    updateDraftStatus(item, s);
     const open = () => {
       const wrongHarness = Boolean(s?.currentEngine && s.currentEngine !== harnessId);
       if (s && (discussionOpening() || s.id !== context.sessionId || wrongHarness || ['permission', 'question'].includes(s.activity)))
@@ -1130,7 +1147,7 @@ function createClaudeSidebar({ $, context, contextBusy, canChangeContext, canRea
   window.addEventListener('focus', () => void loadSessionHistory());
   return {
     load: loadSessionHistory, render: renderSessionSidebar, updateLabel: updateWorkspaceLabel, metaOp: runMetaOp,
-    markReplyRead, renameDiscussion, archivedChanged,
+    markReplyRead, renameDiscussion, archivedChanged, draftChanged,
     get sessions() { return sessionHistory; }, get workspaces() { return workspaces; },
   };
 }

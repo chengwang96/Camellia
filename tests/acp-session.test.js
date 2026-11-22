@@ -42,6 +42,17 @@ test('Kimi idle task follow-up streams and saves a result without a new user mes
   assert.equal(rows[0].message.content[0].text, 'APK verified');
 });
 
+test('ACP progress text streams as commentary without becoming the answer', t => {
+  const { session } = fixture(t), events = [];
+  session.text = ''; session.onEvent = event => events.push(event);
+  session.update({ sessionUpdate: 'camellia_progress', content: { type: 'text', text: 'Reading files' } });
+  session.update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'Final answer' } });
+  const starts = events.filter(event => event.type === 'stream_event' && event.event.type === 'content_block_start')
+    .map(event => event.event.content_block);
+  assert.deepEqual(starts, [{ type: 'text', phase: 'commentary' }, { type: 'text' }]);
+  assert.equal(session.text, 'Final answer');
+});
+
 test('Kimi waits for a task follow-up that races the original prompt response', async t => {
   const { session } = fixture(t);
   session.sessionId = 'kimi-background'; session.spec.modeEngine = 'kimi'; session.ready = Promise.resolve();
@@ -297,6 +308,29 @@ test('Antigravity headless denial is a failed tool and does not create a pending
   assert.equal(events.at(-1).permissionBlocked, true);
   assert.equal(events.at(-1).status, 'failed');
   assert.equal(session.permissions.size, 0);
+});
+
+test('Kimi automatic compaction notices become progress instead of reply text', async t => {
+  const { session } = fixture(t), events = [];
+  session.ready = Promise.resolve(); session.sessionId = 'kimi-native'; session.spec.modeEngine = 'kimi';
+  session.onEvent = event => events.push(event);
+  session.request = async () => {
+    for (const text of [
+      'Compacting conversation context…',
+      'Compaction is blocked by the current turn; retry when the turn is idle.',
+      'Compaction completed.\n- Messages compacted: 10\n- Tokens before: 20,000\n- Tokens after: 2,000',
+    ]) session.update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } });
+    session.update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'Actual answer' } });
+    return { stopReason: 'end_turn' };
+  };
+  const done = new Promise(resolve => { session.onResult = resolve; });
+  session.sendUserMessage('Continue');
+  const result = await done;
+  assert.equal(result.subtype, 'success');
+  assert.equal(result.result, 'Actual answer');
+  assert.deepEqual(events.filter(event => event.type === 'gui:compaction').map(event => event.state), ['running', 'running', 'completed']);
+  assert.equal(events.some(event => JSON.stringify(event).includes('Compaction is blocked')), false);
+  assert.equal(session.running, false);
 });
 
 test('Kimi compaction waits for background completion, not the slash command acknowledgement', async context => {

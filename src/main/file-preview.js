@@ -60,6 +60,22 @@ function readPreviewText(filePath) {
   } finally { fs.closeSync(handle); }
 }
 
+async function readPreviewTextAsync(filePath) {
+  const handle = await fs.promises.open(filePath, fs.constants.O_RDONLY | fs.constants.O_NONBLOCK);
+  try {
+    const stat = await handle.stat();
+    if (!stat.isFile()) throw new Error('The selected path is not a file.');
+    const buffer = Buffer.allocUnsafe(Math.min(stat.size, MAX_TEXT_BYTES) + 1);
+    let length = 0;
+    while (length < buffer.length) {
+      const { bytesRead } = await handle.read(buffer, length, buffer.length - length, null);
+      if (!bytesRead) break;
+      length += bytesRead;
+    }
+    return { stat, bytes: buffer.subarray(0, Math.min(length, MAX_TEXT_BYTES)), truncated: stat.size > MAX_TEXT_BYTES || length > MAX_TEXT_BYTES };
+  } finally { await handle.close(); }
+}
+
 function textRevision(stat, bytes) {
   return `${stat.dev}:${stat.ino}:${stat.mode}:${createHash('sha256').update(bytes).digest('hex')}`;
 }
@@ -121,7 +137,7 @@ function savePreviewText(edit, text) {
   }
 }
 
-function describePreview(filePath, issueEditToken) {
+function describePreview(filePath, issueEditToken, textContent = null) {
   if (typeof filePath !== 'string' || !filePath.trim()) throw new Error('A file path is required.');
   const resolvedPath = path.resolve(filePath);
   const stat = fs.statSync(resolvedPath);
@@ -140,7 +156,7 @@ function describePreview(filePath, issueEditToken) {
     url: pathToFileURL(resolvedPath).href,
   };
   if (kind === 'text') {
-    const content = readPreviewText(resolvedPath);
+    const content = textContent || readPreviewText(resolvedPath);
     preview.size = content.stat.size;
     preview.modifiedAt = content.stat.mtimeMs;
     preview.truncated = content.truncated;
@@ -152,4 +168,11 @@ function describePreview(filePath, issueEditToken) {
   return preview;
 }
 
-module.exports = { MAX_TEXT_BYTES, describePreview, savePreviewText, previewKind, LEGACY_DOCUMENT_EXTENSIONS, BIFF_SPREADSHEET_EXTENSIONS };
+async function describePreviewAsync(filePath, issueEditToken) {
+  if (typeof filePath !== 'string' || !filePath.trim()) throw new Error('A file path is required.');
+  if (previewKind(path.resolve(filePath)) !== 'text') return describePreview(filePath, issueEditToken);
+  const content = await readPreviewTextAsync(path.resolve(filePath));
+  return describePreview(filePath, issueEditToken, content);
+}
+
+module.exports = { MAX_TEXT_BYTES, describePreview, describePreviewAsync, savePreviewText, previewKind, LEGACY_DOCUMENT_EXTENSIONS, BIFF_SPREADSHEET_EXTENSIONS };

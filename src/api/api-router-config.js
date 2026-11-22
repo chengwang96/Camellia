@@ -7,6 +7,8 @@ const { discoverQclaw, DEFAULT_BASE_URL } = require('./qclaw-provider');
 const { normalizeThinking, thinkingFor } = require('../shared/model-levels');
 const { canonicalModelId } = require('../shared/model-names');
 const { normalizeSettings: normalizeWebTools } = require('../shared/web-tools');
+const { codexApiProfile } = require('../shared/codex-api-profiles');
+const { GO_ROOT } = require('./opencode-go');
 const DEFAULT_PORT = 8788;
 // QClaw answers through an agent runtime, so the prompt also carries that
 // runtime's own instructions and skills. Measured overflow lands near 110k
@@ -29,7 +31,8 @@ const PRESETS = [
       { id: 'kimi-k2.6', upstream: 'moonshotai/Kimi-K2.6' },
       { id: 'kimi-k2.5', upstream: 'moonshotai/Kimi-K2.5' },
     ] },
-  { type: 'opencode-go', name: 'OpenCode Go', baseUrl: 'https://opencode.ai/zen/go/v1', protocol: 'dual', models: [] },
+  { type: 'opencode-go', name: 'OpenCode Go', baseUrl: GO_ROOT + '/openai/v1', protocol: 'dual',
+    anthropicBaseUrl: GO_ROOT + '/anthropic/v1', models: [] },
   { type: 'opencode', name: 'OpenCode Zen', baseUrl: 'https://opencode.ai/zen/v1', protocol: 'dual', models: [] },
   { type: 'kimi-code', name: 'Kimi Code (API key)', baseUrl: 'https://api.kimi.com/coding/v1', protocol: 'dual', models: [] },
   { type: 'mimo', name: 'MiMo (pay-as-you-go)', baseUrl: 'https://api.xiaomimimo.com/v1', protocol: 'dual',
@@ -337,9 +340,16 @@ function modelContextWindow(cfg, id) {
 function publicState(cfg) {
   const providers = cfg.providers.map(p => ({ ...p, models: p.models.map(m => ({ ...m })), keys: p.keys.map(({ key, ...k }) => ({ ...k, maskedKey: maskKey(key) })) }));
   const models = [...new Set(cfg.providers.filter(p => p.enabled && p.keys.some(k => k.enabled)).flatMap(p => p.models.map(m => modelId(m.id))))];
-  const modelThinking = Object.fromEntries(models.map(id => [id, thinkingFor(id, cfg)]).filter(([, thinking]) => thinking));
-  return { version: 2, enabled: cfg.enabled, port: cfg.port, routing: { ...cfg.routing }, webTools: { ...cfg.webTools }, providers, models, modelThinking, usage: structuredClone(cfg.usage),
-    usageArchive: structuredClone(cfg.usageArchive), active: { ...cfg.active } };
+  const modelProfiles = Object.fromEntries(models.map(id => {
+    const profile = codexApiProfile(id);
+    if (!profile) return null;
+    const values = profile.supported_reasoning_levels.map(level => level.effort);
+    return [id, { name: profile.display_name, contextWindow: profile.context_window, maxContext: profile.max_context_window,
+      thinking: { values, ...(values.includes(profile.default_reasoning_level) ? { default: profile.default_reasoning_level } : {}) } }];
+  }).filter(Boolean));
+  const modelThinking = Object.fromEntries(models.map(id => [id, thinkingFor(id, cfg) || modelProfiles[id]?.thinking]).filter(([, thinking]) => thinking));
+  return { version: 2, enabled: cfg.enabled, port: cfg.port, routing: { ...cfg.routing }, webTools: { ...cfg.webTools }, providers, models, modelThinking, modelProfiles,
+    usage: structuredClone(cfg.usage), usageArchive: structuredClone(cfg.usageArchive), active: { ...cfg.active } };
 }
 
 module.exports = { DEFAULT_PORT, PRESETS, modelId, endpoint, normalizeConfig, loadConfig, writeConfig, hasRoutes, publicState, maskKey, modelRoutes, modelContextWindow };

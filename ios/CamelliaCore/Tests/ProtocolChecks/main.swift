@@ -1313,10 +1313,12 @@ do {
         "backgroundWork": ["engine": "kimi", "tasks": [["id": "t1", "description": "Run the analysis"]]],
     ]))
     checkEqual(busy.backgroundNote(chinese: false, replying: false) ?? "",
-               "Background work still running · Run the analysis",
+               "1 background task running",
                "a finished reply with background work says so on the dock")
     checkEqual(busy.backgroundNote(chinese: true, replying: false) ?? "",
-               "后台工作仍在运行 · Run the analysis", "and does so in Chinese")
+               "1 个后台任务运行中", "the Chinese dock omits a task's original language")
+    checkEqual(busy.backgroundNote(chinese: true, replying: false, includeDetails: true) ?? "",
+               "1 个后台任务运行中\n\nRun the analysis", "the opened details preserve the original task description")
     check(busy.backgroundNote(chinese: false, replying: true) == nil,
           "a live reply owns the dock line")
     check(busy.backgroundNote(chinese: false, replying: false) != nil,
@@ -1351,14 +1353,16 @@ do {
     checkEqual(controlled.stopTargets.first?["engine"] as? String, "kimi", "the task owns its harness")
     checkEqual(controlled.stopTargets.first?["runId"] as? Int64, 7, "stop targets retain the process generation")
     checkEqual(controlled.stopTargets.first?.count, 3, "stop targets exclude private command text")
+    checkEqual(controlled.note(chinese: false), "4 background tasks running", "multiple tasks use the plural summary")
+    checkEqual(controlled.note(chinese: true), "4 个后台任务运行中", "multiple tasks show a localized count")
     let roundtrip = RemoteBackgroundWork(JSONObject(dictionary: controlled.json))!
     checkEqual(roundtrip.signature, controlled.signature, "list caching preserves stop capabilities and ownership")
     let unknown = RemoteBackgroundWork(JSONObject(dictionary: ["engine": "kimi", "tasks": [
         ["id": "shell", "engine": "kimi", "runId": 7, "canStop": true, "status": "unknown"],
     ]]))!
     check(unknown.statusUnknown, "unverified work never claims to be running")
-    checkEqual(unknown.note(chinese: false), "Background task status unknown · retrying · shell", "unknown work says it will retry")
-    checkEqual(unknown.note(chinese: true), "后台任务状态未知 · 正在重试 · shell", "unknown work has Chinese wording")
+    checkEqual(unknown.note(chinese: false), "Background status unknown · retrying", "unknown work says it will retry")
+    checkEqual(unknown.note(chinese: true), "后台状态未知 · 重试中", "unknown work has Chinese wording")
     checkEqual(unknown.stopTargets.count, 1, "an unverified task keeps its native stop target")
     check(RemoteBackgroundWork(JSONObject(dictionary: unknown.json))!.statusUnknown, "unknown work survives cache round trips")
     let caps = RemoteCapabilities(["stop-background-work"])
@@ -6709,16 +6713,26 @@ do {
 } catch { failures.append("history cancellation: \(error)") }
 
 do {
-    let prefs = MobilePreferences(store: DictionaryPreferenceStore())
+    let store = DictionaryPreferenceStore()
+    let prefs = MobilePreferences(store: store)
     check(prefs.hapticFeedback, "haptics default to enabled, as on Android")
     prefs.hapticFeedback = false
     check(!prefs.hapticFeedback, "haptic preference persists")
-    prefs.downloadDirectoryBookmark = Data([0, 255, 128])
+    check(prefs.askDownloadLocationEachTime, "without a saved folder, downloads default to per-download export")
+    let folderBookmark = Data([0, 255, 128])
+    prefs.downloadDirectoryBookmark = folderBookmark
     prefs.downloadDirectoryLabel = "Downloads"
-    checkEqual(prefs.downloadDirectoryBookmark, Data([0, 255, 128]), "folder bookmarks round-trip without UTF-8 conversion")
+    checkEqual(prefs.automaticDownloadDirectoryBookmark, folderBookmark, "an existing folder is used automatically after upgrading")
     checkEqual(prefs.downloadDirectoryLabel, "Downloads", "download folder label persists")
+    prefs.askDownloadLocationEachTime = true
+    let reloaded = MobilePreferences(store: store)
+    check(reloaded.askDownloadLocationEachTime, "per-download export stays enabled after reloading")
+    check(reloaded.automaticDownloadDirectoryBookmark == nil, "per-download export bypasses the saved folder")
+    checkEqual(reloaded.downloadDirectoryBookmark, folderBookmark, "per-download export retains the authorized bookmark")
+    prefs.askDownloadLocationEachTime = false
+    checkEqual(reloaded.automaticDownloadDirectoryBookmark, folderBookmark, "turning off per-download export restores automatic saves")
     prefs.downloadDirectoryBookmark = nil
-    check(prefs.downloadDirectoryBookmark == nil, "clearing the folder returns to per-download export")
+    check(prefs.automaticDownloadDirectoryBookmark == nil, "without a folder, downloads fall back to per-download export")
     checkEqual(DownloadDirectory.filename(" ../reports/a\\b\u{0}.pdf "), ".._reports_a_b_.pdf", "file names cannot introduce directories or controls")
     checkEqual(DownloadDirectory.filename(".."), "download", "parent folder is never a file name")
     let root = FileManager.default.temporaryDirectory.appendingPathComponent("camellia-folder-check-\(UUID().uuidString)")

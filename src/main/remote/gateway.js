@@ -1,9 +1,11 @@
 'use strict';
 
 const http = require('node:http');
+const https = require('node:https');
 const { randomUUID, timingSafeEqual } = require('node:crypto');
 const { fail } = require('./access');
 const { isTailscaleIPv4 } = require('./tailscale');
+const { isPrivateIPv4 } = require('./lan');
 const { listArtifacts, openArtifact } = require('./artifacts');
 const { visualizationDocument } = require('./visualizations');
 const { pipeline } = require('node:stream/promises');
@@ -30,8 +32,10 @@ async function body(request, limit = 4096) {
 }
 
 class RemoteGateway {
-  constructor({ access, reader, commands, apiRoutes = null, desktopRestart = null, discussions = null, accountUsage = null, validateHost = isTailscaleIPv4 }) {
-    Object.assign(this, { access, reader, commands, apiRoutes, desktopRestart, discussions, accountUsage, validateHost });
+  constructor({ access, reader, commands, apiRoutes = null, desktopRestart = null, discussions = null, accountUsage = null,
+    validateHost = isTailscaleIPv4, lanAccess = null, computerId = '', transportInfo = null }) {
+    Object.assign(this, { access, reader, commands, apiRoutes, desktopRestart, discussions, accountUsage, validateHost,
+      lanAccess, computerId, transportInfo });
     this.streams = new Set();
     this.downloads = new Set();
     this.sequence = 0;
@@ -44,20 +48,27 @@ class RemoteGateway {
   }
   async start(host, port = 43127, transport = null) {
     if (this.server) throw new Error('Remote access is already running');
-    if (transport) {
+    if (transport?.mode === 'lan') {
+      if (!isPrivateIPv4(host) || !Number.isInteger(port) || port < 0 || port > 65535
+          || typeof transport.certificate !== 'string' || typeof transport.privateKey !== 'string') throw new Error('Invalid LAN transport');
+    } else if (transport) {
       if (host !== '127.0.0.1' || port !== 0 || !isTailscaleIPv4(transport.address) || !/^[a-f0-9]{64}$/.test(transport.token)) throw new Error('Invalid embedded transport');
     } else if (!this.validateHost(host)) throw new Error('Remote access must bind to the local Tailscale IPv4 address');
     this.transport = transport;
     this.instanceId = randomUUID();
     this.commands?.trimJournal(true);
     this.sequence = 0;
-    const server = http.createServer({ maxHeaderSize: 8192, requestTimeout: 120_000, headersTimeout: 10_000 }, (request, response) => {
+    const handler = (request, response) => {
       void this.handle(request, response).catch(error => {
         if (response.headersSent || response.destroyed) { response.destroy(); return; }
         if (error.status === 429) response.setHeader('Retry-After', '60');
         this.json(response, error.status || 500, { error: error.status ? error.message : 'Remote request failed' });
       });
-    });
+    };
+    const options = { maxHeaderSize: 8192, requestTimeout: 120_000, headersTimeout: 10_000 };
+    const server = transport?.mode === 'lan'
+      ? https.createServer({ ...options, key: transport.privateKey, cert: transport.certificate, minVersion: 'TLSv1.2' }, handler)
+      : http.createServer(options, handler);
     server.maxConnections = 64;
     server.on('connection', socket => socket.setTimeout(30_000, () => socket.destroy()));
     await new Promise((resolve, reject) => {
@@ -65,8 +76,9 @@ class RemoteGateway {
       server.listen({ host, port, exclusive: true }, resolve);
     });
     this.server = server;
-    this.authority = transport ? `${transport.address}:43127` : `${host}:${server.address().port}`;
-    this.url = `http://${this.authority}`;
+    this.authority = transport?.mode === 'lan' ? `${host}:${server.address().port}`
+      : transport ? `${transport.address}:43127` : `${host}:${server.address().port}`;
+    this.url = `${transport?.mode === 'lan' ? 'https' : 'http'}://${this.authority}`;
     this.heartbeat = setInterval(() => this.checkStreams(), 10_000);
     this.heartbeat.unref();
     return this.url;
@@ -87,28 +99,39 @@ class RemoteGateway {
   throttle(request, pairing, control = false) {
     const now = Date.now();
     for (const [key, entry] of this.rate) if (entry.until <= now) this.rate.delete(key);
-    const key = `${this.transport ? request.headers['x-camellia-peer'] : request.socket.remoteAddress}:${pairing ? 'pair' : control ? 'control' : 'read'}`;
+    const key = `${this.transport && this.transport.mode !== 'lan' ? request.headers['x-camellia-peer'] : request.socket.remoteAddress}:${pairing ? 'pair' : control ? 'control' : 'read'}`;
     const entry = this.rate.get(key) || { until: now + 60_000, count: 0 };
     if (!this.rate.has(key) && this.rate.size >= 1024) fail(429, 'Too many clients');
     this.rate.set(key, entry);
     if (++entry.count > (pairing ? 30 : 300)) fail(429, 'Too many requests; retry in one minute');
   }
   async handle(request, response) {
-    if (this.transport) {
+    if (this.transport && this.transport.mode !== 'lan') {
       const token = Buffer.from(request.headers['x-camellia-transport'] || '');
       const expected = Buffer.from(this.transport.token);
       if (request.socket.remoteAddress !== '127.0.0.1' || token.length !== expected.length || !timingSafeEqual(token, expected)) fail(403, 'Embedded transport required');
     }
+    if (this.transport?.mode === 'lan' && !isPrivateIPv4(request.socket.remoteAddress)) fail(403, 'LAN clients must use a private address');
     if (request.headers.host !== this.authority || request.headers.origin || request.headers['sec-fetch-site'] === 'cross-site') fail(403, 'Only direct app connections are allowed');
     const url = new URL(request.url, this.url);
     if (url.origin !== this.url) fail(400, 'Invalid request target');
-    const pairing = url.pathname === '/v1/pair/request' || url.pathname === '/v1/pair/claim';
+    const pairing = url.pathname === '/v1/pair/request' || url.pathname === '/v1/pair/claim' || url.pathname === '/v1/lan/join';
     this.throttle(request, pairing, !pairing && (request.method === 'POST' || /^\/v1\/(?:discussions\/)?commands\//.test(url.pathname)));
     if (pairing) {
       if (request.method !== 'POST' || url.search) fail(405, 'POST required');
       const payload = await body(request);
       if (!payload || typeof payload !== 'object' || Array.isArray(payload)) fail(400, 'JSON object required');
-      const result = url.pathname.endsWith('/request') ? this.access.request(payload) : this.access.claim(payload.id, payload.claim);
+      let result;
+      if (url.pathname === '/v1/lan/join') {
+        if (!this.lanAccess) fail(404, 'LAN access is unavailable');
+        result = this.lanAccess.join({ ...payload, remoteAddress: request.socket.remoteAddress });
+        result = { ...result, protocol: 1, ...(this.computerId ? { computerId: this.computerId } : {}),
+          ...(this.transportInfo?.() || {}) };
+      } else {
+        result = url.pathname.endsWith('/request') ? this.access.request(payload) : this.access.claim(payload.id, payload.claim);
+        result = { ...result, protocol: 1, ...(this.computerId ? { computerId: this.computerId } : {}),
+          ...(this.transportInfo?.() || {}) };
+      }
       this.json(response, 200, result);
       return;
     }
@@ -152,7 +175,7 @@ class RemoteGateway {
     }
     // Only the authenticated embedded helper can supply the phone's Tailnet IP.
     // Never learn it from forwarded headers on a plain HTTP listener.
-    const peer = this.transport ? request.headers['x-camellia-peer'] : request.socket.remoteAddress;
+    const peer = this.transport && this.transport.mode !== 'lan' ? request.headers['x-camellia-peer'] : request.socket.remoteAddress;
     if (isTailscaleIPv4(peer)) {
       this.peerAddresses.set(device.id, peer);
       const online = this.onlineDevices.get(device.id);
@@ -292,7 +315,10 @@ class RemoteGateway {
     if (this.reader.manager?.visualize) capabilities.push('visualizations');
     if (this.commands && fullControl && this.reader.manager.drivers?.codex?.resetCredits) capabilities.push('codex-reset-credits');
     capabilities.push('list-query', 'workbench-summary');
+    const transports = this.transportInfo?.() || null;
     return { protocol: 1, permission: device.permission, capabilities,
+      ...(this.computerId ? { computerId: this.computerId } : {}),
+      ...(transports ? { transports } : {}),
       engines: (this.reader.manager.remoteEngines || ['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'grok']).filter(engine => ['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'grok'].includes(engine)),
       workspaces: this.reader.workspaces().filter(item => device.allWorkspaces || device.workspaceIds.includes(item.id)),
       includeUnassigned: Boolean(device.allWorkspaces || device.includeUnassigned) };
@@ -498,13 +524,15 @@ class RemoteGateway {
     for (const stream of this.streams) if (stream.device.id === id) { this.forgetStream(stream); stream.response.end(); }
     for (const entry of this.downloads) if (entry.device.id === id) entry.response.destroy();
   }
-  async stop() {
+  async stop({ shared = false } = {}) {
     clearInterval(this.heartbeat);
     clearTimeout(this.flushTimer);
     this.flushTimer = null;
-    this.access.clearPairing();
-    this.commands?.cancelPending();
-    this.discussions?.cancelPending();
+    if (!shared) {
+      this.access.clearPairing();
+      this.commands?.cancelPending();
+      this.discussions?.cancelPending();
+    }
     for (const entry of this.downloads) entry.response.destroy();
     for (const stream of this.streams) stream.response.destroy();
     this.streams.clear();

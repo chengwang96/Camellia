@@ -330,18 +330,20 @@ public struct RemoteBackgroundWork: Sendable, Hashable {
         ["engine": engine, "tasks": tasks.map(\.json)]
     }
 
-    /// The one-line dock note, matching the desktop's wording and Android's.
-    public func note(chinese: Bool) -> String {
-        let detail: String
-        if tasks.count > 1 {
-            detail = chinese ? "\(tasks.count) 个任务" : "\(tasks.count) tasks"
+    /// The localized dock summary, with original task descriptions in the details view.
+    public func note(chinese: Bool, includeDetails: Bool = false) -> String {
+        guard !tasks.isEmpty else { return "" }
+        let summary: String
+        if statusUnknown {
+            summary = chinese ? "后台状态未知 · 重试中" : "Background status unknown · retrying"
+        } else if chinese {
+            summary = "\(tasks.count) 个后台任务运行中"
         } else {
-            detail = tasks[0].description.isEmpty ? tasks[0].id : tasks[0].description
+            summary = tasks.count == 1 ? "1 background task running" : "\(tasks.count) background tasks running"
         }
-        let base = statusUnknown
-            ? (chinese ? "后台任务状态未知 · 正在重试" : "Background task status unknown · retrying")
-            : (chinese ? "后台工作仍在运行" : "Background work still running")
-        return detail.isEmpty ? base : "\(base) · \(detail)"
+        guard includeDetails else { return summary }
+        let descriptions = tasks.map { $0.description.isEmpty ? $0.id : $0.description }
+        return ([summary] + descriptions).joined(separator: "\n\n")
     }
 }
 
@@ -390,9 +392,9 @@ public struct RemoteConversation: Sendable, Identifiable, Hashable {
 
     /// The dock's one-line note for work that outlived its reply, or nil when
     /// a reply is live and already owns that line.
-    public func backgroundNote(chinese: Bool, replying: Bool) -> String? {
+    public func backgroundNote(chinese: Bool, replying: Bool, includeDetails: Bool = false) -> String? {
         guard !replying, activity == nil, let backgroundWork else { return nil }
-        return backgroundWork.note(chinese: chinese)
+        return backgroundWork.note(chinese: chinese, includeDetails: includeDetails)
     }
 
     /// The shape it was read from, so the list cache can store a row and read

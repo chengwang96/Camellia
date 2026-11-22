@@ -1,5 +1,6 @@
 package app.camellia.mobile;
 
+import java.util.ArrayList;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
@@ -38,14 +39,17 @@ final class RemoteWorkStatus {
         return work == null ? null : work.optJSONArray("tasks");
     }
 
+    private static boolean hasTaskId(JSONObject task) {
+        return task != null && !task.isNull("id") && !task.optString("id").isEmpty();
+    }
+
     /** How many background tasks are still running, ignoring malformed entries. */
     static int backgroundCount(JSONObject conversation) {
         JSONArray tasks = backgroundTasks(conversation);
         if (tasks == null && conversation != null) return Math.max(0, conversation.optInt("backgroundTaskCount"));
         int count = 0;
         for (int i = 0; i < size(tasks); i++) {
-            JSONObject task = tasks.optJSONObject(i);
-            if (task != null && !task.optString("id").isEmpty()) count++;
+            if (hasTaskId(tasks.optJSONObject(i))) count++;
         }
         return count;
     }
@@ -54,7 +58,7 @@ final class RemoteWorkStatus {
         JSONArray tasks = backgroundTasks(conversation);
         for (int i = 0; i < size(tasks); i++) {
             JSONObject task = tasks.optJSONObject(i);
-            if (task != null && !task.optString("id").isEmpty() && task.optString("status").equals("unknown")) return true;
+            if (hasTaskId(task) && task.optString("status").equals("unknown")) return true;
         }
         return false;
     }
@@ -64,7 +68,7 @@ final class RemoteWorkStatus {
         JSONArray tasks = backgroundTasks(conversation), targets = new JSONArray();
         for (int i = 0; i < size(tasks); i++) {
             JSONObject task = tasks.optJSONObject(i);
-            if (task == null || !task.optBoolean("canStop") || task.optString("id").isEmpty()
+            if (!hasTaskId(task) || !task.optBoolean("canStop")
                     || task.optLong("runId", 0) <= 0 || !java.util.Arrays.asList("claude", "codex", "dsh", "kimi", "antigravity", "grok").contains(task.optString("engine"))) continue;
             try { targets.put(new JSONObject().put("id", task.getString("id")).put("engine", task.getString("engine")).put("runId", task.getLong("runId"))); }
             catch (org.json.JSONException ignored) { /* A malformed identity is never sent as a stop command. */ }
@@ -72,26 +76,24 @@ final class RemoteWorkStatus {
         return targets;
     }
 
-    /**
-     * The dock note for work that outlives its reply. Empty while a reply is
-     * live, because the footer has one line and the reply owns it then.
-     */
+    /** The localized one-line summary for work that outlives its reply. */
     static String background(JSONObject conversation, boolean zh) {
-        JSONArray tasks = backgroundTasks(conversation);
         int count = backgroundCount(conversation);
         if (count == 0) return "";
-        String detail = "";
-        boolean uncertain = backgroundUnknown(conversation);
-        if (count > 1) detail = label(zh, count + " 个任务", count + " tasks");
-        else for (int i = 0; i < size(tasks); i++) {
+        if (backgroundUnknown(conversation)) return label(zh, "后台状态未知 · 重试中", "Background status unknown · retrying");
+        return label(zh, count + " 个后台任务运行中", count + (count == 1 ? " background task running" : " background tasks running"));
+    }
+
+    static String backgroundDescriptions(JSONObject conversation) {
+        JSONArray tasks = backgroundTasks(conversation);
+        ArrayList<String> descriptions = new ArrayList<>();
+        for (int i = 0; i < size(tasks); i++) {
             JSONObject task = tasks.optJSONObject(i);
-            if (task == null || task.optString("id").isEmpty()) continue;
-            detail = task.optString("description", "");
-            if (detail.isEmpty()) detail = task.optString("id");
-            break;
+            if (!hasTaskId(task)) continue;
+            String description = task.isNull("description") ? "" : task.optString("description");
+            descriptions.add(description.isEmpty() ? task.optString("id") : description);
         }
-        return (uncertain ? label(zh, "后台任务状态未知 · 正在重试", "Background task status unknown · retrying")
-                : label(zh, "后台工作仍在运行", "Background work still running")) + (detail.isEmpty() ? "" : " · " + detail);
+        return String.join("\n\n", descriptions);
     }
 
     private static boolean workingTool(JSONArray process, boolean typed) {

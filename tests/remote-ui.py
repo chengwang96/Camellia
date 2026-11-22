@@ -6,13 +6,16 @@ repo = Path(__file__).resolve().parents[1]
 screenshots = repo / 'dist/ui-preview'
 screenshots.mkdir(parents=True, exist_ok=True)
 bridge = """(() => {
-  const state = { running: false, address: null, devices: [], pending: [],
+  const state = { running: false, enabled: false, address: null, devices: [], pending: [],
+    guard: { supported: true, available: true, enabled: false, running: false, retrying: false },
     workspaces: [{ id: 'project', name: 'Research workspace' }, { id: 'second', name: 'Second workspace' }], closeToTray: false, language: 'zh-CN', theme: 'system' };
   window.remoteTest = state;
   window.camelliaRemote = { control: async (action, payload) => {
     if (window.remoteTestFailure) return { ok: false, error: 'Mobile access is unavailable' };
-    if (action === 'start') { state.running = true; state.address = 'http://100.80.1.2:43127'; }
-    if (action === 'stop') { state.running = false; state.address = null; }
+    if (action === 'start') { state.enabled = true; state.running = true; state.address = 'http://100.80.1.2:43127'; state.guard.running = state.guard.enabled; }
+    if (action === 'stop') { state.enabled = false; state.running = false; state.address = null; state.guard.running = false; }
+    if (action === 'guard-enable') { state.guard.enabled = true; state.guard.running = true; }
+    if (action === 'guard-disable') { state.guard.enabled = false; state.guard.running = false; }
     if (action === 'set-name') {
       state.computerName = payload.name;
       return { ok: true, result: { ...structuredClone(state),
@@ -27,7 +30,7 @@ bridge = """(() => {
     if (action === 'simulate-phone-request') state.pending = [{ id: 'phone', name: '<img src=x onerror=alert(1)>', state: 'pending', ...window.lastInviteOptions }];
     if (action === 'approve') { state.devices = state.pending; state.pending = []; }
     if (action === 'reject') state.pending = [];
-    if (action === 'revoke') state.devices = [];
+    if (action === 'revoke') { state.devices = []; state.guard.running = false; }
     if (action === 'scope') Object.assign(state.devices.find(device => device.id === payload.id), payload);
     return { ok: true, result: structuredClone(state) };
   } };
@@ -88,8 +91,18 @@ with sync_playwright() as playwright:
             expect(page.locator('#pending .device')).to_have_count(0)
             expect(page.locator('#devices .device')).to_have_count(1)
             expect(page.get_by_role('button', name='授权全部访问', exact=True)).to_have_count(0)
+            expect(page.locator('#guardSection')).to_be_visible()
+            expect(page.locator('#guardToggle')).to_be_enabled()
+            page.locator('#guardToggle').check()
+            expect(page.locator('#guardStatus')).to_have_text('守护中')
+            assert page.evaluate('window.remoteTest.guard.enabled') is True
+            page.locator('#guardToggle').uncheck()
+            expect(page.locator('#guardStatus')).to_have_text('未开启。')
+            page.locator('#guardToggle').check()
             page.get_by_role('button', name='关闭手机访问', exact=True).click()
+            expect(page.locator('#guardStatus')).to_have_text('手机访问关闭时暂停；重新开启后自动恢复。')
             page.get_by_role('button', name='开启手机访问', exact=True).click()
+            expect(page.locator('#guardStatus')).to_have_text('守护中')
             expect(page.locator('#devices .name')).to_contain_text('<img src=x onerror=alert(1)>')
             assert page.evaluate('remoteTest.devices[0].allWorkspaces') is True
             assert page.evaluate('remoteTest.devices[0].includeUnassigned') is True

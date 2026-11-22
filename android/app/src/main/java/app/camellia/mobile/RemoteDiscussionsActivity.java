@@ -139,10 +139,12 @@ public final class RemoteDiscussionsActivity extends Activity {
         address = getIntent().getStringExtra("address");
         groupId = saved != null ? saved.getString("groupId") : getIntent().getStringExtra("groupId");
         try {
-            for (JSONObject computer : new ComputerStore(new CredentialStore(this)).all())
+            java.util.List<JSONObject> computers = new ComputerStore(new CredentialStore(this)).all();
+            ComputerRoutes.configure(computers);
+            for (JSONObject computer : computers)
                 if (computer.optString("address").equals(address)) credentials = computer;
             if (!credentials.has("token")) throw new IllegalStateException(tr("请先配对电脑。", "Pair with the computer first."));
-            new Endpoint(address);
+            new Endpoint(ComputerRoutes.route(address).url);
             profileKey = address + "#" + credentials.optString("deviceId");
             state = stateStore.load(); profile = state.has(profileKey) ? state.getJSONObject(profileKey) : new JSONObject();
             stateAttachments.replace(profile);

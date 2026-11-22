@@ -27,9 +27,20 @@ with sync_playwright() as playwright:
     status = page.locator('[data-sid="shared-fixture"] .session-item-time')
     expect(status).not_to_have_text('Draft')
     ordinary_color = status.evaluate('(element) => getComputedStyle(element).color')
+    page.evaluate("""() => {
+      window.initialDraftRow = document.querySelector('[data-sid="shared-fixture"]');
+      window.draftReadKeys = [];
+      const read = Storage.prototype.getItem;
+      Storage.prototype.getItem = function(key) {
+        if (String(key).startsWith('camellia-chat-draft:')) draftReadKeys.push(String(key));
+        return read.call(this, key);
+      };
+    }""")
 
     page.locator('#input').fill('Unsent draft')
     expect(status).to_have_text('Draft')
+    assert page.evaluate('initialDraftRow === document.querySelector(\'[data-sid="shared-fixture"]\')'), 'Draft status rebuilt the conversation row'
+    assert page.evaluate('draftReadKeys.every(key => key === "camellia-chat-draft:shared-fixture")'), page.evaluate('draftReadKeys')
     assert 'is-draft' in status.get_attribute('class')
     assert status.evaluate('(element) => getComputedStyle(element).color') != ordinary_color
     page.locator('#input').fill('')

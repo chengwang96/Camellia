@@ -64,6 +64,60 @@ test('three modes persist, share download transport and do not save missing syst
   assert.equal(applied.HTTPS_PROXY, ''); assert.equal(applied.NO_PROXY, '*');
   assert.match(service.state().error, /No system proxy/);
 });
+test('reapply refreshes the live environment without rewriting the saved mode', async () => {
+  let config = { network: { mode: 'direct' } };
+  let applied = { HTTP_PROXY: 'http://127.0.0.1:7890/', HTTPS_PROXY: 'http://127.0.0.1:7890/',
+    CAMELLIA_NETWORK_PROXY: 'http://127.0.0.1:7890/', NO_PROXY: 'localhost,127.0.0.1,::1' };
+  const service = createNetworkSettings({
+    loadConfig: () => config,
+    saveConfig: value => Object.assign(config, value),
+    sessions: () => ({ fromPartition: () => ({ setProxy: async () => {}, resolveProxy: async () => 'DIRECT' }),
+      defaultSession: { setProxy: async () => {} } }),
+    applyEnvironment: env => { applied = env; },
+    environment: () => applied,
+  });
+  assert.equal(service.verify().consistent, false);
+  const state = await service.reapply();
+  assert.equal(state.mode, 'direct');
+  assert.equal(state.configured, 'direct');
+  assert.equal(applied.HTTP_PROXY, '');
+  assert.equal(applied.HTTPS_PROXY, '');
+  assert.equal(applied.CAMELLIA_NETWORK_PROXY, '');
+  assert.equal(applied.NO_PROXY, '*');
+  assert.equal(service.verify().consistent, true);
+  assert.equal(config.network.mode, 'direct');
+  const installed = { ...applied };
+  applied.HTTPS_PROXY = 'http://127.0.0.1:7890/';
+  assert.equal(service.verify().consistent, false);
+  Object.assign(applied, installed, { CAMELLIA_NETWORK_MODE: 'proxy' });
+  assert.equal(service.verify().consistent, false);
+  service.close();
+});
+test('verify detects a changed system proxy before the old process environment is replaced', async () => {
+  let config = { network: { mode: 'system' } };
+  let route = 'PROXY localhost:7890';
+  let applied = {};
+  const service = createNetworkSettings({
+    loadConfig: () => config,
+    saveConfig: value => Object.assign(config, value),
+    sessions: () => ({ fromPartition: () => ({ setProxy: async () => {}, resolveProxy: async () => route }),
+      defaultSession: { setProxy: async () => {} } }),
+    applyEnvironment: env => { applied = env; },
+    environment: () => applied,
+    healthCheckImpl: async () => ({ direct: true, proxy: true }),
+  });
+  await service.save({ mode: 'system' });
+  assert.equal(service.verify().consistent, true);
+  route = 'PROXY localhost:7897';
+  await service.detect();
+  assert.equal(service.verify().consistent, false);
+  const state = await service.reapply();
+  assert.equal(state.configured, 'system');
+  assert.equal(applied.HTTPS_PROXY, 'http://localhost:7897/');
+  assert.equal(service.verify().consistent, true);
+  assert.equal(config.network.mode, 'system');
+  service.close();
+});
 test('Electron receives proxy rules without URL paths in system, auto and bridge modes', async t => {
   for (const proxyRoute of ['PROXY localhost:7890', 'HTTPS [::1]:8443']) {
     let config = {}, applied, rules;

@@ -37,7 +37,7 @@ with sync_playwright() as playwright:
         page.locator('#input').fill('Keep this draft')
         image.drag_to(page.locator('#input'))
         chips = page.locator('#attachRow .attchip')
-        expected_count = 1 if engine == 'codex' else 0
+        expected_count = 1
         expect(chips).to_have_count(expected_count)
         expect(page.locator('#input')).to_have_value('Keep this draft')
         expect(page.locator('#inputCard')).not_to_have_class('input-card dragging')
@@ -48,8 +48,6 @@ with sync_playwright() as playwright:
             expect(chips).to_have_count(1)
             chips.first.locator('.attchip-x').click()
             expect(chips).to_have_count(0)
-        else:
-            expect(page.locator('body')).to_contain_text('Antigravity currently supports text and code attachments.')
         page.evaluate("""() => {
           const transfer = new DataTransfer();
           transfer.items.add(new File(['hello'], 'notes.txt', {type:'text/plain'}));
@@ -67,4 +65,4 @@ with sync_playwright() as playwright:
         page.close()
     browser.close()
     assert not errors, errors
-print('PASS: preview image drag, deduplication, image restrictions, external files, and draft preservation')
+print('PASS: preview image drag, deduplication, engine image support, external files, and draft preservation')

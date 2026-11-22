@@ -128,17 +128,17 @@ test('quick switch uses fetched routed levels and clears an unsupported effort f
   }
 });
 
-function modelMenu(subscription, google = false) {
+function modelMenu(subscription, google = false, modelProfiles = {}) {
   const state = {
     supportsAccounts: () => true, sharedChat: true, context: { sessionId: 'conversation-a' },
     accountName: () => google ? 'Google' : 'Kimi', MODELS: [],
     accountModels: [{ id: 'shared-model', name: 'Shared model' }, { id: 'account-only', name: 'Account model' }],
     visibleAccountModels: () => state.accountModels,
-    routeModels: ['shared-model', 'api-only'], routeModelCatalog: {},
+    routeModels: ['shared-model', 'api-only'], routeModelCatalog: { modelProfiles },
     accountSubscription: () => subscription, googleSubscription: () => google,
   };
   vm.createContext(state);
-  vm.runInContext(extract('  function modelSections()', '  function openModelMenu()'), state);
+  vm.runInContext(extract('  function routeModelLabel(', '  function openModelMenu()'), state);
   return JSON.parse(JSON.stringify(state.modelSections()));
 }
 
@@ -159,4 +159,11 @@ test('shared model IDs retain both connections with the active API connection fi
   const sections = modelMenu(false);
   assert.deepEqual(sections.map(section => section.connection), ['api', 'subscription']);
   assert.deepEqual(sections.map(section => section.options.map(model => model.id)), [['shared-model', 'api-only'], ['shared-model', 'account-only']]);
+});
+
+test('API model menus use local profile display names without changing route IDs', () => {
+  const sections = modelMenu(false, false, { 'api-only': { name: 'GPT-6.2-Sol' } });
+  assert.deepEqual(sections[0].options, [
+    { id: 'shared-model', label: 'shared-model' }, { id: 'api-only', label: 'GPT-6.2-Sol' },
+  ]);
 });

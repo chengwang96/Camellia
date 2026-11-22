@@ -23,6 +23,15 @@ function stopReasonError(stopReason) {
   return '';
 }
 
+function kimiCompactionState(text) {
+  if (/^Compaction completed\.\n- Messages compacted: [\d,]+\n- Tokens before: [\d,]+\n- Tokens after: [\d,]+$/.test(text)) return 'completed';
+  if (text === 'Compaction cancelled.') return 'cancelled';
+  if (text === 'Compacting conversation context…' || text === 'Compacting conversation context...'
+      || text.startsWith('Compacting conversation context with instruction: ')
+      || text.startsWith('Compaction is blocked by the current turn;')) return 'running';
+  return '';
+}
+
 // ACP stays at the process boundary. The renderer receives the same stream and
 // session events as the other harness, never upstream keys or CLI internals.
 class AcpSession extends StreamingSession {
@@ -378,15 +387,32 @@ class AcpSession extends StreamingSession {
     }
     if (this.compaction) {
       if (kind === 'agent_message_chunk' && update.content?.type === 'text') {
-        const text = update.content.text;
-        if (/^Compaction completed\.\n- Messages compacted: [\d,]+\n- Tokens before: [\d,]+\n- Tokens after: [\d,]+$/.test(text)) {
+        const text = update.content.text, state = kimiCompactionState(text);
+        if (state === 'completed') {
           this.compaction.completed = true;
           if (this.compaction.accepted) this.settleCompaction();
-        } else if (text === 'Compaction cancelled.' || text.startsWith('Compaction is blocked by the current turn;')) this.settleCompaction(new Error(text));
+        } else if (state === 'cancelled' || text.startsWith('Compaction is blocked by the current turn;')) this.settleCompaction(new Error(text));
       }
       return;
     }
+    if (this.spec.modeEngine === 'kimi' && kind === 'agent_message_chunk' && update.content?.type === 'text') {
+      const state = kimiCompactionState(update.content.text);
+      if (state) { this.emit({ type: 'gui:compaction', state }); return; }
+    }
     if (kind === 'camellia_compaction') { this.emit({ type: 'gui:compaction', state: update.state }); return; }
+    if (kind === 'camellia_progress' && update.content?.type === 'text') {
+      const text = update.content.text;
+      if (!text) return;
+      if (this.activeBlock?.type !== 'progress') {
+        this.endBlock();
+        this.activeBlock = { type: 'progress', index: this.blockIndex++ };
+        this.emitStream({ type: 'content_block_start', index: this.activeBlock.index,
+          content_block: { type: 'text', phase: 'commentary' } });
+      }
+      this.emitStream({ type: 'content_block_delta', index: this.activeBlock.index,
+        delta: { type: 'text_delta', text } });
+      return;
+    }
     if (kind === 'agent_message_chunk' && update._meta?.camelliaQueuedPrompt) {
       this.endBlock();
       this.emit({ type: 'gui:prompt-queue', state: 'queued' });

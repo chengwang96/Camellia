@@ -22,6 +22,12 @@ for (const file of ['settings/api-settings.html', 'remote/remote.html']) {
     assert.match(primary, /data-copy="pairWaiting"/);
     assert.match(primary, /data-copy="pairSuccess"/);
     assert.doesNotMatch(primary, /data-copy="(?:network|footer|logout)"/);
+    assert.match(primary, /id="(?:mobile-)?guardSection"[^>]*hidden/);
+    assert.match(primary, /id="(?:mobile-)?guardToggle"[^>]*role="switch"/);
+    assert.match(primary, /data-copy="guardHint"/);
+    assert.match(primary, /id="(?:mobile-)?lanToggle"[^>]*role="switch"/);
+    assert.match(primary, /id="(?:mobile-)?lanPin"[^>]*maxlength="6"/);
+    assert.match(primary, /id="(?:mobile-)?lanAllowJoin"[^>]*role="switch"/);
   });
 }
 
@@ -59,4 +65,13 @@ test('authorized devices rename in place instead of opening a dialog', () => {
   const styles = fs.readFileSync(path.join(__dirname, '../src/renderer/settings/device-settings.css'), 'utf8');
   assert.match(styles, /\.device-settings \.device-rename-field \{/);
   assert.doesNotMatch(styles, /dialog\.device-rename/);
+});
+
+test('the standalone mobile window exposes local-network controls without a second pairing form', () => {
+  const html = fs.readFileSync(path.join(__dirname, '../src/renderer/remote/remote.html'), 'utf8');
+  assert.match(html, /id="lanToggle"[^>]*role="switch"/);
+  assert.match(html, /id="lanPin"[^>]*maxlength="6"/);
+  assert.match(html, /id="lanSavePin"/);
+  assert.match(html, /id="lanAllowJoin"[^>]*role="switch"/);
+  assert.match(html, /data-copy="lanSecurity"/);
 });

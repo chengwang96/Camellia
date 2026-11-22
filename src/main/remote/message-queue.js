@@ -217,13 +217,14 @@ class RemoteMessageQueue {
     if (goal) {
       if (typeof goalId !== 'string' || !goalId || goal.goal?.id !== goalId || !goal.armed || goal.goal.phase !== 'active')
         fail(409, 'This goal is no longer active. Refresh before sending the instruction.');
-    } else if (!Number.isSafeInteger(runId) || !active || active.facade.gen !== runId) fail(409, 'This run is no longer active');
+    } else if (!Number.isSafeInteger(runId) || !active || active.facade.gen !== runId)
+      fail(409, 'This run is no longer active. The message is still queued; send it after the current turn finishes.');
     this.starting.add(id);
     try {
       entry.state = 'starting'; this.changed(id);
       const payload = { ...entry.payload, sessionId: id, runId, queueId: entry.id, ...(goal ? { goalId } : {}) };
       const result = await (goal ? this.manager.steerGoal(conversation.currentEngine, payload) : this.manager.steer(conversation.currentEngine, payload));
-      if (!result.ok) fail(409, result.error || 'The instruction was not accepted');
+      if (!result.ok) fail(409, result.error || 'The current task cannot accept an insert right now. The message is still queued.');
       const index = this.entries.indexOf(entry);
       if (index >= 0) this.entries.splice(index, 1);
       this.changed(id);

@@ -162,16 +162,17 @@ window.CamelliaFilePreview = { closeTextEditors: closeTextPreviewEditors, create
     const controller = typeof AbortController === 'function' ? new AbortController() : null;
     const render = { controller, finished: false };
     markdownRender = render;
-    const work = window.CamelliaMarkdownPreview.renderChunked.call(
-      window.CamelliaMarkdownPreview, text, {
-        baseUrl: file.url,
-        sourceLines: true,
-        signal: controller?.signal,
-        onChunk: html => {
-          if (markdownRender === render) article.insertAdjacentHTML('beforeend', html);
-        },
+    const options = {
+      baseUrl: file.url,
+      sourceLines: true,
+      signal: controller?.signal,
+      onChunk: html => {
+        if (markdownRender === render) article.insertAdjacentHTML('beforeend', html);
       },
-    );
+    };
+    const work = window.dshDesktop.markdownPreview
+      ? window.CamelliaMarkdownPreview.renderChunkedOffloaded(text, options)
+      : window.CamelliaMarkdownPreview.renderChunked(text, options);
     render.done = Promise.resolve(work).catch(error => {
       if (error?.name !== 'AbortError') {
         article.textContent = '';
@@ -648,7 +649,12 @@ window.CamelliaFilePreview = { closeTextEditors: closeTextPreviewEditors, create
       const border = input.offsetHeight - input.clientHeight;
       input.style.height = input.scrollHeight + Math.max(0, border) + 'px';
     };
-    const fitAll = () => editor.blocks.forEach(block => fitInput(block.input));
+    const fitAll = () => {
+      const inputs = editor.blocks.map(block => block.input).filter(input => !input.hidden);
+      for (const input of inputs) input.style.height = 'auto';
+      const heights = inputs.map(input => input.scrollHeight + Math.max(0, input.offsetHeight - input.clientHeight));
+      inputs.forEach((input, index) => { input.style.height = heights[index] + 'px'; });
+    };
     editor.fitAll = fitAll;
     editor.createBlock = data => {
       const row = document.createElement(data.notebook ? 'section' : 'label');

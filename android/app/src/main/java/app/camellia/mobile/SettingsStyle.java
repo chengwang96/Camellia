@@ -549,9 +549,10 @@ final class SettingsStyle {
         parent.addView(block, new LinearLayout.LayoutParams(-1, -2));
     }
 
-    void note(LinearLayout parent, String value) {
+    TextView note(LinearLayout parent, String value) {
         TextView note = new TextView(context); note.setText(value); note.setTextSize(Palette.TEXT_NOTE); note.setTextColor(palette.faint);
         note.setPadding(dp(16), 0, dp(16), dp(18)); note.setLineSpacing(dp(3), 1); parent.addView(note);
+        return note;
     }
 
     android.widget.ProgressBar progressBar() {
@@ -599,7 +600,7 @@ final class SettingsStyle {
                 toggle.setPressed(pressed && toggle.isEnabled());
             }
         });
-        toggle.setContentDescription(title + ", " + description); toggle.setChecked(checked); toggle.setMinimumHeight(dp(48));
+        toggle.setContentDescription(description.isEmpty() ? title : title + ", " + description); toggle.setChecked(checked); toggle.setMinimumHeight(dp(48));
         toggle.setOnCheckedChangeListener(listener);
         LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-2, -2); params.setMarginStart(dp(16)); row.addView(toggle, params);
         row.setSoundEffectsEnabled(false); // performClick on the switch supplies the single click feedback.

@@ -5,6 +5,7 @@ const path = require('node:path');
 const { randomUUID } = require('node:crypto');
 const { StringDecoder } = require('node:string_decoder');
 const { validSessionId } = require('../engines/claude-history');
+const { ConversationHistory } = require('../engines/conversation-history');
 const { referenceMatcher } = require('./reference-matcher');
 const { JsonReferenceScanner } = require('./json-reference-scanner');
 const { readDiscussionRecord } = require('../engines/discussions/store');
@@ -345,7 +346,7 @@ class StorageCleanup {
       if (match && !owners.has(match[1])) await add(path.join(sharedDir, name), 'Conversation remnants', false, match[1]);
     }
     const indexDir = path.join(sharedDir, '.history-index');
-    for (const name of entries(indexDir)) {
+    if (!attachmentsOnly) for (const name of entries(indexDir)) {
       const match = name.match(/^([a-zA-Z0-9_-]+)\.idx(?:\.[a-f0-9-]{36}\.(?:tmp|\d+\.tool))?$/);
       if (match && !owners.has(match[1])) await add(path.join(indexDir, name), 'History indexes', false, match[1]);
     }
@@ -415,52 +416,66 @@ class StorageCleanup {
       inspect(path.relative(backup.directory, entry.path).replace(/^(?:app|home)[\\/]/, ''));
     const buffer = Buffer.alloc(READ_CHUNK_BYTES);
     const verifiedSources = [];
-    for (const { file, root, json, lines, stat: original } of sources) {
-      await yieldScan();
-      this.verify([{ file, root, stat: original }]);
-      const stat = this.safeStat(file, root);
-      if (!stat?.isFile()) throw new Error('A reference file is missing or unreadable; cleanup was stopped');
-      if (json) {
-        inspect(JSON.stringify(readJson(file, root)));
-      }
-      const descriptor = fs.openSync(file, 'r');
-      try {
-        const decoder = new StringDecoder('utf8');
-        let tail = '', decodedTail = '', decodedBackslash = false, trailingBackslash = false;
-        const scanner = lines && new JsonReferenceScanner((text, first, last) => {
-          if (first) { decodedTail = ''; decodedBackslash = false; }
-          const raw = decodedBackslash ? text.replace(/^\\+/, '') : text;
-          if (text) decodedBackslash = text.endsWith('\\');
-          const source = decodedTail + normalize(raw);
-          inspect(source);
-          decodedTail = !last && overlap ? source.slice(-overlap) : '';
-        });
-        const consume = text => {
-          const raw = trailingBackslash ? text.replace(/^\\+/, '') : text;
-          if (text) trailingBackslash = text.endsWith('\\');
-          const source = tail + normalize(raw);
-          inspect(source);
-          tail = overlap ? source.slice(-overlap) : '';
-          if (scanner) scanner.write(text);
-        };
-        let remaining = stat.size;
-        let processed = 0;
-        while (remaining > 0) {
-          const bytes = fs.readSync(descriptor, buffer, 0, Math.min(buffer.length, remaining), null);
-          if (!bytes) throw new Error('Reference files changed; scan again');
-          consume(decoder.write(buffer.subarray(0, bytes)));
-          remaining -= bytes;
-          processed += bytes;
-          if (processed >= 4 * 1024 * 1024) {
-            processed = 0;
-            await yieldScan();
+    let sharedReferences;
+    try {
+      for (const { file, root, json, lines, stat: original } of sources) {
+        await yieldScan();
+        this.verify([{ file, root, stat: original }]);
+        const stat = this.safeStat(file, root);
+        if (!stat?.isFile()) throw new Error('A reference file is missing or unreadable; cleanup was stopped');
+        if (json) {
+          inspect(JSON.stringify(readJson(file, root)));
+        }
+        const sharedId = attachmentsOnly && lines && root === this.dataDir && path.dirname(file) === sharedDir
+          ? path.basename(file, '.jsonl') : '';
+        if (sharedId && owners.has(sharedId)) {
+          sharedReferences ||= new ConversationHistory(sharedDir);
+          const ids = sharedReferences.referenceIds(sharedId, { existingOnly: true });
+          if (ids) {
+            for (const id of ids) { decodedIds.add(id); inspect(id); }
+            verifiedSources.push({ file, root, stat });
+            continue;
           }
         }
-        consume(decoder.end());
-        if (scanner) scanner.end();
-        verifiedSources.push({ file, root, stat });
-      } finally { fs.closeSync(descriptor); }
-    }
+        const descriptor = fs.openSync(file, 'r');
+        try {
+          const decoder = new StringDecoder('utf8');
+          let tail = '', decodedTail = '', decodedBackslash = false, trailingBackslash = false;
+          const scanner = lines && new JsonReferenceScanner((text, first, last) => {
+            if (first) { decodedTail = ''; decodedBackslash = false; }
+            const raw = decodedBackslash ? text.replace(/^\\+/, '') : text;
+            if (text) decodedBackslash = text.endsWith('\\');
+            const source = decodedTail + normalize(raw);
+            inspect(source);
+            decodedTail = !last && overlap ? source.slice(-overlap) : '';
+          });
+          const consume = text => {
+            const raw = trailingBackslash ? text.replace(/^\\+/, '') : text;
+            if (text) trailingBackslash = text.endsWith('\\');
+            const source = tail + normalize(raw);
+            inspect(source);
+            tail = overlap ? source.slice(-overlap) : '';
+            if (scanner) scanner.write(text);
+          };
+          let remaining = stat.size;
+          let processed = 0;
+          while (remaining > 0) {
+            const bytes = fs.readSync(descriptor, buffer, 0, Math.min(buffer.length, remaining), null);
+            if (!bytes) throw new Error('Reference files changed; scan again');
+            consume(decoder.write(buffer.subarray(0, bytes)));
+            remaining -= bytes;
+            processed += bytes;
+            if (processed >= 4 * 1024 * 1024) {
+              processed = 0;
+              await yieldScan();
+            }
+          }
+          consume(decoder.end());
+          if (scanner) scanner.end();
+          verifiedSources.push({ file, root, stat });
+        } finally { fs.closeSync(descriptor); }
+      }
+    } finally { sharedReferences?.close(); }
     const verification = [...verifiedSources, ...listedDirectories.values(), ...pluginLinkRecords, ...retained.verification];
     this.verify(verification);
     return { candidates: candidates.filter(candidate => !guards.get(candidate)?.some(term => found.has(term)

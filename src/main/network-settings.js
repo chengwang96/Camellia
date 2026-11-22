@@ -63,11 +63,30 @@ async function healthCheck(proxyUrl, { url = 'https://api.github.com', timeout =
   const { direct, proxy } = await probeConnection(probeTarget(url), { proxyUrl, timeout });
   return { direct, proxy };
 }
+function matchingProxyUrl(left, right) {
+  if (!left && !right) return true;
+  try {
+    return new URL(left).href === new URL(right).href;
+  } catch {
+    return String(left || '') === String(right || '');
+  }
+}
+const VERIFY_ENV_KEYS = ['HTTP_PROXY', 'HTTPS_PROXY', 'NO_PROXY', 'CAMELLIA_NETWORK_PROXY',
+  'CAMELLIA_SUBSCRIPTION_PROXY', 'CAMELLIA_NETWORK_MODE', 'CAMELLIA_KIMI_DIRECT',
+  'npm_config_proxy', 'npm_config_https_proxy', 'npm_config_noproxy'];
+function proxyFingerprint(env = {}) {
+  return Object.fromEntries(VERIFY_ENV_KEYS.map(key => [key, String(env[key] || '')]));
+}
+function sameProxyFingerprint(left, right) {
+  return Boolean(left && right) && VERIFY_ENV_KEYS.every(key => left[key] === right[key]);
+}
 function createNetworkSettings({ loadConfig, saveConfig, sessions, applyEnvironment, onHealthChange = () => {}, probeUrl = 'https://chatgpt.com',
   healthCheckImpl = healthCheck, createFallback = require('./network-fallback').createFallbackProxy,
-  loadRoutes = () => ({ providers: [] }), providerTargetsImpl = providerTargets, subscriptionEngines = () => [], configuredSubscriptionEngines = subscriptionEngines, probeImpl = probeTargets }) {
+  loadRoutes = () => ({ providers: [] }), providerTargetsImpl = providerTargets, subscriptionEngines = () => [],
+  configuredSubscriptionEngines = subscriptionEngines, probeImpl = probeTargets, environment = () => process.env }) {
   let detected = { url: '', unsupported: false }, error = '', queue = Promise.resolve(), degraded = false, monitor = null, closed = false;
   let kimiDirect = false;
+  let appliedEnvironment = null;
   const bridges = [];
   // Whether the live transport is the direct-first bridge, or the real system
   // proxy. "Auto" is allowed to fall back to the proxy when direct is blocked,
@@ -199,7 +218,12 @@ function createNetworkSettings({ loadConfig, saveConfig, sessions, applyEnvironm
     // Chromium proxy rules accept scheme://host:port, not a URL path. URL.href
     // adds a trailing slash, which Chromium rejects with ERR_NO_SUPPORTED_PROXIES.
     await sessions().defaultSession.setProxy(url ? { mode: 'fixed_servers', proxyRules: new URL(url).origin, proxyBypassRules: '<local>;localhost;127.0.0.1;[::1]' } : { mode: 'direct' });
-    applyEnvironment(networkEnvironment(process.env, { mode: nextMode === 'prefer-direct' ? 'auto' : nextMode, url, subscriptionProxy, kimiDirect: kimiProxy }));
+    const nextEnvironment = networkEnvironment(environment(), { mode: nextMode === 'prefer-direct' ? 'auto' : nextMode,
+      url, subscriptionProxy, kimiDirect: kimiProxy });
+    applyEnvironment(nextEnvironment);
+    appliedEnvironment = proxyFingerprint(nextEnvironment);
+    // The environment is the cross-runtime contract. Record exactly what was
+    // installed so an external edit can be distinguished from a fresh start.
     saveConfig({ ...(persist ? { network: { mode: requested } } : {}), downloadProxy: { mode: url ? 'proxy' : 'direct', url } });
     schedule(nextMode === 'system' ? 4000 : 60000);
     return state();
@@ -225,13 +249,39 @@ function createNetworkSettings({ loadConfig, saveConfig, sessions, applyEnvironm
     }
     return state();
   }
-  return { state, detect, checkHealth, testConnectivity, close() { closed = true; clearTimeout(monitor); bridges.forEach(bridge => bridge.close()); },
+  function enqueue(run) {
+    const result = queue.then(run, run);
+    queue = result.catch(() => {});
+    return result;
+  }
+  function verify() {
+    const saved = loadConfig().downloadProxy || {};
+    const env = environment() || {};
+    const configuredMode = mode();
+    let expected = saved.mode === 'proxy' ? String(saved.url || '') : '';
+    if (configuredMode === 'direct') expected = '';
+    else if (configuredMode === 'system' && !degraded) expected = detected.url || '';
+    const http = String(env.HTTP_PROXY || '');
+    const https = String(env.HTTPS_PROXY || '');
+    const proxySetting = String(env.CAMELLIA_NETWORK_PROXY || '');
+    const noProxy = String(env.NO_PROXY || env.no_proxy || '');
+    const consistent = matchingProxyUrl(http, expected) && matchingProxyUrl(https, expected)
+      && matchingProxyUrl(proxySetting, expected)
+      && noProxy === (expected ? 'localhost,127.0.0.1,::1' : '*')
+      && sameProxyFingerprint(proxyFingerprint(env), appliedEnvironment);
+    return { consistent, expected, actual: https || http };
+  }
+  return { state, detect, checkHealth, testConnectivity, verify,
+    close() { closed = true; clearTimeout(monitor); bridges.forEach(bridge => bridge.close()); },
     initialize() { return apply(mode(), false, true); },
+    reapply() {
+      if (closed) return Promise.reject(new Error('Network settings are closed'));
+      return enqueue(() => { degraded = false; return apply(mode(), false, true); });
+    },
     save(value) {
       // An explicit choice supersedes an automatic downgrade: the new setting
       // is applied as chosen and the health monitor re-probes it from scratch.
-      const run = () => { degraded = false; return apply(value?.mode, true); };
-      const result = queue.then(run, run); queue = result.catch(() => {}); return result;
+      return enqueue(() => { degraded = false; return apply(value?.mode, true); });
     } };
 }
 module.exports = { detectedProxy, networkEnvironment, subscriptionEnvironment, createNetworkSettings, healthCheck, probeTarget, PROXY_KEYS };

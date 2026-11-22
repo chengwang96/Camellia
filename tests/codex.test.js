@@ -107,6 +107,18 @@ test('large Codex file changes retain one diff on disk and bounded events in liv
   assert.ok(JSON.stringify(session.replayEvents).length < 128 * 1024);
 });
 
+test('large in-progress tool snapshots stay bounded without creating permanent output records', async t => {
+  const { session, events, notify } = await outputFixture(t);
+  const diff = 'PARTIAL_START\n' + '<xml>data</xml>\n'.repeat(100000) + '\nPARTIAL_END';
+  notify('item/started', { item: { type: 'fileChange', id: 'large-running', status: 'in_progress', changes: [{ path: '/work/slide.xml', kind: { type: 'update' }, diff }] } });
+  const event = events.find(row => row.type === 'gui:tool' && row.id === 'large-running');
+  assert.ok(JSON.stringify(event).length < 128 * 1024);
+  assert.equal(event.fullOutput, undefined);
+  assert.equal(session.replayEvents.filter(row => row.type === 'gui:tool').length, 1);
+  assert.equal(fs.existsSync(path.join(session.history.root, 'tool-output')), false);
+  assert.ok(event.output.includes('PARTIAL_START'));
+});
+
 test('a complete tool record storage failure ends its turn and shuts down the native producer', async t => {
   const { session, events, notify } = await outputFixture(t), write = fs.writeFileSync;
   t.mock.method(fs, 'writeFileSync', (file, ...args) => {
@@ -949,12 +961,19 @@ test('Codex API metadata adds native patch support without overriding known mode
   const next = JSON.parse(fs.readFileSync(read().model_catalog_json, 'utf8'));
   assert.ok(next.models.some(m => m.slug === 'deepseek-v4.1-flash'));
   assert.ok(!next.models.some(m => m.slug === 'kimi-k3'));
-  for (const native of ['gpt-6.1-sol', 'gpt-6.1-terra', 'gpt-6-sol', 'gpt-6-luna', 'gpt-5.5', 'openai/gpt-5.5-2026']) {
+  for (const native of ['gpt-6.2-sol', 'gpt-6.1-sol', 'gpt-6.1-terra', 'gpt-6-sol', 'gpt-6-luna', 'gpt-5.5', 'openai/gpt-5.5-2026']) {
     const spec = codexSpawnSpec({ ...options, model: native });
     if (native.startsWith('gpt-6')) {
       assert.equal(spec.model, toolModelId(native));
       const catalog = JSON.parse(fs.readFileSync(read().model_catalog_json, 'utf8'));
-      assert.equal(catalog.models.find(entry => entry.slug === spec.model).shell_type, 'unified_exec');
+      const entry = catalog.models.find(entry => entry.slug === spec.model);
+      assert.equal(entry.shell_type, 'unified_exec');
+      if (native === 'gpt-6.2-sol') {
+        assert.equal(entry.default_reasoning_level, 'low');
+        assert.deepEqual(entry.supported_reasoning_levels.map(level => level.effort), ['low', 'medium', 'high', 'xhigh', 'max', 'ultra']);
+        assert.equal(entry.context_window, 872000);
+        assert.equal(entry.max_context_window, 872000);
+      }
     } else {
       assert.equal(spec.model, native);
       assert.equal(read().model_catalog_json, undefined);
@@ -991,6 +1010,8 @@ test('Codex API window ignores an accepted lower bound but honors explicit route
     ...provisional.routes, { source: 'confirmed-upper-bound', cap: 65536 },
   ] }), 65536);
   assert.equal(apiContextWindow('gpt-6-sol', { routes: [{ source: 'configured', cap: 128000 }] }), 128000);
+  assert.equal(apiContextWindow('gpt-6.2-sol'), 872000);
+  assert.equal(apiContextWindow('gpt-6.2-sol', { routes: [{ source: 'configured', cap: 872000 }] }), 872000);
 });
 
 test('shutting down a Codex process settles even when a helper keeps its stdio open', async t => {

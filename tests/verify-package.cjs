@@ -44,6 +44,11 @@ if (isMac) {
   const tailnetHeader = fs.readFileSync(tailnetHelper);
   assert.equal(tailnetHeader.readUInt32LE(0), 0xfeedfacf, 'Embedded-network helper is a Mach-O executable');
   assert.equal(tailnetHeader.readUInt32LE(4), 0x0100000c, 'Embedded-network helper targets Apple Silicon');
+  const guardHelper = path.join(resources, 'runtime/camellia-remote-guard');
+  assert.ok(fs.statSync(guardHelper).mode & 0o111, 'Missing executable remote guard helper');
+  const guardHeader = fs.readFileSync(guardHelper);
+  assert.equal(guardHeader.readUInt32LE(0), 0xfeedfacf, 'Remote guard helper is a Mach-O executable');
+  assert.equal(guardHeader.readUInt32LE(4), 0x0100000c, 'Remote guard helper targets Apple Silicon');
 }
 assert.equal(runtimeInfo.platform, isMac ? 'darwin' : 'win32');
 assert.equal(runtimeInfo.arch, isMac ? 'arm64' : 'x64');
@@ -66,6 +71,13 @@ const tailnetInfo = JSON.parse(fs.readFileSync(path.join(resources, 'runtime/tai
 assert.equal(tailnetInfo.platform, runtimeInfo.platform);
 assert.equal(tailnetInfo.arch, runtimeInfo.arch);
 assert.equal(tailnetInfo.tailscale, 'v1.104.7');
+for (const file of [isMac ? 'camellia-remote-guard' : 'camellia-remote-guard.exe',
+  'remote-guard-version.json', 'REMOTE-GUARD-NOTICES.txt']) {
+  assert.ok(fs.existsSync(path.join(resources, 'runtime', file)), 'Missing remote guard asset: ' + file);
+}
+const guardInfo = JSON.parse(fs.readFileSync(path.join(resources, 'runtime/remote-guard-version.json')));
+assert.deepEqual(guardInfo, { protocol: 1, platform: runtimeInfo.platform, arch: runtimeInfo.arch });
+assert.match(fs.readFileSync(path.join(resources, 'runtime/REMOTE-GUARD-NOTICES.txt'), 'utf8'), /Go runtime and standard library:/);
 assert.ok(asar.listPackage(archive).some(file => file.includes('smol-toml')));
 
 const sdkDir = path.join(resources, 'runtimes/antigravity');

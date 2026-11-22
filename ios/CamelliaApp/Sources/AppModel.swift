@@ -408,9 +408,8 @@ final class AppModel: ObservableObject {
         if enabled { UINotificationFeedbackGenerator().notificationOccurred(.success) }
     }
 
-    func clearDownloadDirectory() {
-        preferences.downloadDirectoryBookmark = nil
-        preferences.downloadDirectoryLabel = ""
+    func setAskDownloadLocationEachTime(_ enabled: Bool) {
+        preferences.askDownloadLocationEachTime = enabled
         objectWillChange.send()
     }
 

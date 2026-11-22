@@ -7,7 +7,7 @@ const { createTailnetUpdates } = require('./tailnet-updates');
 
 function createRemoteDesktop({ app, BrowserWindow, ipcMain, nativeTheme, windowChrome, manager, rendererRoot, loadConfig, getSettingsWindow = () => null, getMainWindow = () => null, networkFactory, apiRoutes = null, getDiscussions = null,
   computerName = () => '', saveComputerName = () => {}, networkHostname, downloadConnection, createUpdates = createTailnetUpdates, assertTailnetUpdateAllowed = () => {},
-  prepareRestart = async () => {}, accountUsage = null, log = () => {} }) {
+  prepareRestart = async () => {}, accountUsage = null, guard = null, log = () => {} }) {
   let window = null, tailnetOperation = false;
   const updates = createUpdates({ bundle: bundleDirectory(app), dataDir: app.getPath('userData'), connection: downloadConnection });
   const updatingTailnet = () => tailnetOperation;
@@ -19,7 +19,7 @@ function createRemoteDesktop({ app, BrowserWindow, ipcMain, nativeTheme, windowC
   };
   const desktopRestart = require('./desktop-restart').createDesktopRestart({ file: path.join(app.getPath('userData'), 'remote', 'desktop-restarts.json'),
     prepare: prepareRestart, restart: () => { app.relaunch(); app.quit(); }, log });
-  const service = createRemoteService({ dataDir: app.getPath('userData'), manager, apiRoutes, setComputerName, getDiscussions, desktopRestart, accountUsage, log,
+  const service = createRemoteService({ dataDir: app.getPath('userData'), manager, apiRoutes, setComputerName, getDiscussions, desktopRestart, accountUsage, guard, log,
     safeStorage: require('electron').safeStorage, openExternal: url => require('electron').shell.openExternal(url),
     preferences: () => ({ closeToTray: loadConfig().closeToTray === true, theme: loadConfig().theme || 'system', language: loadConfig().language || 'zh-CN',
       computerName: computerName() }),

@@ -131,7 +131,7 @@ with sync_playwright() as playwright:
         page.wait_for_timeout(100)
         tail = page.evaluate("""() => {
           const scroller = document.querySelector('.scroll-content');
-          const lastCard = document.querySelector('#mobilePage > .advanced-settings');
+          const lastCard = document.querySelector('#mobilePage .tailscale-settings-group');
           return {
             atEnd: scroller.scrollTop === scroller.scrollHeight - scroller.clientHeight,
             cardBottom: lastCard.getBoundingClientRect().bottom,

@@ -199,13 +199,7 @@ public class TabletDestinationsTest extends InstrumentationTestCase {
             assertTrue(bounds(find("tabletConnectionMethodLabel")).bottom <= bounds(find("tabletConnectionPathLabel")).top);
             assertTrue(bounds(find("tabletConnectionPathLabel")).bottom <= bounds(find("tabletComputerPermissionLabel")).top);
         }
-        if (bounds(find("tabletComputerUsageTitle")).top == bounds(find("tabletComputerRenameTitle")).top) {
-            assertSameBaseline("tabletComputerUsageTitle", "tabletComputerRenameTitle");
-            assertSameBaseline("tabletComputerUsageDescription", "tabletComputerRenameDescription");
-            assertEquals(find("tabletComputerUsage").getHeight(), find("tabletComputerRename").getHeight());
-        } else {
-            assertTrue(bounds(find("tabletComputerUsageDescription")).bottom < bounds(find("tabletComputerRenameTitle")).top);
-        }
+        assertTrue(bounds(find("tabletComputerRenameTitle")).bottom <= bounds(find("tabletComputerRenameDescription")).top);
         ui(() -> find("tabletComputerMore").performClick());
         assertTrue(find("tabletComputerRestart").isEnabled());
         capture("native-computers-expanded");
@@ -223,7 +217,7 @@ public class TabletDestinationsTest extends InstrumentationTestCase {
         String longName = "Research workstation with an exceptionally long display name";
         new ComputerStore(new CredentialStore(activity)).save(computer(HP, longName));
         ui(() -> { set("tabletComputerAddress", HP); invoke("computersScreen"); });
-        for (String tag : new String[]{"tabletComputerUsageTitle", "tabletComputerRenameTitle"}) {
+        for (String tag : new String[]{"tabletComputerRenameTitle"}) {
             TextView title = (TextView) find(tag); assertNotNull(title.getLayout());
             assertEquals("Primary action title must remain readable: " + title.getText(), 0, title.getLayout().getEllipsisCount(0));
             assertTrue("Action text must fit vertically", title.getHeight() >= title.getLayout().getHeight());
@@ -233,9 +227,8 @@ public class TabletDestinationsTest extends InstrumentationTestCase {
             TextView value = (TextView) find(tag);
             assertEquals("Connection values must not break inside a single word: " + value.getText(), 1, value.getLineCount());
         }
-        View usage = find("tabletComputerUsage"), rename = find("tabletComputerRename");
-        if (usage.getLeft() == rename.getLeft()) assertTrue("Stacked actions must not overlap", rename.getTop() >= usage.getBottom());
-        else assertTrue("Peer actions must not overlap", rename.getLeft() >= usage.getRight());
+        View rename = find("tabletComputerRename");
+        assertTrue("The display-name action must remain visible", rename.getWidth() > 0 && rename.getHeight() > 0);
         capture("native-computer-compact-audit");
     }
 
