@@ -328,3 +328,19 @@ test('too many groups or directory entries cannot be written or silently omitted
   for (let i = LIMITS.records; i <= LIMITS.directoryEntries; i++) fs.writeFileSync(path.join(h.dir, 'orphan-' + i + '.tmp'), '');
   assert.throws(() => h.store.list(), /directory entries/);
 });
+
+test('unchanged discussion manifests reuse their decoded snapshot until a commit', t => {
+  const h = setup(t), file = h.store.file(h.group.id);
+  h.store.read(h.group.id);
+  const open = fs.openSync, calls = [];
+  t.mock.method(fs, 'openSync', (target, ...args) => {
+    if (target === file) calls.push(target);
+    return open(target, ...args);
+  });
+  const cached = h.store.read(h.group.id);
+  assert.equal(calls.length, 0);
+  h.manager.rename(h.group.id, 'Updated title');
+  const fresh = h.store.read(h.group.id);
+  assert.equal(calls.length, 1);
+  assert.notEqual(cached.title, fresh.title);
+});

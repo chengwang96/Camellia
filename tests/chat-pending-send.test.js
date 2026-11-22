@@ -53,6 +53,7 @@ function fixture() {
     extract('  function saveMessageQueue(', "  window.addEventListener('beforeunload'"),
     extract('  function canQueueComposerMessage()', '  function drainMessageQueue()'),
     extract('  function conversationBusy()', '  function canChangeContext()'),
+    extract('  function updatePendingSendStops()', '  function reopenMessageEditor('),
     extract('  function updateSendEnabled()', '  async function steerQueuedMessage('),
     extract('  async function steerQueuedMessage(', '  async function send('),
     extract('  function takePendingSendBubble(', '  function pendingSendCommitted('),
@@ -149,6 +150,26 @@ test('a failed send preparation pauses a queue added during compaction', async (
   assert.equal(harness.drafts.get('queue-paused:conversation-a'), true);
   assert.deepEqual(JSON.parse(JSON.stringify(state.messageQueue)), [{ text: 'After compaction', attachments: [] }]);
   assert.equal(harness.requests.length, 1);
+});
+
+test('composer stop hides the duplicate pending-send stop until a draft changes it to queue', () => {
+  const { state } = fixture();
+  const stop = { hidden: false };
+  state.chat.querySelectorAll = selector => selector === '.pending-send button' ? [stop] : [];
+  state.pendingConversationSends.set(state.context.sessionId, {});
+  state.input.value = '';
+  state.updateSendEnabled();
+  assert.equal(state.sendBtn.dataset.action, 'stop');
+  assert.equal(state.sendBtn.disabled, false);
+  assert.equal(stop.hidden, true);
+  state.input.value = 'Unsent next message';
+  state.updateSendEnabled();
+  assert.equal(state.sendBtn.dataset.action, 'queue');
+  assert.equal(stop.hidden, false);
+  state.input.value = '';
+  state.updateSendEnabled();
+  assert.equal(state.sendBtn.dataset.action, 'stop');
+  assert.equal(stop.hidden, true);
 });
 
 test('returning during pending compaction cannot dispatch a duplicate and can stop without a stale run ID', async () => {

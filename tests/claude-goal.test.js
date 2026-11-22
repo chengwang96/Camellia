@@ -130,6 +130,34 @@ test('goals continue past the former 10, 25 and 50 turn limits and finish only o
   assert.equal(h.timers.size, 0);
 });
 
+test('pausing or clearing during asynchronous session creation cannot start a late goal turn', async t => {
+  for (const action of ['pause', 'clear']) {
+    let release;
+    const h = setup(t, { ensureSession: () => new Promise(resolve => { release = resolve; }) });
+    h.goal.start({ objective: 'Finish' });
+    const pending = h.goal.drive();
+    if (action === 'pause') h.goal.setPhase('paused'); else h.goal.clear();
+    release(h.session);
+    assert.equal(await pending, false);
+    assert.equal(h.prompts.length, 0);
+    if (action === 'pause') {
+      assert.equal(h.goal.view().phase, 'paused'); assert.equal(h.goal.view().roundsStarted, 0);
+    } else assert.equal(h.goal.view(), null);
+  }
+});
+
+test('a late session creation failure cannot block a replacement goal', async t => {
+  let reject;
+  const h = setup(t, { ensureSession: () => new Promise((_, fail) => { reject = fail; }) });
+  h.goal.start({ objective: 'Original' });
+  const pending = h.goal.drive();
+  h.goal.clear(); h.goal.start({ objective: 'Replacement' });
+  reject(new Error('Late startup failure'));
+  assert.equal(await pending, false);
+  assert.equal(h.goal.view().objective, 'Replacement'); assert.equal(h.goal.view().phase, 'active');
+  assert.equal(h.prompts.length, 0);
+});
+
 test('pausing before init retains the goal conversation without scheduling another round', t => {
   const h = setup(t);
   h.goal.start({ objective: 'Finish' }); h.tick(); h.goal.setPhase('paused');

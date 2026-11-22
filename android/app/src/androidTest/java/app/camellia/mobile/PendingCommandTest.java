@@ -21,19 +21,24 @@ public class PendingCommandTest extends InstrumentationTestCase {
         var context = getInstrumentation().getTargetContext();
         EmbeddedNetwork.initialize(context);
         EmbeddedNetwork.setEnabled(false);
-        CredentialStore encrypted = new CredentialStore(context);
+        CredentialStore encrypted = new CredentialStore(context, "pending-command-test");
         encrypted.clear();
         String id = "12345678-1234-1234-1234-123456789abc";
         JSONObject payload = new JSONObject().put("action", "send").put("requestId", java.util.UUID.randomUUID().toString())
             .put("instanceId", "fixture").put("expectedSeq", 3).put("prompt", "Keep this message");
-        new ComputerStore(encrypted).save(new JSONObject().put("address", "http://100.80.1.2:43127").put("token", "a".repeat(43))
-            .put("pendingCommand", new JSONObject().put("conversationId", id).put("payload", payload)));
+        JSONObject profile = new JSONObject().put("address", "http://100.80.1.2:43127").put("token", "a".repeat(43))
+            .put("pendingCommand", new JSONObject().put("conversationId", id).put("payload", payload));
+        new ComputerStore(encrypted).save(profile);
         MainActivity activity = (MainActivity) getInstrumentation().startActivitySync(new Intent(context, MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
         CountDownLatch release = new CountDownLatch(1);
         try {
             getInstrumentation().waitForIdleSync();
             getInstrumentation().runOnMainSync(() -> {
                 try {
+                    var store = MainActivity.class.getDeclaredField("store");
+                    store.setAccessible(true); store.set(activity, new ComputerStore(encrypted));
+                    var credentials = MainActivity.class.getDeclaredField("credentials");
+                    credentials.setAccessible(true); credentials.set(activity, profile);
                     var conversation = MainActivity.class.getDeclaredField("conversationId"); conversation.setAccessible(true); conversation.set(activity, id);
                     var detail = MainActivity.class.getDeclaredMethod("detailScreen"); detail.setAccessible(true); detail.invoke(activity);
                     assertEquals("", ((EditText) field(activity, "composer")).getText().toString());

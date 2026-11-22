@@ -29,6 +29,41 @@ test('settings reads one config snapshot per request and observes later disk cha
   } finally { fs.readFileSync = read; harness.cleanup(); }
 });
 
+test('detailed logging defaults off, applies immediately, persists and validates boolean values', async () => {
+  const first = createHarness();
+  let reopened;
+  try {
+    assert.equal(first.call('workbench-settings').verboseLogging, false);
+    const records = [];
+    first.api.getLogWriter().write = message => records.push(message);
+    first.api.log('ordinary error');
+    first.api.log.verbose('PRIVATE_PROMPT must not be written while disabled');
+    assert.deepEqual(records, ['ordinary error']);
+    assert.equal(first.call('workbench-save-settings', { verboseLogging: true }).ok, true);
+    assert.equal(first.call('workbench-settings').verboseLogging, true);
+    first.api.log.verbose('runtime durationMs=12 status=success');
+    assert.deepEqual(records.at(-1), '[verbose] runtime durationMs=12 status=success');
+    assert.equal(first.call('workbench-save-settings', { theme: 'dark' }).ok, true);
+    assert.equal(first.call('workbench-settings').verboseLogging, true, 'unrelated saves preserve the setting');
+    for (const verboseLogging of [null, 'yes', 1, {}, []]) {
+      assert.equal(first.call('workbench-save-settings', { verboseLogging }).ok, false);
+      assert.equal(first.call('workbench-settings').verboseLogging, true);
+    }
+    first.api.log.verbose('event before restart');
+    reopened = createHarness(first.root);
+    assert.equal(reopened.call('workbench-settings').verboseLogging, true);
+    assert.equal(reopened.call('workbench-save-settings', { verboseLogging: false }).ok, true);
+    assert.equal(first.call('workbench-settings').verboseLogging, false);
+    first.api.log.verbose('must stop immediately after disabling');
+    assert.equal(records.some(line => line.includes('must stop immediately')), false);
+    assert.equal(records.some(line => line.includes('PRIVATE_PROMPT')), false);
+  } finally {
+    reopened?.cleanup();
+    await first.api.getLogWriter().close();
+    first.cleanup();
+  }
+});
+
 test('shared skills preference persists and updates the portable bridge at runtime', () => {
   const first = createHarness();
   try {
@@ -141,7 +176,8 @@ test('data directory, transfer and cleanup controls live only on the data page',
   const general = html.slice(html.indexOf('<section id="generalPage"'), html.indexOf('<section id="dataPage"'));
   const data = html.slice(html.indexOf('<section id="dataPage"'), html.indexOf('<section id="modelsPage"'));
   const archived = html.slice(html.indexOf('<section id="archivedPage"'), html.indexOf('<section id="mobilePage"'));
-  for (const id of ['dataPath', 'migrateDataDirectory', 'openLogs', 'exportData', 'importData', 'storageSection', 'scanStorage', 'cleanStorage']) {
+  for (const id of ['dataPath', 'migrateDataDirectory', 'openLogs', 'verboseLoggingSection', 'verboseLogging', 'verboseLoggingStatus',
+    'exportData', 'importData', 'storageSection', 'scanStorage', 'cleanStorage']) {
     assert.ok(data.includes(`id="${id}"`), id + ' belongs to Data & backups');
     assert.ok(!general.includes(`id="${id}"`), id + ' does not belong to General');
     assert.ok(!archived.includes(`id="${id}"`), id + ' does not belong to Archived');

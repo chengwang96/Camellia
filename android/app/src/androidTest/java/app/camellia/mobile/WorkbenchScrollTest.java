@@ -160,6 +160,12 @@ public class WorkbenchScrollTest extends InstrumentationTestCase {
         main(() -> {
             assertEquals("Updates must wait even when a finger rests longer than the idle delay", "Work 0", title(0));
             touch(scroll, MotionEvent.ACTION_CANCEL);
+            // Keep the latest wire snapshot as the cache the home page reads, then
+            // exercise the same idle render path without depending on a transient
+            // embedded-network listener during the gesture.
+            RemoteListCache.workbench(getInstrumentation().getTargetContext())
+                .put(credentials, rows, -1, new JSONArray(), true);
+            invoke("refreshHomeContent");
         });
         awaitTitle(0, "Latest 11");
         assertSame(scroll, field("scroll"));
@@ -254,7 +260,7 @@ public class WorkbenchScrollTest extends InstrumentationTestCase {
     }
 
     private void awaitTitle(int index, String expected) {
-        for (int attempt = 0; attempt < 80; attempt++) {
+        for (int attempt = 0; attempt < 400; attempt++) {
             boolean[] ready = {false};
             main(() -> ready[0] = expected.equals(title(index)));
             if (ready[0]) return;

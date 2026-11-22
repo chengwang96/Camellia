@@ -2,21 +2,22 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
-const { spawn, execFileSync } = require('node:child_process');
+const { spawn, execFile } = require('node:child_process');
 const { readJson, writeJson } = require('../../shared/json-store');
 const { setTimeout: delay } = require('node:timers/promises');
 const { clearGoogleCredentials } = require('./credentials');
 const { headlessEnvironment, cliNetworkError, cliAuthenticationError, describeCliFailure } = require('./cli-auth.cjs');
+const { locateRuntime } = require('../../main/runtime-manager');
 
 // A blank proxy setting means "use the Windows system proxy", so Google
 // sign-in also works on networks where oauth2.googleapis.com is unreachable
-// directly. Returns '' on other platforms or when no system proxy is enabled.
-function systemProxy() {
+// directly. Resolves to '' on other platforms or when no system proxy is enabled.
+async function systemProxy() {
   if (process.platform !== 'win32') return '';
   try {
     const reg = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32/reg.exe');
-    const out = execFileSync(reg, ['query', 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings'],
-      { encoding: 'utf8', windowsHide: true, timeout: 5000 });
+    const out = await new Promise((resolve, reject) => execFile(reg, ['query', 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings'],
+      { encoding: 'utf8', windowsHide: true, timeout: 5000 }, (error, stdout, stderr) => error ? reject(error) : resolve(`${stdout || ''}\n${stderr || ''}`)));
     if (!/ProxyEnable\s+REG_DWORD\s+0x1\b/i.test(out)) return '';
     const server = (out.match(/ProxyServer\s+REG_SZ\s+(\S+)/i) || [])[1] || '';
     if (!server) return '';
@@ -37,7 +38,7 @@ function subscriptionEnvironment(env, proxyUrl = '') {
   const managedNetwork = env.CAMELLIA_NETWORK_MODE !== undefined;
   const proxy = managedNetwork
     ? (env.CAMELLIA_SUBSCRIPTION_PROXY ?? env.CAMELLIA_NETWORK_PROXY ?? '')
-    : proxyUrl || systemProxy();
+    : proxyUrl || '';
   if (managedNetwork || proxy) {
     for (const key of Object.keys(next)) if (/^(https?_proxy|all_proxy|no_proxy)$/i.test(key)) delete next[key];
     Object.assign(next, { HTTP_PROXY: proxy, HTTPS_PROXY: proxy, ALL_PROXY: '', NO_PROXY: proxy ? 'localhost,127.0.0.1,::1' : '*' });
@@ -144,9 +145,9 @@ function abortable(promise, signal) {
   });
 }
 
-function stopCli(proc) {
+async function stopCli(proc) {
   if (process.platform === 'win32' && proc.pid) {
-    try { execFileSync('taskkill.exe', ['/pid', String(proc.pid), '/t', '/f'], { windowsHide: true, timeout: 5000, stdio: 'ignore' }); return; }
+    try { await new Promise(resolve => execFile('taskkill.exe', ['/pid', String(proc.pid), '/t', '/f'], { windowsHide: true, timeout: 5000, stdio: 'ignore' }, () => resolve())); return; }
     catch { /* The process may already have exited. */ }
   }
   proc.kill();
@@ -157,10 +158,10 @@ function runCli(file, args, { env, cwd, timeout = 45000, signal }) {
   return new Promise((resolve, reject) => {
     const proc = spawn(file, args, { env, cwd, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
     let output = '', errors = '';
-    const abort = () => { clearTimeout(timer); stopCli(proc); reject(signal.reason); };
+    const abort = () => { clearTimeout(timer); void stopCli(proc); reject(signal.reason); };
     signal?.addEventListener('abort', abort, { once: true });
     const timer = setTimeout(() => {
-      stopCli(proc);
+      void stopCli(proc);
       const error = new Error('Google account check timed out. Check the network connection and retry.');
       // A stalled run is the signature of the CLI waiting on its own sign-in
       // page, so callers must not launch it again.
@@ -257,7 +258,7 @@ function requireGoogleProvider(settingsFile) {
 
 function loginScript(file, { platform, exe, proxyUrl = '', networkMode }) {
   const quote = value => platform === 'win32' ? "'" + value.replace(/'/g, "''") + "'" : "'" + value.replace(/'/g, "'\\''") + "'";
-  const effective = networkMode ? proxyUrl : proxyUrl || systemProxy();
+  const effective = networkMode ? proxyUrl : proxyUrl || '';
   const proxy = effective ? { HTTP_PROXY: effective, HTTPS_PROXY: effective, ALL_PROXY: '', NO_PROXY: 'localhost,127.0.0.1,::1' }
     : networkMode ? { HTTP_PROXY: '', HTTPS_PROXY: '', ALL_PROXY: '', NO_PROXY: '*' } : {};
   const lines = platform === 'win32'
@@ -325,13 +326,13 @@ function createGoogleAccount({ home, cliSettingsFile, runtime, environment, sett
     const request = Promise.resolve().then(async () => {
       const checkedAt = new Date(now()).toISOString();
       try {
-        const found = runtime().locate('antigravity', 'subscription');
+        const found = await locateRuntime(runtime(), 'antigravity', 'subscription');
         if (!found) throw new Error('Download the Antigravity Google subscription runtime first.');
         requireGoogleProvider(cliSettingsFile);
         fs.mkdirSync(home, { recursive: true });
         // The structured command response never starts an agent turn.
         controller.signal.throwIfAborted();
-        const output = await runCliWithRetry(run, found.file, ['-p', '/quota', '--output-format', 'json'], { env: headlessEnvironment(subscriptionEnvironment(environment(), settings().proxyUrl)), cwd: home, signal: controller.signal }, { sleep });
+        const output = await runCliWithRetry(run, found.file, ['-p', '/quota', '--output-format', 'json'], { env: headlessEnvironment(subscriptionEnvironment(environment(), settings().proxyUrl || await systemProxy())), cwd: home, signal: controller.signal }, { sleep });
         const result = parseGoogleQuota(output);
         if (version !== accountVersion) return;
         const latest = { ...result, at: checkedAt }, previous = readUsage();
@@ -366,10 +367,10 @@ function createGoogleAccount({ home, cliSettingsFile, runtime, environment, sett
     checks.add(controller);
     fs.mkdirSync(home, { recursive: true });
     try {
-      const found = runtime().locate('antigravity', 'subscription');
+      const found = await locateRuntime(runtime(), 'antigravity', 'subscription');
       if (!found) throw new Error('Download the Antigravity Google subscription runtime first.');
       requireGoogleProvider(cliSettingsFile);
-      const output = await runCliWithRetry(run, found.file, ['models'], { env: headlessEnvironment(subscriptionEnvironment(environment(), settings().proxyUrl)), cwd: home, signal: controller.signal }, { sleep });
+      const output = await runCliWithRetry(run, found.file, ['models'], { env: headlessEnvironment(subscriptionEnvironment(environment(), settings().proxyUrl || await systemProxy())), cwd: home, signal: controller.signal }, { sleep });
       if (version !== accountVersion) return state();
       const models = groupModels(parseModels(output));
       if (!models.length) {
@@ -422,9 +423,9 @@ function createGoogleAccount({ home, cliSettingsFile, runtime, environment, sett
       const file = path.join(home, process.platform === 'win32' ? 'google-sign-in.ps1' : 'google-sign-in.command');
       const env = environment();
       loginScript(file, { platform: process.platform, exe: found.file,
-        proxyUrl: env.CAMELLIA_NETWORK_MODE ? env.CAMELLIA_SUBSCRIPTION_PROXY ?? env.CAMELLIA_NETWORK_PROXY : settings().proxyUrl,
+        proxyUrl: env.CAMELLIA_NETWORK_MODE ? env.CAMELLIA_SUBSCRIPTION_PROXY ?? env.CAMELLIA_NETWORK_PROXY : settings().proxyUrl || await systemProxy(),
         networkMode: env.CAMELLIA_NETWORK_MODE });
-      await abortable(openLogin(file, subscriptionEnvironment(environment(), settings().proxyUrl)), controller.signal);
+      await abortable(openLogin(file, subscriptionEnvironment(environment(), settings().proxyUrl || await systemProxy())), controller.signal);
       // A new CLI sign-in can select a different account. Neither saved quota
       // nor an in-flight response from the old sign-in belongs to that account.
       if (version !== accountVersion) return { canceled: true };

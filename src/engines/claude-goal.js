@@ -230,9 +230,22 @@ class ClaudeGoal {
       return false;
     }
     if (instruction) this.cancelVerification();
-    let session;
-    try { session = this.ensureSession({ sessionId: this.goal.sessionId, workspaceId: this.goal.workspaceId }); }
+    const expected = this.goal;
+    let created;
+    try { created = this.ensureSession({ sessionId: this.goal.sessionId, workspaceId: this.goal.workspaceId }); }
     catch (err) { this.block('workspace-unavailable', err.message); return; }
+    if (created && typeof created.then === 'function') {
+      return Promise.resolve(created).then(session => this.driveWithSession(session, instruction, expected), err => {
+        if (this.armed && this.goal === expected && this.goal?.phase === 'active') this.block('workspace-unavailable', err.message);
+        if (instruction) throw err;
+        return false;
+      });
+    }
+    return this.driveWithSession(created, instruction, expected);
+  }
+
+  driveWithSession(session, instruction, expected) {
+    if (!this.armed || this.goal !== expected || this.goal?.phase !== 'active' || this.getSession()?.running) return false;
     if (!this.touch({ roundsStarted: this.goal.roundsStarted + 1, waiting: null,
       ...(instruction ? { verifying: null, waitStreak: 0, lastWait: null } : {}) })) return false;
     this.owner = { goalId: this.goal.id, gen: session.gen };

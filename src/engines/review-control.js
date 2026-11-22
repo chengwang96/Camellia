@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 const { createHash, randomUUID } = require('node:crypto');
+const { runReviewJob } = require('./review-worker');
 
 const MAX_DIFF_CHARS = 120000;
 const MAX_FILE_CHARS = 40000;
@@ -271,6 +272,7 @@ class ReviewController {
     this.items = new Map();
     this.jobs = new Map();
     this.timers = new Map();
+    this.pendingSnapshots = new Map();
     fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
     this.snapshotRoot = path.join(dir, 'snapshots');
     removeSnapshot(this.snapshotRoot);
@@ -441,11 +443,11 @@ class ReviewController {
     };
   }
 
-  context(parentId) {
+  async context(parentId) {
     const parent = this.manager.get(parentId);
     const options = this.options(parentId);
     let summary;
-    try { summary = changeSummary(parent.cwd); }
+    try { summary = await runReviewJob('summary', { cwd: parent.cwd }); }
     catch (error) { return { ok: true, reviewable: false, changedFiles: 0, files: [],
       reason: error.message, error: error.message, options }; }
     const available = options.engines.filter(engine => engine.available && engine.engine !== parent.currentEngine);
@@ -458,8 +460,8 @@ class ReviewController {
       availableEngines: available.length, reason, options };
   }
 
-  hasChanges(parentId) {
-    try { return changeSummary(this.manager.get(parentId).cwd).count > 0; }
+  async hasChanges(parentId) {
+    try { return (await runReviewJob('summary', { cwd: this.manager.get(parentId).cwd })).count > 0; }
     catch { return false; }
   }
 
@@ -502,7 +504,7 @@ class ReviewController {
     return Promise.reject(new Error('Review is not running in this process'));
   }
 
-  async start(parentId, payload = {}, { target: capturedTarget } = {}) {
+  async start(parentId, payload = {}, { target: capturedTarget, signal = null } = {}) {
     const parent = this.manager.get(parentId);
     if (this.manager.busy(parent.id) && payload.viaAgent !== true && payload.allowWhileBusy !== true)
       throw new Error('Wait for the author turn to finish before starting a manual review');
@@ -537,9 +539,23 @@ class ReviewController {
       throw new Error('This conversation already has two active reviews');
     if (active.length >= MAX_ACTIVE_REVIEWS)
       throw new Error('Camellia already has four active reviews');
-    const target = capturedTarget || captureTarget(parent.cwd, { base, includeUntracked });
-    if (!target.status.length) throw new Error('There are no reviewable changes in the workspace');
-    const id = randomUUID();
+    const id = randomUUID(), preparation = new AbortController();
+    const abort = () => preparation.abort();
+    this.pendingSnapshots.set(id, preparation);
+    signal?.addEventListener('abort', abort, { once: true });
+    let target, snapshot;
+    try {
+      target = capturedTarget || await runReviewJob('capture', { cwd: parent.cwd, options: { base, includeUntracked } }, preparation.signal);
+      if (!target.status.length) throw new Error('There are no reviewable changes in the workspace');
+      snapshot = await runReviewJob('snapshot', { cwd: target.cwd, destination: path.join(this.snapshotRoot, id, 'workspace') }, preparation.signal);
+    } catch (error) {
+      try { await fs.promises.rm(path.join(this.snapshotRoot, id), { recursive: true, force: true }); }
+      catch (cleanupError) { this.log('Review preparation cleanup failed: ' + cleanupError.message); }
+      throw error;
+    } finally {
+      signal?.removeEventListener('abort', abort);
+      this.pendingSnapshots.delete(id);
+    }
     const settings = { ...this.manager.settings(reviewerEngine) };
     if (payload.model) settings.model = payload.model;
     if (payload.thinking !== undefined) settings.thinkingBudget = payload.thinking;
@@ -547,7 +563,6 @@ class ReviewController {
     const skill = this.skills.load(reviewSkillName(mode));
     if (reviewerEngine === 'antigravity' && settings.connection === 'subscription')
       throw new Error('Antigravity subscription cannot run a tool-backed review');
-    const snapshot = createWorkspaceSnapshot(target.cwd, path.join(this.snapshotRoot, id, 'workspace'));
     let child;
     try {
       child = this.manager.create(reviewerEngine, null, 'Review: ' + parent.title, snapshot.directory);
@@ -629,8 +644,8 @@ class ReviewController {
     const child = this.manager.get(childId);
     let stale = false;
     try {
-      const current = captureTarget(review.target.cwd, { base: review.target.base || '',
-        includeUntracked: true });
+      const current = await runReviewJob('capture', { cwd: review.target.cwd,
+        options: { base: review.target.base || '', includeUntracked: true } });
       stale = current.targetHash !== review.target.targetHash;
     } catch { /* The reviewer report remains bounded if the workspace is no longer readable. */ }
     let report = review.report;
@@ -743,7 +758,7 @@ class ReviewController {
     } catch (error) { this.log('Review gate event failed: ' + error.message); }
   }
 
-  gate(parentId, options = {}) {
+  async gate(parentId, options = {}) {
     const policy = this.settings(parentId);
     if (!policy.gate) return Promise.resolve({ ok: true, passed: true, skipped: true });
     const parent = this.manager.get(parentId);
@@ -761,7 +776,7 @@ class ReviewController {
     }
     const gateState = parent.reviewGateState;
     let target;
-    try { target = captureTarget(parent.cwd, { includeUntracked: true }); }
+    try { target = await runReviewJob('capture', { cwd: parent.cwd, options: { includeUntracked: true } }); }
     catch (error) { return Promise.resolve(this.gateFailure(null, error.message)); }
     const related = [...this.items.values()]
       .filter(item => item.parentConversationId === parentId && item.target.targetHash === target.targetHash)
@@ -844,6 +859,8 @@ class ReviewController {
   }
 
   async cancel(reviewId) {
+    const pending = this.pendingSnapshots.get(reviewId);
+    if (pending) { pending.abort(); return { ok: true, cancelled: true }; }
     const review = this.get(reviewId);
     if (!TERMINAL_STATUSES.has(review.status)) {
       try { await this.manager.cancel({ sessionId: review.childConversationId }); } catch { /* preserve state */ }
@@ -862,5 +879,5 @@ function createReviewController(options) {
   return new ReviewController(options);
 }
 
-module.exports = { MAX_DIFF_CHARS, captureTarget, createWorkspaceSnapshot, reviewPermission, reviewSkillName, reviewPrompt,
+module.exports = { MAX_DIFF_CHARS, captureTarget, createWorkspaceSnapshot, changeSummary, reviewPermission, reviewSkillName, reviewPrompt,
   normalizeReport, ReviewController, createReviewController };

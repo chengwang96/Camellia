@@ -135,6 +135,7 @@
     </section>
     <section id="dataPage" class="page" hidden>
       <div class="setting-row app-update" id="dataDirectorySection"><div><h2 data-i18n>Local data</h2><p class="hint" id="dataPath"></p><p class="hint" id="dataDirectoryStatus" role="status" aria-live="polite" hidden></p></div><div class="app-update-actions"><button id="migrateDataDirectory" hidden data-i18n>Move to camellia folder</button><button id="openLogs" data-i18n>View logs</button></div></div>
+      <div class="setting-row" id="verboseLoggingSection"><div><h2><label for="verboseLogging" data-i18n>Detailed diagnostic logs</label></h2><p class="hint" id="verboseLoggingHint" data-i18n>Record timing and outcomes, not conversation or tool content. Logs stay local; review before sharing.</p><p class="hint" id="verboseLoggingStatus" role="status" aria-live="polite" data-i18n>Off</p></div><input id="verboseLogging" type="checkbox" role="switch" aria-label="Detailed diagnostic logs" aria-describedby="verboseLoggingHint verboseLoggingStatus" data-i18n-attrs="aria-label"></div>
       <div class="setting-row app-update" id="dataMigrationSection"><div><h2 id="dataMigrationTitle" data-i18n>Move to another installation</h2><p class="hint" id="dataMigrationStatus" role="status" aria-live="polite" hidden data-i18n>Transfer API configuration, settings or conversations. Subscription sign-ins are excluded.</p><progress id="dataMigrationProgress" max="100" aria-labelledby="dataMigrationTitle" aria-describedby="dataMigrationStatus" hidden></progress></div><div class="app-update-actions"><button id="exportData" aria-describedby="dataMigrationStatus" data-i18n>Export data</button><button id="importData" aria-describedby="dataMigrationStatus" data-i18n>Import data</button><button id="importDataAgain" aria-describedby="dataMigrationStatus" hidden data-i18n>Import another package</button></div></div>
       <div class="section" id="storageSection">
         <div class="setting-row app-update"><div><h2 data-i18n>Codex plugin caches</h2><p class="hint" id="pluginCacheStatus" role="status" aria-live="polite" data-i18n>Share duplicate plugin caches after restarting. Keeps conversations and accounts.</p></div><div class="app-update-actions"><button id="maintainPluginCaches" aria-describedby="pluginCacheStatus" data-i18n>Deduplicate and restart</button></div></div>
@@ -220,6 +221,14 @@
         <div class="device-name-row"><label for="mobile-lanPin" data-copy="lanPin">连接 PIN</label><input id="mobile-lanPin" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" autocomplete="one-time-code" spellcheck="false"><button id="mobile-lanSavePin" data-copy="lanSavePin">保存 PIN</button></div>
         <p id="mobile-lanAddress" class="device-address"></p>
         <p id="mobile-lanPinStatus" class="hint" role="status" aria-live="polite"></p>
+        <button id="mobile-lanFirewallRetry" type="button" hidden></button>
+        <details id="mobile-lanMacPermissions" class="mobile-help device-help" hidden>
+          <summary data-copy="lanMacPermissions">macOS 连接权限</summary>
+          <p id="mobile-lanMacPrivacyHint" class="hint" data-copy="lanMacPrivacyHint"></p>
+          <button id="mobile-lanMacPrivacy" type="button" data-copy="lanMacPrivacy"></button>
+          <p class="hint" data-copy="lanMacFirewallHint"></p>
+          <button id="mobile-lanMacFirewall" type="button" data-copy="lanMacFirewall"></button>
+        </details>
         <div class="relay-setting"><span id="mobile-lanJoinLabel" data-copy="lanAllowJoin">允许新设备加入</span><input id="mobile-lanAllowJoin" type="checkbox" role="switch" aria-labelledby="mobile-lanJoinLabel"></div>
         <p class="hint" data-copy="lanSecurity"></p>
       </section>
@@ -389,17 +398,39 @@
 <dialog id="deleteArchivedDialog"><form method="dialog" class="dialog-head"><h2 data-i18n>Delete conversation</h2><button aria-label="Close" data-i18n-attrs="aria-label">×</button></form><p id="deleteArchivedTitle"></p><p class="hint" data-i18n>Deleting removes this conversation and its files permanently. This cannot be undone.</p><button id="confirmDeleteArchived" class="danger" data-i18n>Delete permanently</button></dialog>
 <dialog id="deleteAllArchivedDialog"><form method="dialog" class="dialog-head"><h2 data-i18n>Delete all archived conversations</h2><button aria-label="Close" data-i18n-attrs="aria-label">×</button></form><p id="deleteAllArchivedCount"></p><p class="hint" data-i18n>Deleting removes every archived conversation and its files permanently. This cannot be undone.</p><button id="confirmDeleteAllArchived" class="danger" data-i18n>Delete permanently</button></dialog>
       <dialog id="cleanStorageDialog"><form method="dialog" class="dialog-head"><h2 data-i18n>Clean unused files</h2><button aria-label="Close" data-i18n-attrs="aria-label">×</button></form><p id="cleanStorageEstimate"></p><p class="hint" data-i18n>Files are permanently deleted, not moved to the recycle bin. References are checked again; changed or newly referenced files are skipped.</p><button id="confirmCleanStorage" class="danger" data-i18n>Confirm cleanup</button></dialog>
-      <dialog id="importDataDialog"><form method="dialog" class="dialog-head"><h2 id="dataScopeTitle" data-i18n>Import data</h2><button aria-label="Close" data-i18n-attrs="aria-label">×</button></form>
-        <p class="hint" data-i18n>Subscription accounts are not transferred.</p>
-        <label class="import-scope"><input type="checkbox" id="dataScopeAll"><span data-i18n>Select all</span></label>
-        <label class="import-scope"><input type="checkbox" id="importScopeApi" checked><span><strong data-i18n>API configuration</strong><span class="hint" id="importScopeApiHint"></span></span></label>
-        <label class="import-scope"><input type="checkbox" id="importScopeSettings" checked><span><strong data-i18n>Application settings</strong><span class="hint" data-i18n>Settings page options only</span><span class="hint" id="importScopeSettingsHint"></span></span></label>
-        <label class="import-scope"><input type="checkbox" id="importScopeConversations" checked><span><strong data-i18n>Conversation history</strong><span class="hint" id="importScopeConversationsHint"></span></span></label>
-        <p class="hint" id="dataScopeNote" data-i18n>Selected files overwrite matching ones in this installation; current files are backed up first. Restart Camellia after importing settings or conversation history.</p>
-        <p class="hint" id="dataScopeCompatibility" hidden></p>
-        <p class="hint error" id="importDataError" hidden></p>
-        <button id="confirmImportData" class="primary" data-i18n>Import selected data</button>
-      </dialog>
+<dialog id="importDataDialog" aria-labelledby="dataScopeTitle">
+  <form method="dialog" class="dialog-head">
+    <h2 id="dataScopeTitle" data-i18n>Import data</h2>
+    <button aria-label="Close" data-i18n-attrs="aria-label">×</button>
+  </form>
+  <p class="hint" data-i18n>Subscription accounts are not transferred.</p>
+  <div class="import-scopes">
+    <label class="import-scope">
+      <input type="checkbox" id="dataScopeAll">
+      <span class="import-scope-title" data-i18n>Select all</span>
+    </label>
+    <label class="import-scope">
+      <input type="checkbox" id="importScopeApi" checked>
+      <span class="import-scope-title" data-i18n>API configuration</span>
+      <span class="hint" id="importScopeApiHint"></span>
+    </label>
+    <label class="import-scope">
+      <input type="checkbox" id="importScopeSettings" checked>
+      <span class="import-scope-title" data-i18n>Application settings</span>
+      <span class="hint" data-i18n>Settings page options only</span>
+      <span class="hint" id="importScopeSettingsHint"></span>
+    </label>
+    <label class="import-scope">
+      <input type="checkbox" id="importScopeConversations" checked>
+      <span class="import-scope-title" data-i18n>Conversation history</span>
+      <span class="hint" id="importScopeConversationsHint"></span>
+    </label>
+  </div>
+  <p class="hint" id="dataScopeNote" data-i18n>Selected files overwrite matching ones in this installation; current files are backed up first. Restart Camellia after importing settings or conversation history.</p>
+  <p class="hint" id="dataScopeCompatibility" hidden></p>
+  <p class="hint error" id="importDataError" hidden></p>
+  <button id="confirmImportData" class="primary" data-i18n>Import selected data</button>
+</dialog>
 <script src="../../shared/qr.js"></script>
 <script src="../../shared/model-names.js"></script>
 <script src="../../shared/provider-brands.js"></script>

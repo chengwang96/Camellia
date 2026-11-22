@@ -9,6 +9,8 @@ window.CamelliaGitPanel = { create({ context, getCwd, setStatus, fileViewer, clo
   let open = false, selected = null, diff = null, diffLoading = false, statusTicket = 0, diffTicket = 0, actionTicket = 0, directoryTicket = 0;
   let commitMessage = '', commitFocusPending = false, wrapDiff = false, lastStatusAt = 0;
   let directoryFiles = null, directoryParent = '', directoryLoading = '', directoryError = '';
+  let revision = 0;
+  const notify = () => { revision++; onUpdate(); };
   const diffScroll = new Map(), diffCache = new Map(), diffHighlightCache = new Map();
 
   function commandButton(label, run, className = 'work-action', focus) {
@@ -60,19 +62,19 @@ window.CamelliaGitPanel = { create({ context, getCwd, setStatus, fileViewer, clo
   async function refresh(force = false) {
     const cwd = getCwd();
     if (!force && status && cwd === loadedCwd && Date.now() - lastStatusAt < 2000) {
-      onUpdate(); renderViewer();
+      notify(); renderViewer();
       if (open && selectedEntry() && !selectedEntry().file.directory) await loadDiff();
       return;
     }
     const ticket = ++statusTicket;
     if (!cwd) {
-      status = null; repositoryError = null; loadedCwd = ''; loading = false; lastStatusAt = 0; onUpdate(); renderViewer(); return;
+      status = null; repositoryError = null; loadedCwd = ''; loading = false; lastStatusAt = 0; notify(); renderViewer(); return;
     }
     if (cwd !== loadedCwd) {
       loadedCwd = cwd; status = null; repositoryError = null; operationError = ''; notice = ''; selected = null; diff = null; commitMessage = '';
       lastStatusAt = 0; diffCache.clear(); directoryFiles = null; directoryParent = ''; directoryError = '';
     }
-    loading = true; onUpdate(); renderViewer();
+    loading = true; notify(); renderViewer();
     let result;
     try {
       if (!window.dshDesktop.gitStatus) throw new Error(t('Git status is unavailable.'));
@@ -87,7 +89,7 @@ window.CamelliaGitPanel = { create({ context, getCwd, setStatus, fileViewer, clo
       directoryTicket++; directoryFiles = null; directoryParent = ''; directoryLoading = ''; directoryError = '';
       ensureSelection();
     }
-    onUpdate(); renderViewer();
+    notify(); renderViewer();
     if (open && selectedEntry() && !selectedEntry().file.directory) await loadDiff(true);
   }
 
@@ -131,7 +133,7 @@ window.CamelliaGitPanel = { create({ context, getCwd, setStatus, fileViewer, clo
   async function runAction(action, payload = {}) {
     if (busy || !status) return false;
     const ticket = ++actionTicket, cwd = status.root, conversationCwd = loadedCwd, previousMessage = commitMessage;
-    busy = action; operationError = ''; notice = ''; onUpdate(); renderViewer();
+    busy = action; operationError = ''; notice = ''; notify(); renderViewer();
     try {
       const result = await window.dshDesktop.gitAction({ cwd, action, ...payload });
       if (!result.ok) throw new Error(result.error || t('The Git operation failed.'));
@@ -152,7 +154,7 @@ window.CamelliaGitPanel = { create({ context, getCwd, setStatus, fileViewer, clo
       if (ticket === actionTicket) { operationError = error.message; setStatus(error.message); }
       return false;
     } finally {
-      if (ticket === actionTicket) { busy = ''; onUpdate(); renderViewer(); }
+      if (ticket === actionTicket) { busy = ''; notify(); renderViewer(); }
     }
   }
 
@@ -186,7 +188,7 @@ window.CamelliaGitPanel = { create({ context, getCwd, setStatus, fileViewer, clo
         t('{0} commit(s) will be pushed.').replace('{0}', status.ahead);
       if (!await dialog({ title: 'Push commits', body, confirmLabel: 'Push' })) return;
     } else {
-      if (!status.remotes.length) { operationError = t('No Git remote is configured.'); renderViewer(); onUpdate(); return; }
+      if (!status.remotes.length) { operationError = t('No Git remote is configured.'); renderViewer(); notify(); return; }
       const remote = await dialog({ title: 'Publish branch', body: t('Choose a remote for {0}.').replace('{0}', status.branch),
         confirmLabel: 'Publish branch', remotes: status.remotes });
       if (!remote) return;
@@ -441,14 +443,15 @@ window.CamelliaGitPanel = { create({ context, getCwd, setStatus, fileViewer, clo
     statusTicket++; diffTicket++; actionTicket++; directoryTicket++; if (open) closeFilePreview();
     status = null; repositoryError = null; operationError = ''; notice = ''; loading = false; busy = ''; loadedCwd = ''; lastStatusAt = 0;
     selected = null; diff = null; commitMessage = ''; commitFocusPending = false; diffScroll.clear(); diffCache.clear(); diffHighlightCache.clear();
-    directoryFiles = null; directoryParent = ''; directoryLoading = ''; directoryError = ''; markClosed();
+    directoryFiles = null; directoryParent = ''; directoryLoading = ''; directoryError = ''; revision++; markClosed();
   }
   window.addEventListener('focus', () => { if ((status || open) && !busy) void refresh(); });
-  window.addEventListener('camellia:language', () => { onUpdate(); renderViewer(); });
+  window.addEventListener('camellia:language', () => { notify(); renderViewer(); });
 
   return {
     renderSummary,
     count: () => status?.files.length || 0,
+    revision: () => revision,
     refresh,
     openChanges,
     openCommit,

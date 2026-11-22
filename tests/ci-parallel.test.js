@@ -77,6 +77,14 @@ test('Android shards keep whole classes, cover every suite once and reserve gate
   assert.deepEqual(planShards(names, 3, { directory: root }), shards, 'Repeated selection must be deterministic');
   assert.throws(() => planShards([...names, names[0]], 3, { directory: root }), /twice/);
   assert.throws(() => planShards([...names, 'MissingTest'], 3, { directory: root }), /ENOENT/);
+
+  fs.writeFileSync(path.join(root, 'ChildTest.java'), `
+    public class ChildTest extends TailTest {
+      public void testScenario0() {}
+      public void testChildOnly() {}
+    }
+  `);
+  assert.equal(planShards(['ChildTest'], 1, { directory: root })[0].tests, 21);
 });
 
 test('small Android selections still execute a nonempty shard each', t => {
@@ -144,6 +152,7 @@ test('Android aggregate requires the package and all shards, including on failur
   assert.equal(jobs.ui.needs, 'package');
   assert.deepEqual(jobs.ui.strategy.matrix.shard, [1, 2, 3]);
   assert.equal(jobs.ui.strategy['fail-fast'], false);
+  assert.equal(jobs.ui.steps.find(step => step.name === 'Install host test dependencies').if, 'matrix.shard == 1');
   const run = jobs.ui.steps.find(step => step.name === 'Android UI and gateway integration');
   assert.equal(Number(run.env.SHARD_COUNT), jobs.ui.strategy.matrix.shard.length);
   const classes = run.run.match(/ui_classes=\(([\s\S]*?)\)/)[1].trim().split(/\s+/);
@@ -154,7 +163,9 @@ test('Android aggregate requires the package and all shards, including on failur
     'TabletInteractionTest', 'TabletRotationContinuityTest', 'TabletSettingsNavigationTest']) assert.ok(tabletClasses.includes(name), name);
   assert.match(run.run, /run_ui ui[^\n]*\n[\s\S]+wm size 960x1536\n[\s\S]+wm density 240\n[\s\S]+run_ui tablet-ui/);
   for (const name of ['ModernSettingsLayoutTest', 'NavigationVeilTest', 'UiConsistencyTest', 'SettingsFeedbackTest',
-    'ChoiceDropdownTest', 'ComposerAttachmentOverflowTest', 'RemoteApprovalSheetTest', 'WorkbenchServersTest', 'ConversationListScrollTest']) assert.ok(classes.includes(name), name);
+    'ChoiceDropdownTest', 'ComposerAttachmentOverflowTest', 'RemoteApprovalSheetTest', 'WorkbenchServersTest',
+    'ConversationListScrollTest', 'DesktopRestartTest', 'EmbeddedNetworkTest', 'RemoteControlRecoveryTest']) assert.ok(classes.includes(name), name);
+  assert.ok(!classes.includes('RemoteFeedbackTest'), 'RemoteControlRecoveryTest runs the inherited feedback cases');
   const gateway = run.run.match(/if \[ "\$SHARD" = 1 \]; then([\s\S]*?)\nfi/)[1];
   for (const fixture of ['pairing', 'gateway', 'discussions']) assert.match(gateway, new RegExp('android-' + fixture + '-smoke\\.cjs'));
   const bash = process.platform === 'win32' ? 'C:/Program Files/Git/bin/bash.exe' : '/bin/bash';

@@ -6,7 +6,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { removeTree } = require('./test-fs.cjs');
-const { detectSystemPython, sharedPythonSupportsSdk, pythonCandidates } = require('../src/main/python-runtime');
+const { detectSystemPython, detectSystemPythonAsync, sharedPythonSupportsSdk, pythonCandidates } = require('../src/main/python-runtime');
 
 function scratch(context, name = 'python3') {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'camellia-python-'));
@@ -100,4 +100,26 @@ test('Windows also offers the py launcher while POSIX prefers python3', () => {
   assert.ok(posix.some(entry => entry.file === path.join('/usr/bin', 'python3')));
   assert.ok(posix.some(entry => entry.file === path.join('/usr/bin', 'python')));
   assert.ok(posix.every(entry => !entry.file.includes('py.exe')), 'POSIX never offers the Windows launcher');
+});
+
+test('async Python detection yields to the event loop and shares concurrent probes', async context => {
+  const { root, file } = scratch(context), calls = [];
+  let release;
+  const gate = new Promise(resolve => { release = resolve; });
+  const probe = async (_exe, args) => {
+    const script = String(args.at(-1));
+    calls.push(script);
+    await gate;
+    return script.startsWith('import sys') ? '{"python": "3.12.4"}\n' : '';
+  };
+  const options = { platform: process.platform, env: { PATH: root }, home: root, probe, cache: new Map() };
+  const first = detectSystemPythonAsync(options), second = detectSystemPythonAsync(options);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(calls.length, 1);
+  release();
+  assert.equal((await first).file, file);
+  assert.equal((await second).file, file);
+  assert.equal(calls.length, 2);
+  assert.equal((await detectSystemPythonAsync(options)).file, file);
+  assert.equal(calls.length, 2);
 });

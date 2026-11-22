@@ -126,9 +126,16 @@ python tests/api-settings-ui.py
 python tests/engine-settings-ui.py
 python tests/workspaces-ui.py
 python tests/conversation-retention-ui.py
+python tests/chat-failed-send-ui.py
+python tests/settings-page-smoke.py
+python tests/remote-ui.py
 ```
 
 Browser checks write screenshots under `dist/`. README screenshots live in `docs/images/`; local reference captures belong in the ignored `docs/images/local/` directory.
+
+Desktop CI runs the failed-send, settings-page and mobile-access renderer
+regressions on Windows and macOS. The unit-test step enables explicit garbage
+collection for the released-session regression.
 
 Release acceptance also launches the **built application**, using its normal
 entry, packaged preload and renderer. It does not load a source test driver or
@@ -154,7 +161,7 @@ provider charges. Background-throttling switches keep hidden CI windows
 responsive to the external browser driver. Screenshots, traces, application logs and artifact hashes
 are saved under `dist/packaged-desktop-<platform>/`, including on failure.
 
-Desktop CI separates its 60-minute build/integration job from a 30-minute
+Desktop CI separates its 60-minute build/integration job from a 50-minute
 acceptance job on each platform. Acceptance downloads the same workflow run's
 release files and extracts the release ZIP, preserving macOS executable
 permissions and symlinks with `ditto`; it does not rebuild the application.

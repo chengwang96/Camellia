@@ -31,7 +31,7 @@ const shortcutBindings = window.CamelliaShortcuts?.watchBindings(desktop);
 const navigation = window.CamelliaWorkbenchNavigation;
 $('discussionNavigation').replaceChildren(navigation.section({ key: 'discussions', title: 'Agent discussions (beta)', content: $('groupList'), add: newGroup, addId: 'newGroup' }));
 let conversationNavigation, navigationRequest = 0, pendingNavigationIntent, navigating = false;
-let groups = [], group = null, bindings = [], runtimeOptions = [], selected = new Set(), loading = 0, refreshTimer;
+let groups = [], group = null, bindings = [], runtimeOptions = [], selected = new Set(), loading = 0, refreshTimer, draftTimer;
 const pendingSends = new Set(), sendErrors = new Map();
 const isSending = () => pendingSends.has(group?.id);
 const verifyingMembers = new Set();
@@ -45,7 +45,7 @@ let attachments = [];
 const drafts = new Map(), failures = new Map();
 const selectedGroupKey = 'camellia:discussion:selected';
 const draftPrefix = 'camellia:discussion:draft:';
-const messageNodes = new Map();
+const messageNodes = new Map(), partialStreams = new Map();
 let latestScrollFrame = null;
 let followingOutput = true, scrollInteracting = false, scrollIntentUntil = 0, lastScrollTop = 0;
 let groupMenu = null, renamingId = null, deleteTarget = null;
@@ -116,6 +116,18 @@ function markdown(text) {
   }
   return fragment;
 }
+function markdownHtml(text) {
+  return window.CamelliaMarkdown.renderHtml(document, text, { allowImages: true,
+    copyLabel: t('Copy code'), copiedLabel: t('Copied'), failedLabel: t('Copy failed'), wrapLabel: t('Word wrap') });
+}
+function reconcileChildren(container, desired) {
+  let current = container.firstChild;
+  for (const next of desired) {
+    if (current === next) current = current.nextSibling;
+    else container.insertBefore(next, current);
+  }
+  while (current) { const old = current; current = current.nextSibling; old.remove(); }
+}
 function copyAction(text, assistant) {
   const actions = node('div', 'message-actions' + (assistant ? ' turn-actions' : ''));
   const copy = button('', async () => { await navigator.clipboard.writeText(text); copy.title = t('Message copied'); copy.setAttribute('aria-label', t('Message copied')); }, 'message-copy');
@@ -185,15 +197,21 @@ function storeDraft(id, draft) {
     sendErrors.set(id, failure); if (group?.id === id) error(failure); return false;
   }
 }
-function rememberDraft() {
+function rememberDraft(immediate = false) {
   if (!group) return true;
-  const draft = { text: $('message').value, selected: [...selected], mode: $('replyMode').value, attachments };
-  const identity = group.id + JSON.stringify(attachments.map(file => [file.id, file.path]));
-  if (identity !== cleanupReferenceIdentity) {
-    cleanupReferenceIdentity = identity;
-    void desktop.storageReferencesChanged?.();
-  }
-  return storeDraft(group.id, draft);
+  clearTimeout(draftTimer);
+  const id = group.id, draft = { text: $('message').value, selected: [...selected], mode: $('replyMode').value, attachments: [...attachments] };
+  const save = () => {
+    const identity = id + JSON.stringify(draft.attachments.map(file => [file.id, file.path]));
+    if (identity !== cleanupReferenceIdentity) {
+      cleanupReferenceIdentity = identity;
+      void desktop.storageReferencesChanged?.();
+    }
+    return storeDraft(id, draft);
+  };
+  if (immediate) return save();
+  draftTimer = setTimeout(save, 250);
+  return true;
 }
 function readDraft(id) {
   if (drafts.has(id)) return drafts.get(id);
@@ -204,6 +222,13 @@ function readDraft(id) {
       mode: draft.mode === 'serial' ? 'serial' : 'parallel', attachments: Array.isArray(draft.attachments) ? draft.attachments : [] };
   } catch { /* A damaged optional draft must not hide persisted discussion history. */ }
   return null;
+}
+function upsertGroup(summary) {
+  if (!summary) return;
+  const index = groups.findIndex(row => row.id === summary.id);
+  if (index < 0) groups.push(summary);
+  else groups[index] = { ...groups[index], ...summary };
+  groups.sort((a, b) => Number(b.pinned) - Number(a.pinned) || b.lastMessageAt - a.lastMessageAt || a.id.localeCompare(b.id));
 }
 function renderGroups() {
   if (renamingId) return;
@@ -275,7 +300,9 @@ async function discardGroup(id, nextGroups) {
   const index = groups.findIndex(row => row.id === id); groups = nextGroups;
   drafts.delete(id); sendErrors.delete(id); try { localStorage.removeItem(draftPrefix + id); } catch { /* optional draft */ }
   if (group?.id === id) {
-    ++loading; group = null; selected.clear(); attachments = []; messageNodes.clear(); $('messages').replaceChildren(); $('message').value = '';
+    ++loading; group = null; selected.clear(); attachments = [];
+    for (const state of partialStreams.values()) state.stream.dispose();
+    partialStreams.clear(); messageNodes.clear(); $('messages').replaceChildren(); $('message').value = '';
     try { localStorage.removeItem(selectedGroupKey); } catch { /* optional selection */ }
     const next = groups[Math.max(0, Math.min(index, groups.length - 1))];
     if (next) await load(next.id);
@@ -347,9 +374,27 @@ function renderMembers() {
   else if (selected.size && group.participants.some(p => selected.has(p.id) && p.capability.mode === 'native-tools')) $('sendHint').textContent = t('Tool tasks share this group folder and run one at a time.');
   $('stopAll').disabled = !group.preparing && !group.verifying && !group.stopping && !group.deliveries.some(d => openStatuses.has(d.status));
 }
+function partialBody(delivery) {
+  let state = partialStreams.get(delivery.id);
+  if (!state) {
+    const body = node('div', 'message-body md');
+    const stream = window.CamelliaStreamingMarkdown.create(body, {
+      render: markdownHtml,
+      codeBlock: (language, code) => markdownHtml('```' + language + '\n' + (code || '') + '\n```'),
+    });
+    state = { body, stream, text: '' };
+    partialStreams.set(delivery.id, state);
+  }
+  if (state.text !== delivery.partialText) {
+    state.text = delivery.partialText || '';
+    state.stream.append(state.text, state.text);
+    state.stream.flush();
+  }
+  return state.body;
+}
 function renderMessages() {
   const container = $('messages'), scroll = $('chatScroll'), position = scroll.scrollTop;
-  const fragment = document.createDocumentFragment();
+  const desired = [], activeDeliveries = new Set();
   const lastByRequest = new Map(group.messages.map(m => [m.requestId, m.id]));
   const anchors = new Map();
   for (const m of group.messages) {
@@ -373,16 +418,17 @@ function renderMessages() {
     if (m.attachments?.length) { const row = node('div', 'attach-row discussion-message-attachments'); rich.attachments(row, m.attachments); item.append(row); }
     }
     if (m.role === 'assistant') rich.renderTools(item, group.deliveries.find(d => d.id === m.deliveryId));
-    fragment.append(item);
-    if (lastByRequest.get(m.requestId) === m.id) { const anchor = document.createComment('response'); fragment.append(anchor); anchors.set(m.requestId, anchor); }
+    desired.push(item);
+    if (lastByRequest.get(m.requestId) === m.id) { const anchor = document.createComment('response'); desired.push(anchor); anchors.set(m.requestId, anchor); }
   }
   for (const d of group.deliveries.filter(d => d.status !== 'completed' && !d.serialResolution)) {
+    activeDeliveries.add(d.id);
     const member = group.participants.find(p => p.id === d.participantId), item = node('article', 'message pending turn'); item.dataset.deliveryId = d.id;
     const header = node('div', 'message-header turn-meta');
     header.append(identityButton(d.participantId, member?.name || '', member?.engine), node('span', 'response-status', '· ' + t(stateLabels[d.phase || d.status] || d.status)));
     item.append(header);
     rich.renderTools(item, d);
-    if (d.partialText) { const body = node('div', 'message-body md'); body.append(markdown(d.partialText)); item.append(body); }
+    if (d.partialText) item.append(partialBody(d));
     if (openStatuses.has(d.status)) {
       if (!d.partialText) { const status = node('div', 'run-status'); status.append(node('span', 'pulse'), node('span', '', t(stateLabels[d.phase || d.status] || d.status))); item.append(status); }
       const actions = node('div', 'response-actions'); actions.append(button(t('Stop'), () => mutate('stop', { deliveryId: d.id }))); item.append(actions);
@@ -399,9 +445,10 @@ function renderMessages() {
       item.append(actions);
     }
     const anchor = anchors.get(d.requestId);
-    if (anchor) anchor.before(item); else fragment.append(item);
+    if (anchor) desired.splice(desired.indexOf(anchor), 0, item); else desired.push(item);
   }
-  container.replaceChildren(fragment);
+  for (const [id, state] of partialStreams) if (!activeDeliveries.has(id)) { state.stream.dispose(); partialStreams.delete(id); }
+  reconcileChildren(container, desired);
   if (followingOutput) scrollToLatest();
   else scroll.scrollTo({ top: position, behavior: 'instant' });
 }
@@ -420,17 +467,19 @@ function render() {
 }
 async function load(id, refresh = false) {
   const ticket = ++loading;
-  if (!refresh) rememberDraft();
-  const result = await call('load', { id });
+  if (!refresh) rememberDraft(true);
+  const result = await call('load', { id, refresh });
   if (ticket !== loading) return;
   if (!refresh) { closeGroupMenu(); setSidebarOpen(false); }
   const changed = group?.id !== id;
   if (!changed && result.group.revision < group.revision) return;
+  upsertGroup(result.summary);
   group = result.group;
   if (!refresh || changed) followingOutput = true;
   try { localStorage.setItem(selectedGroupKey, id); } catch { /* Selection is optional; discussion data is saved by the service. */ }
   if (changed) {
-    messageNodes.clear();
+    for (const state of partialStreams.values()) state.stream.dispose();
+    partialStreams.clear(); messageNodes.clear();
     const draft = readDraft(id); $('message').value = draft?.text || ''; selected = new Set(draft?.selected || []); $('replyMode').value = draft?.mode || 'parallel';
     attachments = draft?.attachments || [];
     clearNotice();
@@ -631,17 +680,31 @@ $('composer').onsubmit = async event => {
   finally { pendingSends.delete(id); resizeComposer(); }
 };
 $('message').addEventListener('input', () => { resizeComposer(); rememberDraft(); });
+window.addEventListener('beforeunload', () => rememberDraft(true));
 $('message').onkeydown = event => { if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) { event.preventDefault(); $('composer').requestSubmit(); } };
 const unsubscribe = desktop.onDiscussionEvent(event => {
   if (event.reason) failures.set(event.deliveryId, event.reason);
   if (!isVisible() || navigating) return;
+  if (event.type === 'deleted') {
+    groups = groups.filter(row => row.id !== event.discussionId);
+    if (group?.id === event.discussionId) void discardGroup(event.discussionId, groups).catch(error);
+    else renderGroups();
+    return;
+  }
+  upsertGroup(event.summary);
+  if (group?.id !== event.discussionId) { renderGroups(); return; }
+  if (event.type === 'answer') {
+    const delivery = group.deliveries.find(row => row.id === event.deliveryId);
+    if (delivery) {
+      delivery.partialText = event.text || '';
+      clearTimeout(refreshTimer);
+      refreshTimer = setTimeout(() => { if (isVisible() && !navigating) renderMessages(); }, 60);
+      return;
+    }
+  }
   clearTimeout(refreshTimer); refreshTimer = setTimeout(async () => {
     if (!isVisible() || navigating) return;
-    try {
-      const next = (await call('list')).groups;
-      if (group && !next.some(row => row.id === group.id)) await discardGroup(group.id, next);
-      else { groups = next; if (group) await load(group.id, true); else renderGroups(); }
-    }
+    try { await load(group.id, true); }
     catch (err) { error(err); }
   }, 60);
 });
@@ -715,7 +778,7 @@ void desktop.workbenchSettings().then(settings => {
   applyContentWidth(settings.chatContentWidth);
   applyAdvancedAnimations(settings.advancedAnimations);
 }).catch(error);
-window.addEventListener('beforeunload', () => { cancelLatestScroll(); discussionReferenceSources.delete(cleanupReferences); conversationNavigation?.destroy(); rememberDraft(); unsubscribe?.(); unsubscribeWidth?.(); unsubscribeAnimations?.(); unsubscribeRuntime?.(); clearTimeout(refreshTimer); clearTimeout(runtimeRefreshTimer); });
+window.addEventListener('beforeunload', () => { cancelLatestScroll(); discussionReferenceSources.delete(cleanupReferences); conversationNavigation?.destroy(); rememberDraft(true); unsubscribe?.(); unsubscribeWidth?.(); unsubscribeAnimations?.(); unsubscribeRuntime?.(); clearTimeout(refreshTimer); clearTimeout(runtimeRefreshTimer); });
 window.addEventListener('camellia:language', () => { closeGroupMenu(); messageNodes.clear(); render(); if ($('memberDialog').open) renderProviders(); });
 const ready = (async () => {
   await window.CamelliaI18n.ready;

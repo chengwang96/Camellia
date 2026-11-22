@@ -713,8 +713,18 @@ with sync_playwright() as p:
         expect(page.locator('.msg-user .bubble')).to_have_text('Corrected task B')
         expect(page.locator('#chat')).not_to_contain_text('Stopped Task B', use_inner_text=True)
         expect(page.locator('.pending-send')).to_contain_text('Restarting this turn')
+        pending_stop=page.locator('.pending-send button')
+        expect(pending_stop).to_have_text('Stop resending')
+        expect(pending_stop).to_be_visible()
+        expect(page.locator('#send')).to_have_attribute('data-action','queue')
+        page.locator('#input').fill('')
+        expect(page.locator('#send')).to_have_attribute('data-action','stop')
+        expect(pending_stop).to_be_hidden()
+        page.locator('#input').fill('Unsent next message')
+        expect(page.locator('#send')).to_have_attribute('data-action','queue')
+        expect(pending_stop).to_be_visible()
         page.screenshot(path=str(preview/f'edit-pending-send-{engine}.png'),animations='disabled')
-        page.locator('.pending-send button').click()
+        pending_stop.click()
         expect(page.locator('.message-editor')).to_be_visible()
         expect(editor).to_have_value('Corrected task B')
         expect(page.locator('.message-edit-status[role="alert"]')).to_contain_text('Fixture compaction canceled')
@@ -1285,7 +1295,7 @@ with sync_playwright() as p:
     assert '40.0K / 1.0M' in page.locator('#ctxRing').get_attribute('data-tip')
     page.evaluate("receiveEvent({type:'gui:usage',session_id:'shared-fixture',engine:'claude',usage:{input_tokens:40000,context_window:258400}})")
     tip = page.locator('#ctxRing').get_attribute('data-tip')
-    assert 'Engine window: 258.4K' in tip and 'Model maximum (provider catalog): 1.0M' in tip, tip
+    assert 'Engine window: 258.4K' in tip and 'Model maximum (catalog): 1.0M' in tip, tip
     page.close()
     # Goal draft mode: the criterion chip feeds into goal-start.
     page = browser.new_page(viewport={'width':1200,'height':820})
@@ -1364,6 +1374,12 @@ with sync_playwright() as p:
     page.locator('#importBtn').click()
     page.wait_for_function('window.importScans === 2')
     page.locator('#importCancel').click()
+    expect(page.locator('#importMask')).to_be_hidden()
+    page.locator('#importBtn').click()
+    page.wait_for_function('window.importScans === 3')
+    page.locator('#importTitle').click()
+    expect(page.locator('#importMask')).to_be_visible()
+    page.locator('#importMask').click(position={'x':12,'y':12})
     expect(page.locator('#importMask')).to_be_hidden()
     # Batch failures explain why an incremental update was rejected, after the
     # sidebar refresh, in both supported languages.

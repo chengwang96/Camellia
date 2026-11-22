@@ -82,7 +82,14 @@ jobs:
       # tools or Kimi's automatic bootstrap reaching the network.
       - name: Install ripgrep for the native tool audit (Windows)
         if: matrix.platform == 'windows'
-        run: choco install ripgrep --no-progress -y
+        shell: pwsh
+        run: |
+          for ($attempt = 1; $attempt -le 3; $attempt++) {
+            choco install ripgrep --no-progress -y
+            if ($LASTEXITCODE -eq 0) { exit 0 }
+            Start-Sleep -Seconds 10
+          }
+          exit $LASTEXITCODE
       - name: Install ripgrep for the native tool audit (macOS)
         if: matrix.platform == 'macos'
         env:
@@ -96,7 +103,7 @@ jobs:
       - name: Unit tests
         if: matrix.platform != 'windows'
         timeout-minutes: 10
-        run: node --test --test-force-exit --test-concurrency=4 --test-reporter=tap tests/*.test.js
+        run: node --expose-gc --test --test-force-exit --test-concurrency=4 --test-reporter=tap tests/*.test.js
       - name: Unit tests (Windows)
         if: matrix.platform == 'windows'
         timeout-minutes: 10
@@ -104,7 +111,7 @@ jobs:
         run: |
           $testFiles = @(Get-ChildItem -LiteralPath tests -Filter '*.test.js' -File |
             Where-Object Name -ne 'background-process.test.js' | ForEach-Object FullName)
-          node --test --test-force-exit --test-concurrency=4 --test-reporter=tap @testFiles
+          node --expose-gc --test --test-force-exit --test-concurrency=4 --test-reporter=tap @testFiles
       - name: Native background process tests (Windows)
         if: matrix.platform == 'windows'
         timeout-minutes: 2
@@ -132,6 +139,16 @@ jobs:
             }
           }
           & ./tests/windows-background-argv.ps1
+      - name: Install renderer test driver
+        run: python -m pip install playwright==1.61.0
+      - name: Install headless Chromium for renderer tests
+        run: python -m playwright install chromium --only-shell
+      - name: Failed-send renderer regression
+        run: python tests/chat-failed-send-ui.py
+      - name: Settings renderer regression
+        run: python tests/settings-page-smoke.py
+      - name: Mobile access renderer regression
+        run: python tests/remote-ui.py
       - name: Diagnostic pipe disconnection
         run: node tests/diagnostic-output-electron.cjs
       - name: Electron smoke test

@@ -155,6 +155,14 @@ test('a real Word 97-2003 document decodes text and table cells', t => {
   // piece-table decode cannot reproduce Word's table and text-box edges.
 });
 
+test('legacy Word parsing runs in the Office worker', async t => {
+  const { renderOfficePreview } = require('../src/main/office-preview-process');
+  const result = await renderOfficePreview({ type: 'legacy', filePath: wordDocument(t) });
+  assert.deepEqual(result.office.tables[0], ['姓名', '王诚']);
+  assert.ok(result.office.paragraphs.includes('标题'));
+  assert.match(result.office.html, /<td>王诚<\/td>/);
+});
+
 test('a non-Word OLE file is not misidentified as a document', t => {
   const file = writeCompound(t, 'other.doc', [{ name: 'Data', data: Buffer.from('not word') }]);
   assert.equal(isCompoundFile(file), true);

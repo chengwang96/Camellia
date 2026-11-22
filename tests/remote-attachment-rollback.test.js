@@ -89,6 +89,9 @@ test('pending sends expose an attachment lease until they settle', async t => {
   const pending = h.send();
   assert.equal(h.commands.pendingAttachments.size, 1);
   const leased = h.commands.pendingAttachments.get(h.payload.requestId);
+  for (let attempt = 0; attempt < 200 && (!leased.length || !fs.existsSync(leased[0].path) || !finish); attempt++) {
+    await new Promise(resolve => setTimeout(resolve, 5));
+  }
   assert.equal(leased.length, 1); assert.ok(fs.existsSync(leased[0].path));
   finish({ ok: true }); await pending;
   assert.equal(h.commands.pendingAttachments.size, 0); assert.ok(fs.existsSync(leased[0].path));

@@ -21,7 +21,7 @@ const { callConversationTool } = require('./conversation-control');
 const managedSubagents = require('./subagent-conversations');
 const { planHistoryCompaction } = require('./compaction-plan');
 const { runSummaryPipeline, DEFAULT_MAX_REQUESTS, MAX_CACHED_SUMMARIES } = require('./compaction-summary');
-const { searchFiles, searchContents } = require('../main/file-search');
+const { searchFilesAsync, searchContentsAsync } = require('../main/file-search-process');
 const { buildHistoryIndex, searchHistory: matchHistory } = require('../main/conversation-index');
 const { previewKind } = require('../main/file-preview');
 const { subscriptionFailure, subscriptionRecoveryMessage, availableAccount } = require('./subscription-recovery');
@@ -288,6 +288,7 @@ class SharedConversations {
     fs.mkdirSync(dir, { recursive: true });
     this.items = new Map(); this.legacyConversations = new Map(); this.active = new Map(); this.facades = new Map(); this.switching = new Map(); this.goals = new Map(); this.recovering = new Map(); this.sequence = 0; this.clock = 0;
     this.pendingSaves = new Map();
+    this.findControllers = new Map();
     this.stopping = new Map(); this.deleting = new Set(); this.stopTimeoutMs = stopTimeoutMs;
     this.titleRequests = new Set(); this.titleFollowUps = new Map();
     this.onGoal = onGoal;
@@ -513,6 +514,9 @@ class SharedConversations {
   pauseGoals() { for (const goal of this.goals.values()) { if (goal.armed) goal.setPhase('paused'); else goal.cancelTimer(); } }
 
   closeGoalTools() {
+    managedSubagents.flush(this);
+    for (const controller of this.findControllers.values()) controller.abort();
+    this.findControllers.clear();
     this.flushPendingSaves();
     this.historyStore.close();
     this.remoteQueue?.close();
@@ -696,9 +700,17 @@ class SharedConversations {
     // History first: the files earlier conversations wrote are what the user
     // usually means, and recalling them reads no file content at all.
     const history = args.inside === true ? [] : this.searchHistory(args.query, { cwd: c.cwd, limit: 20 });
-    const found = args.inside === true
-      ? await searchContents({ ...scope, query: args.query, limit: 20 })
-      : searchFiles({ ...scope, query: args.query });
+    const controller = new AbortController();
+    active.findController?.abort();
+    active.findController = controller;
+    let found;
+    try {
+      found = args.inside === true
+        ? await searchContentsAsync({ ...scope, query: args.query, limit: 20 }, controller.signal)
+        : await searchFilesAsync({ ...scope, query: args.query }, controller.signal);
+    } finally {
+      if (active.findController === controller) delete active.findController;
+    }
     const hits = [
       ...history.map(entry => ({ path: entry.path, name: path.basename(entry.path), from: entry.titles?.[0] || '', kind: previewKind(entry.path) })),
       ...found.results.map(({ deliverable, modifiedAt, ...file }) => file),
@@ -1077,6 +1089,7 @@ class SharedConversations {
   }
   // Permanent delete: index, append-only log, goal, handoffs and torn backups.
   async purge(id) {
+    this.findControllers.get(id)?.abort(new Error('Conversation changed while searching. Run the search again.'));
     if (this.workInProgress(id) || this.stopping.has(id)) throw new Error('Stop this conversation before deleting it');
     const c = this.items.get(id);
     const files = c ? this.handoffFiles(c) : new Set();
@@ -1173,27 +1186,34 @@ class SharedConversations {
     const workspaceId = meta.sessionWorkspace[id] || null;
     const workspace = meta.workspaces.find(item => item.id === workspaceId);
     const language = this.loadConfig().language;
-    // A bare /find means "show me what I was working on": the files recent
-    // conversations wrote, newest first. Nothing is read and no engine runs.
-    if (!String(query || '').trim()) {
-      const recent = this.searchHistory('', { cwd: c.cwd, limit: 20 });
-      return this.recordFind(c, { query: '', history: recent, fallback: '', language, userText, origin });
+    this.findControllers.get(id)?.abort();
+    const controller = new AbortController();
+    this.findControllers.set(id, controller);
+    try {
+      // A bare /find means "show me what I was working on": the files recent
+      // conversations wrote, newest first. Nothing is read and no engine runs.
+      if (!String(query || '').trim()) {
+        const recent = this.searchHistory('', { cwd: c.cwd, limit: 20 });
+        return this.recordFind(c, { query: '', history: recent, fallback: '', language, userText, origin });
+      }
+      const scope = { cwd: c.cwd, workspacePath: workspace?.path || '', workspaceId, workspaces: meta.workspaces, language };
+      const found = /^inside:\s*/i.test(String(query || ''))
+        ? await searchContentsAsync({ ...scope, query: String(query).replace(/^inside:\s*/i, '') }, controller.signal)
+        : await searchFilesAsync({ ...scope, query }, controller.signal);
+      // Content extraction yields. A deletion, archive or newer turn must not
+      // let its late answer recreate the conversation or overwrite its ordering.
+      if (this.items.get(id) !== c || c.seq !== seq || this.busy(id)
+          || this.workspaces.sessionMeta().archived[id]) {
+        throw new Error('Conversation changed while searching. Run the search again.');
+      }
+      // Files written by any conversation come first: they are what the user is
+      // usually after, and they need no file-content reading to be recalled.
+      const history = /^inside:\s*/i.test(String(query || '')) ? []
+        : this.searchHistory(String(query || '').replace(/^find\s*/i, ''), { cwd: c.cwd, limit: 20 });
+      return this.recordFind(c, { query: found.query, history, fallback: found.text, language, userText, origin, roots: found.roots });
+    } finally {
+      if (this.findControllers.get(id) === controller) this.findControllers.delete(id);
     }
-    const scope = { cwd: c.cwd, workspacePath: workspace?.path || '', workspaceId, workspaces: meta.workspaces, language };
-    const found = /^inside:\s*/i.test(String(query || ''))
-      ? await searchContents({ ...scope, query: String(query).replace(/^inside:\s*/i, '') })
-      : searchFiles({ ...scope, query });
-    // Content extraction yields. A deletion, archive or newer turn must not
-    // let its late answer recreate the conversation or overwrite its ordering.
-    if (this.items.get(id) !== c || c.seq !== seq || this.busy(id)
-        || this.workspaces.sessionMeta().archived[id]) {
-      throw new Error('Conversation changed while searching. Run the search again.');
-    }
-    // Files written by any conversation come first: they are what the user is
-    // usually after, and they need no file-content reading to be recalled.
-    const history = /^inside:\s*/i.test(String(query || '')) ? []
-      : this.searchHistory(String(query || '').replace(/^find\s*/i, ''), { cwd: c.cwd, limit: 20 });
-    return this.recordFind(c, { query: found.query, history, fallback: found.text, language, userText, origin, roots: found.roots });
   }
 
   // Persists a /find answer as an ordinary assistant turn so both clients pick
@@ -1760,7 +1780,6 @@ class SharedConversations {
     const policy = this.reviews.settings(c.id);
     if (!policy.turnGate || c.controlParentId || c.controlReviewId) return;
     if (this.goals.get(c.id)?.armed) return;
-    if (!this.reviews.hasChanges(c.id)) return;
     if (c.pendingTurnReview?.userSeq === run.userSeq) return;
     c.pendingTurnReview = { state: 'starting', userSeq: run.userSeq, at: Date.now() };
     this.save(c);
@@ -1777,8 +1796,16 @@ class SharedConversations {
   }
   async startTurnReview(c, userSeq) {
     if (this.items.get(c.id) !== c || this.deleting.has(c.id)) return;
-    const policy = this.reviews.settings(c.id);
+    let policy = this.reviews.settings(c.id);
     if (!policy.turnGate) {
+      delete c.pendingTurnReview;
+      this.save(c);
+      return;
+    }
+    const changed = await this.reviews.hasChanges(c.id);
+    if (this.items.get(c.id) !== c || this.deleting.has(c.id) || c.pendingTurnReview?.userSeq !== userSeq) return;
+    policy = this.reviews.settings(c.id);
+    if (!policy.turnGate || !changed) {
       delete c.pendingTurnReview;
       this.save(c);
       return;
@@ -1798,7 +1825,11 @@ class SharedConversations {
       allowWhileBusy: true,
       viaAgent: true,
     });
-    if (this.items.get(c.id) !== c) return;
+    if (this.items.get(c.id) !== c || this.deleting.has(c.id) || c.pendingTurnReview?.userSeq !== userSeq
+        || !this.reviews.settings(c.id).turnGate) {
+      await this.reviews.cancel(started.review.id);
+      return;
+    }
     c.pendingTurnReview = { state: 'running', userSeq, reviewId: started.review.id, at: Date.now() };
     this.save(c);
     this.onEvent({ type: 'conversation:turn-review', session_id: c.id, review: started.review });
@@ -1984,6 +2015,7 @@ class SharedConversations {
         throw new Error('Wait for this conversation to finish or stop it first.');
     };
     assertAvailable();
+    this.findControllers.get(c.id)?.abort(new Error('Conversation changed while searching. Run the search again.'));
     if (!directoryExists(c.cwd)) throw new Error('Working directory not found. Relocate the folder from the workspace menu: ' + c.cwd);
     if (!payload.sessionId && !internal && payload.fastMode !== undefined)
       this.saveSettings(engine, { sessionId: c.id, fastMode: payload.fastMode });
@@ -2159,7 +2191,7 @@ class SharedConversations {
         const closing = this.drivers[engine].sessions?.pendingRelease({ conversationId: c.id });
         if (closing) await closing;
         if (!operation.cancelled) {
-          const session = this.drivers[engine].ensure({ conversationId: c.id, sessionId: oldSegment.nativeId, workspaceId: null, cwd: c.cwd, settings });
+          const session = await this.drivers[engine].ensure({ conversationId: c.id, sessionId: oldSegment.nativeId, workspaceId: null, cwd: c.cwd, settings });
           operation.session = { interrupt: () => { void session.kill(); } };
           try {
             const boundary = await session.editBoundary(edit.row.text);
@@ -2258,6 +2290,9 @@ class SharedConversations {
     this.active.set(a.activeKey, a);
     if (!internal || !this.facades.has(c.id)) this.facades.set(c.id, a.facade);
     a.facade.running = true;
+    a.diagnosticStage = 'prepare';
+    if (!internal && !continuation) this.log.verbose?.('conversation start: ' + JSON.stringify({ sessionId: c.id, engine,
+      runId: a.facade.gen, model: settings.model, connection: settings.connection }));
     try {
       c.engineSettings ||= {};
       // A retry keeps the turn's binding without replacing a newer selection
@@ -2286,7 +2321,10 @@ class SharedConversations {
       this.publishActivity(c.id);
       if (!internal && !continuation) this.onEvent({ type: 'conversation:started', session_id: c.id, engine, runId: a.facade.gen,
         prompt: a.prompt, displayText: a.displayText, attachments: a.attachments, userSeq: a.userSeq, workspaceId: c.workspaceId });
-      await this.prepare(engine, settings);
+      const prepareStartedAt = Date.now();
+      try { await this.prepare(engine, settings); }
+      finally { a.prepareMs = (a.prepareMs || 0) + Date.now() - prepareStartedAt; }
+      a.diagnosticStage = 'connect';
       if (a.cancelled || a.finished || this.items.get(c.id) !== c) {
         if (!a.finished) this.capture(engine, { type: 'result', subtype: 'stopped', result: '', conversationId: a.activeKey || c.id });
         return { ok: true, runId: a.facade.gen, sessionId: c.id, userSeq: a.userSeq, done: a.done };
@@ -2314,18 +2352,33 @@ class SharedConversations {
       a.subscriptionSettings = settings;
       a.contextSettings = { model: settings.model, connection: settings.connection, contextWindow: settings.contextWindow,
         ...(settings.subscriptionId ? { subscriptionId: settings.subscriptionId } : {}) };
-      a.session = this.drivers[engine].ensure({ conversationId: a.activeKey, sessionId: fresh ? null : c.segments[engine]?.nativeId,
+      a.session = await this.drivers[engine].ensure({ conversationId: a.activeKey, sessionId: fresh ? null : c.segments[engine]?.nativeId,
         ...(nativeFork ? { sessionId: nativeFork.sessionId, fork: true, resumeFile: this.forkSnapshotFile(c),
           ...(nativeFork.resumeSessionAt ? { resumeSessionAt: nativeFork.resumeSessionAt } : {}) } : nativeEdit),
         workspaceId: null, cwd: c.cwd, settings, goalBridge });
+      if (a.cancelled || a.finished || this.items.get(c.id) !== c) {
+        const session = a.session, nextRun = this.active.get(a.activeKey), recovering = this.recovering.get(c.id);
+        a.session = null;
+        if ((!nextRun || nextRun === a) && (!recovering || recovering === a)) {
+          try { if (session?.shutdown) await session.shutdown(); else if (session?.kill) await session.kill(); }
+          catch (error) { this.log('Conversation startup shutdown failed: ' + error.message); }
+        }
+        if (!a.finished) this.capture(engine, { type: 'result', subtype: 'stopped', result: '', conversationId: a.activeKey || c.id });
+        return { ok: true, runId: a.facade.gen, sessionId: c.id, userSeq: a.userSeq, done: a.done };
+      }
       // A native background task started in this request must still resolve to
       // this user turn if it finishes after another message or with no run open.
       if (Number.isSafeInteger(a.userSeq)) a.session.subagentUserSeq = a.userSeq;
+      a.diagnosticStage = 'stream';
       if (!a.session.sendUserMessage(prompt, payload.attachments || [])) throw new Error('Engine did not accept the message');
       if (a.titleDeferred && this.drivers[engine]?.titleDuringTurn)
         void this.titleFromFirstMessage(c, { engine, settings: a.contextSettings, duringTurn: true });
       return { ok: true, runId: a.facade.gen, sessionId: c.id, userSeq: a.userSeq, done: a.done };
     } catch (error) {
+      if (a.cancelled || a.finished || this.items.get(c.id) !== c) {
+        if (!a.finished) this.capture(engine, { type: 'result', subtype: 'stopped', result: '', conversationId: a.activeKey || c.id });
+        return { ok: true, runId: a.facade.gen, sessionId: c.id, userSeq: a.userSeq, done: a.done };
+      }
       const goal = this.goals.get(c.id);
       if (goal?.armed && goal.ownedSession() === a.facade) goal.block('session-unavailable', error.message);
       if (this.active.get(a.activeKey || c.id) === a) this.capture(engine, { type: 'result', subtype: 'error', is_error: true,
@@ -2480,6 +2533,7 @@ class SharedConversations {
     this.onEvent({ type: 'conversation:turn-end', session_id: c.id, engine });
   }
   captureRun(a, engine, event) {
+    a.firstEventMs ??= Date.now() - a.startedAt;
     event = retainEvent(event, path.join(this.dir, 'tool-output', a.c.id));
     if (['gui:tool', 'gui:permission', 'gui:plan'].includes(event.type)
         || event.type === 'assistant' && event.message?.content?.length
@@ -2707,7 +2761,7 @@ class SharedConversations {
         && prevDelta?.type === delta.type && typeof delta[key] === 'string' && typeof prevDelta[key] === 'string') {
         prevDelta[key] += delta[key]; prev.eventSeq = out.eventSeq;
       } else if (!replaceToolSnapshot(a.events, out)) a.events.push(structuredClone(out));
-      if (event.type !== 'result') { this.onEvent(out); managedSubagents.notify(this, c.id); }
+      if (event.type !== 'result') { this.onEvent(out); managedSubagents.notify(this, c.id, event); }
     } else if (event.type === 'gui:permission') this.onEvent({ ...out, handoff: true });
     if (event.type === 'result') {
       const output = Array.isArray(event.outputBlocks) ? { outputBlocks: event.outputBlocks } : {};
@@ -2754,6 +2808,11 @@ class SharedConversations {
       a.facade.running = false; this.active.delete(a.activeKey || c.id);
       if (!a.internal && c.interrupted) this.remoteQueue?.pause(c.id);
       a.finished = true;
+      if (!a.internal) this.log.verbose?.('conversation turn: ' + JSON.stringify({ sessionId: c.id, engine,
+        runId: out.runId, eventSeq: out.eventSeq, durationMs: Date.now() - a.startedAt,
+        ...(Number.isFinite(a.prepareMs) ? { prepareMs: a.prepareMs } : {}),
+        ...(Number.isFinite(a.firstEventMs) ? { firstEventMs: a.firstEventMs } : {}),
+        stage: a.diagnosticStage || 'stream', status: event.subtype || 'success', isError: event.is_error === true }));
       if (a.titleDeferred && !a.cancelled && event.subtype !== 'stopped') {
         a.titleDeferred = false;
         void this.titleFromFirstMessage(c, { engine, settings: a.contextSettings });
@@ -2955,6 +3014,7 @@ class SharedConversations {
     const a = recovery || this.active.get(id);
     if (a && !a.cancelled) {
       a.cancelled = true;
+      a.findController?.abort();
       for (const abort of a.webCalls || []) abort.abort();
       if (a.facade.running) {
         try { a.session?.interrupt(); } catch (error) { this.log('Conversation interrupt failed: ' + error.message); }
@@ -3005,6 +3065,7 @@ class SharedConversations {
   async deleteConversation(id) {
     this.get(id);
     if (this.deleting.has(id)) throw new Error('This conversation is already being deleted');
+    this.findControllers.get(id)?.abort(new Error('Conversation changed while searching. Run the search again.'));
     this.deleting.add(id);
     try {
       if (this.workInProgress(id) || this.stopping.has(id)) {
@@ -3611,7 +3672,7 @@ class SharedConversations {
             const closing = this.drivers[engine].sessions?.pendingRelease({ conversationId: id });
             if (closing) await withLimit(closing);
             if (switching.cancelled || recovery?.cancelled) throw new Error('Compaction canceled');
-            session = this.drivers[engine].ensure({ conversationId: id, sessionId: segment.nativeId, workspaceId: null,
+            session = await this.drivers[engine].ensure({ conversationId: id, sessionId: segment.nativeId, workspaceId: null,
               cwd: c.cwd, settings: nativeSettings, goalBridge: this.goalBridges.get(id) });
             switching.session = session;
             let progressing = false;

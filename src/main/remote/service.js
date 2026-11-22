@@ -12,9 +12,10 @@ const { tailscaleHostname } = require('./embedded-network');
 const { LanAccess, LanDiscovery, LanIdentity, addressSignature, chooseLanAddress } = require('./lan');
 
 function createRemoteService({ dataDir, manager, networkFactory, apiRoutes = null, desktopRestart = null, getDiscussions = null, accountUsage = null,
-  guard = null, preferences = () => ({}), setComputerName = () => '', safeStorage = null, openExternal = null, log = () => {} }) {
+  guard = null, lanFirewall = null, macLanPermissions = null, preferences = () => ({}), setComputerName = () => '', safeStorage = null, openExternal = null, log = () => {} }) {
   let gateway = null, lanGateway = null, access = null, network = null, busy = false, enabled = false, closed = false;
   let lanAccess = null, lanIdentity = null, lanDiscovery = null, lanRuntime = null, lanMonitor = null, lanSignature = '';
+  let lanFirewallStatus = '';
   let startupChecked = false, monitor = null, attachmentMaintenance = null, retryDelay = 1000, retryAt = 0;
   let recovering = null, diagnosing = false, sourceDeviceId = '', sourceAddress = '';
   const tailscale = new TailscaleAPI({ file: path.join(dataDir, 'remote', 'tailscale-oauth.json'), safeStorage, openExternal });
@@ -68,6 +69,8 @@ function createRemoteService({ dataDir, manager, networkFactory, apiRoutes = nul
       port: lanRuntime?.port || null,
       fingerprint: identity.fingerprint || '',
       computerId: identity.computerId || lanAccess?.computerId?.() || '',
+      ...(lanFirewallStatus ? { firewall: lanFirewallStatus } : {}),
+      ...(macLanPermissions ? { macPermissionPanels: macLanPermissions.panels } : {}),
       ...(lanRuntime?.error ? { error: lanRuntime.error } : {}),
     };
   }
@@ -109,9 +112,7 @@ function createRemoteService({ dataDir, manager, networkFactory, apiRoutes = nul
     await stopLanGateway(true);
     const identity = lanIdentity.get();
     try {
-      // The LAN port is advertised over mDNS, so it does not need to share the
-      // virtual Tailscale authority port and can avoid unrelated port use.
-      await lanGateway.start(address, 0, {
+      await lanGateway.start(address, lanFirewall?.port ?? 0, {
         mode: 'lan',
         certificate: identity.certificate,
         privateKey: identity.privateKey,
@@ -131,6 +132,19 @@ function createRemoteService({ dataDir, manager, networkFactory, apiRoutes = nul
       lanRuntime = { error: error.message };
       throw error;
     }
+  }
+  async function syncLanFirewall(prompt) {
+    if (!lanFirewall) return;
+    const enabled = lanAccess.enabled();
+    try {
+      if (await lanFirewall.configure(enabled, { prompt })) {
+        lanFirewallStatus = '';
+        return;
+      }
+    } catch (error) {
+      log('LAN firewall configuration failed: ' + (error.code || error.name));
+    }
+    lanFirewallStatus = enabled ? 'authorization-required' : 'cleanup-required';
   }
   async function refreshLan() {
     if (closed) return;
@@ -159,8 +173,11 @@ function createRemoteService({ dataDir, manager, networkFactory, apiRoutes = nul
     clearInterval(lanMonitor);
     if (closed || !lanAccess?.enabled()) return;
     lanMonitor = setInterval(() => {
-      if (closed || !lanAccess?.enabled() || lanGateway?.server && lanSignature === addressSignature()) return;
-      void refreshLan().catch(error => log('LAN access network check failed: ' + error.message));
+      if (closed || busy || !lanAccess?.enabled()
+          || (lanGateway?.server && lanDiscovery.udp.socket && lanSignature === addressSignature())) return;
+      busy = true;
+      void refreshLan().catch(error => log('LAN access network check failed: ' + error.message))
+        .finally(() => { busy = false; });
     }, 5000);
     lanMonitor.unref();
   }
@@ -322,6 +339,13 @@ function createRemoteService({ dataDir, manager, networkFactory, apiRoutes = nul
     setSourceDeviceId,
     async command(action, payload) {
       if (closed) return { ok: false, error: 'Camellia is closing' };
+      if (action === 'lan-open-mac-settings') {
+        if (!macLanPermissions) return { ok: false, error: 'This action requires macOS' };
+        try {
+          await macLanPermissions.open(payload?.panel);
+          return { ok: true };
+        } catch (error) { return { ok: false, error: error.message }; }
+      }
       if (['tailscale-status', 'tailscale-open-credentials', 'tailscale-save', 'tailscale-remove', 'tailscale-apply-peer-relay', 'tailscale-rename-device'].includes(action)) {
         try {
           if (action !== 'tailscale-open-credentials') ++tailscaleRevision;
@@ -366,10 +390,12 @@ function createRemoteService({ dataDir, manager, networkFactory, apiRoutes = nul
             lanAccess.setEnabled(true);
             lanAccess.ensurePin();
             await refreshLan();
+            await syncLanFirewall(true);
             scheduleLanMonitor();
           } else if (action === 'lan-disable') {
             lanAccess.setEnabled(false);
             await stopLanGateway(true);
+            await syncLanFirewall(true);
             scheduleLanMonitor();
           } else if (action === 'lan-set-pin') {
             lanAccess.setPin(payload?.pin);
@@ -507,15 +533,21 @@ function createRemoteService({ dataDir, manager, networkFactory, apiRoutes = nul
       startupChecked = true;
       if (busy || enabled) return;
       busy = true;
+      let firewallCheck;
       try {
         initialize();
         if (lanAccess?.enabled()) {
           await refreshLan().catch(error => log('LAN access auto-start failed: ' + error.message));
           scheduleLanMonitor();
         }
+        if (lanFirewall) firewallCheck = syncLanFirewall(false);
         if (!hasTrustedDevices()) { guard?.pause(); return; }
         await startAccess(false);
-      } finally { busy = false; scheduleMonitor(); }
+      } finally {
+        if (firewallCheck) await firewallCheck;
+        busy = false;
+        scheduleMonitor();
+      }
     },
     updateHostname: async hostname => network?.setHostname(hostname),
     restartNetwork,

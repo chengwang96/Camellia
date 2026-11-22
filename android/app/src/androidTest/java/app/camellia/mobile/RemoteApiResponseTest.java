@@ -5,6 +5,7 @@ import java.io.*;
 import java.net.*;
 import java.nio.charset.StandardCharsets;
 import java.util.concurrent.*;
+import org.json.JSONObject;
 
 public class RemoteApiResponseTest extends InstrumentationTestCase {
     public void testNativeUnicodeAtTheExactByteLimit() throws Exception {
@@ -66,6 +67,29 @@ public class RemoteApiResponseTest extends InstrumentationTestCase {
                 });
                 assertEquals(1, snapshots.get());
                 assertEquals("GET /v1/conversations/" + id + "/events?incremental=1&historyVersion=" + version + " HTTP/1.1", server.requestLine);
+            } finally { client.cancel(); }
+        } finally { EmbeddedNetwork.setEnabled(old); }
+    }
+
+    public void testConversationEventsApplyNegotiatedLiveDeltas() throws Exception {
+        var context = getInstrumentation().getTargetContext(); EmbeddedNetwork.initialize(context);
+        boolean old = EmbeddedNetwork.enabled(); EmbeddedNetwork.setEnabled(false);
+        String id = "00000000-0000-0000-0000-000000000001";
+        String full = "{\"instanceId\":\"server\",\"cursor\":1,\"conversation\":{\"id\":\"" + id
+            + "\"},\"settings\":{\"model\":\"fixture\"},\"live\":{\"runId\":7,\"eventSeq\":1,\"text\":\"Hello\",\"process\":[{\"type\":\"tool\",\"text\":\"ready\"}]}}";
+        String patch = "{\"instanceId\":\"server\",\"cursor\":2,\"delta\":true,\"live\":{\"runId\":7,\"eventSeq\":2,\"textDelta\":\" world\",\"textBaseLength\":5,\"baseEventSeq\":1}}";
+        byte[] body = ("event: snapshot\ndata: " + full + "\n\nevent: snapshot\ndata: " + patch + "\n\n").getBytes(StandardCharsets.UTF_8);
+        try (Server server = new Server(body, "text/event-stream")) {
+            RemoteApi client = client(server); client.incremental(true); client.liveDelta(true);
+            var snapshots = new java.util.concurrent.atomic.AtomicInteger();
+            var latest = new java.util.concurrent.atomic.AtomicReference<JSONObject>();
+            try {
+                client.events(id, "a".repeat(43), value -> { latest.set(value); snapshots.incrementAndGet(); });
+                assertEquals(2, snapshots.get());
+                assertEquals("Hello world", latest.get().getJSONObject("live").getString("text"));
+                assertEquals(1, latest.get().getJSONObject("live").getJSONArray("process").length());
+                assertEquals("fixture", latest.get().getJSONObject("settings").getString("model"));
+                assertEquals("GET /v1/conversations/" + id + "/events?incremental=1&delta=live-v1 HTTP/1.1", server.requestLine);
             } finally { client.cancel(); }
         } finally { EmbeddedNetwork.setEnabled(old); }
     }

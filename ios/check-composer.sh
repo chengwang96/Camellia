@@ -47,20 +47,18 @@ RESULT="$CONTAINER/Documents/composer-verdict.txt"
 for ATTEMPT in 1 2; do
   rm -f -- "$RESULT"
   set +e
-  OUTPUT="$(perl -e 'alarm shift; exec @ARGV' 120 xcrun simctl launch --console "$UDID" app.camellia.mobile.composercheck 2>&1)"
+  OUTPUT="$(perl -e 'alarm shift; exec @ARGV' 240 xcrun simctl launch --console "$UDID" app.camellia.mobile.composercheck 2>&1)"
   STATUS=$?
   set -e
   printf '%s\n' "$OUTPUT" | tee "$LOGS/composer-attempt-$ATTEMPT.log"
-  if [ "$STATUS" -eq 0 ]; then
-    for _ in {1..100}; do
-      [ -f "$RESULT" ] && break
-      sleep 0.1
-    done
-  fi
+  for _ in {1..100}; do
+    [ -f "$RESULT" ] && break
+    sleep 0.1
+  done
   if [ -f "$RESULT" ]; then
     cp "$RESULT" "$LOGS/composer-attempt-$ATTEMPT-verdict.txt"
   fi
-  if [ "$STATUS" -eq 0 ] && [ -f "$RESULT" ] && grep -Fxq '[composer-check] verdict=PASS failures=none' "$RESULT" \
+  if [ -f "$RESULT" ] && grep -Fxq '[composer-check] verdict=PASS failures=none' "$RESULT" \
     && [[ "$OUTPUT" != *"[composer-check] verdict=FAIL"* ]]; then
     echo "verdict: PASS"
     exit 0

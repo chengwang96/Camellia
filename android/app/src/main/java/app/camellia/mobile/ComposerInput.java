@@ -135,6 +135,7 @@ final class ComposerInput extends EditorInput {
     @Override protected void onFocusChanged(boolean focused, int direction, android.graphics.Rect previous) {
         enterDown = false; held = false;
         super.onFocusChanged(focused, direction, previous);
+        if (focused) EditorFocusState.watch(this);
     }
 
     @Override public InputConnection onCreateInputConnection(EditorInfo info) {

@@ -31,6 +31,7 @@ with sync_playwright() as playwright:
     }''')
     expect(page.locator('.msg-user')).to_have_count(1)
     expect(page.locator('.failed-send')).to_contain_text('Engine unavailable')
+    expect(page.locator('.msg-user .message-actions .message-edit')).to_be_hidden()
     page.evaluate('''() => {
       document.querySelector('.failed-send span').textContent =
         'Failed to start: ' + 'Compaction summary request limit reached. '.repeat(12);

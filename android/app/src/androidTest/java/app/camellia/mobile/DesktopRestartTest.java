@@ -66,6 +66,29 @@ public class DesktopRestartTest extends InstrumentationTestCase {
         assertEquals(0, reads.get()); assertEquals(0, writes.get());
     }
 
+    public void testPairedComputerUsesConnectionSettingsWithoutAManualPinAction() throws Exception {
+        ui(() -> {
+            ComputerRoutes.configure(java.util.List.of(computer));
+            invoke("manageComputer", computer);
+            TextView summary = panel().findViewWithTag("managedComputerSummary:" + computer.optString("address"));
+            assertTrue(summary.getText().toString().contains("当前线路：Tailscale"));
+            assertFalse(((android.widget.Switch) panel().findViewWithTag("manageAutoLan")).isChecked());
+            assertNull(panel().findViewWithTag("manageLanPin"));
+            assertNull(panel().findViewWithTag("manageAddTailscale"));
+            computer.put("autoLan", true);
+            invoke("manageComputer", computer);
+            assertTrue(((android.widget.Switch) panel().findViewWithTag("manageAutoLan")).isChecked());
+            assertNull(panel().findViewWithTag("manageLanPin"));
+            assertNull(panel().findViewWithTag("manageUseTailscale"));
+
+            computer.put("address", "https://192.168.3.8:43129");
+            invoke("manageComputer", computer);
+            assertNull(panel().findViewWithTag("manageAutoLan"));
+            assertNull(panel().findViewWithTag("manageLanPin"));
+            assertNotNull(panel().findViewWithTag("manageAddTailscale"));
+        });
+    }
+
     public void testConfirmSendsOneBoundRestartAndPreservesTheComputerCredential() throws Exception {
         confirm(); waitFor(() -> writes.get() == 1 && !dialog().isShowing());
         assertEquals(1, reads.get()); assertEquals(INSTANCE, posted.getString("instanceId"));
@@ -85,7 +108,11 @@ public class DesktopRestartTest extends InstrumentationTestCase {
 
     public void testLostAcknowledgmentNeverResendsTheRestart() throws Exception {
         disconnect = true; confirm(); waitFor(() -> feedback().contains("请求结果不确定"));
-        ui(() -> { View confirm = panel().findViewWithTag("restartConfirm"); assertFalse(confirm.isEnabled()); confirm.performClick(); });
+        ui(() -> {
+            View confirm = panel().findViewWithTag("restartConfirm");
+            assertFalse(confirm.isEnabled());
+            assertFalse(confirm.performAccessibilityAction(android.view.accessibility.AccessibilityNodeInfo.ACTION_CLICK, null));
+        });
         assertEquals(1, writes.get());
     }
 

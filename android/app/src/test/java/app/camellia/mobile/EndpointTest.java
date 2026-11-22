@@ -104,6 +104,10 @@ public class EndpointTest {
         assertEquals(endpoint.origin() + events + "?incremental=1", endpoint.uri(events + "?incremental=1").toString());
         String versioned = events + "?incremental=1&historyVersion=" + "a".repeat(64);
         assertEquals(endpoint.origin() + versioned, endpoint.uri(versioned).toString());
+        String delta = events + "?incremental=1&delta=live-v1";
+        assertEquals(endpoint.origin() + delta, endpoint.uri(delta).toString());
+        String deltaVersioned = delta + "&historyVersion=" + "a".repeat(64);
+        assertEquals(endpoint.origin() + deltaVersioned, endpoint.uri(deltaVersioned).toString());
         for (String suffix : new String[]{"?incremental=1&historyVersion=short", "?incremental=1&historyVersion=" + "A".repeat(64),
                 "?historyVersion=" + "a".repeat(64), "?incremental=1&historyVersion=" + "a".repeat(64) + "&token=secret"}) {
             assertThrows(suffix, IllegalArgumentException.class, () -> endpoint.uri(events + suffix));

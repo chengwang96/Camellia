@@ -128,6 +128,39 @@ public class PairingFlowTest extends InstrumentationTestCase {
         } finally { getInstrumentation().removeMonitor(monitor); }
     }
 
+    public void testLanScanOffersPinRepairOnlyAfterExistingTrustFails() throws Exception {
+        String url = "https://192.168.3.8:43129", identity = "local-pairing-fixture";
+        ComputerStore computers = new ComputerStore(storage);
+        ui(() -> computers.save(new JSONObject().put("address", url).put("computerId", identity)
+            .put("token", "a".repeat(43)).put("lanAddress", url).put("lanFingerprint", "b".repeat(64))
+            .put("activeTransport", ComputerRoutes.LAN)));
+        for (boolean joinable : new boolean[]{false, true}) {
+            ui(() -> {
+                var discovery = MainActivity.class.getDeclaredMethod("onLanServices", java.util.List.class);
+                discovery.setAccessible(true);
+                discovery.invoke(activity, java.util.List.of(new LanDiscovery.Service(
+                    "fixture", identity, "Paired computer", url, "c".repeat(64), joinable)));
+                assertNull(DialogWindows.focused(activity));
+                assertTrue(activity.getWindow().getDecorView().findViewWithTag("lanConnect:" + identity).performClick());
+            });
+            await(() -> DialogWindows.focused(activity) != null);
+            ui(() -> {
+                var dialog = (android.app.AlertDialog) DialogWindows.focused(activity);
+                var repair = dialog.getButton(android.content.DialogInterface.BUTTON_POSITIVE);
+                assertEquals(joinable, repair.getText().toString().contains("PIN"));
+                if (joinable) assertTrue(repair.performClick()); else dialog.dismiss();
+            });
+        }
+        await(() -> DialogWindows.focused(activity) != null);
+        ui(() -> {
+            var dialog = DialogWindows.focused(activity);
+            assertNotNull(dialog.findViewById(android.R.id.message));
+            assertEquals("a".repeat(43), computers.findByComputerId(identity).getString("token"));
+            assertEquals("b".repeat(64), computers.findByComputerId(identity).getString("lanFingerprint"));
+            dialog.dismiss();
+        });
+    }
+
     public void testScannedQrReturnsFromCameraAndPairsExactlyOnce() throws Exception {
         if (!integration()) return;
         ui(() -> input("pairName").setText("Pairing scan fixture"));

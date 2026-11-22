@@ -217,16 +217,21 @@ function isDocx(pathname) {
   return path.extname(pathname).toLowerCase() === '.docx';
 }
 
-async function readDocxEdit(filePath) {
-  const stat = fs.statSync(filePath);
-  if (stat.size > MAX_FILE_BYTES) throw new Error('This Word document is too large to edit.');
-  const source = fs.readFileSync(filePath);
-  let archive;
-  try { archive = await JSZip.loadAsync(source); }
-  catch { throw new Error('This Word document is not a valid DOCX package.'); }
-  const part = archive.file(DOCUMENT_PART);
-  if (!part) throw new Error('This Word document has no main body.');
-  const content = await part.async('string');
+async function readDocxEdit(filePath, { source = null, content = null } = {}) {
+  if (source) {
+    if (source.length > MAX_FILE_BYTES) throw new Error('This Word document is too large to edit.');
+  } else {
+    if (fs.statSync(filePath).size > MAX_FILE_BYTES) throw new Error('This Word document is too large to edit.');
+    source = fs.readFileSync(filePath);
+  }
+  if (content === null) {
+    let archive;
+    try { archive = await JSZip.loadAsync(source); }
+    catch { throw new Error('This Word document is not a valid DOCX package.'); }
+    const part = archive.file(DOCUMENT_PART);
+    if (!part) throw new Error('This Word document has no main body.');
+    content = await part.async('string');
+  }
   if (Buffer.byteLength(content) > MAX_PART_BYTES) throw new Error('This Word document body is too large to edit.');
   if (/<!DOCTYPE|<!ENTITY/i.test(content)) throw new Error('Unsupported Office XML declaration.');
   const { blocks, truncated } = scanParagraphs(content);

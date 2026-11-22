@@ -18,6 +18,7 @@ const accountOptions = require('./subscription-accounts');
 const { quotaPatch, createResetCredits } = require('./codex-reset-credits');
 const weeklyProbe = require('./codex-weekly-probe');
 const { getDiscussionLaunch, buildDiscussionSpec, assertDiscussionPoolAccess } = require('./discussions/native-launch');
+const { locateRuntime } = require('../main/runtime-manager');
 const { withSessionAffinity } = require('../api/session-affinity');
 
 const MAX_TIMER_MS = 0x7fffffff;
@@ -175,7 +176,7 @@ function createCodex({ dataDir, loadConfig, saveConfig, getRoute, getModels = ()
   async function wakeSubscriptionAccount(id) {
     const entry = accountEntry(id);
     if (!entry.state.account || entry.loginId) throw new Error('Sign in to this account first');
-    const runtime = runtimes().locate('codex');
+    const runtime = await locateRuntime(runtimes(), 'codex');
     if (!runtime) throw new Error('Download Codex CLI in Settings → Engine Settings first');
     const model = (entry.state.models || []).find(model => model.isDefault)?.id || entry.state.models?.[0]?.id;
     if (!model) throw new Error('Refresh the account to load its models first');
@@ -245,7 +246,7 @@ function createCodex({ dataDir, loadConfig, saveConfig, getRoute, getModels = ()
     const value = accountEntry(id);
     if (value.removing) throw new Error('Account is being removed');
     if (!value.client || value.client.dead) {
-      const runtime = runtimes().locate('codex');
+      const runtime = await locateRuntime(runtimes(), 'codex');
       if (!runtime) throw new Error('Download Codex CLI in Settings → Engine Settings first');
       value.client = createAccountClient({ ...spec('subscription', runtime, home, undefined, undefined, id), log,
         onNotification: (method, params) => {
@@ -310,7 +311,7 @@ function createCodex({ dataDir, loadConfig, saveConfig, getRoute, getModels = ()
   const standaloneCwd = value => value.cwd || path.join(dataDir, 'codex-sessions');
   const workspaces = createSessionWorkspaces({ history, loadConfig, saveConfig, metaKey: 'codexMeta', settingsKey: 'codex',
     standaloneCwd, getSession: () => sessions.legacy, fixedCwd: false, onDetach: id => goal.detachWorkspace(id) });
-  function ensureSession(opts) {
+  async function ensureSession(opts) {
     const discussion = getDiscussionLaunch(opts, 'codex');
     assertDiscussionPoolAccess(sessions, opts, discussion);
     const current = sessions.get(opts);
@@ -342,7 +343,7 @@ function createCodex({ dataDir, loadConfig, saveConfig, getRoute, getModels = ()
       ? fastTier(accountEntry(selected.subscriptionId).state.models?.find(model => model.id === selected.model))?.id || null : null;
     if (current && !current.dead && !opts.fork && current.opts.goalBridge === opts.goalBridge && current.sessionId === (opts.sessionId || null)
       && current.opts.workspaceId === opts.workspaceId && ['cwd', 'model', 'permissionMode', 'thinkingBudget', 'connection', 'proxyUrl', 'contextWindow', 'subscriptionId', 'serviceTier'].every(key => current.settings[key] === selected[key])) return current;
-    const runtime = runtimes().locate('codex');
+    const runtime = await locateRuntime(runtimes(), 'codex');
     if (!runtime) throw new Error('Download Codex CLI in Settings → Engine Settings first');
     const launch = discussion ? buildDiscussionSpec(discussion, runtime, selected)
       : spec(selected.connection, runtime, selected.cwd, selected.model, opts.conversationId, selected.subscriptionId);
@@ -375,7 +376,7 @@ function createCodex({ dataDir, loadConfig, saveConfig, getRoute, getModels = ()
       const snapshot = path.join(targetHome, path.relative(sourceHome, forkSourcePath));
       forkSourcePath = snapshot;
     }
-    const session = ensureSession({ sessionId, conversationId, cwd, settings, goalBridge, fork: true, forkSourcePath, ...boundary });
+    const session = await ensureSession({ sessionId, conversationId, cwd, settings, goalBridge, fork: true, forkSourcePath, ...boundary });
     registerSession(session);
     try {
       await (session.ready ||= session.open());
@@ -531,7 +532,7 @@ function createCodex({ dataDir, loadConfig, saveConfig, getRoute, getModels = ()
     'send': async payload => {
       if (sessions.legacy?.running) throw new Error('Wait for the response to finish or stop it before sending another message');
       const sessionId = payload.sessionId || null;
-      const current = ensureSession({ sessionId, workspaceId: payload.workspaceId || null, fork: Boolean(payload.fork),
+      const current = await ensureSession({ sessionId, workspaceId: payload.workspaceId || null, fork: Boolean(payload.fork),
         ...(!sessionId && typeof payload.fastMode === 'boolean' ? { settings: { fastMode: payload.fastMode } } : {}) });
       return { ok: current.sendUserMessage(String(payload.prompt || ''), payload.attachments || []), runId: current.gen };
     },

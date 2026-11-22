@@ -178,7 +178,8 @@
         "NSDownloadsFolderUsageDescription": "Camellia needs access to files you choose in Downloads.",
         "NSRemovableVolumesUsageDescription": "Camellia needs access to project folders stored on removable volumes.",
         "NSNetworkVolumesUsageDescription": "Camellia needs access to project folders stored on network volumes.",
-        "NSLocalNetworkUsageDescription": "Camellia connects to paired devices, local model services, and your private network."
+        "NSLocalNetworkUsageDescription": "Camellia uses the local network to discover and connect to paired devices and local model services.",
+        "NSBonjourServices": ["_camellia._tcp"]
       }
     },
     "asarUnpack": [

@@ -97,6 +97,93 @@ test('the user bubble reuses the same footer instead of a duplicate implementati
   assert.match(shared, /message-actions/);
 });
 
+test('the latest user message can resend itself through the edit path', () => {
+  const context = {
+    editingMessage: null, sending: false,
+    conversationBusy: () => false, contextBusy: () => false,
+    beginMessageEdit(div) { context.editingMessage = { div }; },
+    resendEditedMessage(state) { context.resent = state; },
+  };
+  vm.createContext(context);
+  vm.runInContext(extract('  function resendUserMessage(', '  function messageEditErrorText('), context);
+  const div = { messageData: { seq: 3 }, querySelector: () => null };
+  context.resendUserMessage(div);
+  assert.equal(context.resent?.div, div);
+
+  const user = extract('  function addUser(', '  function showFailedSend(');
+  assert.match(user, /className = 'message-resend'/);
+  assert.match(user, /resend\.title = 'Resend message'/);
+  assert.match(user, /resend\.onclick = \(\) => resendUserMessage\(div\)/);
+  const update = extract('  function updateMessageActions(', '  function cancelMessageEdit(');
+  assert.match(update, /div === users\.at\(-1\)/);
+  assert.match(update, /message-resend/);
+  assert.match(update, /message-edit/);
+});
+
+test('a failed send keeps one edit action beside its error', () => {
+  const resend = { hidden: null };
+  const edit = { hidden: null };
+  let failed = { hidden: false };
+  const row = {
+    messageData: { seq: 3 },
+    querySelector(selector) {
+      if (selector === '.message-resend') return resend;
+      if (selector === '.message-edit') return edit;
+      if (selector === '.failed-send') return failed;
+      return null;
+    },
+  };
+  const context = {
+    chat: {
+      querySelectorAll(selector) { return selector === '.msg-user' ? [row] : []; },
+    },
+    context: { sessionId: 'failed-send' },
+    editingMessage: null, sending: false, loadingSession: false, switchingEngine: false,
+    conversationBusy: () => false,
+    handoffForCurrentSession: () => false,
+  };
+  vm.createContext(context);
+  vm.runInContext(extract('  function updateMessageActions(', '  function cancelMessageEdit('), context);
+
+  context.updateMessageActions();
+  assert.equal(resend.hidden, false);
+  assert.equal(edit.hidden, true);
+
+  failed = null;
+  context.updateMessageActions();
+  assert.equal(edit.hidden, false);
+});
+
+test('a failed turn retries from its error instead of the message footer', () => {
+  const resend = { hidden: null };
+  const edit = { hidden: null };
+  const row = {
+    messageData: { seq: 3 },
+    querySelector(selector) {
+      if (selector === '.message-resend') return resend;
+      if (selector === '.message-edit') return edit;
+      return null;
+    },
+  };
+  const context = {
+    chat: {
+      querySelectorAll(selector) {
+        return selector === '.msg-user' ? [row] : [{ dataset: { retrySeq: '3' } }];
+      },
+    },
+    context: { sessionId: 'failed-turn' },
+    editingMessage: null, sending: false, loadingSession: false, switchingEngine: false,
+    conversationBusy: () => false,
+    handoffForCurrentSession: () => false,
+  };
+  vm.createContext(context);
+  vm.runInContext(extract('  function updateMessageActions(', '  function cancelMessageEdit('), context);
+
+  context.updateMessageActions();
+  assert.equal(resend.hidden, true);
+  assert.equal(edit.hidden, false);
+});
+
 test('an attachment-only user message never draws an empty text bubble', () => {
   const render = extract('  function renderUserBubble(', '  function setUserMessageContent(');
   assert.match(render, /String\(text \|\| ''\)\.trim\(\)/);

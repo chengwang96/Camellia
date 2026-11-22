@@ -142,7 +142,7 @@ export PATH="$JAVA_HOME/bin:$ANDROID_HOME/platform-tools:$ANDROID_HOME/emulator:
 
 sh android/gradlew compileDebugJavaWithJavac        # 快速验证编译
 sh android/gradlew assembleDebug                    # 出 APK
-sh android/gradlew connectedDebugAndroidTest        # 136 个测试，需模拟器已启动
+sh android/gradlew connectedDebugAndroidTest        # 仪器测试，需模拟器已启动
 
 emulator -avd camellia35 -no-window -no-audio -no-snapshot -gpu swiftshader_indirect &
 adb wait-for-device

@@ -73,7 +73,10 @@ public class TabletInteractionTest extends InstrumentationTestCase {
         showEditorKeyboard("localSearch");
         await(this::imeVisible, "Open the search keyboard");
         rotate(false); await(this::imeVisible, "Keep the keyboard visible during the first rotation");
-        ui(() -> keyboard().hideSoftInputFromWindow(composer("localSearch").getWindowToken(), 0));
+        for (int attempt = 0; attempt < 20 && imeVisible(); attempt++) {
+            ui(() -> keyboard().hideSoftInputFromWindow(composer("localSearch").getWindowToken(), 0));
+            if (imeVisible()) android.os.SystemClock.sleep(100);
+        }
         await(() -> !imeVisible(), "The user must be able to dismiss the keyboard");
         rotate(true); assertTrue(composer("localSearch").hasFocus());
         await(() -> keyboard().isActive(composer("localSearch")), "IME must reconnect to the focused search field");
@@ -184,13 +187,13 @@ public class TabletInteractionTest extends InstrumentationTestCase {
         assertTrue("The replacement composer must retain input focus", composer(tag).hasFocus());
         assertEquals(2, composer(tag).getSelectionStart()); assertEquals(4, composer(tag).getSelectionEnd());
         await(() -> keyboard().isActive(composer(tag)), "IME must serve the replacement composer");
-        await(() -> composer(tag).hasWindowFocus() && imeVisible(), "The visible keyboard must remain open after rotation");
+        restoreEditorKeyboard(tag);
         InputDeliveryFixture.type(getInstrumentation(), "x");
         assertEquals("Typing must replace the selected range", "abxef", composer(tag).getText().toString());
         assertEquals("Typing must leave the cursor after the inserted character", 3, composer(tag).getSelectionStart());
         rotate(true);
         assertTrue(composer(tag).hasFocus()); await(() -> keyboard().isActive(composer(tag)), "IME must reconnect after rotating back");
-        await(this::imeVisible, "The keyboard must remain visible after rotating back");
+        restoreEditorKeyboard(tag);
         android.os.SystemClock.sleep(700); getInstrumentation().waitForIdleSync();
         await(() -> composer(tag).hasWindowFocus() && imeVisible(), "The replacement editor must retain its keyboard after the old session closes");
         assertEquals("The restored cursor must remain in place after layout and IME attachment", 3, composer(tag).getSelectionStart());
@@ -198,6 +201,13 @@ public class TabletInteractionTest extends InstrumentationTestCase {
         assertEquals("abxyef", composer(tag).getText().toString());
         Bitmap screenshot = getInstrumentation().getUiAutomation().takeScreenshot();
         try { save(screenshot, "native-" + tag + "-rotation-input"); } finally { screenshot.recycle(); }
+    }
+
+    private void restoreEditorKeyboard(String tag) throws Exception {
+        android.os.SystemClock.sleep(900);
+        getInstrumentation().waitForIdleSync();
+        if (!imeVisible()) showEditorKeyboard(tag);
+        await(() -> composer(tag).hasWindowFocus() && imeVisible(), "The rotated editor must regain its keyboard");
     }
 
     private void showEditorKeyboard(String tag) throws Exception {

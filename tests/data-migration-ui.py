@@ -29,8 +29,12 @@ window.dshDesktop = new Proxy({}, {get: (_target, name) => {
       ? {ok:true,needsSelection:true,file:'C:/exports/camellia.zip',categories:previewCategories,skippedEngines:previewSkippedEngines}
       : {ok:false,error:'The package has no Camellia data to import'};
     await waitForTransfer();
-    return window.importResult || {ok:true,restored:3,bytes:1200,scope};
+    const result = window.importResult || {ok:true,restored:3,bytes:1200,scope};
+    if (result.ok && scope.includes('api') && window.importedRouterState) window.routerState = window.importedRouterState;
+    return result;
   };
+  if (name === 'apiRouterGetState') return async () => ({...empty,...(window.routerState || {})});
+  if (name === 'providerInsights') return async () => ({ok:true,providers:{},keys:{},subscriptions:[]});
   if (name === 'dataDirectoryMigrate') return async () => {
     transferCalls.push({type:'directory'});
     return window.directoryResult || {ok:true,restarting:true};
@@ -47,6 +51,19 @@ window.dshDesktop = new Proxy({}, {get: (_target, name) => {
   return async () => ({...empty});
 }});
 """
+
+def assert_scope_alignment(dialog):
+    for row in dialog.locator(".import-scope").all():
+        checkbox = row.get_by_role("checkbox").bounding_box()
+        title = row.locator(".import-scope-title").bounding_box()
+        checkbox_center = checkbox["y"] + checkbox["height"] / 2
+        title_center = title["y"] + title["height"] / 2
+        assert abs(checkbox_center - title_center) <= 1, (checkbox, title)
+        for hint in row.locator(".hint:visible").all():
+            bounds = hint.bounding_box()
+            assert abs(bounds["x"] - title["x"]) <= 1, (bounds, title)
+            assert bounds["y"] >= title["y"] + title["height"], (bounds, title)
+
 
 with sync_playwright() as playwright:
     browser = playwright.chromium.launch(headless=True)
@@ -76,6 +93,7 @@ with sync_playwright() as playwright:
 
     page.locator("#exportData").click()
     expect(page.locator("#dataScopeTitle")).to_have_text("Export data")
+    assert_scope_alignment(page.locator("#importDataDialog"))
     expect(page.locator("#dataScopeAll")).to_be_checked()
     expect(page.locator("#importScopeApiHint")).to_be_hidden()
     page.locator("#dataScopeAll").uncheck()
@@ -135,6 +153,14 @@ with sync_playwright() as playwright:
     assert page.evaluate("cleanChecks") == 2
     page.evaluate("assertClean = window.originalAssertClean")
 
+    page.evaluate("""() => {
+      window.importedRouterState = {ok:true,enabled:true,port:4780,running:false,usage:{},active:{},presets:[],providers:[{
+        id:'imported-provider',type:'custom',name:'Imported provider',enabled:true,
+        baseUrl:'https://imported.example/v1',protocol:'openai',priority:0,
+        keys:[{id:'imported-key',name:'Imported key',key:'',maskedKey:'sk-imported',enabled:true}],
+        models:[{id:'imported-model',upstream:'imported-upstream',protocol:'openai'}]
+      }]};
+    }""")
     page.locator("#importData").click()
     expect(page.locator("#dataScopeTitle")).to_have_text("Import data")
     expect(page.locator("#importScopeApi")).to_be_checked()
@@ -149,6 +175,14 @@ with sync_playwright() as playwright:
     page.locator("#confirmImportData").click()
     expect(page.locator("#importData")).to_be_enabled()
     assert page.evaluate("transferCalls.at(-1)") == {"type": "import", "file": "C:/exports/camellia.zip", "scope": ["api"]}
+    page.locator('[data-view="providers"]').click()
+    expect(page.locator("#providerSummary")).to_have_text("Providers: 1 · Keys: 1")
+    expect(page.locator("#providers")).to_contain_text("Imported provider")
+    page.locator('[data-select="imported-provider"]').first.click()
+    expect(page.locator("#pName")).to_have_value("Imported provider")
+    expect(page.locator('[data-key-card="imported-key"] [data-field="name"]')).to_have_value("Imported key")
+    expect(page.locator('[data-key-card="imported-key"] [data-field="key"]')).to_have_attribute("placeholder", "sk-imported · Leave blank to keep")
+    page.locator('[data-view="data"]').click()
 
     page.evaluate("previewCategories = {settings:{files:5,bytes:2048},conversations:{files:10,bytes:5120}}")
     page.locator("#importData").click()
@@ -268,11 +302,13 @@ with sync_playwright() as playwright:
                 bottom: dialog.getBoundingClientRect().bottom
             })""")
             assert layout["fits"] and layout["left"] >= 0 and layout["right"] <= width and layout["bottom"] <= 900, layout
+            assert_scope_alignment(page.locator("#importDataDialog"))
             page.screenshot(path=str(screenshots / f"import-{language}-{width}.png"))
             page.locator("#importDataDialog .dialog-head button").click()
             expect(page.locator("#importData")).to_be_enabled()
         page.locator("#exportData").click()
         expect(page.locator("#dataScopeTitle")).to_have_text("Export data" if language == "en" else "导出数据")
+        assert_scope_alignment(page.locator("#importDataDialog"))
         expect(page.locator("#confirmImportData")).to_have_text("Export selected data" if language == "en" else "导出所选内容")
         expect(page.locator("#importDataDialog p").first).to_have_text(
             "Subscription accounts are not transferred." if language == "en" else "不迁移订阅账号。"

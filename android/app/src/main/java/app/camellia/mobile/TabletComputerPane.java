@@ -26,7 +26,7 @@ final class TabletComputerPane extends LinearLayout {
         void open(JSONObject computer);
         void test(JSONObject computer);
         void rename(JSONObject computer);
-        void lanPin(JSONObject computer);
+        void connectionSettings(JSONObject computer);
         void restart(JSONObject computer);
         void forget(JSONObject computer);
         void add();
@@ -159,9 +159,13 @@ final class TabletComputerPane extends LinearLayout {
         restart = null;
         if (expanded) {
             maintenance.addView(divider(), new LayoutParams(-1, Math.max(1, dp(1))));
-            TextView lanPin = action(tr("使用 PIN 直连", "Connect with PIN"), "tabletComputerLanPin", () -> listener.lanPin(computer));
-            lanPin.setTextSize(14); lanPin.setPadding(0, dp(12), 0, dp(12)); lanPin.setGravity(Gravity.CENTER_VERTICAL); lanPin.setTextColor(style.ink);
-            maintenance.addView(lanPin, new LayoutParams(-1, -2));
+            if (computer.has("token")) {
+                TextView connectionSettings = action(tr("连接设置", "Connection settings"), "tabletComputerConnectionSettings",
+                    () -> listener.connectionSettings(computer));
+                connectionSettings.setTextSize(14); connectionSettings.setPadding(0, dp(12), 0, dp(12));
+                connectionSettings.setGravity(Gravity.CENTER_VERTICAL); connectionSettings.setTextColor(style.ink);
+                maintenance.addView(connectionSettings, new LayoutParams(-1, -2));
+            }
             restart = action(tr("重启桌面端 Camellia", "Restart desktop Camellia"), "tabletComputerRestart", () -> listener.restart(computer));
             restart.setTextSize(14); restart.setPadding(0, dp(12), 0, dp(12)); restart.setGravity(Gravity.CENTER_VERTICAL); restart.setTextColor(style.ink); maintenance.addView(restart, new LayoutParams(-1, -2));
             TextView forget = action(tr("移除配对", "Forget pairing"), "tabletComputerForget", () -> listener.forget(computer));

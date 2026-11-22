@@ -166,7 +166,7 @@ function kimiSpawnSpec({ home, runtime, model, contextWindow = 131072, outputLim
 async function forkKimiNative({ ensureSource, targetHome, sessionId, sourceConversationId, cwd, settings, goalBridge, sourceGoalBridge, registerSession }) {
   // Kimi holds a writer lease on a loaded session. Fork through its owning
   // connection instead of trying to restore that session in a second process.
-  const session = ensureSource({ sessionId, conversationId: sourceConversationId, cwd, settings, goalBridge: sourceGoalBridge });
+  const session = await ensureSource({ sessionId, conversationId: sourceConversationId, cwd, settings, goalBridge: sourceGoalBridge });
   await (session.ready ||= session.open());
   if (!session.agentCapabilities?.sessionCapabilities?.close || !session.agentCapabilities?.sessionCapabilities?.resume)
     throw new Error('Kimi cannot safely rebind native fork tools; update its runtime');

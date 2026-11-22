@@ -1117,7 +1117,9 @@ function createClaudeSidebar({ $, context, contextBusy, canChangeContext, canRea
     toggle.setAttribute('aria-expanded', String(!collapsed));
     toggle.setAttribute('aria-label', window.CamelliaI18n.t(collapsed ? 'Expand workspace' : 'Collapse workspace'));
   };
-  $('importCancel').onclick = () => $('importMask').classList.remove('visible');
+  const closeImportDialog = () => $('importMask').classList.remove('visible');
+  $('importCancel').onclick = closeImportDialog;
+  $('importMask').addEventListener('click', event => { if (event.target === event.currentTarget) closeImportDialog(); });
   $('importBtn').addEventListener('click', () => void openImportDialog());
 
   // ---------- manual re-sync of an imported conversation ----------

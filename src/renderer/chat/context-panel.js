@@ -65,6 +65,7 @@ window.createContextPanel = ({ context, getEngine, onOpen, setStatus, openConver
   let error = '';
   let requestEpoch = 0;
   let refreshTimer = null;
+  let refreshStatic = false;
   const expanded = new Set();
   const expandedLists = new Set();
   const contents = new Map();
@@ -97,6 +98,7 @@ window.createContextPanel = ({ context, getEngine, onOpen, setStatus, openConver
   function reset() {
     clearTimeout(refreshTimer);
     refreshTimer = null;
+    refreshStatic = false;
     requestEpoch++;
     snapshot = null;
     previousSnapshot = null;
@@ -120,9 +122,10 @@ window.createContextPanel = ({ context, getEngine, onOpen, setStatus, openConver
     rewriteBlockId = null;
     lastSessionId = context.sessionId;
     render();
+    if (panelIsOpen()) refresh({ includeStatic: true });
   }
 
-  async function load() {
+  async function load({ includeStatic = true } = {}) {
     const sessionId = context.sessionId;
     if (!sessionId) {
       snapshot = null;
@@ -141,15 +144,15 @@ window.createContextPanel = ({ context, getEngine, onOpen, setStatus, openConver
           engine: getEngine(), action: 'context-snapshot',
           payload: { sessionId, ...(turnSeq ? { turnSeq } : {}) },
         }),
-        window.dshDesktop.conversationCommand({
+        includeStatic ? window.dshDesktop.conversationCommand({
           engine: getEngine(), action: 'agent-graph', payload: { sessionId },
-        }).catch(() => null),
-        window.dshDesktop.conversationCommand({
+        }).catch(() => null) : Promise.resolve(null),
+        includeStatic ? window.dshDesktop.conversationCommand({
           engine: getEngine(), action: 'context-blocks', payload: { sessionId },
-        }).catch(() => null),
-        window.dshDesktop.conversationCommand({
+        }).catch(() => null) : Promise.resolve(null),
+        includeStatic ? window.dshDesktop.conversationCommand({
           engine: getEngine(), action: 'context-memory-status', payload: { sessionId },
-        }).catch(() => null),
+        }).catch(() => null) : Promise.resolve(null),
       ]);
       if (epoch !== requestEpoch || context.sessionId !== sessionId) return;
       if (!result?.ok) throw new Error(result?.error || 'Context snapshot failed');
@@ -185,9 +188,11 @@ window.createContextPanel = ({ context, getEngine, onOpen, setStatus, openConver
         snapshotCache.set(nextPrevious.turnSeq, nextPrevious);
         while (snapshotCache.size > 32) snapshotCache.delete(snapshotCache.keys().next().value);
       }
-      graph = agentResult?.ok ? agentResult.graph : null;
-      blocks = blockResult?.ok ? blockResult.blocks || [] : [];
-      memory = memoryResult?.ok ? memoryResult : null;
+      if (includeStatic) {
+        graph = agentResult?.ok ? agentResult.graph : null;
+        blocks = blockResult?.ok ? blockResult.blocks || [] : [];
+        memory = memoryResult?.ok ? memoryResult : null;
+      }
       if (snapshot?.turnSeq) turnSeq = snapshot.turnSeq;
     } catch (failure) {
       if (epoch === requestEpoch) error = failure.message || String(failure);
@@ -199,10 +204,15 @@ window.createContextPanel = ({ context, getEngine, onOpen, setStatus, openConver
     }
   }
 
-  function refresh() {
+  function refresh({ includeStatic = false } = {}) {
     if (panel.hidden) return;
+    refreshStatic ||= includeStatic;
     clearTimeout(refreshTimer);
-    refreshTimer = setTimeout(() => { refreshTimer = null; void load(); }, 180);
+    refreshTimer = setTimeout(() => {
+      refreshTimer = null;
+      const full = refreshStatic; refreshStatic = false;
+      void load({ includeStatic: full });
+    }, 180);
   }
 
   async function expand(node) {

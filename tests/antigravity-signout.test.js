@@ -13,6 +13,10 @@ const { writeJson, readJson } = require('../src/shared/json-store');
 
 const quota = JSON.stringify({ command: { data: { groups: [{ name: 'Gemini Models', buckets: [{ window: 'weekly', remaining_fraction: 0.8 }] }] } } });
 function deferred() { let resolve; const promise = new Promise(done => { resolve = done; }); return { promise, resolve }; }
+async function waitFor(check) {
+  for (let attempt = 0; attempt < 200 && !check(); attempt++) await new Promise(resolve => setTimeout(resolve, 2));
+  assert.equal(check(), true);
+}
 function fixture(t, overrides = {}) {
   const h = createHarness(); t.after(() => h.cleanup());
   const home = h.folder('google'), cliSettingsFile = path.join(h.folder('official-cli'), 'settings.json');
@@ -66,7 +70,7 @@ test('sign-out cancels hung quota and model checks and ignores their late succes
     const result = deferred(); pending.push({ args, signal: options.signal, ...result }); return result.promise;
   } });
   const usage = account.refreshUsage(), models = account.refresh();
-  await nextTurn(); assert.equal(pending.length, 2);
+  await waitFor(() => pending.length === 2);
   await account.signOut();
   await Promise.all([usage, models]);
   assert.ok(pending.every(check => check.signal.aborted));
@@ -81,7 +85,7 @@ test('sign-out interrupts retry backoff rather than starting another attempt', a
   const { account } = fixture(t, { run: async () => { calls++; throw new Error('Unexpected EOF'); },
     sleep: () => { sleeps++; return waiting.promise; } });
   const refresh = account.refresh();
-  await nextTurn(); assert.equal(sleeps, 1);
+  await waitFor(() => sleeps === 1);
   await account.signOut(); await refresh;
   waiting.resolve(); await nextTurn();
   assert.equal(calls, 1);

@@ -1817,6 +1817,7 @@ final class AppModel: ObservableObject {
         // Every detail subscription starts with a full current snapshot. A
         // simultaneous GET would download and render the same history twice.
         session.watch(conversationId: id, incremental: access.capabilities.contains(.incrementalSnapshots),
+                      delta: access.capabilities.contains(.liveDeltas),
                       onSnapshot: { [weak self] snapshot in
             guard let self else { return }
             guard self.transcript.apply(snapshot) else { return }

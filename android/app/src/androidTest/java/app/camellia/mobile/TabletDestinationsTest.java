@@ -232,6 +232,43 @@ public class TabletDestinationsTest extends InstrumentationTestCase {
         capture("native-computer-compact-audit");
     }
 
+    public void testConnectionPreferenceSurvivesRediscoveryAfterTurningLanOff() throws Exception {
+        if (!wide()) return;
+        String lan = "https://192.168.3.8:43129", identity = "tablet-route-fixture", fingerprint = "b".repeat(64);
+        ComputerStore store = new ComputerStore(new CredentialStore(activity));
+        JSONObject paired = computer(HP, "HP").put("computerId", identity).put("lanAddress", lan)
+            .put("lanFingerprint", fingerprint).put("activeTransport", ComputerRoutes.LAN).put("lanPaired", true);
+        LanDiscovery.Service service = new LanDiscovery.Service("fixture", identity, "HP", lan, fingerprint, false);
+        ui(() -> {
+            store.save(paired);
+            ((java.util.List<LanDiscovery.Service>) field("lanServices")).add(service);
+            set("tabletComputerAddress", HP);
+            invoke("computersScreen");
+            find("tabletComputerMore").performClick();
+            assertNull(find("tabletComputerLanPin"));
+            find("tabletComputerConnectionSettings").performClick();
+            android.app.Dialog dialog = (android.app.Dialog) field("computerDialog");
+            android.widget.Switch automatic = dialog.findViewById(android.R.id.content).findViewWithTag("manageAutoLan");
+            assertTrue(automatic.isChecked());
+            assertEquals(lan, ComputerRoutes.route(HP).url);
+            automatic.performClick();
+            assertEquals(HP, ComputerRoutes.route(HP).url);
+            assertFalse(store.findByComputerId(identity).getBoolean("lanPreferred"));
+            ((java.util.List<LanDiscovery.Service>) field("lanServices")).add(service);
+            invoke("applyLanRoutes");
+            assertEquals(HP, ComputerRoutes.route(HP).url);
+            assertEquals(ComputerRoutes.TAILSCALE, store.findByComputerId(identity).getString("activeTransport"));
+
+            automatic.performClick();
+            assertEquals(lan, ComputerRoutes.route(HP).url);
+            ((java.util.List<?>) field("lanServices")).clear();
+            invoke("applyLanRoutes");
+            assertEquals(HP, ComputerRoutes.route(HP).url);
+            assertTrue(store.findByComputerId(identity).getBoolean("lanPreferred"));
+            dialog.dismiss();
+        });
+    }
+
     private void assertNavigationLabelsFit(View view) {
         if (view instanceof TextView) {
             TextView label = (TextView) view;

@@ -798,6 +798,30 @@ $('exportUsage').onclick = () => {
   const link = document.createElement('a'); link.href = url; link.download = `workbench-usage-${localDay(new Date())}.csv`; link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
 };
 $('openLogs').onclick = () => api.openLogs();
+function renderVerboseLogging(enabled, failed = false) {
+  const t = window.CamelliaI18n.t;
+  $('verboseLogging').checked = enabled === true;
+  $('verboseLoggingStatus').classList.toggle('error', failed);
+  $('verboseLoggingStatus').textContent = t(failed ? 'Could not save the detailed logging preference. The previous setting is still active.'
+    : enabled ? 'On' : 'Off');
+}
+$('verboseLogging').addEventListener('change', async () => {
+  const control = $('verboseLogging'), enabled = control.checked;
+  control.disabled = true;
+  $('verboseLoggingStatus').classList.remove('error');
+  $('verboseLoggingStatus').textContent = window.CamelliaI18n.t('Saving detailed logging preference…');
+  try {
+    const result = await api.workbenchSaveSettings({ verboseLogging: enabled });
+    if (!result.ok) throw new Error(result.error);
+    renderVerboseLogging(enabled);
+    status('Preferences saved');
+  } catch (error) {
+    renderVerboseLogging(!enabled, true);
+    status(window.CamelliaI18n.t(error.message), true);
+  } finally {
+    control.disabled = false;
+  }
+});
 
 // Move the profile to another install, folder or computer. Both directions are
 // explicit and the page reports real progress; importing overwrites matching
@@ -894,6 +918,7 @@ const importData = async file => {
     if (result.canceled) { $('dataMigrationStatus').hidden = true; $('dataMigrationStatus').textContent = migrationIdle(); }
     else if (!result.ok) throw new Error(result.error + (result.recoveryRequired && result.backupDir ? '\nBackup directory: ' + result.backupDir : ''));
     else {
+      if (Array.isArray(result.scope) && result.scope.includes('api')) await refresh();
       $('dataMigrationProgress').value = 100;
       const scope = scopeLabel(result.scope);
       const restart = Array.isArray(result.scope) && result.scope.some(kind => kind !== 'api');
@@ -1760,6 +1785,7 @@ async function refreshPreferences() {
     $('conversationSessionTtl').value = String(preferences.conversations?.sessionTtlMinutes ?? 30);
     $('conversationSessionLimit').value = String(preferences.conversations?.sessionLimit ?? 4);
     $('dataPath').textContent = preferences.dataPath; $('version').textContent = 'v' + preferences.version;
+    renderVerboseLogging(preferences.verboseLogging === true);
     renderDataDirectory(preferences.dataDirectory);
     renderPluginCacheMaintenance(preferences.pluginCacheMaintenance);
   } catch (error) { status(error.message, true); }

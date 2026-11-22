@@ -10,7 +10,7 @@ window.createWorkPanel = ({ context, setStatus, openFilePreview, shouldFollow, g
   const renderedCards = new Map(), childFileRequests = new Map();
   const files = window.CamelliaArtifacts.artifactStore();
   const drafts = new Map(), expanded = new Map(), detailExpanded = new Map(), scrollPositions = new Map();
-  let renderedView = null, footerKey = null;
+  let renderedView = null, renderedKey = null, footerKey = null;
   const header = toggle.closest('.main-header');
   if (header) {
     const place = () => panel.style.setProperty('--work-panel-top', header.offsetHeight + 8 + 'px');
@@ -18,6 +18,7 @@ window.createWorkPanel = ({ context, setStatus, openFilePreview, shouldFollow, g
   }
   const taskKey = task => task.engine + ':' + task.id;
   const orderedTasks = items => [...items.filter(task => task.status !== 'completed'), ...items.filter(task => task.status === 'completed')];
+  const taskPreview = task => task.status === 'completed' ? task.result || task.progress || task.goal : task.progress || task.goal;
   const fileKey = file => window.CamelliaArtifacts.artifactPath(file.canonicalPath || file.path, window.dshDesktop.platform);
   const addFile = (file, origin) => files.set({ ...file, origin }, window.dshDesktop.platform);
   const el = (tag, cls, text) => { const node = document.createElement(tag); node.className = cls; if (text != null) node.textContent = text; return node; };
@@ -153,9 +154,10 @@ window.createWorkPanel = ({ context, setStatus, openFilePreview, shouldFollow, g
   function taskRow(task) {
     const row = button('', () => { selected = taskKey(task); setOpen(true); render(); }, 'work-task');
     row.dataset.workFocus = 'task:' + taskKey(task);
+    row.dataset.taskKey = taskKey(task);
     row.dataset.state = state(task);
     const heading = el('span', 'work-task-heading'); heading.append(el('strong', '', task.title || t('Subtask')), stateBadge(task));
-    const preview = task.status === 'completed' ? task.result || task.progress || task.goal : task.progress || task.goal;
+    const preview = taskPreview(task);
     row.append(heading, el('small', 'work-task-preview', preview || t('No progress reported yet')));
     const meta = el('span', 'work-task-meta', engineName(task.engine));
     if (task.approvals?.length) meta.append(el('span', 'work-attention', t('Needs attention')));
@@ -234,6 +236,27 @@ window.createWorkPanel = ({ context, setStatus, openFilePreview, shouldFollow, g
     if (follow) scroll.scrollTop = scroll.scrollHeight;
     else if (anchor?.isConnected) scroll.scrollTop += anchor.getBoundingClientRect().top - top;
   }
+  function structureKey(task) {
+    if (task) return JSON.stringify(['detail', taskKey(task), task.status, task.title, task.goal, task.result,
+      task.contextPacket, task.settlement, task.history, task.approvals, task.canReply, task.canStop, task.engine]);
+    return JSON.stringify(['overview', tasks.map(item => [taskKey(item), item.status, item.title, item.goal,
+      item.engine, item.approvals?.length || 0, item.canStop]), [...files.values()], reviews, gitPanel?.revision?.() || 0]);
+  }
+  function updateStreaming(task) {
+    if (task) {
+      const progressText = task.status === 'completed' ? task.result || task.progress : task.progress;
+      const progress = body.querySelector('.work-progress');
+      if (!progress) return;
+      progress.dataset.state = state(task);
+      progress.querySelector('h3').textContent = t(task.status === 'completed' && task.result ? 'Result' : 'Latest progress');
+      progress.querySelector('p').textContent = progressText || t('No progress reported yet');
+      return;
+    }
+    for (const item of tasks) {
+      const row = body.querySelector(`[data-task-key="${CSS.escape(taskKey(item))}"]`);
+      if (row) row.querySelector('.work-task-preview').textContent = taskPreview(item) || t('No progress reported yet');
+    }
+  }
   function render() {
     const attention = tasks.filter(task => task.approvals?.length || task.status === 'waiting').length;
     badge.textContent = String(attention); badge.hidden = !attention; toggle.title = t('Work panel') + (attention ? ' · ' + t('Needs attention') + ' ' + attention : '');
@@ -247,6 +270,8 @@ window.createWorkPanel = ({ context, setStatus, openFilePreview, shouldFollow, g
     }
     // A streaming update must not erase a child reply or question being typed.
     if (body.contains(document.activeElement) && ['INPUT', 'TEXTAREA'].includes(document.activeElement.tagName)) return;
+    const nextView = task ? taskKey(task) : 'overview', nextKey = structureKey(task);
+    if (renderedView === nextView && renderedKey === nextKey) { updateStreaming(task); return; }
     const focused = body.contains(document.activeElement) ? document.activeElement.dataset.workFocus : null;
     if (renderedView != null) {
       scrollPositions.set(renderedView, body.scrollTop);
@@ -255,7 +280,7 @@ window.createWorkPanel = ({ context, setStatus, openFilePreview, shouldFollow, g
       for (const disclosure of body.querySelectorAll('details[data-work-disclosure]'))
         detailExpanded.set(disclosure.dataset.workDisclosure, disclosure.open);
     }
-    body.replaceChildren(); renderedView = task ? taskKey(task) : 'overview';
+    body.replaceChildren(); renderedView = nextView; renderedKey = nextKey;
     if (task) {
       body.append(button('Back to overview', () => { selected = null; render(); }, 'work-back'));
       const heading = el('div', 'work-detail-heading'), identity = el('div', 'work-detail-identity');
@@ -354,12 +379,12 @@ window.createWorkPanel = ({ context, setStatus, openFilePreview, shouldFollow, g
     tasks = pendingTasks; pendingTasks = null;
     render(); renderCards(); void childFiles();
   }
-  window.addEventListener('camellia:language', () => { render(); renderCards(); });
+  window.addEventListener('camellia:language', () => { renderedKey = null; render(); renderCards(); });
   return {
     reset() {
       epoch++; clearTimeout(updateTimer); updateTimer = null; pendingTasks = null; tasks = [];
       reviews = []; files.clear(); drafts.clear(); expanded.clear(); detailExpanded.clear(); scrollPositions.clear();
-      childFileRequests.clear(); renderedView = null; selected = null; gitPanel?.reset(); render(); renderCards();
+      childFileRequests.clear(); renderedView = null; renderedKey = null; selected = null; gitPanel?.reset(); render(); renderCards();
     },
     update(value) {
       pendingTasks = orderedTasks(value || []);

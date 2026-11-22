@@ -12,6 +12,7 @@ const path = require('node:path');
 const patchDsh = require('../../integrations/dsh/patch.cjs');
 const { createDownloadConnection, chooseDownloadConnection } = require('./download-network');
 const { upgradePythonRuntime } = require('./python-runtime');
+const { locateRuntime } = require('./runtime-manager');
 const { latestAntigravityCli, upgradeAntigravityCli, manifestUrl } = require('./antigravity-cli-release');
 const { verifyKimiRuntime } = require('./kimi-runtime-check');
 
@@ -47,6 +48,7 @@ function createRuntimeUpdates({ manager, engines, node, npm, run, downloadSettin
     return { ...row, updating: pending.has(row.id), reinstalling: reinstalling.has(row.id), uninstalling: uninstalling.has(row.id),
       updateInfo: cached?.installation === installation(row) ? cached.info : null };
   });
+  const stateAsync = async () => state(manager.stateAsync ? await manager.stateAsync() : manager.state());
   const registryUrls = {
     npm: registries.npm || (pkg => `https://registry.npmjs.org/${pkg}/latest`),
     pypi: registries.pypi || (pkg => `https://pypi.org/pypi/${pkg}/json`),
@@ -86,7 +88,10 @@ function createRuntimeUpdates({ manager, engines, node, npm, run, downloadSettin
     const signature = JSON.stringify(rows.map(installation));
     if (checking?.signature === signature) return checking.task;
     const revision = ++checkRevision;
-    const task = Promise.resolve().then(() => performCheck(rows, revision)).finally(() => {
+    const task = Promise.resolve().then(async () => {
+      const current = manager.stateAsync ? await manager.stateAsync() : rows;
+      return performCheck(current, revision);
+    }).finally(() => {
       if (checking?.task === task) checking = null;
     });
     checking = { signature, task };
@@ -173,7 +178,7 @@ function createRuntimeUpdates({ manager, engines, node, npm, run, downloadSettin
   }
 
   async function perform(engine) {
-    const found = manager.locate(engine);
+    const found = await locateRuntime(manager, engine);
     if (!found) throw new Error('Download this engine before updating it');
     if (found.external) throw new Error('This CLI is installed outside Camellia. Update it using its original installer.');
     const settings = downloadSettings();
@@ -218,7 +223,7 @@ function createRuntimeUpdates({ manager, engines, node, npm, run, downloadSettin
         if (staging) {
           const backup = path.join(staging, 'previous');
           const candidate = path.join(staging, 'candidate');
-          const current = manager.locate(engine);
+          const current = await locateRuntime(manager, engine);
           if (current?.dir !== found.dir || current.version !== found.version)
             throw new Error('The installed Kimi runtime changed during verification. Check for updates again.');
           fs.renameSync(found.dir, backup);
@@ -226,7 +231,7 @@ function createRuntimeUpdates({ manager, engines, node, npm, run, downloadSettin
           try {
             fs.renameSync(candidate, found.dir);
             activated = true;
-            if (manager.locate(engine)?.version !== latest) throw new Error(`The update to v${latest} could not be activated.`);
+            if ((await locateRuntime(manager, engine))?.version !== latest) throw new Error(`The update to v${latest} could not be activated.`);
           } catch (error) {
             try {
               if (activated) fs.renameSync(found.dir, candidate);
@@ -244,7 +249,7 @@ function createRuntimeUpdates({ manager, engines, node, npm, run, downloadSettin
             python: manager.pythonSelection?.() });
         }
         else await upgradeNpmRuntime(engine, found.dir, connection, latest);
-        const updated = manager.locate(engine);
+        const updated = await locateRuntime(manager, engine);
         if (!updated || compareVersions(updated.version, latest) !== 0) throw new Error(`The update to v${latest} did not complete. Please retry.`);
         result = { ok: true, engine, from: found.version, to: latest, changed: true, restartRequired: false, restarting: false };
       } catch (error) { updateError = error; }
@@ -280,7 +285,7 @@ function createRuntimeUpdates({ manager, engines, node, npm, run, downloadSettin
     if (engine === 'dsh') patchDsh(dir);
   }
 
-  return { check, update, reinstall, uninstall, state, isUpdating: engine => pending.has(engine) };
+  return { check, update, reinstall, uninstall, state, stateAsync, isUpdating: engine => pending.has(engine) };
 }
 
 module.exports = { compareVersions, createRuntimeUpdates };

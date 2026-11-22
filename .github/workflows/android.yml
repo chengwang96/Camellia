@@ -95,8 +95,9 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version-file: .node-version
-          cache: npm
+          cache: ${{ matrix.shard == 1 && 'npm' || '' }}
       - name: Install host test dependencies
+        if: matrix.shard == 1
         run: npm ci --ignore-scripts
       - name: Prepare emulator SDK
         run: |-
@@ -179,11 +180,12 @@ jobs:
             DownloadDirectoryTest RemoteConversationStatusTest RemoteAttachmentRenderingTest RemoteKeepAliveTest
             InlineImageTest InlineImageGalleryTest RemoteApiDownloadRetryTest ChatEmptyStateTest
             LocalImageComposerTest MarkdownTest PermissionToolTest PopupCoordinatesTest
-            RemoteApiResponseTest RemoteFeedbackTest RemoteSettingsLayoutTest SettingsTest
+            RemoteApiResponseTest RemoteControlRecoveryTest RemoteSettingsLayoutTest SettingsTest
             UiConsistencyTest SettingsControlsTest SubtaskPageLayoutTest ModernSettingsLayoutTest NavigationVeilTest SettingsFeedbackTest
             ChoiceDropdownTest ComposerAttachmentOverflowTest RemoteApprovalSheetTest WorkbenchServersTest ConversationListScrollTest
             VisualizationDialogTest RemoteDownloadIntegrityTest LocalChatTest
             CardViewerTest ChatReadingTest EditorInputTest VisualizationRotationTest
+            DesktopRestartTest EmbeddedNetworkTest
           )
           tablet_classes=(
             DialogRotationTest

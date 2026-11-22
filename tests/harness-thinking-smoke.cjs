@@ -114,7 +114,7 @@ async function runCases(cases, root) {
         try {
           const done = new Promise(resolve => { pending = { engine, resolve, thinking: 0 }; });
           const settings = { connection: 'api', model: profile.model, permissionMode: 'ask', thinkingBudget: level };
-          const session = host.drivers[engine].ensure({ conversationId: randomUUID(), cwd, settings });
+          const session = await host.drivers[engine].ensure({ conversationId: randomUUID(), cwd, settings });
           assert.notEqual(session.sendUserMessage(marker + ': Reply briefly. Do not use tools.'), false);
           const result = await Promise.race([done, new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(
             `Native turn timed out: ${engine} ${profile.model} ${level || 'Default'}; captured ${requests.length - start} requests\n${logs.slice(-8).join('\n')}`)), 60000); })]);

@@ -3198,6 +3198,41 @@ test('incremental SSE resumes with a metadata-only first frame and continues aft
   assert.equal(invalid.status, 400);
 });
 
+test('live delta streams are negotiated and preserve a complete legacy format', { timeout: 8000 }, async context => {
+  const { gateway, manager, visible, pair } = fixture(context);
+  const credential = pair(); await gateway.start('127.0.0.1', 0);
+  const active = { facade: { gen: 7 }, eventSeq: 1, text: '你好🙂', assistant: [], permissions: new Map() };
+  manager.active.set(visible.id, active);
+  const legacy = await stream(gateway, visible.id, credential.token);
+  context.after(() => legacy.close());
+  const legacyFirst = await legacy.next();
+  assert.equal(legacyFirst.live.text, '你好🙂');
+  assert.equal(legacyFirst.delta, undefined);
+
+  const incremental = await stream(gateway, visible.id, credential.token, {}, '?incremental=1&delta=live-v1');
+  context.after(() => incremental.close());
+  const first = await incremental.next();
+  assert.equal(first.live.text, '你好🙂'); assert.equal(first.delta, undefined);
+  active.text += ' next'; active.eventSeq++;
+  gateway.publish({ type: 'stream_event', session_id: visible.id });
+  const patch = await incremental.next();
+  assert.equal(patch.delta, true);
+  assert.equal(patch.live.textDelta, ' next');
+  assert.equal(patch.live.textBaseLength, 4);
+  assert.equal(patch.live.baseEventSeq, 1);
+  assert.equal(patch.live.text, undefined);
+  assert.equal(patch.settings, undefined);
+  assert.equal(patch.automation, undefined);
+
+  active.text = 'replacement'; active.eventSeq++;
+  gateway.publish({ type: 'stream_event', session_id: visible.id });
+  const replacement = await incremental.next();
+  assert.equal(replacement.live.text, 'replacement');
+  assert.equal(replacement.live.textDelta, undefined);
+  const invalid = await request(gateway, `/v1/conversations/${visible.id}/events?incremental=1&delta=other`, { token: credential.token });
+  assert.equal(invalid.status, 400);
+});
+
 test('startup can be cancelled by its own ID without cancelling a later startup', async context => {
   const { manager, gateway, reader, commands, visible, pair, access } = fixture(context);
   const device = access.authenticate(pair().token); await gateway.start('127.0.0.1', 0);
@@ -3238,7 +3273,8 @@ test('journal rollover bounds retained receipts and rejects expired requests ins
   commands.entries = Array.from({ length: 4001 }, (_, index) => ({ key: device.id + ':' + (index ? require('node:crypto').randomUUID() : payload.requestId), at: Date.now(), result: { ok: true } }));
   const otherStream = { id: hidden.id, historyVersion: 'cached', dirty: false, response: { destroy() {} } };
   gateway.streams.add(otherStream);
-  gateway.publish({ sessionId: visible.id });
+  commands.save();
+  await new Promise(resolve => setTimeout(resolve, 1100));
   assert.equal(commands.entries.length, 2000); assert.notEqual(gateway.instanceId, oldInstance);
   assert.equal(otherStream.dirty, true); assert.equal(otherStream.historyVersion, undefined);
   await assert.rejects(commands.execute(device, visible.id, payload, gateway.instanceId), /Server restarted/);

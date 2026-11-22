@@ -57,6 +57,62 @@ function storeAttachments({ directory, deviceId, requestId, entries }) {
   } catch (error) { for (const entry of written) fs.unlinkSync(entry.path); throw error; }
 }
 
+async function storeDecodedAttachments({ directory, deviceId, requestId, decoded }) {
+  await fs.promises.mkdir(directory, { recursive: true, mode: 0o700 });
+  const stat = await fs.promises.lstat(directory);
+  if (!stat.isDirectory() || stat.isSymbolicLink()) fail(409, 'Attachment storage is unavailable');
+  let used = 0;
+  for (const name of await fs.promises.readdir(directory)) {
+    const entry = await fs.promises.lstat(path.join(directory, name));
+    if (!entry.isFile() || entry.isSymbolicLink()) fail(409, 'Attachment storage contains unsupported entries');
+    used += entry.size;
+  }
+  if (used + decoded.reduce((sum, entry) => sum + entry.bytes.length, 0) > 256 * 1024 * 1024) fail(409, 'Attachment storage is full; clean up on the server');
+  const written = [];
+  try {
+    for (const [index, entry] of decoded.entries()) {
+      const extension = entry.isImage ? '.jpg' : /^\.[a-zA-Z0-9]{1,12}$/.test(path.extname(entry.name)) ? path.extname(entry.name) : '.bin';
+      const file = path.join(directory, createHash('sha256').update(`${deviceId}:${requestId}:${index}`).digest('hex') + extension);
+      await fs.promises.writeFile(file, entry.bytes, { flag: 'wx', mode: 0o600 });
+      written.push({ path: file, name: entry.name, isImage: entry.isImage, size: entry.bytes.length });
+    }
+    return written;
+  } catch (error) {
+    for (const entry of written) try { await fs.promises.unlink(entry.path); } catch {}
+    throw error;
+  }
+}
+
+async function storeAttachmentsAsync({ directory, deviceId, requestId, entries }) {
+  if (!Array.isArray(entries) || !entries.length || entries.length > MAX_COUNT) fail(400, `Provide 1 to ${MAX_COUNT} attachments`);
+  const decoded = [];
+  let total = 0;
+  for (const entry of entries) {
+    const decodedEntry = decodeAttachments([entry])[0];
+    total += decodedEntry.bytes.length;
+    if (total > MAX_TOTAL) fail(413, 'Attachments exceed the 32 MiB total limit');
+    decoded.push(decodedEntry);
+    await new Promise(resolve => setImmediate(resolve));
+  }
+  return storeDecodedAttachments({ directory, deviceId, requestId, decoded });
+}
+
+async function storeImagesAsync({ directory, deviceId, requestId, images }) {
+  if (!Array.isArray(images) || !images.length || images.length > MAX_COUNT) fail(400, `Provide 1 to ${MAX_COUNT} images`);
+  const decoded = [];
+  let total = 0;
+  for (const [index, image] of images.entries()) {
+    if (typeof image !== 'string' || image.length > Math.ceil(MAX_IMAGE / 3) * 4 || !/^[A-Za-z0-9+/]+={0,2}$/.test(image)) fail(400, 'Invalid image');
+    const bytes = Buffer.from(image, 'base64');
+    if (bytes.length > MAX_IMAGE || bytes.length < 4 || bytes.toString('base64') !== image || bytes[0] !== 255 || bytes[1] !== 216 || bytes[2] !== 255 || bytes.at(-2) !== 255 || bytes.at(-1) !== 217) fail(400, 'JPEG image required');
+    total += bytes.length;
+    if (total > MAX_TOTAL) fail(413, 'Images exceed the 32 MiB total limit');
+    decoded.push({ name: `mobile-image-${index + 1}.jpg`, bytes, isImage: true });
+    await new Promise(resolve => setImmediate(resolve));
+  }
+  return storeDecodedAttachments({ directory, deviceId, requestId, decoded });
+}
+
 async function openStoredAttachment({ root, file }) {
   const source = typeof file?.path === 'string' ? file.path : file?.fullPath;
   if (typeof source !== 'string' || typeof file?.name !== 'string') fail(404, 'Attachment not found');
@@ -87,5 +143,5 @@ async function openStoredAttachment({ root, file }) {
   }
 }
 
-module.exports = { MAX_COUNT, MAX_IMAGE, MAX_FILE, MAX_TOTAL, MAX_REQUEST, attachmentName, decodeAttachments, storeAttachments,
+module.exports = { MAX_COUNT, MAX_IMAGE, MAX_FILE, MAX_TOTAL, MAX_REQUEST, attachmentName, decodeAttachments, storeAttachments, storeAttachmentsAsync, storeImagesAsync,
   openStoredAttachment };

@@ -48,7 +48,7 @@ test('invalid paths do not overwrite saved settings; missing overrides never tri
     assert.equal(setup.manager.locate('codex').file, executable);
   }
   fs.unlinkSync(executable);
-  assert.throws(() => setup.manager.ensure('codex'), /no longer exists/);
+  await assert.rejects(setup.manager.ensure('codex'), /no longer exists/);
   const row = setup.manager.state().find(entry => entry.id === 'codex');
   assert.equal(row.status, 'error');
   assert.equal(row.customPath, executable);
@@ -121,6 +121,20 @@ test('JavaScript entry points run under Node, and native engines reject script e
   assert.deepEqual(setup.calls[0], { executable: process.execPath, args: [script, '--version'] });
   await assert.rejects(setup.manager.setPath('claude', script), /native executable/);
   await assert.rejects(setup.manager.setPath('kimi', setup.file('kimi.exe')), /JavaScript/);
+});
+
+test('Python state IPC awaits automatic detection instead of reading only the cache', async context => {
+  const harness = createHarness();
+  context.after(() => harness.cleanup());
+  const manager = harness.api.migrationServices().runtimes;
+  let release, calls = 0;
+  const detected = new Promise(resolve => { release = resolve; });
+  manager.pythonStateAsync = () => { calls++; return detected; };
+  const pending = harness.call('runtime-python-state');
+  release({ file: '/detected/python', version: '3.12.4', configured: false, packages: [] });
+  const result = await pending;
+  assert.equal(result.ok, true); assert.equal(result.python.file, '/detected/python');
+  assert.equal(result.python.version, '3.12.4'); assert.equal(calls, 1);
 });
 
 test('desktop IPC persists and clears a local executable path', async context => {

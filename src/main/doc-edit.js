@@ -10,7 +10,7 @@
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { spawnSync } = require('node:child_process');
+const childProcess = require('node:child_process');
 const { createHash, randomUUID } = require('node:crypto');
 const MAX_FILE_BYTES = 64 * 1024 * 1024;
 const WORD_TIMEOUT_MS = 120_000;
@@ -18,6 +18,24 @@ const BRIDGE = path.join(__dirname, 'word-com-edit.py');
 
 function revision(bytes) {
   return createHash('sha256').update(bytes).digest('hex');
+}
+
+function execFile(file, args, options) {
+  return new Promise((resolve, reject) => {
+    childProcess.execFile(file, args, options, (error, stdout, stderr) => {
+      if (error) { error.stdout = stdout; error.stderr = stderr; reject(error); }
+      else resolve({ stdout, stderr });
+    });
+  });
+}
+
+async function fileExists(file) {
+  try { await fs.promises.access(file); return true; } catch { return false; }
+}
+
+async function removeTree(directory) {
+  if (!directory) return;
+  try { await fs.promises.rm(directory, { recursive: true, force: true }); } catch {}
 }
 
 function pythonCandidates() {
@@ -35,35 +53,43 @@ function pythonCandidates() {
 }
 
 let bridgePython;
-// Probing starts a Python process, and this is consulted on every legacy
-// preview, so the answer is cached for the lifetime of the main process.
+// Probes share one asynchronous result for the lifetime of the main process.
 function findBridgePython() {
-  if (bridgePython !== undefined) return bridgePython;
-  bridgePython = pythonCandidates().find(python => {
-    const probe = spawnSync(python, ['-c', 'import win32com.client'], { windowsHide: true, timeout: 15000, stdio: 'ignore' });
-    return probe.status === 0;
-  }) || null;
+  bridgePython ??= (async () => {
+    for (const python of pythonCandidates()) {
+      try {
+        await execFile(python, ['-c', 'import win32com.client'], { windowsHide: true, timeout: 15000, stdio: 'ignore' });
+        return python;
+      } catch {}
+    }
+    return null;
+  })();
   return bridgePython;
 }
 
-function wordBridgeAvailable() {
-  if (process.platform !== 'win32' || !fs.existsSync(BRIDGE)) return false;
-  return Boolean(findBridgePython());
+async function wordBridgeAvailable({ signal } = {}) {
+  signal?.throwIfAborted();
+  if (process.platform !== 'win32' || !await fileExists(BRIDGE)) return false;
+  const available = Boolean(await findBridgePython());
+  signal?.throwIfAborted();
+  return available;
 }
 
-function readDocSnapshot(filePath) {
-  const stat = fs.statSync(filePath);
+async function readDocSnapshot(filePath, { signal } = {}) {
+  signal?.throwIfAborted();
+  const stat = await fs.promises.stat(filePath);
   if (stat.size > MAX_FILE_BYTES) throw new Error('This document is too large to edit.');
-  const bytes = fs.readFileSync(filePath);
-  if (!wordBridgeAvailable()) throw new Error('Editing .doc files needs Microsoft Word and Python with pywin32.');
+  const bytes = await fs.promises.readFile(filePath);
+  signal?.throwIfAborted();
+  if (!await wordBridgeAvailable({ signal })) throw new Error('Editing .doc files needs Microsoft Word and Python with pywin32.');
   // The preview loads without Word; opening the editor asks Word for the exact
   // Paragraphs collection. Nothing is exposed as editable before that list
   // arrives, because a piece-table decode cannot reproduce Word's indexing.
   return { path: filePath, revision: revision(bytes), paragraphs: [], wordParagraphs: null, wordRevision: null };
 }
 
-function exactDocParagraphs(snapshot) {
-  const paragraphs = listDocParagraphs(snapshot);
+async function exactDocParagraphs(snapshot) {
+  const paragraphs = await listDocParagraphs(snapshot);
   snapshot.paragraphEditability = paragraphs.map(item => item.editable !== false);
   snapshot.wordParagraphs = paragraphs.map(item => item.text);
   snapshot.wordRevision = snapshot.revision;
@@ -73,13 +99,13 @@ function exactDocParagraphs(snapshot) {
   return snapshot.paragraphs;
 }
 
-function listDocParagraphs(snapshot) {
-  const bytes = fs.readFileSync(snapshot.path);
+async function listDocParagraphs(snapshot) {
+  const bytes = await fs.promises.readFile(snapshot.path);
   if (revision(bytes) !== snapshot.revision) throw new Error('The file changed on disk. Reopen the document before saving.');
   if (snapshot.wordRevision === snapshot.revision && Array.isArray(snapshot.wordParagraphs)) {
     return snapshot.wordParagraphs.map((text, index) => ({ text, editable: snapshot.paragraphEditability?.[index] !== false }));
   }
-  const result = runWordBridge({ path: snapshot.path, revision: snapshot.revision }, [], 60_000, true);
+  const result = await runWordBridge({ path: snapshot.path, revision: snapshot.revision }, [], 60_000, true);
   try {
     return Array.isArray(result.paragraphs)
       ? result.paragraphs.map((item, index) => {
@@ -90,24 +116,28 @@ function listDocParagraphs(snapshot) {
         return { text, editable: !marker && (typeof item === 'string' || item.editable !== false) };
       })
       : [];
-  } finally {
-    try { fs.rmSync(result.directory, { recursive: true, force: true }); } catch {}
-  }
+  } finally { await removeTree(result.directory); }
 }
 
-function runWordBridge(snapshot, edits, timeout = WORD_TIMEOUT_MS, readOnly = false, convert = null) {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'camellia-doc-bridge-'));
-  const request = path.join(directory, 'request.json');
-  fs.writeFileSync(request, JSON.stringify({ path: snapshot.path, edits, readOnly, convert }));
+async function runWordBridge(snapshot, edits, timeout = WORD_TIMEOUT_MS, readOnly = false, convert = null, signal = null) {
+  let directory;
   try {
-    const python = findBridgePython();
+    directory = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'camellia-doc-bridge-'));
+    const request = path.join(directory, 'request.json');
+    await fs.promises.writeFile(request, JSON.stringify({ path: snapshot.path, edits, readOnly, convert }));
+    const python = await findBridgePython();
     if (!python) throw new Error('Editing .doc files needs Microsoft Word and Python with pywin32.');
-    const result = spawnSync(python, ['-X', 'utf8', BRIDGE, request], {
-      windowsHide: true, timeout, encoding: 'utf8', maxBuffer: 8 * 1024 * 1024,
-    });
-    if (result.error?.code === 'ETIMEDOUT' || result.signal) throw new Error('Word took too long to save this document.');
-    if (result.error) throw new Error(result.error.message || 'Could not start the Word bridge.');
-    if (result.status !== 0) throw new Error(String(result.stderr || '').trim() || 'The Word bridge failed.');
+    let result;
+    try {
+      result = await execFile(python, ['-X', 'utf8', BRIDGE, request], {
+        windowsHide: true, timeout, encoding: 'utf8', maxBuffer: 8 * 1024 * 1024, signal,
+      });
+    } catch (error) {
+      if (error.name === 'AbortError' || error.code === 'ABORT_ERR') throw error;
+      if (error.code === 'ETIMEDOUT' || error.signal) throw new Error('Word took too long to save this document.');
+      if (typeof error.code === 'number') throw new Error(String(error.stderr || '').trim() || 'The Word bridge failed.');
+      throw new Error(error.message || 'Could not start the Word bridge.');
+    }
     let payload;
     try { payload = JSON.parse(String(result.stdout).trim().split(/\r?\n/).pop()); }
     catch { throw new Error('Word did not return a usable result.'); }
@@ -116,7 +146,7 @@ function runWordBridge(snapshot, edits, timeout = WORD_TIMEOUT_MS, readOnly = fa
     // caller still needs the bridge's request directory cleaned up.
     return { copy: payload.copy, paragraphs: payload.paragraphs, path: payload.path, directory };
   } catch (error) {
-    fs.rmSync(directory, { recursive: true, force: true });
+    await removeTree(directory);
     throw error;
   }
 }
@@ -127,70 +157,105 @@ let convertedDocuments = 0;
 // short while so the preview does not start Word on every open, and is removed
 // when the cache rotates or the process exits.
 const convertedCache = new Map();
+const convertingDocuments = new Map();
 
-function convertDocToDocx(filePath) {
-  const key = fs.realpathSync.native(filePath);
-  const stat = fs.statSync(key);
-  const cached = convertedCache.get(key);
-  if (cached && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size && fs.existsSync(cached.path)) return cached.path;
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'camellia-doc-preview-'));
-  const target = path.join(directory, `converted-${process.pid}-${++convertedDocuments}.docx`);
-  let bridgeDirectory = null;
+function conversionCancelled() {
+  const error = new Error('Document preview was cancelled');
+  error.name = 'AbortError';
+  return error;
+}
+
+async function waitForConversion(entry, signal) {
+  entry.users++;
+  let rejectAbort;
+  const cancelled = new Promise((resolve, reject) => { rejectAbort = reject; });
+  const abort = () => rejectAbort(conversionCancelled());
+  signal?.addEventListener('abort', abort, { once: true });
   try {
-    bridgeDirectory = runWordBridge({ path: key }, [], 60_000, false, target).directory;
-    if (!fs.existsSync(target)) throw new Error('Word did not produce a converted preview.');
-  } catch (error) {
-    fs.rmSync(directory, { recursive: true, force: true });
-    throw error;
+    if (signal?.aborted) abort();
+    return await Promise.race([entry.promise, cancelled]);
   } finally {
-    if (bridgeDirectory) try { fs.rmSync(bridgeDirectory, { recursive: true, force: true }); } catch {}
+    signal?.removeEventListener('abort', abort);
+    entry.users--;
+    if (!entry.users) entry.controller.abort();
   }
-  if (cached) fs.rmSync(path.dirname(cached.path), { recursive: true, force: true });
-  convertedCache.set(key, { path: target, mtimeMs: stat.mtimeMs, size: stat.size });
-  return target;
+}
+
+async function convertDocToDocx(filePath, { signal } = {}) {
+  const key = await fs.promises.realpath(filePath);
+  const stat = await fs.promises.stat(key);
+  signal?.throwIfAborted();
+  const cached = convertedCache.get(key);
+  if (cached && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size && await fileExists(cached.path)) return cached.path;
+  const pending = convertingDocuments.get(key);
+  if (pending && pending.mtimeMs === stat.mtimeMs && pending.size === stat.size && !pending.controller.signal.aborted) {
+    return waitForConversion(pending, signal);
+  }
+  const entry = { mtimeMs: stat.mtimeMs, size: stat.size, controller: new AbortController(), users: 0, promise: null };
+  entry.promise = (async () => {
+    const directory = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'camellia-doc-preview-'));
+    const target = path.join(directory, `converted-${process.pid}-${++convertedDocuments}.docx`);
+    let bridgeDirectory = null;
+    try {
+      bridgeDirectory = (await runWordBridge({ path: key }, [], 60_000, false, target, entry.controller.signal)).directory;
+      if (!await fileExists(target)) throw new Error('Word did not produce a converted preview.');
+    } catch (error) {
+      await removeTree(directory);
+      throw error;
+    } finally { await removeTree(bridgeDirectory); }
+    if (cached) await removeTree(path.dirname(cached.path));
+    convertedCache.set(key, { path: target, mtimeMs: stat.mtimeMs, size: stat.size });
+    return target;
+  })();
+  convertingDocuments.set(key, entry);
+  const clear = () => { if (convertingDocuments.get(key) === entry) convertingDocuments.delete(key); };
+  entry.promise.then(clear, clear);
+  return waitForConversion(entry, signal);
 }
 
 function clearConvertedDocuments() {
+  for (const pending of convertingDocuments.values()) pending.controller.abort();
+  convertingDocuments.clear();
   for (const cached of convertedCache.values()) {
     try { fs.rmSync(path.dirname(cached.path), { recursive: true, force: true }); } catch {}
   }
   convertedCache.clear();
 }
 
-function saveDocEdit(snapshot, edits) {
+async function saveDocEdit(snapshot, edits) {
   if (!Array.isArray(edits)) throw new Error('Invalid Word edits.');
   if (edits.some(edit => !Number.isInteger(edit?.index) || typeof edit.text !== 'string' || edit.text.includes('\0') || !edit.text.isWellFormed())) {
     throw new Error('Enter valid text without null characters.');
   }
-  const target = fs.realpathSync.native(snapshot.path);
-  if (revision(fs.readFileSync(target)) !== snapshot.revision) throw new Error('The file changed on disk. Reopen the document before saving.');
-  fs.accessSync(target, fs.constants.W_OK);
+  const target = await fs.promises.realpath(snapshot.path);
+  if (revision(await fs.promises.readFile(target)) !== snapshot.revision) throw new Error('The file changed on disk. Reopen the document before saving.');
+  await fs.promises.access(target, fs.constants.W_OK);
   // The indices were produced by Word, so saving refuses to proceed unless
   // Word has confirmed the same paragraph list for this revision.
-  exactDocParagraphs(snapshot);
+  await exactDocParagraphs(snapshot);
   for (const edit of edits) {
     if (snapshot.paragraphEditability?.[edit.index] === false) {
       throw new Error('This paragraph contains a picture or page break and cannot be edited.');
     }
   }
-  if (!edits.length) return { file: { modifiedAt: fs.statSync(target).mtimeMs }, paragraphs: snapshot.paragraphs, snapshot };
+  if (!edits.length) return { file: { modifiedAt: (await fs.promises.stat(target)).mtimeMs }, paragraphs: snapshot.paragraphs, snapshot };
 
-  const { copy, directory } = runWordBridge(snapshot, edits);
+  const { copy, directory } = await runWordBridge(snapshot, edits);
   const temporary = path.join(path.dirname(target), `.camellia-office-${randomUUID()}.tmp`);
   let replaced = false;
   try {
-    const bytes = fs.readFileSync(copy);
-    const handle = fs.openSync(temporary, 'wx', 0o600);
+    const bytes = await fs.promises.readFile(copy);
+    const handle = await fs.promises.open(temporary, 'wx', 0o600);
     try {
-      fs.writeFileSync(handle, bytes);
-      if (process.platform !== 'win32') fs.fchmodSync(handle, fs.statSync(target).mode & 0o777);
-      fs.fsyncSync(handle);
-    } finally { fs.closeSync(handle); }
-    if (revision(fs.readFileSync(target)) !== snapshot.revision) throw new Error('The file changed on disk. Reopen the document before saving.');
-    fs.renameSync(temporary, target);
+      await handle.writeFile(bytes);
+      if (process.platform !== 'win32') await handle.chmod((await fs.promises.stat(target)).mode & 0o777);
+      await handle.sync();
+    } finally { await handle.close(); }
+    if (revision(await fs.promises.readFile(target)) !== snapshot.revision) throw new Error('The file changed on disk. Reopen the document before saving.');
+    await fs.promises.rename(temporary, target);
     replaced = true;
-    const stat = fs.statSync(target);
-    const updated = { ...snapshot, path: target, revision: revision(fs.readFileSync(target)) };
+    const stat = await fs.promises.stat(target);
+    const updated = { ...snapshot, path: target, revision: revision(await fs.promises.readFile(target)) };
     updated.paragraphs = edits.reduce((paragraphs, edit) => {
       if (edit.index < paragraphs.length) paragraphs[edit.index] = edit.text;
       return paragraphs;
@@ -201,8 +266,8 @@ function saveDocEdit(snapshot, edits) {
     updated.wordRevision = null;
     return { file: { size: stat.size, modifiedAt: stat.mtimeMs }, paragraphs: updated.paragraphs, snapshot: updated };
   } finally {
-    if (!replaced) try { fs.unlinkSync(temporary); } catch {}
-    fs.rmSync(directory, { recursive: true, force: true });
+    if (!replaced) try { await fs.promises.unlink(temporary); } catch {}
+    await removeTree(directory);
   }
 }
 

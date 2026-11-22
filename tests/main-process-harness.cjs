@@ -69,13 +69,14 @@ function createHarness(existingRoot, { respondToInterrupts = false, clearGoogleC
   const sandbox = {
     require: (name) => {
       if (name === 'electron') return electron;
-      if (name === 'node:child_process') return { spawn, spawnSync: () => ({ status: 0, stdout: '' }) };
+      if (name === 'node:child_process') return { spawn, spawnSync: () => ({ status: 0, stdout: '' }),
+        execFile: (_file, _args, _options, callback) => { queueMicrotask(() => callback(null, '1.2.3\n', '')); } };
       if (name === 'node:os') return { ...os, homedir: () => home };
       if (name === 'node:fs') return mockFs;
       if (name === './runtime-manager.js' && runtimeLocator) {
         const manager = require('../src/main/runtime-manager');
         return { ...manager, createRuntimeManager: options => ({
-          ...manager.createRuntimeManager({ ...options, discoverLocal: false }), locate: runtimeLocator,
+          ...manager.createRuntimeManager({ ...options, discoverLocal: false }), locate: runtimeLocator, locateAsync: runtimeLocator,
         }) };
       }
       if (name === '../api/subscription-price-catalog' && priceFetcher) {
@@ -90,12 +91,12 @@ function createHarness(existingRoot, { respondToInterrupts = false, clearGoogleC
       return require(name);
     },
     module: { exports: {} }, __dirname: mainDir,
-    process: mockProcess, Buffer, URL, AbortSignal, console,
+    process: mockProcess, Buffer, URL, AbortSignal, AbortController, console,
     setTimeout: (fn) => { timers.set(++timerId, fn); return timerId; },
     clearTimeout: (id) => timers.delete(id),
   };
   const source = fs.readFileSync(path.join(__dirname, '..', 'src/main/main.js'), 'utf8');
-  vm.runInNewContext(source + '\nmodule.exports = { subscriptionUsage, claudeSessionMeta, resolveClaudeSessionContext, claudeGoalDrive: () => goalDriver.drive(), syncOllamaBaseUrl, retirePendingEngines, resolveClaudeRoute, claudeSpawnSpec, stopRouter: stopOllamaProxyHandle, getSession: () => claudeSessions.legacy, sharedConversations, claudeSessions, kimiSessions, codex, antigravity, dshChat, migrationServices: () => ({ runtimes: runtimes(), updates: runtimeUpdates(), appUpdates: appUpdates() }), setWindow: (w) => { mainWindow = w; }, setSettingsWindow: (w) => { settingsWindow = w; } };', sandbox, { filename: 'src/main/main.js' });
+  vm.runInNewContext(source + '\nmodule.exports = { subscriptionUsage, claudeSessionMeta, resolveClaudeSessionContext, claudeGoalDrive: () => goalDriver.drive(), syncOllamaBaseUrl, retirePendingEngines, resolveClaudeRoute, claudeSpawnSpec, stopRouter: stopOllamaProxyHandle, getSession: () => claudeSessions.legacy, sharedConversations, log, getLogWriter, claudeSessions, kimiSessions, codex, antigravity, dshChat, migrationServices: () => ({ runtimes: runtimes(), updates: runtimeUpdates(), appUpdates: appUpdates() }), setWindow: (w) => { mainWindow = w; }, setSettingsWindow: (w) => { settingsWindow = w; }, setRemoteDesktop: value => { remoteDesktop = value; } };', sandbox, { filename: 'src/main/main.js' });
   const api = sandbox.module.exports;
   api.setWindow({ isDestroyed: () => false, setTitle() {}, webContents: {
     getURL: () => require('node:url').pathToFileURL(path.join(__dirname, '..', 'src/renderer/chat/workbench.html')).href,

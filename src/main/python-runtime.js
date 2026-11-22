@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { createHash } = require('node:crypto');
 const os = require('node:os');
-const { execFileSync } = require('node:child_process');
+const { execFile, execFileSync } = require('node:child_process');
 const { writeJson } = require('../shared/json-store');
 
 // Both probes are shared with the settings UI so an interpreter saved by hand
@@ -30,9 +30,8 @@ function pythonCandidates({ platform, env, home }) {
   return directories.flatMap(dir => commands.map(({ command, prefix = [] }) => ({ file: path.join(dir, command), prefix })));
 }
 
-// One shared interpreter for every harness. Auto-detection deliberately stays
-// synchronous because it feeds the synchronous runtime state that the settings
-// page and the install prompts read.
+// Cache-only detection supports fast runtime reads. Full interpreter probes
+// run asynchronously and share work for the same file version.
 function detectSystemPython({ platform = process.platform, env = process.env, home = os.homedir(),
   probe = execFileSync, cache = new Map() } = {}) {
   for (const candidate of pythonCandidates({ platform, env, home })) {
@@ -58,6 +57,59 @@ function detectSystemPython({ platform = process.platform, env = process.env, ho
     }
     const found = cache.get(key);
     if (found) return { ...found, source: 'Detected automatically', detected: true };
+  }
+  return null;
+}
+
+const pendingPythonProbes = new WeakMap();
+
+async function detectSystemPythonAsync({ platform = process.platform, env = process.env, home = os.homedir(),
+  probe = execFile, cache = new Map() } = {}) {
+  let pending = pendingPythonProbes.get(cache);
+  if (!pending) { pending = new Map(); pendingPythonProbes.set(cache, pending); }
+  for (const candidate of pythonCandidates({ platform, env, home })) {
+    let key;
+    try {
+      if (!fs.statSync(candidate.file).isFile()) continue;
+      fs.accessSync(candidate.file, platform === 'win32' ? fs.constants.R_OK : fs.constants.X_OK);
+      key = `${candidate.file}:${fs.statSync(candidate.file).mtimeMs}:${candidate.prefix.join(' ')}`;
+    } catch { continue; }
+    if (!cache.has(key)) {
+      if (!pending.has(key)) {
+        const task = (async () => {
+          const options = { timeout: 5000, maxBuffer: 65536, windowsHide: true, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
+            env: { ...env, PYTHONUTF8: '1', PYTHONDONTWRITEBYTECODE: '1' } };
+          let found = null;
+          try {
+            const version = parsePythonVersion(await probe(candidate.file, [...candidate.prefix, '-c', PYTHON_PROBE], options));
+            if (version && Number(version.split('.')[0]) >= 3) {
+              let antigravitySdk = false;
+              try { await probe(candidate.file, [...candidate.prefix, '-c', SDK_PROBE], options); antigravitySdk = true; } catch {}
+              found = { file: candidate.file, version, antigravitySdk };
+            }
+          } catch { found = null; }
+          cache.set(key, found);
+          return found;
+        })().finally(() => pending.delete(key));
+        pending.set(key, task);
+      }
+      await pending.get(key);
+    }
+    const found = cache.get(key);
+    if (found) return { ...found, source: 'Detected automatically', detected: true };
+  }
+  return null;
+}
+
+function detectSystemPythonCached({ platform = process.platform, env = process.env, home = os.homedir(), cache = new Map() } = {}) {
+  for (const candidate of pythonCandidates({ platform, env, home })) {
+    try {
+      if (!fs.statSync(candidate.file).isFile()) continue;
+      fs.accessSync(candidate.file, platform === 'win32' ? fs.constants.R_OK : fs.constants.X_OK);
+      const key = `${candidate.file}:${fs.statSync(candidate.file).mtimeMs}:${candidate.prefix.join(' ')}`;
+      const found = cache.get(key);
+      if (found) return { ...found, source: 'Detected automatically', detected: true };
+    } catch { continue; }
   }
   return null;
 }
@@ -203,4 +255,4 @@ function globalPythonEnvironment(python, env = process.env) {
 }
 
 module.exports = { locatePythonRuntime, installPythonRuntime, upgradePythonRuntime, pythonEnvironment,
-  globalPythonEnvironment, detectSystemPython, sharedPythonSupportsSdk, pythonCandidates };
+  globalPythonEnvironment, detectSystemPython, detectSystemPythonAsync, detectSystemPythonCached, sharedPythonSupportsSdk, pythonCandidates };

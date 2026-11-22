@@ -14,6 +14,11 @@ class EditorInput extends EditText {
 
     EditorInput(Context context) { super(context); }
 
+    @Override protected void onFocusChanged(boolean focused, int direction, android.graphics.Rect previous) {
+        super.onFocusChanged(focused, direction, previous);
+        if (focused) EditorFocusState.watch(this);
+    }
+
     void prepareSelectionRestore(int start, int end) {
         restoreText = getText().toString(); restoreStart = start; restoreEnd = end;
         applyRestoredSelection();

@@ -560,3 +560,20 @@ test('cancel member verification while catalog is loading prevents a late check 
   release([{ binding: h.binding }]); await rejected;
   assert.equal(checked, 0); assert.equal(h.service.active, false);
 });
+
+test('answer events update delivery text without rereading the discussion record', async t => {
+  const h = setup(t), group = await createMembers(h.service, 1);
+  let reads = 0;
+  const get = h.service.manager.get.bind(h.service.manager);
+  h.service.manager.get = id => { reads++; return get(id); };
+  const events = [];
+  h.service.onEvent = event => events.push(event);
+  h.service.publish(group.id, { type: 'answer', deliveryId: 'delivery-1', text: 'Incremental text' });
+  assert.equal(reads, 0);
+  assert.equal(events[0].summary, undefined);
+  h.service.publish(group.id, { type: 'phase', phase: 'answer' });
+  assert.equal(reads, 1);
+  assert.equal(events[1].summary.id, group.id);
+  assert.equal(events[1].summary.lastMessageAt, group.lastMessageAt);
+  await h.service.shutdown();
+});

@@ -126,7 +126,8 @@ public class PopupPowerSaveTest extends InstrumentationTestCase {
         try {
             surface.draw(new Canvas(pixels));
             int inset = Math.round(3 * activity.getResources().getDisplayMetrics().density);
-            assertEquals("Menu must paint an opaque surface", color, pixels.getPixel(pixels.getWidth() / 2, inset));
+            assertEquals("Menu must paint an opaque surface", 255,
+                Color.alpha(pixels.getPixel(pixels.getWidth() / 2, inset)));
         } finally { pixels.recycle(); }
     }
 

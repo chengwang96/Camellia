@@ -118,7 +118,7 @@ class NativeActivity {
       if (adapter.active.has(identity.runtimeId) || adapter.driver.sessions.get(opts)) throw new Error('Native runtime is already occupied');
       adapter.active.set(identity.runtimeId, this); adapter.owned.add(identity.runtimeId);
       this.claimed = true;
-      try { this.session = adapter.driver.ensure({ ...opts, settings }); }
+      try { this.session = await adapter.driver.ensure({ ...opts, settings }); }
       catch (error) { this.session = adapter.driver.sessions.get(opts); throw error; }
       const session = this.session;
       if (!session || adapter.driver.sessions.get(opts) !== session || !Number.isSafeInteger(session.gen)) throw new Error('Invalid native discussion session');

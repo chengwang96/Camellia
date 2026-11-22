@@ -13,10 +13,10 @@ const children = (node, name) => Array.from(node.childNodes || []).filter(child 
 const descendants = (node, name) => Array.from(node.getElementsByTagName('*')).filter(child => child.localName === name);
 const runs = node => descendants(node, 't').map(part => part.textContent).join('');
 
-async function readOfficePreview(filePath, kind, language = 'en') {
+async function readOfficePreview(filePath, kind, language = 'en', { source = null, wordSource = null } = {}) {
   if (!['word', 'presentation', 'spreadsheet'].includes(kind)) throw new Error('Unsupported Office preview format.');
   if (fs.statSync(filePath).size > 100 * 1024 * 1024) throw new Error('This Office file is too large to preview.');
-  const archive = await unzipper.Open.file(filePath);
+  const archive = source ? await unzipper.Open.buffer(source) : await unzipper.Open.file(filePath);
   if (archive.files.length > 10000) throw new Error('This Office file is too large to preview.');
   const entries = new Map(archive.files.map(entry => [entry.path, entry]));
   const documents = new Map();
@@ -48,6 +48,7 @@ async function readOfficePreview(filePath, kind, language = 'en') {
     const data = await bytes(name, optional);
     if (!data) return null;
     const source = data.toString('utf8');
+    if (name === 'word/document.xml' && wordSource) wordSource.content = source;
     if (/<!DOCTYPE|<!ENTITY/i.test(source)) throw new Error('Unsupported Office XML declaration.');
     const document = new DOMParser({ onError(level, message) { if (level !== 'warning') throw new Error(message); } }).parseFromString(source, 'text/xml');
     documents.set(name, document);

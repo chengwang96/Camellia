@@ -6797,12 +6797,15 @@ do {
                "failure and concurrent export tests never overwrite an existing document")
 } catch { failures.append("download directory: \(error)") }
 
-for path in ["/v1/commands/\(uuid)", "/v1/conversations/\(uuid)/events?incremental=1"] {
+for path in ["/v1/commands/\(uuid)", "/v1/conversations/\(uuid)/events?incremental=1",
+             "/v1/conversations/\(uuid)/events?incremental=1&delta=live-v1"] {
     check(endpoint.isAllowed(path: path), "allow Android recovery endpoint \(path)")
 }
 for path in ["/v1/commands/\(uuid)?token=x", "/v1/commands/\(uuid)/other",
              "/v1/conversations/\(uuid)/events?incremental=0",
-             "/v1/conversations/\(uuid)/events?incremental=1&extra=1"] {
+             "/v1/conversations/\(uuid)/events?incremental=1&extra=1",
+             "/v1/conversations/\(uuid)/events?incremental=1&delta=other",
+             "/v1/conversations/\(uuid)/events?incremental=1&delta=live-v1&delta=live-v1"] {
     check(!endpoint.isAllowed(path: path), "recovery endpoint rejects extra query/path \(path)")
 }
 let recoveryCaps = RemoteCapabilities(["command-receipts", "incremental-snapshots", "stop-start"])
@@ -7065,6 +7068,23 @@ do {
     check(try !store.saveAccountUsage(json, for: a), "late usage response cannot overwrite rotated pairing")
     try store.remove(a.address)
     check(try !store.saveAccountUsage(json, for: a), "late usage response cannot restore a forgotten pairing")
+}
+
+do {
+    let base = try! JSONBody.object(Data(#"{"instanceId":"A","cursor":1,"settings":{"model":"fixture"},"live":{"runId":7,"eventSeq":1,"text":"Hello","process":[{"type":"tool","text":"ready"}]}}"#.utf8))
+    let patch = try! JSONBody.object(Data(#"{"instanceId":"A","cursor":2,"delta":true,"live":{"runId":7,"eventSeq":2,"textDelta":" 世界","textBaseLength":5,"baseEventSeq":1}}"#.utf8))
+    let merged = try! RemoteDelta.merge(previous: base, patch: patch)
+    checkEqual(merged.object("live")?.text("text") ?? "", "Hello 世界", "live deltas append text to the retained base")
+    checkEqual(merged.object("live")?.objects("process").count ?? 0, 1, "live deltas retain unchanged process entries")
+    checkEqual(merged.object("settings")?.text("model") ?? "", "fixture", "live deltas retain unchanged settings")
+    let invalid = try! JSONBody.object(Data(#"{"delta":true,"live":{"runId":7,"baseEventSeq":2,"textBaseLength":5,"textDelta":"bad"}}"#.utf8))
+    do {
+        _ = try RemoteDelta.merge(previous: base, patch: invalid)
+        check(false, "a mismatched live delta must force a fresh snapshot")
+    } catch {
+        check(true, "a mismatched live delta must force a fresh snapshot")
+    }
+    check(RemoteCapabilities(["live-deltas"]).contains(.liveDeltas), "the live delta capability is decoded")
 }
 
 if failures.isEmpty {

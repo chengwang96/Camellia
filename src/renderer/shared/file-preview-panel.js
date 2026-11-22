@@ -71,7 +71,13 @@ window.CamelliaFilePreview = { closeTextEditors: closeTextPreviewEditors, create
   $('fileViewerReveal').before(editButton);
   let previewedFile = null;
   let previewRequest = 0;
+  let pendingPreviewId = null;
   let previewLocation = {};
+  function cancelPendingPreview() {
+    const id = pendingPreviewId;
+    pendingPreviewId = null;
+    if (id) void Promise.resolve(window.dshDesktop.previewFileCancel?.(id)).catch(() => {});
+  }
   let textEditor = null;
   let wordEditor = null;
   let markdownRender = null;
@@ -883,14 +889,18 @@ window.CamelliaFilePreview = { closeTextEditors: closeTextPreviewEditors, create
       renderSavedPreview();
     }
     beforeOpen();
+    cancelPendingPreview();
+    const requestId = window.crypto?.randomUUID?.() || 'preview-' + Date.now() + '-' + Math.random().toString(36).slice(2);
+    pendingPreviewId = requestId;
     fileViewer.dataset.mode = 'preview';
     $('fileViewerReveal').hidden = false;
     $('fileViewerExternal').hidden = false;
     editButton.disabled = true;
     const request = ++previewRequest;
     let result;
-    try { result = await window.dshDesktop.previewFile(filePath); }
+    try { result = await window.dshDesktop.previewFile(filePath, requestId); }
     catch (error) { result = { ok: false, error: error.message }; }
+    finally { if (pendingPreviewId === requestId) pendingPreviewId = null; }
     if (request !== previewRequest) return;
     editButton.disabled = false;
     if (!result?.ok) {
@@ -940,6 +950,7 @@ window.CamelliaFilePreview = { closeTextEditors: closeTextPreviewEditors, create
     if (wordEditor && !await finishWordEdit()) return false;
     if (textEditor && !await finishTextEdit()) return false;
     previewRequest++;
+    cancelPendingPreview();
     markdownRender?.controller?.abort();
     markdownRender = null;
     finishPreviewResize();

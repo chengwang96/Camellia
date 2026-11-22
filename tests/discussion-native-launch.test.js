@@ -85,7 +85,7 @@ function setup(t, engine) {
     return { conversationId: identity.runtimeId, cwd: root, sessionId: nativeId, settings, discussionLaunch: token };
   }
   async function open(opts) {
-    const session = driver.ensureSession(opts); await (session.ready ||= session.open()); return session;
+    const session = await driver.ensureSession(opts); await (session.ready ||= session.open()); return session;
   }
   async function release(opts) { await driver.sessions.release(opts); revokeDiscussionLaunch(opts.discussionLaunch); }
   return { root, home, state, driver, calls, specs, tokens, prepare, open, release };
@@ -117,12 +117,12 @@ test('native launch tokens cannot be forged, serialized, moved to another runtim
   for (const patch of [{ discussionLaunch: {} }, { discussionLaunch: structuredClone(opts.discussionLaunch) },
     { conversationId: randomUUID() }, { sessionId: 'other' }, { cwd: os.tmpdir() },
     { settings: { ...opts.settings, permissionMode: 'full' } }, { goalBridge: {} }, { fork: true }]) {
-    assert.throws(() => h.driver.ensureSession({ ...opts, ...patch }), /Invalid.*discussion launch/);
+    await assert.rejects(h.driver.ensureSession({ ...opts, ...patch }), /Invalid.*discussion launch/);
   }
   assert.throws(() => getDiscussionLaunch(opts, 'antigravity'), /Invalid/);
   assert.equal(h.calls.length, 0);
   await h.open(opts); await h.release(opts);
-  assert.throws(() => h.driver.ensureSession(opts), /expired discussion launch/);
+  await assert.rejects(h.driver.ensureSession(opts), /expired discussion launch/);
   assert.equal(h.calls.length, 1);
 });
 
@@ -137,20 +137,20 @@ for (const engine of ['codex', 'antigravity']) {
     assert.equal(h.driver.sessions.sessions.size, 0);
     for (const request of [{ sessionId: session.sessionId }, { conversationId: opts.conversationId },
       { conversationId: randomUUID(), sessionId: session.sessionId, fork: true }]) {
-      assert.throws(() => h.driver.ensureSession({ cwd: h.root, ...request }), /owned by a discussion/);
+      await assert.rejects(h.driver.ensureSession({ cwd: h.root, ...request }), /owned by a discussion/);
     }
     assert.equal(h.calls.length, 1);
   });
 
   test(`${engine} ordinary, cleanup and global shutdown paths retain discussion ownership until the owner releases it`, async t => {
     const h = setup(t, engine), opts = h.prepare(), session = await h.open(opts);
-    assert.throws(() => h.driver.ensureSession({ conversationId: opts.conversationId, cwd: h.root }), /owned by a discussion/);
-    assert.throws(() => h.driver.ensureSession({ sessionId: session.sessionId, cwd: h.root }), /owned by a discussion/);
-    assert.throws(() => h.driver.ensureSession({ conversationId: randomUUID(), sessionId: session.sessionId, cwd: h.root }), /owned by a discussion/);
+    await assert.rejects(h.driver.ensureSession({ conversationId: opts.conversationId, cwd: h.root }), /owned by a discussion/);
+    await assert.rejects(h.driver.ensureSession({ sessionId: session.sessionId, cwd: h.root }), /owned by a discussion/);
+    await assert.rejects(h.driver.ensureSession({ conversationId: randomUUID(), sessionId: session.sessionId, cwd: h.root }), /owned by a discussion/);
     await assert.rejects(h.driver.sessions.release({ conversationId: opts.conversationId }), /released by their owner/);
     await h.driver.shutdown();
     assert.equal(session.dead, true); assert.equal(h.driver.sessions.get(opts), session);
-    assert.throws(() => h.driver.ensureSession({ conversationId: opts.conversationId, cwd: h.root }), /owned by a discussion/);
+    await assert.rejects(h.driver.ensureSession({ conversationId: opts.conversationId, cwd: h.root }), /owned by a discussion/);
     await h.release(opts); assert.equal(h.driver.sessions.get(opts), null);
     assert.equal(h.calls.length, 1);
   });
@@ -162,7 +162,7 @@ test('Codex discussion continuation requires the recorded connection and account
   for (const request of [h.prepare('api', { nativeId }),
     h.prepare('subscription', { nativeId, settings: { subscriptionId: 'account-1' } }),
     h.prepare('subscription', { settings: { subscriptionId: 'deleted-account' } })]) {
-    assert.throws(() => h.driver.ensureSession(request), /not verified/);
+    await assert.rejects(h.driver.ensureSession(request), /not verified/);
   }
   assert.equal(h.calls.length, 1);
   const next = h.prepare('subscription', { nativeId }); await h.open(next);
@@ -172,11 +172,11 @@ test('Codex discussion continuation requires the recorded connection and account
 
 test('Antigravity discussions require the one verified subscription account and preserve the native connection', async t => {
   const h = setup(t, 'antigravity');
-  assert.throws(() => h.driver.ensureSession(h.prepare('subscription', { settings: { subscriptionId: 'account-1' } })), /not verified/);
-  assert.throws(() => h.driver.ensureSession(h.prepare('api', { nativeId: 'agy-existing' })), /connection is not verified/);
-  assert.throws(() => h.driver.ensureSession(h.prepare('subscription', { nativeId: 'api-existing' })), /connection is not verified/);
+  await assert.rejects(h.driver.ensureSession(h.prepare('subscription', { settings: { subscriptionId: 'account-1' } })), /not verified/);
+  await assert.rejects(h.driver.ensureSession(h.prepare('api', { nativeId: 'agy-existing' })), /connection is not verified/);
+  await assert.rejects(h.driver.ensureSession(h.prepare('subscription', { nativeId: 'api-existing' })), /connection is not verified/);
   fs.writeFileSync(path.join(h.home, 'google-account.json'), JSON.stringify({ models: [{ id: 'fixture-model' }], awaitingVerification: true }));
-  assert.throws(() => h.driver.ensureSession(h.prepare()), /account is not verified/);
+  await assert.rejects(h.driver.ensureSession(h.prepare()), /account is not verified/);
   assert.equal(h.calls.length, 0); assert.equal(h.specs.length, 0);
 });
 
@@ -190,9 +190,9 @@ test('incomplete policy settings and invalid or asynchronous spawn specification
     { exe: process.execPath, args: [], cwd: os.tmpdir(), env: {} },
     { exe: process.execPath, args: [], cwd: h.root },
     { exe: process.execPath, args: [null], cwd: h.root, env: {} }]) {
-    assert.throws(() => h.driver.ensureSession(h.prepare('api', { launch: { buildSpec: () => bad } })), /Invalid discussion spawn/);
+    await assert.rejects(h.driver.ensureSession(h.prepare('api', { launch: { buildSpec: () => bad } })), /Invalid discussion spawn/);
   }
-  assert.throws(() => h.driver.ensureSession(h.prepare('api', { launch: { buildSpec: async () => { throw new Error('late rejection'); } } })), /synchronous/);
+  await assert.rejects(h.driver.ensureSession(h.prepare('api', { launch: { buildSpec: async () => { throw new Error('late rejection'); } } })), /synchronous/);
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(h.calls.length, 0); assert.equal(h.driver.sessions.sessions.size, 0);
 });

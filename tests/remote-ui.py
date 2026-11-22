@@ -97,7 +97,7 @@ with sync_playwright() as playwright:
             expect(page.locator('#guardStatus')).to_have_text('守护中')
             assert page.evaluate('window.remoteTest.guard.enabled') is True
             page.locator('#guardToggle').uncheck()
-            expect(page.locator('#guardStatus')).to_have_text('未开启。')
+            expect(page.locator('#guardStatus')).to_have_text('未开启')
             page.locator('#guardToggle').check()
             page.get_by_role('button', name='关闭手机访问', exact=True).click()
             expect(page.locator('#guardStatus')).to_have_text('手机访问关闭时暂停；重新开启后自动恢复。')

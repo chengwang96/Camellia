@@ -57,6 +57,34 @@ test('remote list refreshes bound configuration reads across many conversations 
   assert.equal(counts.get(routerFile), 1);
 });
 
+test('read-only inspector commands do not wake remote subscribers', async t => {
+  const h = createHarness(undefined, { runtimeLocator: () => null });
+  t.after(() => h.cleanup());
+  h.configureApi();
+  h.api.codex.handlers['save-settings']({ connection: 'api', model: 'test-model' });
+  const manager = h.api.sharedConversations;
+  const conversation = manager.create('codex', undefined, 'Read-only inspector', h.root);
+  let publishes = 0;
+  h.api.setRemoteDesktop({ publish: () => { publishes++; } });
+  for (const action of ['context-snapshot', 'context-blocks', 'agent-graph', 'context-memory-status', 'review-list']) {
+    const result = await h.call('conversation-command', { engine: 'codex', action, payload: { sessionId: conversation.id } });
+    assert.equal(result.ok, true, action + ': ' + result.error);
+  }
+  assert.equal(publishes, 0);
+});
+
+test('stream-only events do not dirty list subscriptions', t => {
+  const gateway = new RemoteGateway({ reader: {} });
+  const home = { device: { id: 'phone' }, id: null, kind: 'conversations', dirty: false };
+  const detail = { device: { id: 'phone' }, id: 'conversation', kind: 'conversations', dirty: false };
+  gateway.streams.add(home); gateway.streams.add(detail);
+  t.after(() => { gateway.streams.clear(); clearTimeout(gateway.flushTimer); });
+  gateway.publish({ type: 'stream_event', session_id: 'conversation' });
+  assert.equal(home.dirty, false); assert.equal(detail.dirty, true);
+  gateway.publish({ type: 'result', session_id: 'conversation' });
+  assert.equal(home.dirty, true);
+});
+
 test('active output projections are shared until the run event sequence changes', () => {
   const reader = new RemoteReadModel({});
   const active = { eventSeq: 1, events: [{ type: 'stream_event', event: {

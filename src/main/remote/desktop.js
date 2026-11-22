@@ -3,6 +3,8 @@
 const path = require('node:path');
 const { EmbeddedNetwork, bundleDirectory } = require('./embedded-network');
 const { createRemoteService } = require('./service');
+const { createLanFirewall } = require('./lan-firewall');
+const { createMacLanPermissions } = require('./mac-lan-permissions');
 const { createTailnetUpdates } = require('./tailnet-updates');
 
 function createRemoteDesktop({ app, BrowserWindow, ipcMain, nativeTheme, windowChrome, manager, rendererRoot, loadConfig, getSettingsWindow = () => null, getMainWindow = () => null, networkFactory, apiRoutes = null, getDiscussions = null,
@@ -20,6 +22,8 @@ function createRemoteDesktop({ app, BrowserWindow, ipcMain, nativeTheme, windowC
   const desktopRestart = require('./desktop-restart').createDesktopRestart({ file: path.join(app.getPath('userData'), 'remote', 'desktop-restarts.json'),
     prepare: prepareRestart, restart: () => { app.relaunch(); app.quit(); }, log });
   const service = createRemoteService({ dataDir: app.getPath('userData'), manager, apiRoutes, setComputerName, getDiscussions, desktopRestart, accountUsage, guard, log,
+    lanFirewall: createLanFirewall(),
+    macLanPermissions: createMacLanPermissions({ openExternal: url => require('electron').shell.openExternal(url) }),
     safeStorage: require('electron').safeStorage, openExternal: url => require('electron').shell.openExternal(url),
     preferences: () => ({ closeToTray: loadConfig().closeToTray === true, theme: loadConfig().theme || 'system', language: loadConfig().language || 'zh-CN',
       computerName: computerName() }),

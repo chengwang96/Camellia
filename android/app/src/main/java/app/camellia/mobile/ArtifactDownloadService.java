@@ -41,13 +41,15 @@ public final class ArtifactDownloadService extends Service {
         boolean active() { return phase.equals("running"); }
     }
     private static final class Job {
-        final String name, address, token, path;
+        final String name, address, token, path, id, conversation;
         final long size;
+        final boolean discussion;
         final Uri directory;
         Uri destination;
         volatile boolean cancelled;
         Job(JSONObject file, String token, Uri target, boolean inDirectory) throws Exception {
             name = file.getString("name"); address = file.getString("address"); this.token = token;
+            id = file.getString("id"); conversation = file.getString("conversation"); discussion = file.optBoolean("discussion");
             path = "/v1/" + (file.optBoolean("discussion") ? "discussions/" : "conversations/") + file.getString("conversation") + "/artifacts/" + file.getString("id");
             new Endpoint(ComputerRoutes.route(address).url).uri(path);
             size = file.getLong("size");
@@ -210,6 +212,8 @@ public final class ArtifactDownloadService extends Service {
             finished = true;
             state = new State(job.name, job.address, state.received, job.size, phase, detail, job.destination);
             synchronized (LOCK) { if (current == job) current = null; }
+            if ("complete".equals(phase) && job.destination != null)
+                ArtifactDownloadHistory.complete(this, job.address, job.conversation, job.discussion, job.id, job.name, job.destination);
             stopForeground(STOP_FOREGROUND_REMOVE);
             getSystemService(NotificationManager.class).notify(NOTICE, notification(state));
             if (job.directory == null && job.destination != null) {

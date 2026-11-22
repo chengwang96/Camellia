@@ -6,6 +6,9 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const https = require('node:https');
+const { createLanFirewall } = require('../src/main/remote/lan-firewall');
+const { createMacLanPermissions } = require('../src/main/remote/mac-lan-permissions');
+const { createRemoteService } = require('../src/main/remote/service');
 const { RemoteAccess } = require('../src/main/remote/access');
 const { RemoteGateway } = require('../src/main/remote/gateway');
 const { DISCOVERY_MESSAGE, LanAccess, LanDiscovery, LanIdentity, LanUdpDiscovery, MAX_FAILURES, chooseLanAddress, isPrivateIPv4 } = require('../src/main/remote/lan');
@@ -16,6 +19,81 @@ function workspace(context) {
   context.after(() => removeTree(root));
   return root;
 }
+
+test('Windows LAN firewall prompts only for explicit changes and reuses existing rules', async () => {
+  const scripts = [];
+  const results = ['absent', 'absent', '', 'ready', 'ready', 'ready', '', 'absent'];
+  const firewall = createLanFirewall({
+    platform: 'win32', executable: "C:\\Users\\O'Neil\\Camellia.exe",
+    run: async (file, args) => {
+      assert.match(file, /\\System32\\WindowsPowerShell\\v1\.0\\powershell\.exe$/i);
+      scripts.push(Buffer.from(args.at(-1), 'base64').toString('utf16le'));
+      return { stdout: results.shift() };
+    },
+  });
+  assert.equal(createLanFirewall({ platform: 'darwin' }), null);
+  assert.equal(await firewall.configure(true), false);
+  assert.equal(scripts.length, 1);
+  assert.equal(await firewall.configure(true, { prompt: true }), true);
+  assert.equal(await firewall.configure(true, { prompt: true }), true);
+  assert.equal(await firewall.configure(false, { prompt: true }), true);
+  const elevatedScripts = scripts.flatMap(script => {
+    const match = script.match(/-EncodedCommand ([A-Za-z0-9+/=]+)'/);
+    return match ? [Buffer.from(match[1], 'base64').toString('utf16le')] : [];
+  });
+  assert.equal(elevatedScripts.length, 2);
+  assert.match(elevatedScripts[0], /O''Neil/);
+  assert.match(elevatedScripts[0], /\$rule.RemoteAddresses = 'LocalSubnet'/);
+  assert.match(elevatedScripts[0], /\$rule.ApplicationName = \$application/);
+  assert.ok(elevatedScripts[0].includes(`Ports = '${firewall.port}'`));
+  assert.ok(elevatedScripts[0].includes("Ports = '5353,52638'"));
+  assert.match(elevatedScripts[1], /if \(\$false\)/);
+  assert.deepEqual(results, []);
+});
+
+test('explicit LAN retry and disable handle a cancelled Windows firewall request', async context => {
+  context.mock.method(os, 'networkInterfaces', () => ({}));
+  const calls = [];
+  const dataDir = workspace(context);
+  const service = createRemoteService({
+    dataDir, manager: { workspaces: { sessionMeta: () => ({ workspaces: [] }) } },
+    networkFactory: () => ({ stop() {} }),
+    lanFirewall: { async configure(enabled, options) {
+      calls.push([enabled, options.prompt]);
+      if (calls.length === 2) throw new Error('Cancelled');
+      return true;
+    } },
+  });
+  context.after(() => service.close());
+  await service.startTrustedDevices();
+  assert.equal((await service.command('lan-enable')).result.lan.firewall, 'authorization-required');
+  assert.equal((await service.command('lan-enable')).result.lan.firewall, undefined);
+  assert.equal((await service.command('lan-disable')).result.lan.firewall, undefined);
+  assert.deepEqual(calls, [[false, false], [true, true], [true, true], [false, true]]);
+});
+
+test('macOS LAN settings open only supported system panels from local controls', async context => {
+  const opened = [];
+  const permissions = createMacLanPermissions({
+    platform: 'darwin', release: '24.1.0', openExternal: async url => opened.push(url),
+  });
+  const service = createRemoteService({
+    dataDir: workspace(context), manager: { workspaces: { sessionMeta: () => ({ workspaces: [] }) } },
+    networkFactory: () => ({ stop() {} }), macLanPermissions: permissions,
+  });
+  context.after(() => service.close());
+  assert.deepEqual((await service.command('lan-state')).result.lan.macPermissionPanels, ['firewall', 'privacy']);
+  assert.equal((await service.command('lan-open-mac-settings', { panel: 'privacy' })).ok, true);
+  assert.equal((await service.command('lan-open-mac-settings', { panel: 'firewall' })).ok, true);
+  assert.equal((await service.command('lan-open-mac-settings', { panel: 'https://example.test' })).ok, false);
+  assert.deepEqual(opened, [
+    'x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_LocalNetwork',
+    'x-apple.systempreferences:com.apple.Network-Settings.extension?Firewall',
+  ]);
+  assert.deepEqual(createMacLanPermissions({ platform: 'darwin', release: '23.6.0' }).panels, ['firewall']);
+  assert.equal(createMacLanPermissions({ platform: 'win32' }), null);
+  assert.ok(require('../package.json').build.mac.extendInfo.NSBonjourServices.includes('_camellia._tcp'));
+});
 
 function request(port, route, { method = 'GET', token, payload, host } = {}) {
   return new Promise((resolve, reject) => {
@@ -182,4 +260,9 @@ test('LAN address selection ignores virtual adapters and accepts only private ad
     Ethernet: [{ family: 'IPv4', address: '10.0.0.7', internal: false }],
   });
   assert.equal(selected, '192.168.1.7');
+  assert.equal(chooseLanAddress({
+    utun4: [{ family: 'IPv4', address: '192.168.2.1', internal: false }],
+    bridge100: [{ family: 'IPv4', address: '192.168.64.1', internal: false }],
+    en0: [{ family: 'IPv4', address: '10.0.0.8', internal: false }],
+  }), '10.0.0.8');
 });

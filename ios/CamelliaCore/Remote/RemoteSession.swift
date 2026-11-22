@@ -363,10 +363,11 @@ final class RemoteSession {
     /// established list stream are terminal; other failures retry with backoff.
     func watch(conversationId: String?,
                incremental: Bool = false,
+               delta: Bool = false,
                onSnapshot: @escaping (RemoteSnapshot) -> Void,
                onState: @escaping (RemoteStreamState) -> Void) {
         watch(conversationId: conversationId, onSnapshot: onSnapshot,
-              onState: onState, onListEvent: nil, incremental: incremental)
+              onState: onState, onListEvent: nil, incremental: incremental, delta: delta)
     }
 
     /// A list event completes after its pushed page is applied, or after a
@@ -382,14 +383,14 @@ final class RemoteSession {
                        onSnapshot: @escaping (RemoteSnapshot) -> Void,
                        onState: @escaping (RemoteStreamState) -> Void,
                        onListEvent: ((RemoteSnapshot, Bool, @escaping (Result<Void, Error>) -> Void) -> Void)?,
-                       incremental: Bool = false) {
+                       incremental: Bool = false, delta: Bool = false) {
         invalidate()
         lock.lock()
         watching = true
         let ticket = generation
         lock.unlock()
         let path = conversationId.map {
-            "/v1/conversations/\($0)/events" + (incremental ? "?incremental=1" : "")
+            "/v1/conversations/\($0)/events" + (incremental ? "?incremental=1" + (delta ? "&delta=live-v1" : "") : "")
         } ?? "/v1/conversations/events"
         // Its own queue, never the one-shot queue: this block does not return
         // until the person leaves the screen.
@@ -412,6 +413,7 @@ final class RemoteSession {
                 var streamOpened = false
                 var failure: Error?
                 do {
+                    var snapshotBase: JSONObject?
                     let handle = try self.transport.stream(path)
                     guard self.adopt(handle, ticket: ticket) else { handle.cancel(); return }
                     var reader = SseReader()
@@ -421,7 +423,9 @@ final class RemoteSession {
                             guard let body = try? JSONBody.object(Data(payload.utf8)) else {
                                 throw SessionError.invalidSnapshot
                             }
-                            let snapshot = RemoteSnapshot(body)
+                            let merged = try RemoteDelta.merge(previous: snapshotBase, patch: body)
+                            snapshotBase = merged
+                            let snapshot = RemoteSnapshot(merged)
                             let firstEvent = !streamOpened
                             if conversationId == nil { streamOpened = true }
                             if let onListEvent {

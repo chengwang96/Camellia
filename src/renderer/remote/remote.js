@@ -33,6 +33,18 @@ Object.assign(copy.zh, {
   lanSecurity: 'PIN 不会通过 mDNS 广播。家庭网络之外不建议开启新设备加入。',
   lanOnline: '运行中', lanOffline: '已关闭', lanAddress: '连接地址：',
   lanError: '启动失败',
+  lanFirewallRequired: '等待防火墙授权',
+  lanFirewallHint: '请在 Windows 确认窗口中允许 Camellia 为本地子网配置入站规则。',
+  lanFirewallRetry: '配置防火墙',
+  lanFirewallCleanup: '防火墙规则待清理',
+  lanFirewallCleanupHint: '局域网访问已关闭。请授权移除 Camellia 创建的入站规则。',
+  lanFirewallRemove: '清理防火墙规则',
+  lanListening: '正在监听',
+  lanMacPermissions: 'macOS 连接权限',
+  lanMacPrivacyHint: '首次启用时，如果 macOS 询问局域网权限，请允许 Camellia。此前拒绝过，可以在「局域网」设置中重新开启。',
+  lanMacFirewallHint: '如果防火墙询问是否允许 Camellia 接收入站连接，请选择允许。手机仍无法连入时，可在防火墙选项中检查 Camellia 的状态。',
+  lanMacPrivacy: '打开局域网权限',
+  lanMacFirewall: '打开防火墙设置',
   lanPinNeeded: '还未设置 PIN。保存一个 6 位数字后即可使用。',
   lanPinHidden: 'PIN 已设置。若系统安全存储不可用，输入新的 6 位 PIN 可以替换。',
   lanPinSaved: 'PIN 已保存。', lanPinInvalid: 'PIN 必须是 6 位数字。',
@@ -45,6 +57,18 @@ Object.assign(copy.en, {
   lanSecurity: 'The PIN is never advertised over mDNS. Leave new-device joins off outside a trusted home network.',
   lanOnline: 'Running', lanOffline: 'Off', lanAddress: 'Address: ',
   lanError: 'Start failed',
+  lanFirewallRequired: 'Firewall approval needed',
+  lanFirewallHint: 'Approve the Windows prompt to let Camellia configure inbound rules for the local subnet.',
+  lanFirewallRetry: 'Configure firewall',
+  lanFirewallCleanup: 'Firewall cleanup pending',
+  lanFirewallCleanupHint: 'Local network access is off. Approve removal of the inbound rules Camellia created.',
+  lanFirewallRemove: 'Remove firewall rules',
+  lanListening: 'Listening',
+  lanMacPermissions: 'macOS connection permissions',
+  lanMacPrivacyHint: 'If macOS asks for local network access when you first enable this feature, allow Camellia. You can change a previous denial in Local Network settings.',
+  lanMacFirewallHint: 'If the firewall asks whether Camellia may accept incoming connections, choose Allow. If your phone still cannot connect, check Camellia in Firewall Options.',
+  lanMacPrivacy: 'Open Local Network settings',
+  lanMacFirewall: 'Open Firewall settings',
   lanPinNeeded: 'No PIN yet. Save six digits before using local access.',
   lanPinHidden: 'A PIN is set. If secure storage is unavailable, enter six digits to replace it.',
   lanPinSaved: 'PIN saved.', lanPinInvalid: 'The PIN must contain exactly six digits.',
@@ -139,7 +163,7 @@ Object.assign(copy.zh, {
   guardHint: '开启后约占用 5–15 MB 内存，并阻止电脑因空闲而休眠',
   guardOnlyDesktop: '仅桌面版支持。', guardUnavailable: '守护组件缺失，请重新安装 Camellia。',
   guardNeedsAccess: '开启手机访问后可启用。', guardNeedsDevice: '先配对一台可信设备，再开启守护。',
-  guardOff: '未开启。', guardRunning: '守护中', guardStarting: '守护正在启动…',
+  guardOff: '未开启', guardRunning: '守护中', guardStarting: '守护正在启动…',
   guardRetrying: '守护正在重试…', guardPaused: '手机访问关闭时暂停；重新开启后自动恢复。',
 });
 Object.assign(copy.en, {
@@ -259,10 +283,23 @@ function renderLan() {
   if (!toggle || !allow || !pin) return;
   toggle.checked = Boolean(info.enabled);
   toggle.disabled = working;
+  const macPanels = info.macPermissionPanels || [];
   const status = element('lanStatus');
-  status.textContent = translate(info.error ? 'lanError' : info.running ? 'lanOnline' : info.enabled ? 'connecting' : 'lanOffline');
-  status.classList.toggle('online', Boolean(info.running));
-  status.classList.toggle('error', Boolean(info.error));
+  const firewallCleanup = info.firewall === 'cleanup-required';
+  const firewallNotice = info.firewall ? translate(firewallCleanup ? 'lanFirewallCleanupHint' : 'lanFirewallHint') : '';
+  status.textContent = translate(info.error ? 'lanError' : info.firewall ? (firewallCleanup ? 'lanFirewallCleanup' : 'lanFirewallRequired')
+    : info.running ? (macPanels.length ? 'lanListening' : 'lanOnline') : info.enabled ? 'connecting' : 'lanOffline');
+  status.classList.toggle('online', Boolean(info.running && !info.firewall && !info.error));
+  status.classList.toggle('error', Boolean(info.error || info.firewall));
+  const firewallButton = element('lanFirewallRetry');
+  firewallButton.hidden = !info.firewall;
+  firewallButton.disabled = working;
+  firewallButton.textContent = translate(firewallCleanup ? 'lanFirewallRemove' : 'lanFirewallRetry');
+  element('lanMacPermissions').hidden = !info.enabled || !macPanels.length;
+  element('lanMacPrivacyHint').hidden = !macPanels.includes('privacy');
+  element('lanMacPrivacy').hidden = !macPanels.includes('privacy');
+  element('lanMacPrivacy').disabled = working;
+  element('lanMacFirewall').disabled = working;
   element('lanAddress').textContent = info.address ? translate('lanAddress') + info.address : '';
   if (pin && document.activeElement !== pin) pin.value = info.pin || '';
   pin.disabled = working;
@@ -272,8 +309,8 @@ function renderLan() {
   allow.checked = info.allowJoin !== false;
   allow.disabled = working || !info.enabled;
   const notice = element('lanPinStatus');
-  notice.classList.toggle('error', Boolean(info.error));
-  notice.textContent = info.error || lanPinNotice
+  notice.classList.toggle('error', Boolean(info.error || info.firewall));
+  notice.textContent = info.error || firewallNotice || lanPinNotice
     || (!info.hasPin ? translate('lanPinNeeded') : info.pin ? '' : translate('lanPinHidden'));
 }
 function showError(error) {
@@ -865,6 +902,14 @@ element('lanToggle')?.addEventListener('change', () => {
   lanPinNotice = '';
   void run(() => call(enabled ? 'lan-enable' : 'lan-disable'));
 });
+element('lanFirewallRetry')?.addEventListener('click', () => {
+  void run(() => call(state?.lan?.enabled ? 'lan-enable' : 'lan-disable'));
+});
+for (const [elementId, panel] of [['lanMacPrivacy', 'privacy'], ['lanMacFirewall', 'firewall']]) {
+  element(elementId)?.addEventListener('click', () => {
+    void run(() => call('lan-open-mac-settings', { panel }));
+  });
+}
 element('lanSavePin')?.addEventListener('click', () => {
   const pin = element('lanPin').value;
   if (!/^\d{6}$/.test(pin)) { validateLanPin(); return; }

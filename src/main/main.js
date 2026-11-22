@@ -2,7 +2,7 @@
 
 const diagnosticOutput = require('./diagnostic-output').installDiagnosticOutput();
 const { app, BrowserWindow, WebContentsView, ipcMain, dialog, shell, Menu, Tray, nativeImage, nativeTheme, screen, clipboard, powerSaveBlocker, utilityProcess } = require('electron');
-const { spawn, spawnSync } = require('node:child_process');
+const { spawn, execFile } = require('node:child_process');
 const { once } = require('node:events');
 const fs = require('node:fs');
 const os = require('node:os');
@@ -63,7 +63,7 @@ const { attachImageContextMenu } = require('./image-context-menu');
 const { attachLinkContextMenu } = require('./link-context-menu');
 const { attachExternalNavigation } = require('./external-navigation');
 const { describePreview, describePreviewAsync, savePreviewText } = require('./file-preview');
-const { isDocx, readDocxEdit, saveDocxEdit, saveDocxStructure, readDocxCellPreview } = require('./docx-edit');
+const { isDocx } = require('./docx-edit');
 const gitService = require('./git-service').createGitService();
 const { ENGINES: SUBSCRIPTION_MODEL_ENGINES } = require('../shared/subscription-models');
 const { revealInFileManager } = require('./reveal-file');
@@ -71,7 +71,6 @@ const { detectVSCodeInstallations, validateVSCodeExecutable, openWorkspaceInVSCo
 const { resolveArtifacts } = require('./turn-artifacts');
 const { readOfficePreview } = require('./office-preview');
 const { isOleWorkbook, readXlsPreview } = require('./xls-preview');
-const { isWordDocument, readDocPreview } = require('./doc-preview');
 const { wordBridgeAvailable, readDocSnapshot, exactDocParagraphs, saveDocEdit, convertDocToDocx, clearConvertedDocuments } = require('./doc-edit');
 const { isLegacyPresentation, readPptPreview } = require('./ppt-preview');
 const { createConversationTitles, createTitleRequester, titleCandidates } = require('./conversation-title.js');
@@ -108,6 +107,12 @@ function discussions() {
   return discussionService;
 }
 let remoteDesktop = null;
+const READ_ONLY_REMOTE_COMMANDS = new Set([
+  'list-sessions', 'load-session', 'get-live', 'get-settings', 'goal-get', 'task-list',
+  'list-attachable-conversations', 'list-attachable-artifacts', 'visualize-get', 'visualize-state', 'diagnostic',
+  'context-snapshot', 'context-events', 'context-node', 'agent-graph', 'context-blocks', 'context-expand', 'context-memory-status',
+  'review-settings', 'review-status', 'review-result', 'review-list', 'review-consent-pending', 'review-options', 'review-context', 'skill-list', 'skill-hosts',
+]);
 let storageConfigRevision = 0;
 function publishChatEvent(engine, event) {
   try { if (discussionBoundary?.registry.capture(engine, event)) return; }
@@ -181,6 +186,13 @@ function log(message) {
     // Never let logging break startup.
   }
 }
+log.verbose = message => {
+  try {
+    if (loadConfig().verboseLogging === true) log('[verbose] ' + message);
+  } catch (_err) {
+    // Diagnostics must not affect the operation being measured.
+  }
+};
 diagnosticOutput.setLogger(log);
 
 // A crash currently ends the log mid-sentence with nothing to explain it, which
@@ -839,7 +851,7 @@ function installedSkillPluginDirs(host) {
   } catch { return []; }
 }
 
-function activateSkillInstallation({ host, name, action = 'install', target }) {
+async function activateSkillInstallation({ host, name, action = 'install', target }) {
   try {
     if (host === 'claude') {
       const path = installedSkillPluginDirs('claude').find(item => path.basename(item) === name);
@@ -862,30 +874,24 @@ function activateSkillInstallation({ host, name, action = 'install', target }) {
     }
     if (host !== 'codex') return { ok: true, bridgeOnly: true };
     const marketplace = sharedConversations?.skills?.marketplaceManifest('codex');
-    const runtime = runtimes().locate('codex');
+    const runtime = await runtimes().locateAsync('codex');
     if (!marketplace || !runtime?.file) return { ok: false, error: 'Codex runtime or skill marketplace is unavailable' };
     const env = { ...runtimeEnvironment(detectNode(), 'codex'), CODEX_HOME: codex.home };
-    const run = args => {
-      if (process.platform !== 'win32') return spawnSync(runtime.file, args, {
-        cwd: codex.home, env, encoding: 'utf8', windowsHide: true, timeout: 30000,
-      });
-      const quote = value => '"' + String(value).replace(/"/g, '""') + '"';
-      const command = [runtime.file, ...args].map(quote).join(' ');
-      return spawnSync(env.ComSpec || process.env.ComSpec || 'cmd.exe', ['/d', '/s', '/c', command], {
-        cwd: codex.home, env, encoding: 'utf8', windowsHide: true, timeout: 30000,
-      });
-    };
+    const run = args => new Promise(resolve => {
+      execFile(runtime.file, args, { cwd: codex.home, env, encoding: 'utf8', windowsHide: true, timeout: 30000, maxBuffer: 4 * 1024 * 1024 },
+        (error, stdout, stderr) => resolve({ status: typeof error?.code === 'number' ? error.code : error ? 1 : 0, stdout, stderr }));
+    });
     if (action === 'uninstall') {
-      const removed = run(['plugin', 'remove', name + '@camellia-skills', '--json']);
+      const removed = await run(['plugin', 'remove', name + '@camellia-skills', '--json']);
       return removed.status === 0
         ? { ok: true, marketplace: 'camellia-skills' }
         : { ok: false, error: String(removed.stderr || removed.stdout || 'Codex plugin removal failed').trim() };
     }
-    const addedMarketplace = run(['plugin', 'marketplace', 'add', marketplace.root, '--json']);
+    const addedMarketplace = await run(['plugin', 'marketplace', 'add', marketplace.root, '--json']);
     const marketplaceMessage = String(addedMarketplace.stderr || addedMarketplace.stdout || '');
     if (addedMarketplace.status !== 0 && !/already|exists/i.test(marketplaceMessage))
       return { ok: false, error: String(addedMarketplace.stderr || addedMarketplace.stdout || 'Codex marketplace registration failed').trim() };
-    const installed = run(['plugin', 'add', name + '@camellia-skills', '--json']);
+    const installed = await run(['plugin', 'add', name + '@camellia-skills', '--json']);
     const installedMessage = String(installed.stderr || installed.stdout || '');
     return installed.status === 0 || /already|installed/i.test(installedMessage)
       ? { ok: true, marketplace: 'camellia-skills' }
@@ -1186,7 +1192,7 @@ function ensureKimiSession(settings, opts) {
       && current.opts.workspaceId === opts.workspaceId && sessionSettingsEqual(current.settings, settings)
       && current.settings.contextWindow === settings.contextWindow && current.settings.connection === settings.connection
       && (current.settings.subscriptionId || null) === (settings.subscriptionId || null)) return current;
-  const runtime = runtimes().locate('kimi')?.file;
+  const runtimeRecord = runtimes().locate('kimi'), runtime = runtimeRecord?.file;
   if (!runtime) throw new Error("Kimi is being prepared. Check progress or retry in Settings → Engine Settings.");
   const exe = detectNode();
   if (!exe) throw new Error("Kimi Code requires Node.js 22.19 or later. Configure the runtime in settings.");
@@ -1196,7 +1202,7 @@ function ensureKimiSession(settings, opts) {
     thinkingBudget: settings.thinkingBudget || '' });
   const previousClosed = current?.shutdown();
   const session = new KimiSession({ gen: ++kimiGen, settings, opts, exe, spec, spawn, log, history: kimiHistory,
-    usageMeter: createUsageMeter('kimi', { settings, home, version: runtimes().locate('kimi')?.version }),
+    usageMeter: createUsageMeter('kimi', { settings, home, version: runtimeRecord.version }),
     onEvent: event => {
       if (kimiSessions.get(opts) === session) publishChatEvent('kimi', { ...event, conversationId: opts.conversationId });
     },
@@ -1935,7 +1941,7 @@ if (!gotSingleInstanceLock) {
     try {
       if (!payload.visible) { nativeSettingsView?.setVisible(false); return { ok: true }; }
       if (runtimeUpdatesService?.isUpdating('dsh')) return { ok: false, error: 'DeepSeek Harness is updating. Reload this panel after the update.' };
-      if (!loadConfig().dshBin && !runtimes().locate('dsh')) return { ok: false, needsRuntime: true,
+      if (!loadConfig().dshBin && !await runtimes().locateAsync('dsh')) return { ok: false, needsRuntime: true,
         error: 'Download DeepSeek Harness from Settings → Engine Settings to use its native panel.' };
       if (!nativeSettingsView) {
         // The DSH settings UI is laid out for a full workbench window. Embed it one
@@ -2056,7 +2062,7 @@ if (!gotSingleInstanceLock) {
       if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('dsh:engine-settings-changed', { engine });
       return { ok: true, ...result, restartDeferred: deferred };
     },
-    'runtime-state': () => ({ ok: true, engines: runtimeUpdates().state() }),
+    'runtime-state': async () => ({ ok: true, engines: await runtimeUpdates().stateAsync() }),
     'runtime-set-path': async ({ engine, file, mode }) => {
       assertRuntimeAvailable(engine);
       // The saved path only affects the next process. A running response keeps
@@ -2067,7 +2073,7 @@ if (!gotSingleInstanceLock) {
       else await stopEngine(engine);
       return { ok: true, engines: runtimeUpdates().state(engines), restartDeferred: deferred };
     },
-    'runtime-python-state': () => ({ ok: true, python: runtimes().pythonState() }),
+    'runtime-python-state': async () => ({ ok: true, python: await runtimes().pythonStateAsync() }),
     'runtime-set-python': async ({ file }) => {
       if (anyRuntimeUpdating()) throw new Error('Wait for runtime updates to finish before changing Python');
       // Antigravity is the only engine that launches through the shared
@@ -2248,7 +2254,7 @@ if (!gotSingleInstanceLock) {
     return { ok: true, language: normalizeLanguage(config.language), theme: config.theme || 'system',
       conversations: conversationPreferences(config), autoRefreshBalances: accountRefreshEnabled(config), accountRefreshMinutes: accountRefreshMinutes(config),
       subscriptionAutoRefresh: { antigravity: subscriptionAutoRefreshEnabled('antigravity', config), codex: subscriptionAutoRefreshEnabled('codex', config), kimi: subscriptionAutoRefreshEnabled('kimi', config) },
-      closeToTray: config.closeToTray === true,
+      closeToTray: config.closeToTray === true, verboseLogging: config.verboseLogging === true,
       memoryDirectory: config.memoryDirectory || '', contextMemory: { enabled: config.contextMemory?.enabled === true },
       shortcuts: keyboardShortcuts.resolve(config.shortcuts),
       vscodePath: config.vscodePath || '',
@@ -2285,6 +2291,10 @@ if (!gotSingleInstanceLock) {
         patch.accountRefreshMinutes = ACCOUNT_REFRESH_MINUTES.includes(minutes) ? minutes : accountRefreshMinutes();
       }
       if (payload && Object.prototype.hasOwnProperty.call(payload, 'closeToTray')) patch.closeToTray = payload.closeToTray === true;
+      if (payload && Object.prototype.hasOwnProperty.call(payload, 'verboseLogging')) {
+        if (typeof payload.verboseLogging !== 'boolean') throw new Error('Invalid detailed logging preference');
+        patch.verboseLogging = payload.verboseLogging;
+      }
       if (payload && Object.prototype.hasOwnProperty.call(payload, 'computerName')) patch.computerName = normalizeComputerName(payload.computerName);
       if (payload && Object.prototype.hasOwnProperty.call(payload, 'chatContentWidth')) patch.chatContentWidth = normalizeChatContentWidth(payload.chatContentWidth);
       if (payload && Object.prototype.hasOwnProperty.call(payload, 'advancedAnimations')) {
@@ -2419,6 +2429,7 @@ if (!gotSingleInstanceLock) {
         void remoteDesktop.updateHostname(hostname).catch(error => log(`Embedded network name sync failed: ${error.message}`));
       }
       if (patch.portableSkills !== undefined) sharedConversations?.setPortableSkills(patch.portableSkills);
+      if (patch.verboseLogging !== undefined) log('Detailed diagnostic logging ' + (patch.verboseLogging ? 'enabled' : 'disabled'));
       if (payload?.conversations) saveConfig({ conversations: conversationPreferences({ conversations: payload.conversations }) });
       const contentWidth = normalizeChatContentWidth(patch.chatContentWidth ?? previousContentWidth);
       const advancedAnimations = patch.advancedAnimations ?? previousAdvancedAnimations;
@@ -2573,6 +2584,7 @@ if (!gotSingleInstanceLock) {
       assertRuntimeAvailable('kimi');
       if (kimiSessions.legacy?.running) return { ok: false, error: "Wait for the response to finish or stop it before sending another message" };
       const sessionId = payload.sessionId || null;
+      await runtimes().locateAsync('kimi');
       const session = ensureKimiSession(kimiSettings(sessionId), { sessionId,
         workspaceId: payload.workspaceId || null, fork: Boolean(payload.fork) });
       return session.sendUserMessage(String(payload.prompt || ''), payload.attachments || []) ? { ok: true, runId: session.gen } : { ok: false, error: "Kimi process is unavailable" };
@@ -2697,8 +2709,7 @@ if (!gotSingleInstanceLock) {
     try { return await sharedConversations.command(engine, action, payload, { historyPage }); }
     catch (error) { return { ok: false, error: error.message }; }
     finally {
-      if (!['list-sessions', 'load-session', 'get-live', 'get-settings', 'goal-get', 'task-list', 'list-attachable-conversations', 'list-attachable-artifacts', 'visualize-get', 'visualize-state', 'diagnostic'].includes(action))
-        remoteDesktop?.publish();
+      if (!READ_ONLY_REMOTE_COMMANDS.has(action)) remoteDesktop?.publish();
     }
   });
   ipcMain.handle('dsh:visualize-get', (_event, payload) => {
@@ -3210,6 +3221,8 @@ if (!gotSingleInstanceLock) {
     return path.isAbsolute(relative) || area === '..' || area === 'clipboard-attachments' || (area === 'discussions' && folder === 'work');
   }
 
+  const { renderOfficePreview } = require('./office-preview-process');
+  const previewCancellations = new Map();
   const markdownRenderer = require('./markdown-render').createMarkdownRenderer({
     fork: (modulePath, args, options) => utilityProcess.fork(modulePath, args, options),
   });
@@ -3218,9 +3231,19 @@ if (!gotSingleInstanceLock) {
   ipcMain.handle('dsh:markdown-preview-cancel', (event, requestId) => textPreviewFrame(event)
     ? markdownRenderer.cancel(event.sender, requestId) : { ok: false, error: 'Markdown preview is unavailable in this window.' });
 
-  ipcMain.handle('dsh:preview-file', async (event, filePath) => {
+  ipcMain.handle('dsh:preview-file-cancel', (event, requestId) => {
+    const frame = textPreviewFrame(event), current = previewCancellations.get(requestId);
+    if (frame && current?.frame === frame) current.controller.abort();
+    return { ok: true };
+  });
+  ipcMain.handle('dsh:preview-file', async (event, input) => {
+    const filePath = typeof input === 'string' ? input : input?.filePath;
+    const requestId = input && typeof input === 'object' && typeof input.requestId === 'string' && /^[\w-]{1,100}$/.test(input.requestId)
+      ? input.requestId : null;
+    const frame = textPreviewFrame(event), controller = new AbortController();
+    if (frame && requestId) previewCancellations.set(requestId, { frame, controller });
     try {
-      const frame = textPreviewFrame(event);
+      const signal = controller.signal;
       const file = await describePreviewAsync(filePath, frame && (edit => {
         if (!canEditPreviewTarget(edit.target)) return null;
         const token = require('node:crypto').randomUUID();
@@ -3233,40 +3256,44 @@ if (!gotSingleInstanceLock) {
       // instead of failing the whole preview request.
       const isLegacy = file.kind === 'document';
       if (file.kind === 'spreadsheet' && isOleWorkbook(file.path)) file.office = readXlsPreview(file.path);
-      else if (isLegacy && isWordDocument(file.path)) {
-        file.office = readDocPreview(file.path);
-        // Word can produce a faithful OOXML copy for the same renderer used by
-        // DOCX, which restores pictures, tables and theme styling that the
-        // bounded text reader cannot reproduce. If Word is unavailable the
-        // text preview above still works.
-        if (wordBridgeAvailable()) {
-          try {
-            const converted = convertDocToDocx(file.path);
-            const rich = await readOfficePreview(converted, 'word', normalizeLanguage(loadConfig().language));
-            if (rich.wordHtml) file.office.wordHtml = rich.wordHtml;
-            if (rich.sections?.length) file.office.sections = rich.sections;
-            file.office.rich = Boolean(rich.wordHtml);
-          } catch (error) {
-            file.office.richError = error.message || String(error);
-            log('Rich .doc preview is unavailable for ' + file.path + ': ' + error.message);
+      else if (isLegacy) {
+        const legacy = await renderOfficePreview({ type: 'legacy', filePath: file.path }, signal);
+        file.office = legacy.office;
+        if (file.office) {
+          // Word can produce a faithful OOXML copy for the same renderer used by
+          // DOCX, which restores pictures, tables and theme styling that the
+          // bounded text reader cannot reproduce. If Word is unavailable the
+          // text preview above still works.
+          if (await wordBridgeAvailable({ signal })) {
+            try {
+              const converted = await convertDocToDocx(file.path, { signal });
+              const rich = await renderOfficePreview({ type: 'office', filePath: converted, kind: 'word', language: normalizeLanguage(loadConfig().language) }, signal);
+              if (rich.wordHtml) file.office.wordHtml = rich.wordHtml;
+              if (rich.sections?.length) file.office.sections = rich.sections;
+              file.office.rich = Boolean(rich.wordHtml);
+            } catch (error) {
+              file.office.richError = error.message || String(error);
+              log('Rich .doc preview is unavailable for ' + file.path + ': ' + error.message);
+            }
           }
-        }
-        if (frame && wordBridgeAvailable()) {
-          try {
-            const snapshot = readDocSnapshot(file.path);
-            const token = require('node:crypto').randomUUID();
-            docPreviewEdits.set(frame, { token, snapshot });
-            file.wordEditToken = token;
-            file.wordFormat = 'doc';
-            file.paragraphs = snapshot.paragraphs;
-          } catch (error) { log('Legacy Word editing is unavailable for ' + file.path + ': ' + error.message); }
-        }
+          if (frame && await wordBridgeAvailable({ signal })) {
+            try {
+              const snapshot = await readDocSnapshot(file.path, { signal });
+              const token = require('node:crypto').randomUUID();
+              docPreviewEdits.set(frame, { token, snapshot });
+              file.wordEditToken = token;
+              file.wordFormat = 'doc';
+              file.paragraphs = snapshot.paragraphs;
+            } catch (error) { log('Legacy Word editing is unavailable for ' + file.path + ': ' + error.message); }
+          }
+        } else if (isLegacyPresentation(file.path)) file.office = readPptPreview(file.path);
       }
-      else if (isLegacy && isLegacyPresentation(file.path)) file.office = readPptPreview(file.path);
-      else if (['word', 'presentation', 'spreadsheet'].includes(file.kind)) file.office = await readOfficePreview(file.path, file.kind, normalizeLanguage(loadConfig().language));
-      if (file.kind === 'word' && isDocx(file.path)) {
-        try {
-          const snapshot = await readDocxEdit(file.path);
+      else if (file.kind === 'word' && isDocx(file.path)) {
+        const processed = await renderOfficePreview({ type: 'word', filePath: file.path, language: normalizeLanguage(loadConfig().language) }, signal);
+        file.office = processed.office;
+        if (processed.editError) log('Word editing is unavailable for ' + file.path + ': ' + processed.editError);
+        if (processed.snapshot) {
+          const snapshot = processed.snapshot;
           if (frame) {
             const token = require('node:crypto').randomUUID();
             wordPreviewEdits.set(frame, { token, snapshot });
@@ -3277,11 +3304,15 @@ if (!gotSingleInstanceLock) {
           file.wordCells = snapshot.cells;
           file.wordFormat = 'docx';
           file.officeTruncated = Boolean(snapshot.truncated);
-        } catch (error) { log('Word editing is unavailable for ' + file.path + ': ' + error.message); }
+        }
       }
+      else if (['word', 'presentation', 'spreadsheet'].includes(file.kind)) file.office = await readOfficePreview(file.path, file.kind, normalizeLanguage(loadConfig().language));
       return { ok: true, file };
     }
     catch (error) { return { ok: false, error: error?.message || String(error) }; }
+    finally {
+      if (frame && previewCancellations.get(requestId)?.controller === controller) previewCancellations.delete(requestId);
+    }
   });
 
   ipcMain.handle('dsh:save-preview-text', (event, payload) => {
@@ -3301,7 +3332,7 @@ if (!gotSingleInstanceLock) {
       const preview = frame && wordPreviewEdits.get(frame);
       if (!preview || preview.token !== payload?.token) throw new Error('Reopen the document before editing it.');
       if (!canEditPreviewTarget(preview.snapshot.path)) throw new Error('Reopen the document before editing it.');
-      const result = await saveDocxEdit(preview.snapshot, payload.paragraphs);
+      const result = await renderOfficePreview({ type: 'save', snapshot: preview.snapshot, paragraphs: payload.paragraphs });
       preview.snapshot = result.snapshot;
       return { ok: true, file: result.file, paragraphs: result.snapshot.blocks,
         editable: result.snapshot.editability, cells: result.snapshot.cells };
@@ -3314,7 +3345,7 @@ if (!gotSingleInstanceLock) {
       const preview = frame && wordPreviewEdits.get(frame);
       if (!preview || preview.token !== payload?.token) throw new Error('Reopen the document before editing it.');
       if (!canEditPreviewTarget(preview.snapshot.path)) throw new Error('Reopen the document before editing it.');
-      const result = await saveDocxStructure(preview.snapshot, payload.operation);
+      const result = await renderOfficePreview({ type: 'structure', snapshot: preview.snapshot, operation: payload.operation });
       preview.snapshot = result.snapshot;
       return { ok: true, file: result.file, paragraphs: result.snapshot.blocks,
         editable: result.snapshot.editability, cells: result.snapshot.cells };
@@ -3327,17 +3358,18 @@ if (!gotSingleInstanceLock) {
       const preview = frame && wordPreviewEdits.get(frame);
       if (!preview || preview.token !== payload?.token) throw new Error('Reopen the document before editing it.');
       if (!canEditPreviewTarget(preview.snapshot.path)) throw new Error('Reopen the document before editing it.');
-      return { ok: true, html: await readDocxCellPreview(preview.snapshot, payload.index) };
+      const rendered = await renderOfficePreview({ type: 'cell', snapshot: preview.snapshot, index: payload.index });
+      return { ok: true, html: rendered.html };
     } catch (error) { return { ok: false, error: error?.message || String(error) }; }
   });
 
-  ipcMain.handle('dsh:save-preview-doc', (event, payload) => {
+  ipcMain.handle('dsh:save-preview-doc', async (event, payload) => {
     try {
       const frame = textPreviewFrame(event);
       const preview = frame && docPreviewEdits.get(frame);
       if (!preview || preview.token !== payload?.token) throw new Error('Reopen the document before editing it.');
       if (!canEditPreviewTarget(preview.snapshot.path)) throw new Error('Reopen the document before editing it.');
-      const result = saveDocEdit(preview.snapshot, payload.paragraphs);
+      const result = await saveDocEdit(preview.snapshot, payload.paragraphs);
       preview.snapshot = result.snapshot;
       return { ok: true, file: result.file, paragraphs: result.paragraphs };
     } catch (error) { return { ok: false, error: error?.message || String(error) }; }
@@ -3346,12 +3378,12 @@ if (!gotSingleInstanceLock) {
   // Listing Word's Paragraphs collection starts a hidden Word process, so it
   // happens when the user chooses Edit rather than while the preview loads.
   // The editor shows that list, and a save reconfirms it before writing.
-  ipcMain.handle('dsh:preview-word-paragraphs', (event, token) => {
+  ipcMain.handle('dsh:preview-word-paragraphs', async (event, token) => {
     try {
       const frame = textPreviewFrame(event);
       const preview = frame && docPreviewEdits.get(frame);
       if (!preview || preview.token !== token) throw new Error('Reopen the document before editing it.');
-      const paragraphs = exactDocParagraphs(preview.snapshot);
+      const paragraphs = await exactDocParagraphs(preview.snapshot);
       preview.snapshot.paragraphs = paragraphs;
       return { ok: true, paragraphs, editable: preview.snapshot.paragraphEditability || [] };
     } catch (error) { return { ok: false, error: error?.message || String(error) }; }
@@ -3439,10 +3471,9 @@ if (!gotSingleInstanceLock) {
       if (!dshBin || !fs.existsSync(dshBin)) {
         return { ok: false, error: `DSH bin.js not found: ${dshBin || "(Empty)"}` };
       }
-      const result = spawnSync(nodeExe, [dshBin, '--version'], {
-        windowsHide: true,
-        encoding: 'utf8',
-        timeout: 15000,
+      const result = await new Promise(resolve => {
+        execFile(nodeExe, [dshBin, '--version'], { windowsHide: true, encoding: 'utf8', timeout: 15000, maxBuffer: 1024 * 1024 },
+          (error, stdout, stderr) => resolve({ error, status: typeof error?.code === 'number' ? error.code : error ? 1 : 0, stdout, stderr }));
       });
       if (result.error) {
         return { ok: false, error: `Cannot run Node.js: ${result.error.message}` };

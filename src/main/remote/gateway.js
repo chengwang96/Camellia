@@ -11,6 +11,7 @@ const { visualizationDocument } = require('./visualizations');
 const { pipeline } = require('node:stream/promises');
 const { MAX_REQUEST } = require('./attachments');
 const { withJsonReadSnapshot } = require('../../shared/json-store');
+const { snapshotDelta } = require('./stream-delta');
 const DOWNLOAD_GLOBAL_LIMIT = 32;
 const DOWNLOAD_DEVICE_LIMIT = 8;
 
@@ -45,6 +46,14 @@ class RemoteGateway {
     // disconnected device must not accumulate notifications or retry jobs.
     this.onlineDevices = new Map();
     this.server = null;
+    this.commands?.onTrim?.(() => {
+      this.instanceId = randomUUID();
+      for (const stream of this.streams) {
+        delete stream.historyVersion; delete stream.listVersion;
+        stream.lastSnapshot = null; stream.dirty = true;
+      }
+      this.scheduleFlush();
+    });
   }
   async start(host, port = 43127, transport = null) {
     if (this.server) throw new Error('Remote access is already running');
@@ -276,8 +285,10 @@ class RemoteGateway {
     const conversationEvents = /^\/v1\/conversations\/[a-f0-9-]{36}\/events$/.test(url.pathname);
     const historyVersion = conversationEvents && incremental ? url.searchParams.get('historyVersion') : null;
     if (historyVersion !== null && (!/^[a-f0-9]{64}$/.test(historyVersion) || url.searchParams.getAll('historyVersion').length !== 1)) fail(400, 'Invalid history version');
+    const liveDelta = conversationEvents && incremental && url.searchParams.get('delta') === 'live-v1';
+    if (liveDelta && url.searchParams.getAll('delta').length !== 1) fail(400, 'Invalid live delta option');
     for (const key of url.searchParams.keys()) if (!['before', 'offset'].includes(key) && !(key === 'incremental' && incremental)
-      && !(key === 'historyVersion' && historyVersion !== null)
+      && !(key === 'historyVersion' && historyVersion !== null) && !(key === 'delta' && liveDelta)
       && !(url.pathname === '/v1/conversations' && ['limit', 'query'].includes(key))) fail(400, 'Unsupported query parameter');
     if (url.pathname === '/v1/workbench' || url.pathname === '/v1/workbench/events') {
       if (url.search) fail(400, 'Unsupported workbench query');
@@ -296,7 +307,7 @@ class RemoteGateway {
     } else {
       const match = /^\/v1\/conversations\/([a-f0-9-]{36})(\/events)?$/.exec(url.pathname);
       if (!match) fail(404, 'Endpoint not found');
-      if (match[2]) this.subscribe(response, device, match[1], 'conversations', incremental, historyVersion || undefined);
+      if (match[2]) this.subscribe(response, device, match[1], 'conversations', incremental, historyVersion || undefined, liveDelta);
       else this.json(response, 200, withJsonReadSnapshot(() => ({ ...this.reader.snapshot(device, match[1], number(url.searchParams.get('before'), undefined)), ...this.stamp() })));
     }
   }
@@ -310,7 +321,7 @@ class RemoteGateway {
     if (this.discussions && fullControl) capabilities.push('discussions', 'discussion-rich');
     if (this.commands) capabilities.push('interactive-approvals', 'next-turn-settings', 'subagents');
     if (this.commands) capabilities.push('fork', 'switch-engine', 'compact', 'find', 'resend', 'automation-control', 'message-queue');
-    if (this.commands) capabilities.push('command-receipts', 'stop-start', 'incremental-snapshots');
+    if (this.commands) capabilities.push('command-receipts', 'stop-start', 'incremental-snapshots', 'live-deltas');
     if (this.commands && this.reader.manager.stopBackgroundWork) capabilities.push('stop-background-work');
     if (this.reader.manager?.visualize) capabilities.push('visualizations');
     if (this.commands && fullControl && this.reader.manager.drivers?.codex?.resetCredits) capabilities.push('codex-reset-credits');
@@ -424,11 +435,11 @@ class RemoteGateway {
     const conversationList = { ...this.connectionInfo(device), ...this.reader.list(device), ...discussions };
     return { ...snapshot, conversationList, listVersion: version };
   }
-  subscribe(response, device, id, kind = 'conversations', incremental = false, historyVersion) {
+  subscribe(response, device, id, kind = 'conversations', incremental = false, historyVersion, liveDelta = false) {
     if (this.streams.size >= 16 || [...this.streams].filter(stream => stream.device.id === device.id).length >= 4) fail(429, 'Too many event streams');
     const snapshot = this.streamSnapshot({ device, id, kind, incremental, historyVersion });
     response.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' });
-    const stream = { response, device, id, kind, incremental, dirty: false, blocked: false };
+    const stream = { response, device, id, kind, incremental, delta: liveDelta, lastSnapshot: null, dirty: false, blocked: false };
     this.streams.add(stream);
     const ip = this.peerAddresses.get(device.id) || (this.transport ? null : response.socket?.remoteAddress) || null;
     let online = this.onlineDevices.get(device.id);
@@ -488,16 +499,15 @@ class RemoteGateway {
     if (snapshot.historyVersion) stream.historyVersion = snapshot.historyVersion;
     const payload = { ...snapshot, ...this.stamp(),
       ...(snapshot.conversationList ? { conversationList: { ...snapshot.conversationList, ...this.stamp() } } : {}) };
-    this.writeFrame(stream, `id: ${this.instanceId}:${this.sequence}\nevent: snapshot\ndata: ${JSON.stringify(payload)}\n\n`);
+    const frame = stream.delta ? snapshotDelta(stream.lastSnapshot, payload) : payload;
+    stream.lastSnapshot = payload;
+    this.writeFrame(stream, `id: ${this.instanceId}:${this.sequence}\nevent: snapshot\ndata: ${JSON.stringify(frame)}\n\n`);
   }
   publish(update) {
-    if (this.commands?.trimJournal()) {
-      this.instanceId = randomUUID();
-      for (const stream of this.streams) { delete stream.historyVersion; delete stream.listVersion; stream.dirty = true; }
-    }
     this.sequence++;
     const id = update?.session_id || update?.sessionId || update?.discussionId;
-    for (const stream of this.streams) if (!id || !stream.id || stream.id === id) stream.dirty = true;
+    const listChanged = !update || !update.type || update.type === 'result' || update.type === 'gui:background-work' || update.type.startsWith('conversation:');
+    for (const stream of this.streams) if (!id || stream.id === id || !stream.id && listChanged) stream.dirty = true;
     this.scheduleFlush();
   }
   scheduleFlush() {
@@ -531,6 +541,7 @@ class RemoteGateway {
     if (!shared) {
       this.access.clearPairing();
       this.commands?.cancelPending();
+      this.commands?.close?.();
       this.discussions?.cancelPending();
     }
     for (const entry of this.downloads) entry.response.destroy();

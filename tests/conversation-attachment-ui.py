@@ -114,6 +114,19 @@ with sync_playwright() as playwright:
     page.wait_for_function('uiReady')
     page.locator('[data-sid="failed"]').click()
     expect(page.locator('.run-retry')).to_be_visible()
+    expect(page.locator('.message-resend')).to_be_hidden()
+    page.evaluate('''() => {
+      const user = document.querySelector('.msg-user');
+      showFailedSend({
+        text: user.messageData.text,
+        attachments: user.messageData.attachments,
+        at: user.messageData.at,
+        error: 'No API route is configured for this model',
+      }, user);
+    }''')
+    expect(page.locator('.failed-send > button')).to_have_count(1)
+    expect(page.locator('.message-edit')).to_be_hidden()
+    expect(page.locator('.message-resend')).to_be_hidden()
     retry_size = page.locator('.run-retry').bounding_box()
     assert retry_size['height'] < 35 and retry_size['width'] > 55, retry_size
     assert page.locator('.run-retry').evaluate('(el) => getComputedStyle(el).whiteSpace') == 'nowrap'
@@ -121,6 +134,7 @@ with sync_playwright() as playwright:
     page.wait_for_function('Boolean(window.sentPayload)')
     assert page.evaluate('sentPayload.editSeq') == 1
     expect(page.locator('#chat .msg-user')).to_have_count(1)
+    expect(page.locator('.failed-send')).to_have_count(0)
     page.close()
 
     narrow = browser.new_page(viewport={'width': 390, 'height': 760}, color_scheme='dark')

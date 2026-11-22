@@ -358,21 +358,29 @@ test('Google quota refresh deduplicates requests, retains 30 days, and clears ol
   ] });
   let finish, calls = 0;
   const events = [];
+  const waitForCalls = async expected => {
+    for (let attempt = 0; attempt < 200 && calls < expected; attempt++) await new Promise(resolve => setTimeout(resolve, 2));
+    assert.equal(calls, expected);
+  };
   const account = createGoogleAccount({ home, cliSettingsFile, now: () => stamp,
     runtime: () => ({ locate: () => ({ file: 'official-agy' }), ensure: async () => ({ file: 'official-agy' }) }),
     environment: () => ({}), settings: () => ({}), openLogin: async () => {},
     onChange: () => events.push(account.state().usage.refreshing),
     run: () => { calls++; return new Promise(resolve => { finish = resolve; }); } });
   const first = account.refreshUsage(), duplicate = account.refreshUsage();
+  await new Promise(resolve => setImmediate(resolve));
   await Promise.resolve();
-  assert.equal(calls, 1); assert.equal(account.state().usage.refreshing, true);
+  await waitForCalls(1);
+  assert.equal(account.state().usage.refreshing, true);
   finish(output);
   await Promise.all([first, duplicate]);
   assert.deepEqual(events, [true, false]);
   assert.equal(account.state().usage.history.length, 2);
   assert.equal(account.state().usage.latest.windows[0].usedPercent, 20);
   const oldAccountRefresh = account.refreshUsage();
+  await new Promise(resolve => setImmediate(resolve));
   await Promise.resolve();
+  await waitForCalls(2);
   await account.signIn();
   finish(output);
   await oldAccountRefresh;

@@ -6,9 +6,10 @@ const { createHash } = require('node:crypto');
 const { Readable, Transform } = require('node:stream');
 const { pipeline } = require('node:stream/promises');
 const { writeJson } = require('../shared/json-store');
-const { execFileSync, spawnSync } = require('node:child_process');
+const { execFile, execFileSync, spawnSync } = require('node:child_process');
 const versions = new Map();
 const checkedPaths = new Map();
+const checkedPending = new Map();
 
 function isAntigravityCliHelp(output) {
   // The IDE, Python and other native executables also answer --version. Check
@@ -41,6 +42,80 @@ function checkedAntigravityCliVersion(file, env) {
   }
   rememberAntigravityCli(file, version);
   return version;
+}
+
+function checkedAntigravityCliVersionCached(file) {
+  try {
+    const cached = checkedPaths.get(file);
+    return cached?.signature === cliSignature(file) && !cached.error ? cached.version : null;
+  } catch { return null; }
+}
+
+function checkedAntigravityCliError(file) {
+  try {
+    const cached = checkedPaths.get(file);
+    return cached?.signature === cliSignature(file) ? cached.error || null : null;
+  } catch { return null; }
+}
+
+function probeAntigravityCli(file, args, env) {
+  return new Promise((resolve, reject) => {
+    execFile(file, args, { windowsHide: true, timeout: 10000, maxBuffer: 65536, encoding: 'utf8',
+      env: { ...env, AGY_CLI_DISABLE_AUTO_UPDATE: 'true' }, stdio: ['ignore', 'pipe', 'pipe'] }, (error, stdout, stderr) => {
+      if (error) { reject(new Error(`Could not check the Antigravity CLI: ${error.message}`)); return; }
+      resolve(`${stdout || ''}\n${stderr || ''}`);
+    });
+  });
+}
+
+async function checkedAntigravityCliVersionAsync(file, env, probe = probeAntigravityCli) {
+  const signature = cliSignature(file), cached = checkedPaths.get(file);
+  if (cached?.signature === signature) {
+    if (cached.error) throw cached.error;
+    return cached.version;
+  }
+  if (checkedPending.has(signature)) return checkedPending.get(signature);
+  const task = (async () => {
+    const version = (await probe(file, ['--version'], env)).match(/\b\d+\.\d+\.\d+(?:-[\w.-]+)?\b/)?.[0];
+    if (!version || !isAntigravityCliHelp(await probe(file, ['--help'], env)))
+      throw new Error('Choose the Antigravity CLI (agy), not Python or the Antigravity desktop application');
+    rememberAntigravityCli(file, version);
+    return version;
+  })().catch(error => {
+    checkedPaths.set(file, { signature, error });
+    throw error;
+  }).finally(() => checkedPending.delete(signature));
+  checkedPending.set(signature, task);
+  return task;
+}
+
+function locateAntigravityCliCached(dir) {
+  const marker = path.join(dir, 'cli/installed.json');
+  if (!fs.existsSync(marker)) return null;
+  const installed = JSON.parse(fs.readFileSync(marker, 'utf8'));
+  const file = path.join(dir, 'cli', process.platform === 'win32' ? 'agy.exe' : 'agy');
+  if (!fs.existsSync(file)) return null;
+  const stat = fs.statSync(file), signature = stat.mtimeMs + ':' + stat.size;
+  return { file, dir, version: versions.get(file)?.signature === signature ? versions.get(file).version : installed.version, mode: 'subscription' };
+}
+
+async function locateAntigravityCliAsync(dir) {
+  const marker = path.join(dir, 'cli/installed.json');
+  if (!fs.existsSync(marker)) return null;
+  const installed = JSON.parse(fs.readFileSync(marker, 'utf8'));
+  const file = path.join(dir, 'cli', process.platform === 'win32' ? 'agy.exe' : 'agy');
+  if (!fs.existsSync(file)) return null;
+  const stat = fs.statSync(file), signature = stat.mtimeMs + ':' + stat.size;
+  if (versions.get(file)?.signature !== signature) {
+    let version = installed.version;
+    try {
+      const output = await probeAntigravityCli(file, ['--version'], process.env);
+      version = output.match(/\b\d+\.\d+\.\d+\b/)?.[0] || version;
+    } catch { /* Incomplete installations are reported by the runtime launcher. */
+    }
+    versions.set(file, { signature, version });
+  }
+  return { file, dir, version: versions.get(file).version, mode: 'subscription' };
 }
 
 function locateAntigravityCli(dir) {
@@ -90,8 +165,8 @@ async function installAntigravityCli({ source, dir, connection, run, report }) {
     fs.unlinkSync(staging);
   }
   writeJson(path.join(cliDir, 'installed.json'), { version: platform.version || config.version });
-  return locateAntigravityCli(dir);
+  return locateAntigravityCliAsync(dir);
 }
 
-module.exports = { locateAntigravityCli, installAntigravityCli, isAntigravityCliHelp,
-  rememberAntigravityCli, checkedAntigravityCliVersion };
+module.exports = { locateAntigravityCli, locateAntigravityCliAsync, locateAntigravityCliCached, installAntigravityCli, isAntigravityCliHelp,
+  rememberAntigravityCli, checkedAntigravityCliVersion, checkedAntigravityCliVersionAsync, checkedAntigravityCliVersionCached, checkedAntigravityCliError };

@@ -214,6 +214,8 @@ function updateGrokConnectionSettings(config, patch) {
   return value;
 }
 
+const { locateRuntime } = require('../main/runtime-manager');
+
 function createGrokChat({ dataDir, loadConfig, saveConfig, getRoute, getModels, getContextWindow = () => undefined,
   runtimes, environment = () => process.env, accounts, onEvent, log = () => {}, nativeConfig = () => ({}), nativeRevision = () => '', nativeInstructions = () => '', createUsageMeter = () => null }) {
   const home = path.join(dataDir, 'grok');
@@ -225,7 +227,7 @@ function createGrokChat({ dataDir, loadConfig, saveConfig, getRoute, getModels, 
     saveConfig({ grok: updateGrokConnectionSettings(loadConfig(), patch) });
     return settings(patch.sessionId);
   }
-  function ensure(opts) {
+  async function ensure(opts) {
     sessions.assertAccess(opts);
     const selected = { ...settings(opts.sessionId), ...opts.settings, cwd: opts.cwd, nativeRevision: nativeRevision() };
     if (!['ask', 'auto', 'full', 'plan'].includes(selected.permissionMode)) throw new Error('Invalid Grok permission mode');
@@ -233,7 +235,7 @@ function createGrokChat({ dataDir, loadConfig, saveConfig, getRoute, getModels, 
     if (current && !current.dead && !opts.fork && current.opts.goalBridge === opts.goalBridge && current.sessionId === (opts.sessionId || null)
       && JSON.stringify(current.settings) === JSON.stringify(selected)) return current;
     if (opts.sessionId && !validSessionId(opts.sessionId)) throw new Error('Invalid Grok session ID');
-    const runtime = runtimes().locate('grok');
+    const runtime = await locateRuntime(runtimes(), 'grok');
     if (!runtime) throw new Error('Download Grok Build in Settings → Engine Settings first');
     let sessionHome, route = null;
     if (selected.connection === 'subscription') {
@@ -264,7 +266,7 @@ function createGrokChat({ dataDir, loadConfig, saveConfig, getRoute, getModels, 
     sessions.set(opts, session); session.start(previous); return session;
   }
   async function forkNative({ sessionId, sourceConversationId, conversationId, cwd, settings, goalBridge, sourceGoalBridge, boundary, registerSession }) {
-    const session = ensure({ sessionId, conversationId, cwd, settings, goalBridge, sourceGoalBridge,
+    const session = await ensure({ sessionId, conversationId, cwd, settings, goalBridge, sourceGoalBridge,
       fork: true, forkSourceConversationId: sourceConversationId, ...boundary });
     registerSession(session);
     try {

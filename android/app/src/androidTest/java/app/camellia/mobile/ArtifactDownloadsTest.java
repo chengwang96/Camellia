@@ -2,8 +2,10 @@ package app.camellia.mobile;
 
 import android.app.Activity;
 import android.content.Intent;
+import android.net.Uri;
 import android.test.InstrumentationTestCase;
 import android.view.View;
+import android.widget.TextView;
 import org.json.JSONObject;
 
 public class ArtifactDownloadsTest extends InstrumentationTestCase {
@@ -74,6 +76,72 @@ public class ArtifactDownloadsTest extends InstrumentationTestCase {
             assertEquals("/v1/conversations/" + conversation + "/artifacts?offset=0", requested.get());
             screenshot(activity, "artifact-all-files");
         } finally { downloadState.set(null, previousState); getInstrumentation().runOnMainSync(() -> { downloads.close(); activity.finish(); }); }
+    }
+
+    public void testCompletedArtifactDetailReopensWithOpenAndDone() throws Exception {
+        Activity activity = getInstrumentation().startActivitySync(new Intent(getInstrumentation().getTargetContext(), PopupTestActivity.class)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+        String conversation = "12345678-1234-1234-1234-123456789abc";
+        String address = "http://100.64.0.1:43127";
+        String artifact = "c".repeat(64);
+        Uri destination = Uri.parse("content://app.camellia.mobile.test.document/phone-203");
+        var downloadState = ArtifactDownloadService.class.getDeclaredField("state"); downloadState.setAccessible(true);
+        Object previousState = downloadState.get(null);
+        ArtifactDownloadHistory.clear(activity);
+        ArtifactDownloadHistory.complete(activity, address, conversation, false, artifact,
+            "Camellia-Android-1.1.2.apk", destination);
+        ArtifactDownloads downloads = completedFileDownloads(activity, artifact);
+        ArtifactDownloads reopened = null;
+        try {
+            getInstrumentation().runOnMainSync(() -> downloads.showFile(address, "t".repeat(43), conversation,
+                17, "dist/Camellia-Android-1.1.2.apk"));
+            awaitFile(downloads, artifact);
+            assertOpenAndDone(downloads, artifact);
+            getInstrumentation().runOnMainSync(downloads::stop);
+            downloadState.set(null, new ArtifactDownloadService.State("", "", 0, 0, "idle", ""));
+            downloads.close();
+            reopened = completedFileDownloads(activity, artifact);
+            ArtifactDownloads next = reopened;
+            getInstrumentation().runOnMainSync(() -> next.showFile(address, "t".repeat(43), conversation,
+                17, "dist/Camellia-Android-1.1.2.apk"));
+            awaitFile(next, artifact);
+            assertOpenAndDone(next, artifact);
+        } finally {
+            ArtifactDownloadHistory.clear(activity);
+            downloadState.set(null, previousState);
+            ArtifactDownloads active = reopened == null ? downloads : reopened;
+            getInstrumentation().runOnMainSync(() -> { active.close(); activity.finish(); });
+        }
+    }
+
+    private ArtifactDownloads completedFileDownloads(Activity activity, String artifact) {
+        return new ArtifactDownloads(activity, null, address -> new RemoteApi(address) {
+            @Override public JSONObject json(String path, String token, JSONObject payload) throws java.io.IOException {
+                try {
+                    JSONObject file = new JSONObject().put("name", "Camellia-Android-1.1.2.apk").put("id", artifact)
+                        .put("size", 23_048_754L).put("extension", "APK");
+                    return new JSONObject().put("artifacts", new org.json.JSONArray().put(file)).put("nextOffset", JSONObject.NULL);
+                } catch (Exception error) {
+                    throw new java.io.IOException(error);
+                }
+            }
+        });
+    }
+
+    private void assertOpenAndDone(ArtifactDownloads downloads, String artifact) throws Exception {
+        getInstrumentation().runOnMainSync(() -> {
+            try {
+                View root = artifactSheet(downloads).getWindow().getDecorView();
+                View open = root.findViewWithTag("artifactOpen:" + artifact);
+                assertNotNull("A completed artifact must offer Open on every reopen", open);
+                String action = ((TextView) open).getText().toString();
+                assertTrue(action.equals("打开") || action.equals("Open"));
+                assertNull("A completed artifact must not offer Download again", root.findViewWithTag("artifactDownload:" + artifact));
+                assertNotNull("The detail sheet must keep its Done action", root.findViewWithTag("artifactDone"));
+            } catch (Exception error) {
+                throw new AssertionError(error);
+            }
+        });
     }
 
     private void screenshot(Activity activity, String name) throws Exception {

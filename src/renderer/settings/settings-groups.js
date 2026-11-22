@@ -117,7 +117,8 @@
       ['zoom-shortcuts', ['#shortcutZoomInRow', '#shortcutZoomOutRow', '#shortcutZoomResetRow']],
     ]);
     arrange('dataPage', [
-      ['local-data', ['#dataDirectorySection']], ['data-transfer', ['#dataMigrationSection']], ['storage', ['#storageSection']],
+      ['local-data', ['#dataDirectorySection']], ['diagnostics', ['#verboseLoggingSection']],
+      ['data-transfer', ['#dataMigrationSection']], ['storage', ['#storageSection']],
     ]);
     const storage = get('storageSection');
     if (storage) {

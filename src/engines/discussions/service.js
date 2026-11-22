@@ -41,7 +41,10 @@ class DiscussionService {
     this.manager.recover();
   }
   publish(id, event = {}) {
-    try { this.onEvent({ ...event, discussionId: id, type: event.type || 'changed' }); }
+    let summary;
+    try { summary = event.type === 'answer' || event.type === 'deleted' ? null : this.listEntry(this.manager.get(id)); }
+    catch { /* The event itself still reaches the client. */ }
+    try { this.onEvent({ ...event, discussionId: id, type: event.type || 'changed', ...(summary ? { summary } : {}) }); }
     catch { /* rendering cannot undo a committed write */ }
   }
   capability(binding) {
@@ -67,6 +70,7 @@ class DiscussionService {
     // The renderer needs public discussion state, not native IDs, directories,
     // generated input plans, account homes, launch credentials or ownership records.
     return { id: state.id, title: state.title, pinned: Boolean(state.pinned), revision: state.revision, seq: state.seq, stopping: Boolean(state.stopPending),
+      lastMessageAt: state.lastMessageAt || 0,
       cwd: state.cwd, permissionMode: state.permissionMode || 'ask', permissions: this.scheduler.permissions(state.id),
       preparing: [...this.pendingStarts.values()].some(row => row.id === state.id),
       verifying: [...this.pendingStarts.values()].some(row => row.id === state.id && row.verificationIds.length > 0),
@@ -84,11 +88,13 @@ class DiscussionService {
       requests: state.requests.map(r => ({ id: r.id, mode: r.mode, messageId: r.messageId, deliveryIds: r.deliveryIds })),
     };
   }
+  listEntry(state) {
+    return { id: state.id, title: state.title, pinned: Boolean(state.pinned), revision: state.revision, seq: state.seq,
+      lastMessageAt: state.lastMessageAt || 0, members: state.participants.filter(p => !p.removed).length,
+      active: this.busy(state.id, state), preview: (state.messages.at(-1)?.text || '').slice(0, 120) };
+  }
   list() {
-    return this.manager.list().map(s => ({ id: s.id, title: s.title, pinned: Boolean(s.pinned), revision: s.revision, seq: s.seq,
-      lastMessageAt: s.lastMessageAt || 0,
-      members: s.participants.filter(p => !p.removed).length, active: this.busy(s.id, s),
-      preview: (s.messages.at(-1)?.text || '').slice(0, 120) }))
+    return this.manager.list().map(state => this.listEntry(state))
       .sort((a, b) => Number(b.pinned) - Number(a.pinned) || b.lastMessageAt - a.lastMessageAt || a.id.localeCompare(b.id));
   }
   busy(id, state = this.manager.get(id)) {
@@ -211,12 +217,13 @@ class DiscussionService {
           .flatMap(t => [t.input?.file_path, t.input?.TargetFile, t.input?.path, t.input?.output_path].filter(p => typeof p === 'string')) }) };
     }
     if (action === 'load') {
-      this.production?.refresh();
+      if (!payload.refresh) this.production?.refresh();
       if (!this.busy(state.id, state) && state.participants.some(p => p.connection === 'api' && apiProviderRef(p.accountRef) && apiProviderRef(p.accountRef) !== p.accountRef)) {
         const catalog = await this.getCatalog(), current = this.manager.get(state.id);
         if (!this.busy(state.id, current)) for (const member of current.participants) this.upgradeApiMember(state.id, member, catalog);
       }
-      return { group: this.view(this.manager.get(state.id)) };
+      const current = this.manager.get(state.id);
+      return { group: this.view(current), summary: this.listEntry(current) };
     }
     if (action === 'delete') {
       if (this.busy(state.id, state)) throw new Error('Stop all replies before deleting this discussion.');

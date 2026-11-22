@@ -85,7 +85,8 @@ final class ArtifactDownloads {
             layout.bottomMargin = style.dp(10);
             sheet.actions.addView(all, layout);
         }
-        sheet.actions.addView(sheet.action(tr("完成", "Done"), false, sheet::dismiss));
+        TextView done = sheet.action(tr("完成", "Done"), false, sheet::dismiss); done.setTag("artifactDone");
+        sheet.actions.addView(done);
         dialog.setOnDismissListener(ignored -> { if (ticket == generation) { request.cancel(); client = null; generation++; } });
         dialog.show();
         loadPage(request, address, token, conversation, 0, ticket, rows, status, more);
@@ -106,15 +107,28 @@ final class ArtifactDownloads {
                         JSONObject file = files.optJSONObject(index);
                         if (file == null) continue;
                         ArtifactSheet sheet = dialog;
+                        ArtifactDownloadHistory.Entry saved = ArtifactDownloadHistory.find(activity, address, conversation,
+                            discussion, file.optString("id"));
                         LinearLayout row = sheet.style.group(rows, ""); row.setTag("artifactFile:" + file.optString("id")); row.setPadding(style.dp(16), style.dp(16), style.dp(16), style.dp(14));
-                        TextView type = sheet.text(file.optString("extension") + "  ·  " + android.text.format.Formatter.formatFileSize(activity, file.optLong("size")), Palette.TEXT_SMALL, sheet.style.secondary);
+                        TextView type = sheet.text(file.optString("extension") + "  ·  " + android.text.format.Formatter.formatFileSize(activity, file.optLong("size"))
+                            + (saved == null ? "" : "  ·  " + tr("已下载", "Saved")), Palette.TEXT_SMALL, sheet.style.secondary);
                         row.addView(type);
                         TextView name = sheet.text(file.optString("name"), Palette.TEXT_ROW_STRONG, sheet.style.ink); name.setTypeface(android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.NORMAL));
                         name.setMaxLines(2); name.setEllipsize(android.text.TextUtils.TruncateAt.MIDDLE); name.setPadding(0, style.dp(8), 0, style.dp(16)); row.addView(name);
-                        TextView download = sheet.action(tr("下载到手机", "Save to phone"), true, () -> choose(file, address, token, conversation));
-                        download.setTag("artifactDownload:" + file.optString("id"));
-                        download.setContentDescription(file.optString("name") + " · " + download.getText());
-                        row.addView(download);
+                        if (saved == null) {
+                            TextView download = sheet.action(tr("下载到手机", "Save to phone"), true, () -> choose(file, address, token, conversation));
+                            download.setTag("artifactDownload:" + file.optString("id"));
+                            download.setContentDescription(file.optString("name") + " · " + download.getText());
+                            row.addView(download);
+                        } else {
+                            String openName = saved.name == null || saved.name.isEmpty() ? file.optString("name") : saved.name;
+                            TextView open = sheet.action(tr("打开", "Open"), true, () -> {
+                                if (ArtifactOpen.open(activity, saved.destination, openName, chinese)) sheet.dismiss();
+                            });
+                            open.setTag("artifactOpen:" + file.optString("id"));
+                            open.setContentDescription(file.optString("name") + " · " + tr("已下载，打开文件", "Downloaded; open file"));
+                            row.addView(open);
+                        }
                         if (java.util.Arrays.asList("png", "jpg", "jpeg", "webp", "gif", ".png", ".jpg", ".jpeg", ".webp", ".gif").contains(file.optString("extension").toLowerCase(java.util.Locale.ROOT)) && file.optLong("size") <= 32L * 1024 * 1024) {
                             TextView preview = sheet.action(tr("查看图片", "View image"), false, () -> preview(request, token, conversation, file, ticket, status));
                             preview.setTag("artifactPreview:" + file.optString("id")); row.addView(preview);

@@ -100,7 +100,7 @@ function readDiscussionRecords(dir, options) { return readInventory(dir, options
 class DiscussionStore {
   constructor({ dir, write = writeJson, maxRecordBytes = LIMITS.recordBytes, onError = () => {}, ...draftOptions }) {
     this.dir = path.resolve(dir); this.write = write; this.maxRecordBytes = byteLimit(maxRecordBytes);
-    this.onError = onError; this.payloads = new DiscussionPayloads(this.dir);
+    this.onError = onError; this.readCache = new Map(); this.payloads = new DiscussionPayloads(this.dir);
     this.drafts = new DiscussionDrafts(this, draftOptions);
     fs.mkdirSync(this.dir, { recursive: true }); directoryStat(this.dir);
   }
@@ -110,8 +110,20 @@ class DiscussionStore {
   }
   read(id) {
     directoryStat(this.dir);
-    try { return readDiscussionRecord(this.file(id), id, { maxRecordBytes: this.maxRecordBytes, payloads: this.payloads, drafts: this.drafts }); }
-    catch (error) { if (error.code === 'ENOENT') throw new Error('Discussion not found'); throw error; }
+    const file = this.file(id), stat = fileStat(file, this.maxRecordBytes + 64), cached = this.readCache.get(id);
+    if (cached && unchanged(cached.stat, stat)) {
+      const state = structuredClone(cached.state);
+      recordInfo.set(state, cached.info);
+      this.payloads.validate(id, state, cached.references);
+      this.drafts.merge(state);
+      return state;
+    }
+    try {
+      const state = readDiscussionRecord(file, id, { maxRecordBytes: this.maxRecordBytes, payloads: this.payloads, drafts: this.drafts });
+      this.readCache.set(id, { stat: fileStat(file, this.maxRecordBytes + 64), state: structuredClone(state), info: recordInfo.get(state),
+        references: this.payloads.referenceSnapshot(state) });
+      return state;
+    } catch (error) { if (error.code === 'ENOENT') throw new Error('Discussion not found'); throw error; }
   }
   list() { return readDiscussionRecords(this.dir, { allowMissing: false, maxRecordBytes: this.maxRecordBytes, payloads: this.payloads, drafts: this.drafts }); }
   report(error) { try { this.onError(error); } catch { /* diagnostics cannot undo a commit */ } }
@@ -136,7 +148,7 @@ class DiscussionStore {
   remove(id) {
     // Validate the exact record before unlinking; never traverse member paths.
     const state = this.read(id);
-    fs.unlinkSync(this.file(id));
+    fs.unlinkSync(this.file(id)); this.readCache.delete(id);
     try {
       this.payloads.prune(id, new Set());
       for (const d of state.deliveries) this.drafts.discard(id, d.id);
@@ -175,7 +187,7 @@ class DiscussionStore {
   }
   commit(state, encoded, previousRefs = new Set()) {
     const created = this.payloads.stage(state.id, encoded.pending), refs = payloadReferences(encoded.state);
-    try { this.write(this.file(state.id), encoded.state); }
+    try { this.write(this.file(state.id), encoded.state); this.readCache.delete(state.id); }
     catch (error) {
       // A custom writer may report failure after replacing the manifest. Never
       // remove a payload now referenced by that durable result.

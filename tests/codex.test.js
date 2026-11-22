@@ -373,12 +373,12 @@ test('Codex resolves Fast mode only from the selected subscription model, with s
     getModels: () => ['fast'], getRoute: () => ({ baseUrl: 'http://127.0.0.1:1' }) });
   t.after(() => engine.shutdown());
   assert.equal(engine.settings().fastMode, false);
-  assert.equal(engine.ensureSession({ cwd: root }).settings.serviceTier, null);
+  assert.equal((await engine.ensureSession({ cwd: root })).settings.serviceTier, null);
   for (const [connection, model, fastMode, tier] of [
     ['subscription', 'fast', true, 'priority'], ['subscription', 'fast', false, null],
     ['subscription', 'standard', true, null], ['subscription', 'ultrafast-only', true, null], ['api', 'fast', true, null],
   ]) {
-    const session = engine.ensureSession({ cwd: root, settings: { connection, model, fastMode } });
+    const session = await engine.ensureSession({ cwd: root, settings: { connection, model, fastMode } });
     assert.equal(session.settings.serviceTier, tier, connection + '/' + model + '/' + fastMode);
   }
   engine.saveSettings({ sessionId: 'legacy-a', fastMode: true });
@@ -766,7 +766,7 @@ test('a new Codex session starts from the connection the last session used', asy
   // A session that actually used the subscription pins its own connection and
   // becomes the starting point for the next brand-new session.
   engine.saveSettings({ connection: 'subscription', model: 'account-model' });
-  const session = engine.ensureSession({ sessionId: 'native-thread' });
+  const session = await engine.ensureSession({ sessionId: 'native-thread' });
   assert.equal(session.settings.connection, 'subscription');
   await session.ready;
   assert.equal(desktop.codexSessionConnections['native-thread'] ?? desktop.codex.connection, 'subscription');

@@ -57,6 +57,26 @@ function fixture(t, overrides = {}) {
     restart: () => { manager = new SharedConversations(args); return manager; } };
 }
 
+async function waitForReview(h, parentId, predicate = () => true) {
+  const deadline = Date.now() + 10000;
+  while (Date.now() < deadline) {
+    const review = h.manager.reviews.list(parentId).find(predicate);
+    if (review) return review;
+    await new Promise(resolve => setTimeout(resolve, 5));
+  }
+  assert.fail('Timed out waiting for the review to start');
+}
+
+async function waitForReviewResult(h, reviewId) {
+  const deadline = Date.now() + 10000;
+  while (Date.now() < deadline) {
+    const result = h.manager.reviews.result(reviewId);
+    if (!['queued', 'running'].includes(result.status)) return result;
+    await new Promise(resolve => setTimeout(resolve, 5));
+  }
+  assert.fail('Timed out waiting for the review to settle');
+}
+
 test('context snapshot commands expose the current request without changing its history', async t => {
   const h = fixture(t);
   const run = await h.manager.send('codex', { prompt: 'Inspect this context' });
@@ -303,8 +323,7 @@ test('cross-engine review target, report, stale guard and lifecycle stay bounded
     findings: [{ ...args.findings[0], line: 999 }] }), /line is outside/);
   assert.equal(h.manager.reviews.report(childId, args).ok, true);
   h.finish('codex', 'success', 'Report submitted', h.sent.at(-1).session);
-  await h.flush();
-  const result = await h.manager.reviews.result(started.review.id);
+  const result = await waitForReviewResult(h, started.review.id);
   assert.equal(result.status, 'completed');
   assert.equal(result.report.verdict, 'changes_requested');
   assert.equal(result.report.findings[0].file, 'app.js');
@@ -514,8 +533,7 @@ test('review token budgets prevent an over-budget pass from completing', async t
   session.running = false;
   h.manager.capture('codex', { type: 'result', subtype: 'success', result: 'Reported', session_id: session.sessionId,
     runId: session.gen, usage: { input_tokens: 1200, output_tokens: 20 } });
-  await h.flush();
-  const result = await h.manager.reviews.result(review.id);
+  const result = await waitForReviewResult(h, review.id);
   assert.equal(result.status, 'failed');
   assert.match(result.error, /token budget/);
   assert.equal(result.report.verdict, 'pass');
@@ -550,8 +568,7 @@ test('review gate never treats a stale or failed review as a pass', async t => {
   await h.manager.command('claude', 'review-save-settings',
     { sessionId: parent.id, gate: true, reviewerEngine: 'codex' });
   const gate = h.manager.reviews.gate(parent.id, { goalId: 'goal-stale' });
-  await h.flush();
-  const review = h.manager.reviews.list(parent.id)[0];
+  const review = await waitForReview(h, parent.id);
   const hash = h.manager.reviews.get(review.id).target.targetHash;
   h.manager.reviews.report(review.childConversationId, {
     review_id: review.id, target_hash: hash, verdict: 'pass', summary: 'Looks fine', findings: [],
@@ -586,8 +603,7 @@ test('review gate blocks Goal completion on findings and accepts a fresh pass', 
     objective: 'Ship the fix', user_request: 'Implement and complete the goal.',
   }).ok, true);
   const firstCompletion = call('camellia_update_goal', { status: 'complete', reason: 'The fix is ready.' });
-  await h.flush();
-  const firstReview = h.manager.reviews.list(parent.id)[0];
+  const firstReview = await waitForReview(h, parent.id);
   assert.ok(firstReview);
   assert.equal(firstReview.reviewerEngine, 'codex');
   const targetHash = h.manager.reviews.get(firstReview.id).target.targetHash;
@@ -611,8 +627,7 @@ test('review gate blocks Goal completion on findings and accepts a fresh pass', 
 
   fs.appendFileSync(path.join(workspace, 'app.js'), 'const persisted = true;\n');
   const secondCompletion = call('camellia_update_goal', { status: 'complete', reason: 'The finding is fixed.' });
-  await h.flush();
-  const secondReview = h.manager.reviews.list(parent.id)[0];
+  const secondReview = await waitForReview(h, parent.id, review => review.id !== firstReview.id);
   assert.notEqual(secondReview.id, firstReview.id);
   const secondHash = h.manager.reviews.get(secondReview.id).target.targetHash;
   h.manager.reviews.report(secondReview.childConversationId, {
@@ -647,8 +662,7 @@ test('manual Goal completion uses the review gate and accepts an explicit overri
     { run_token: token, objective: 'Finish safely', user_request: 'Finish the goal.' });
   assert.equal(created.ok, true);
   const completion = h.manager.command('claude', 'goal-complete', { sessionId: parent.id });
-  await h.flush();
-  const review = h.manager.reviews.list(parent.id)[0];
+  const review = await waitForReview(h, parent.id);
   assert.ok(review);
   const hash = h.manager.reviews.get(review.id).target.targetHash;
   h.manager.reviews.report(review.childConversationId, {
@@ -694,10 +708,11 @@ test('review gate allows one initial review and one re-review before requiring a
   const token = h.manager.active.get(parent.id).goalRunToken;
   const call = (name, args) => h.manager.callGoalTool(parent.id, name, { run_token: token, ...args });
   call('camellia_create_goal', { objective: 'Finish', user_request: 'Finish the bounded goal.' });
+  const seenReviews = new Set();
   for (let pass = 1; pass <= 2; pass++) {
     const pending = call('camellia_update_goal', { status: 'complete', reason: 'Pass ' + pass });
-    await h.flush();
-    const review = h.manager.reviews.list(parent.id)[0];
+    const review = await waitForReview(h, parent.id, candidate => !seenReviews.has(candidate.id));
+    seenReviews.add(review.id);
     const hash = h.manager.reviews.get(review.id).target.targetHash;
     h.manager.reviews.report(review.childConversationId, {
       review_id: review.id, target_hash: hash, verdict: 'changes_requested',
@@ -737,8 +752,7 @@ test('turn review pauses the next message until the automatic review settles', a
   const parentSession = h.sent.find(entry => entry.engine === 'claude').session;
   h.finish('claude', 'success', 'Changed', parentSession);
   await first.done;
-  await h.flush();
-  const review = h.manager.reviews.list(parent.id)[0];
+  const review = await waitForReview(h, parent.id);
   assert.ok(review);
   assert.equal(h.manager.get(parent.id).pendingTurnReview.reviewId, review.id);
   await assert.rejects(h.manager.send('claude', { sessionId: parent.id, prompt: 'Next request' }),
@@ -748,7 +762,7 @@ test('turn review pauses the next message until the automatic review settles', a
     review_id: review.id, target_hash: hash, verdict: 'pass', summary: 'Turn is safe', findings: [],
   });
   h.finish('codex', 'success', 'Pass', h.sent.filter(entry => entry.engine === 'codex').at(-1).session);
-  await h.flush();
+  await waitForReviewResult(h, review.id);
   assert.equal(h.manager.get(parent.id).pendingTurnReview, undefined);
   await h.manager.command('claude', 'review-save-settings',
     { sessionId: parent.id, turnGate: false });
@@ -1441,6 +1455,45 @@ test('a committed summary survives a missing notice and is reused by the next co
   assert.ok(calls.some(call => call.user.includes('COMMITTED_SUMMARY')));
 });
 
+test('detailed turn logs contain a bounded timeline without prompts, replies or tool payloads', async t => {
+  const records = [], log = message => records.push(message);
+  log.verbose = message => records.push(message);
+  const h = fixture(t, { log });
+  const prompt = 'PRIVATE_PROMPT_9f34a2', reply = 'PRIVATE_REPLY_81cb62';
+  const run = await h.manager.send('claude', { prompt });
+  const active = h.manager.active.get(run.sessionId);
+  for (let index = 0; index < 20; index++) h.manager.capture('claude', { type: 'stream_event', runId: active.session.gen,
+    event: { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: reply } } });
+  assert.equal(records.filter(line => line.startsWith('conversation turn: ')).length, 0, 'token deltas are not logged');
+  h.manager.capture('claude', { type: 'gui:tool', id: 'private-tool', name: 'Write', input: { text: reply }, runId: active.session.gen });
+  h.manager.capture('claude', { type: 'result', subtype: 'success', result: reply, duration_ms: 1234, runId: active.session.gen });
+  await run.done;
+  const starts = records.filter(line => line.startsWith('conversation start: '));
+  const entries = records.filter(line => line.startsWith('conversation turn: '));
+  assert.equal(starts.length, 1); assert.equal(entries.length, 1);
+  const start = JSON.parse(starts[0].slice('conversation start: '.length));
+  assert.equal(start.sessionId, run.sessionId); assert.equal(start.engine, 'claude');
+  assert.equal(start.runId, active.facade.gen); assert.equal(start.model, active.contextSettings.model);
+  assert.deepEqual(Object.keys(start).filter(key => key !== 'connection').sort(), ['engine', 'model', 'runId', 'sessionId']);
+  const details = JSON.parse(entries[0].slice('conversation turn: '.length));
+  assert.deepEqual(Object.keys(details).sort(), ['durationMs', 'engine', 'eventSeq', 'firstEventMs', 'isError',
+    'prepareMs', 'runId', 'sessionId', 'stage', 'status']);
+  assert.equal(details.sessionId, run.sessionId); assert.equal(details.engine, 'claude');
+  assert.equal(details.runId, active.facade.gen); assert.equal(details.eventSeq, active.eventSeq);
+  assert.equal(details.stage, 'stream'); assert.equal(details.status, 'success'); assert.equal(details.isError, false);
+  for (const key of ['durationMs', 'prepareMs', 'firstEventMs']) assert.ok(Number.isFinite(details[key]) && details[key] >= 0, key);
+  assert.equal(records.filter(line => /^conversation (?:start|turn): /.test(line)).length, 2, 'only turn boundaries are logged');
+
+  h.manager.prepare = async () => { throw new Error('PRIVATE_PREPARE_FAILURE'); };
+  await assert.rejects(h.manager.send('claude', { sessionId: run.sessionId, prompt: 'PRIVATE_SECOND_PROMPT' }), /PRIVATE_PREPARE_FAILURE/);
+  const failed = JSON.parse(records.filter(line => line.startsWith('conversation turn: ')).at(-1).slice('conversation turn: '.length));
+  assert.equal(failed.stage, 'prepare'); assert.equal(failed.status, 'error'); assert.equal(failed.isError, true);
+  assert.notEqual(failed.runId, start.runId);
+  const timeline = records.filter(line => /^conversation (?:start|turn): /.test(line)).join('\n');
+  assert.equal(records.filter(line => /^conversation (?:start|turn): /.test(line)).length, 4);
+  assert.doesNotMatch(timeline, /PRIVATE_PROMPT|PRIVATE_REPLY|PRIVATE_SECOND_PROMPT|PRIVATE_PREPARE_FAILURE|private-tool/);
+});
+
 test('unchanged streaming native bindings avoid per-delta writes and persist at turn completion', async t => {
   const h = fixture(t), run = await h.manager.send('claude', { prompt: 'Stream an answer' });
   const a = h.manager.active.get(run.sessionId), file = h.manager.file(run.sessionId), write = fs.writeFileSync;
@@ -1455,6 +1508,19 @@ test('unchanged streaming native bindings avoid per-delta writes and persist at 
   assert.equal((await run.done).subtype, 'success');
   const saved = JSON.parse(fs.readFileSync(file, 'utf8'));
   assert.equal(saved.segments.claude.nativeId, a.session.sessionId); assert.ok(saved.segments.claude.lastUsedAt);
+});
+
+test('shared sends await asynchronous native session creation', async t => {
+  const h = fixture(t), ensure = h.drivers.codex.ensure;
+  h.drivers.codex.ensure = async opts => {
+    await new Promise(resolve => setImmediate(resolve));
+    return ensure(opts);
+  };
+  const run = await h.manager.send('codex', { prompt: 'Start asynchronous session' });
+  assert.equal(run.ok, true);
+  assert.equal(h.sent.length, 1);
+  assert.match(h.sent[0].prompt, /Start asynchronous session/);
+  h.finish('codex'); await run.done;
 });
 
 test('streaming tool snapshots stay out of permanent history and an unfinished tool is published once as cancelled', async t => {
@@ -1564,6 +1630,46 @@ async function nativeFixture(context, compact) {
   const conversation = harness.manager.get(run.sessionId);
   return { ...harness, conversation };
 }
+
+test('cancelling asynchronous session creation prevents a late dispatch and closes the session', async t => {
+  const h = fixture(t), ensure = h.drivers.codex.ensure;
+  let release, shutdowns = 0;
+  h.drivers.codex.ensure = async options => {
+    await new Promise(resolve => { release = resolve; });
+    const session = ensure(options); session.shutdown = async () => { shutdowns++; }; return session;
+  };
+  const pending = h.manager.send('codex', { prompt: 'Cancel before the native session is ready' });
+  await h.flush();
+  const active = [...h.manager.active.values()][0];
+  assert.ok(active); assert.equal(typeof release, 'function');
+  assert.equal((await h.manager.cancel({ sessionId: active.c.id })).ok, true);
+  release();
+  const run = await pending;
+  assert.equal(run.ok, true); assert.equal((await run.done).subtype, 'stopped');
+  assert.equal(h.sent.length, 0); assert.equal(shutdowns, 1);
+});
+
+test('a late session creation failure does not replace a cancelled turn outcome', async t => {
+  const h = fixture(t);
+  let reject;
+  h.drivers.codex.ensure = async () => new Promise((_, fail) => { reject = fail; });
+  const pending = h.manager.send('codex', { prompt: 'Stop before session creation fails' });
+  await h.flush();
+  const active = [...h.manager.active.values()][0];
+  assert.equal((await h.manager.cancel({ sessionId: active.c.id })).ok, true);
+  reject(new Error('Late startup failure'));
+  const run = await pending;
+  assert.equal(run.ok, true); assert.equal((await run.done).subtype, 'stopped');
+  assert.equal(h.sent.length, 0);
+});
+
+test('native compaction awaits asynchronous native session creation', async t => {
+  const h = await nativeFixture(t, async () => ({ ok: true }));
+  const ensure = h.drivers.codex.ensure;
+  h.drivers.codex.ensure = async options => ensure(options);
+  const result = await h.manager.compact(h.conversation.id);
+  assert.equal(result.ok, true); assert.equal(result.native, true);
+});
 
 test('native compaction never materializes old tool history', async t => {
   const h = await nativeFixture(t, async () => ({ ok: true })), c = h.conversation;
@@ -6708,6 +6814,18 @@ for (const engine of ['claude', 'grok', 'kimi', 'dsh']) test(engine + ' cancelli
   assert.deepEqual(h.manager.messages(c), before);
   assert.equal(h.sent.length, 1);
   assert.equal(h.manager.busy(c.id), false);
+});
+
+test('Codex native edit boundary lookup awaits asynchronous session creation', async t => {
+  const h = fixture(t), original = await h.manager.send('codex', { prompt: 'ORIGINAL_REQUEST' });
+  h.finish('codex'); await original.done;
+  h.drivers.codex.nativeEditing = true;
+  const ensure = h.drivers.codex.ensure;
+  h.drivers.codex.ensure = async options => Object.assign(ensure(options), { editBoundary: async () => 'prior-turn' });
+  const revised = await h.manager.send('codex', { sessionId: original.sessionId, editSeq: original.userSeq, prompt: 'REVISED_REQUEST' });
+  assert.equal(h.sent.at(-1).opts.lastTurnId, 'prior-turn');
+  assert.equal(h.sent.at(-1).opts.fork, true);
+  h.finish('codex'); await revised.done;
 });
 
 for (const cancel of [false, true]) test('legacy Codex edit boundary lookup ' + (cancel ? 'is cancellable without revising history' : 'avoids replay after migration'), async context => {

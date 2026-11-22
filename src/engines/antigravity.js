@@ -12,10 +12,11 @@ const { readJson } = require('../shared/json-store');
 const { modelId } = require('../api/api-router-config');
 const { pythonEnvironment, globalPythonEnvironment } = require('../main/python-runtime');
 const { downloadSettings } = require('../main/download-network');
-const { createGoogleAccount, subscriptionEnvironment, requireGoogleProvider, effectiveSelection, stopCli } = require('./antigravity/subscription');
+const { createGoogleAccount, subscriptionEnvironment, requireGoogleProvider, effectiveSelection, stopCli, systemProxy } = require('./antigravity/subscription');
 const { valid } = require('./permission-levels');
 const { accountSummary, accountsFor, normalizeLabel, DEFAULT_ACCOUNT_ID } = require('./subscription-accounts');
 const { getDiscussionLaunch, buildDiscussionSpec, assertDiscussionPoolAccess } = require('./discussions/native-launch');
+const { locateRuntime } = require('../main/runtime-manager');
 const { harnessThinkingRoute } = require('../api/harness-thinking');
 const { withSessionAffinity } = require('../api/session-affinity');
 
@@ -101,7 +102,7 @@ function createAntigravity({ dataDir, cliSettingsFile, node, openLogin, loadConf
     saveConfig({ antigravity: next });
     return settings(patch.sessionId);
   }
-  function ensureSession(opts) {
+  async function ensureSession(opts) {
     const discussion = getDiscussionLaunch(opts, 'antigravity');
     assertDiscussionPoolAccess(sessions, opts, discussion);
     const current = sessions.get(opts);
@@ -132,12 +133,12 @@ function createAntigravity({ dataDir, cliSettingsFile, node, openLogin, loadConf
     }
     if (current && !current.dead && !opts.fork && current.opts.goalBridge === opts.goalBridge && current.sessionId === (opts.sessionId || null)
       && current.opts.workspaceId === opts.workspaceId && ['cwd', 'model', 'thinkingBudget', 'permissionMode', 'connection', 'proxyUrl'].every(key => current.settings[key] === selected[key])) return current;
-    const runtime = runtimes().locate('antigravity', selected.connection);
+    const runtime = await locateRuntime(runtimes(), 'antigravity', selected.connection);
     if (!runtime) throw new Error('Prepare Antigravity in Settings → Engine Settings, then retry');
     // A configured shared interpreter takes precedence; otherwise the managed
     // SDK environment (or an explicit script path) provides the runtime.
     const sharedPython = !discussion && python() || null;
-    const spec = discussion ? buildDiscussionSpec(discussion, runtime, selected) : subscription ? subscriptionSpawnSpec({ runtime, home, env: environment(), proxyUrl: selected.proxyUrl,
+    const spec = discussion ? buildDiscussionSpec(discussion, runtime, selected) : subscription ? subscriptionSpawnSpec({ runtime, home, env: environment(), proxyUrl: selected.proxyUrl || await systemProxy(),
       model: selected.model, effort: selected.thinkingBudget })
       : antigravitySpawnSpec({ runtime, home, route: withSessionAffinity(getRoute(), opts.conversationId), env: environment(),
         python: sharedPython?.file ? sharedPython : null, config: readJson(path.join(home, 'settings.json'), {}), thinkingBudget: selected.thinkingBudget || '' });
@@ -160,7 +161,7 @@ function createAntigravity({ dataDir, cliSettingsFile, node, openLogin, loadConf
   }
   async function forkNative({ sessionId, conversationId, cwd, settings, goalBridge, registerSession }) {
     if (settings.connection === 'subscription') return null;
-    const session = ensureSession({ sessionId, conversationId, cwd, settings, goalBridge, fork: true });
+    const session = await ensureSession({ sessionId, conversationId, cwd, settings, goalBridge, fork: true });
     registerSession(session);
     try {
       await (session.ready ||= session.open());
@@ -218,7 +219,7 @@ function createAntigravity({ dataDir, cliSettingsFile, node, openLogin, loadConf
     'send': async payload => {
       if (sessions.legacy?.running) throw new Error('Wait for the response to finish or stop it before sending another message');
       const sessionId = payload.sessionId || null;
-      const current = ensureSession({ sessionId, workspaceId: payload.workspaceId || null, fork: Boolean(payload.fork) });
+      const current = await ensureSession({ sessionId, workspaceId: payload.workspaceId || null, fork: Boolean(payload.fork) });
       return { ok: current.sendUserMessage(String(payload.prompt || ''), payload.attachments || []), runId: current.gen };
     },
     'cancel': runId => {

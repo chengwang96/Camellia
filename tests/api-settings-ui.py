@@ -19,6 +19,8 @@ bridge=r"""(() => {
   window.testEmitInsights=data=>onInsights(data);
   window.testEmitRouter=data=>onRouter(data);
   window.testCall=async(method,payload)=>{
+    if(method==='workbenchSaveSettings'&&payload?.verboseLogging!==undefined&&window.testVerboseLoggingFailure)
+      return {ok:false,error:'Injected detailed logging save failure'};
     const r=await window.testRpc(method,payload);
     for(const e of r.events||[]){if(e.channel==='dsh:api-router-state')onRouter(e.data);if(e.channel==='dsh:conversation-event')onEvent(e.data);if(e.channel==='dsh:conversation-goal')onGoal(e.data);if(e.channel==='dsh:provider-insights')onInsights(e.data);}
     return r.result;
@@ -537,6 +539,48 @@ try:
         page.locator('[data-view=providers]').click()
         page.screenshot(path=str(repo/'dist/ui-preview/settings-balances-dark-compact.png'))
         page.locator('[data-view=general]').click();page.locator('[data-theme-choice=dark]').click()
+        # Detailed logging is an independent, immediately saved Data preference.
+        # A failed save restores the actual previous value without disabling errors.
+        page.locator('[data-view=data]').click()
+        assert page.locator('#dataPage > .settings-group').evaluate_all(
+            "groups => groups.map(group => group.dataset.settingsGroup)") == ['local-data', 'diagnostics', 'data-transfer', 'storage']
+        expect(page.locator('#verboseLogging')).not_to_be_checked()
+        expect(page.locator('#verboseLogging')).to_have_attribute('role', 'switch')
+        expect(page.locator('#verboseLoggingStatus')).to_have_text('Off')
+        page.locator('#verboseLogging').check()
+        page.wait_for_function("async () => (await window.dshDesktop.workbenchSettings()).verboseLogging === true")
+        expect(page.locator('#verboseLoggingStatus')).to_have_text('On')
+        assert rpc('workbenchSettings')['result']['verboseLogging'] is True
+        page.reload(wait_until='networkidle')
+        page.locator('[data-view=data]').click()
+        expect(page.locator('#verboseLogging')).to_be_checked()
+        page.evaluate('window.testVerboseLoggingFailure = true')
+        page.locator('#verboseLogging').click()
+        expect(page.locator('#status')).to_contain_text('Injected detailed logging save failure')
+        expect(page.locator('#verboseLogging')).to_be_checked()
+        expect(page.locator('#verboseLogging')).to_be_enabled()
+        expect(page.locator('#verboseLoggingStatus')).to_contain_text('previous setting is still active')
+        assert rpc('workbenchSettings')['result']['verboseLogging'] is True
+        page.evaluate('window.testVerboseLoggingFailure = false')
+        page.locator('#verboseLogging').uncheck()
+        page.wait_for_function("async () => (await window.dshDesktop.workbenchSettings()).verboseLogging === false")
+        page.locator('#verboseLogging').check()
+        page.wait_for_function("async () => (await window.dshDesktop.workbenchSettings()).verboseLogging === true")
+        for language in ['en', 'zh-CN']:
+            page.evaluate('language => CamelliaI18n.setLanguage(language)', language)
+            expect(page.locator('label[for=verboseLogging]')).to_have_text('Detailed diagnostic logs' if language == 'en' else '详细诊断日志')
+            expect(page.locator('#verboseLoggingStatus')).to_have_text('On' if language == 'en' else '开启')
+            for width in [1180, 700, 390]:
+                page.set_viewport_size({'width': width, 'height': 900})
+                page.locator('#verboseLogging').scroll_into_view_if_needed()
+                assert page.evaluate('document.documentElement.scrollWidth <= innerWidth'), (language, width)
+                assert page.locator('#verboseLoggingSection').evaluate('row => row.scrollWidth <= row.clientWidth'), (language, width)
+                page.screenshot(path=str(repo/f'dist/ui-preview/settings-data-verbose-{language}-{width}.png'))
+        page.evaluate("CamelliaI18n.setLanguage('en')")
+        page.set_viewport_size({'width': 1040, 'height': 900})
+        page.locator('#verboseLogging').uncheck()
+        page.wait_for_function("async () => (await window.dshDesktop.workbenchSettings()).verboseLogging === false")
+        page.locator('[data-view=general]').click();page.locator('[data-theme-choice=dark]').click()
         expect(page.locator('#openMobileAccess')).to_have_count(0)
         page.evaluate("""() => {
           const original = window.testCall;
@@ -575,7 +619,8 @@ try:
         expect(page.locator('#mobile-error')).to_contain_text('fully quit Camellia')
         expect(page.locator('#mobile-status')).to_have_text('Status unavailable')
         expect(page.locator('#mobile-toggle')).to_be_disabled()
-        expect(page.locator('#mobilePage input[type=checkbox]')).to_have_count(1)
+        for control in ['mobile-lanToggle', 'mobile-lanAllowJoin', 'mobile-guardToggle', 'mobile-relayUse']:
+            expect(page.locator('#' + control)).to_have_count(1)
         expect(page.locator('#mobilePage [data-copy=network]')).not_to_be_empty()
         expect(page.locator('#mobilePage [data-copy=scope]')).to_have_count(0)
         expect(page.locator('#mobile-retry')).to_be_enabled()

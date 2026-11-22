@@ -7,13 +7,27 @@ const { parseArgs } = require('node:util');
 
 const sourceRoot = path.join(__dirname, '../android/app/src/androidTest/java/app/camellia/mobile');
 
+function countTests(directory, className) {
+  const methods = new Set();
+  const classes = new Set();
+  // The instrumentation runner also runs inherited JUnit 3 methods.
+  while (className) {
+    assert.ok(!classes.has(className), 'Circular Android test inheritance');
+    classes.add(className);
+    const source = fs.readFileSync(path.join(directory, className + '.java'), 'utf8');
+    for (const match of source.matchAll(/\bpublic\s+void\s+(test\w+)\s*\(/g)) methods.add(match[1]);
+    const parent = source.match(/\bclass\s+\w+\s+extends\s+(\w+Test)\b/)?.[1];
+    className = parent && fs.existsSync(path.join(directory, parent + '.java')) ? parent : null;
+  }
+  return methods.size;
+}
+
 function planShards(classes, count, { directory = sourceRoot, gatewayWeight = 36 } = {}) {
   assert.ok(Number.isInteger(count) && count >= 1 && count <= 8 && count <= classes.length, 'Choose 1 to 8 nonempty Android shards');
   assert.equal(new Set(classes).size, classes.length, 'Android suites must not be listed twice');
   const suites = classes.map((name, order) => {
     assert.match(name, /^[A-Za-z][A-Za-z0-9]*Test$/, 'Use an Android test class name');
-    const source = fs.readFileSync(path.join(directory, name + '.java'), 'utf8');
-    const tests = [...source.matchAll(/\bpublic\s+void\s+test\w+\s*\(/g)].length;
+    const tests = countTests(directory, name);
     assert.ok(tests > 0, 'No instrumentation tests found in ' + name);
     return { name, tests, order };
   });

@@ -3,7 +3,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
-const { spawnSync } = require('node:child_process');
+const { execFile, spawnSync } = require('node:child_process');
 const { globalPackageRoots, npmCacheRoot } = require('./runtime-paths');
 const { isAntigravityCliHelp } = require('./antigravity-cli-runtime');
 
@@ -27,8 +27,17 @@ function antigravityDirectories({ platform, env, home }) {
     path.join(env.ProgramFiles || 'C:\\Program Files', 'WinGet', 'Links')];
 }
 
-function createLocalRuntimeDiscovery({ engines, node, platform = process.platform, arch = process.arch, env = process.env, home = os.homedir(), probe = probeNative }) {
-  const versions = new Map();
+function probeNativeAsync(file, args, options) {
+  return new Promise((resolve, reject) => {
+    execFile(file, args, options, (error, stdout, stderr) => {
+      if (error) { reject(error); return; }
+      resolve(`${stdout || ''}\n${stderr || ''}`);
+    });
+  });
+}
+
+function createLocalRuntimeDiscovery({ engines, node, platform = process.platform, arch = process.arch, env = process.env, home = os.homedir(), probe = probeNative, probeAsync = probeNativeAsync }) {
+  const versions = new Map(), pending = new Map();
   const directories = () => [...new Set([
     ...(env.PATH || env.Path || '').split(platform === 'win32' ? ';' : ':').map(dir => dir.replace(/^"|"$/g, '')).filter(dir => path.isAbsolute(dir)),
     path.join(home, '.local', 'bin'), path.join(home, '.grok', 'bin'),
@@ -78,7 +87,7 @@ function createLocalRuntimeDiscovery({ engines, node, platform = process.platfor
       return file ? { file, dir: path.dirname(modules), version: manifest.version } : null;
     } catch { return null; }
   }
-  function nativeRuntime(engine, directoriesToScan) {
+  function nativeRuntime(engine, directoriesToScan, allowProbe = true) {
     const command = engine === 'antigravity' ? 'agy' : engine;
     for (const dir of directoriesToScan) {
       const file = path.join(dir, command + (platform === 'win32' ? '.exe' : ''));
@@ -92,7 +101,7 @@ function createLocalRuntimeDiscovery({ engines, node, platform = process.platfor
         if (!(magic.startsWith('4d5a') || ['7f454c46', 'cffaedfe', 'cefaedfe', 'feedfacf', 'feedface', 'cafebabe', 'bebafeca'].includes(magic))) continue;
         const stat = fs.statSync(real);
         const key = `${engine}:${real}:${stat.mtimeMs}:${stat.size}`;
-        if (!versions.has(key)) {
+        if (!versions.has(key) && allowProbe) {
           let version = null;
           try {
             const options = { env: engine === 'antigravity' ? { ...env, AGY_CLI_DISABLE_AUTO_UPDATE: 'true' } : env,
@@ -110,7 +119,7 @@ function createLocalRuntimeDiscovery({ engines, node, platform = process.platfor
     }
     return null;
   }
-  function locate(engine, mode) {
+  function locate(engine, mode, allowProbe = true) {
     if (engine === 'antigravity' && mode !== 'subscription') return null;
     let found = null;
     if (engines[engine].package) {
@@ -120,9 +129,61 @@ function createLocalRuntimeDiscovery({ engines, node, platform = process.platfor
       }
     }
     if (!found && ['claude', 'codex', 'antigravity', 'grok'].includes(engine)) found = nativeRuntime(engine,
+      engine === 'antigravity' ? [...directories(), ...antigravityDirectories({ platform, env, home })] : directories(), allowProbe);
+    return found ? { ...found, source: 'Available locally', external: true, ...(engine === 'antigravity' ? { mode } : {}) } : null;
+  }
+  async function nativeRuntimeAsync(engine, directoriesToScan) {
+    const command = engine === 'antigravity' ? 'agy' : engine;
+    for (const dir of directoriesToScan) {
+      const file = path.join(dir, command + (platform === 'win32' ? '.exe' : ''));
+      if (!usable(file, true)) continue;
+      try {
+        const real = fs.realpathSync(file), header = Buffer.alloc(4);
+        const descriptor = fs.openSync(real, 'r');
+        try { fs.readSync(descriptor, header, 0, header.length, 0); } finally { fs.closeSync(descriptor); }
+        const magic = header.toString('hex');
+        if (!(magic.startsWith('4d5a') || ['7f454c46', 'cffaedfe', 'cefaedfe', 'feedfacf', 'feedface', 'cafebabe', 'bebafeca'].includes(magic))) continue;
+        const stat = fs.statSync(real), key = `${engine}:${real}:${stat.mtimeMs}:${stat.size}`;
+        if (!versions.has(key)) {
+          if (!pending.has(key)) {
+            const task = (async () => {
+              let version = null;
+              try {
+                const options = { env: engine === 'antigravity' ? { ...env, AGY_CLI_DISABLE_AUTO_UPDATE: 'true' } : env,
+                  timeout: 3000, maxBuffer: 16384, windowsHide: true, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] };
+                const output = String(await probeAsync(real, ['--version'], options));
+                version = output.match(/\b\d+\.\d+\.\d+(?:-[\w.-]+)?\b/)?.[0] || null;
+                if (version && engine === 'antigravity'
+                  && !isAntigravityCliHelp(String(await probeAsync(real, ['--help'], options)))) version = null;
+              } catch { version = null; }
+              versions.set(key, version);
+              return version;
+            })().finally(() => pending.delete(key));
+            pending.set(key, task);
+          }
+          await pending.get(key);
+        }
+        const version = versions.get(key);
+        if (version) return { file: real, dir: path.dirname(real), version };
+      } catch {}
+    }
+    return null;
+  }
+  async function locateAsync(engine, mode) {
+    if (engine === 'antigravity' && mode !== 'subscription') return null;
+    let found = null;
+    if (engines[engine].package) {
+      for (const modules of packageRoots()) {
+        found = npmRuntime(engine, modules);
+        if (found) break;
+      }
+    }
+    if (!found && ['claude', 'codex', 'antigravity', 'grok'].includes(engine)) found = await nativeRuntimeAsync(engine,
       engine === 'antigravity' ? [...directories(), ...antigravityDirectories({ platform, env, home })] : directories());
     return found ? { ...found, source: 'Available locally', external: true, ...(engine === 'antigravity' ? { mode } : {}) } : null;
   }
+  locate.cached = (engine, mode) => locate(engine, mode, false);
+  locate.async = locateAsync;
   locate.packageRuntime = npmRuntime;
   return locate;
 }

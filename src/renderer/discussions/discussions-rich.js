@@ -58,17 +58,26 @@ window.CamelliaDiscussionRich = { create({ getGroup, call, mutate, getAttachment
   $('groupPermission').onchange = () => void mutate('set-permission', { permissionMode: $('groupPermission').value }).catch(error).finally(render);
   function renderTools(item, delivery) {
     if (!delivery) return;
+    const key = getGroup().id + ':' + delivery.id;
+    const signature = JSON.stringify([delivery.status, delivery.phase, delivery.resultId, delivery.tools, getGroup()?.permissions || []]);
+    const previous = processes.get(key);
+    if (previous?.signature === signature && previous.container) {
+      item.querySelector('.message-header').after(previous.container);
+      const artifactState = artifacts.get(key);
+      if (artifactState) { artifactState.item = item; artifactRow(artifactState); }
+      return;
+    }
     let process = item.querySelector('.discussion-tools');
     if (!process) { process = node('div', 'discussion-tools'); item.querySelector('.message-header').after(process); }
     process.replaceChildren();
     const tools = delivery.tools || [];
+    const state = previous || {};
+    processes.set(key, state);
     let bucket = process;
     if (tools.length) {
-      const key = getGroup().id + ':' + delivery.id;
-      let state = processes.get(key);
-      if (!state) {
+      if (!state.el) {
         const el = controls.executionProcess();
-        state = { el, body: el.querySelector('.execution-process-body') }; processes.set(key, state);
+        state.el = el; state.body = el.querySelector('.execution-process-body');
       }
       const finished = !['queued', 'preparing', 'running', 'stopping'].includes(delivery.status);
       // Pending message nodes are recreated on every update. Keep the disclosure
@@ -93,18 +102,19 @@ window.CamelliaDiscussionRich = { create({ getGroup, call, mutate, getAttachment
     for (const permission of getGroup()?.permissions || []) if (permission.deliveryId === delivery.id) {
       process.append(action(permission.questions?.length ? 'Answer questions' : 'Review permission', () => { deferred = null; showPermission(permission); }));
     }
+    state.signature = signature; state.container = process;
     if (delivery.status !== 'completed') return;
     const group = getGroup(), artifactKey = group.id + ':' + delivery.id;
-    let state = artifacts.get(artifactKey);
-    if (state) { state.item = item; artifactRow(state); return; }
+    let artifactState = artifacts.get(artifactKey);
+    if (artifactState) { artifactState.item = item; artifactRow(artifactState); return; }
     // Plain replies have no generated files to resolve. In particular, opening
     // text history must not make a new rich-interaction request to an older app.
     const text = group.messages.find(message => message.deliveryId === delivery.id)?.text || '';
     if (!window.CamelliaArtifacts.textPaths(text).length
       && !(delivery.tools || []).some(tool => tool.status === 'completed' && /write|edit|create|save|output|export|patch/i.test(tool.name))) return;
-    state = { item, groupId: group.id, deliveryId: delivery.id, files: [], error: null, loading: false };
-    artifacts.set(artifactKey, state);
-    void loadArtifacts(state);
+    artifactState = { item, groupId: group.id, deliveryId: delivery.id, files: [], error: null, loading: false };
+    artifacts.set(artifactKey, artifactState);
+    void loadArtifacts(artifactState);
   }
   async function loadArtifacts(state) {
     if (state.loading || getGroup()?.id !== state.groupId) return;

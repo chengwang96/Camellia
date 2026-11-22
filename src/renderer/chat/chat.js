@@ -2165,6 +2165,12 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     }
     const actions = messageActions(meta.at, () => div.messageData.text || (div.messageData.attachments || [])
       .map(attachment => attachment.name).filter(Boolean).join(', '));
+    const resend = document.createElement('button');
+    resend.type = 'button'; resend.className = 'message-resend'; resend.title = 'Resend message'; resend.setAttribute('aria-label', 'Resend message'); resend.hidden = true;
+    resend.dataset.i18nAttrs = 'title aria-label';
+    resend.innerHTML = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg>';
+    resend.onclick = () => resendUserMessage(div);
+    actions.appendChild(resend);
     const edit = document.createElement('button');
     edit.type = 'button'; edit.className = 'message-edit'; edit.title = 'Edit message'; edit.setAttribute('aria-label', 'Edit message'); edit.hidden = true;
     edit.dataset.i18nAttrs = 'title aria-label';
@@ -2214,14 +2220,23 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     controls.append(error, edit);
     if (!cancelled) renderContextRecovery(controls, attempt.error);
     div.appendChild(controls);
+    updateMessageActions();
   }
 
   function updateMessageActions() {
     const users = [...chat.querySelectorAll('.msg-user')];
     const editable = context.sessionId && !conversationBusy() && !loadingSession && !sending && !switchingEngine && !handoffForCurrentSession();
+    const turnRetrySeqs = new Set([...chat.querySelectorAll('.run-retry')]
+      .map(button => button.dataset.retrySeq).filter(Boolean));
     for (const div of users) {
-      const button = div.querySelector('.message-edit');
-      if (button) button.hidden = !editable || div !== users.at(-1) || !div.messageData.seq || Boolean(editingMessage);
+      const available = editable && div === users.at(-1) && Boolean(div.messageData.seq) && !editingMessage;
+      const resend = div.querySelector('.message-resend');
+      if (resend) resend.hidden = !available || turnRetrySeqs.has(String(div.messageData.seq));
+      // A failed send already owns an edit action beside its error. The footer
+      // edit would duplicate that pencil for the same message.
+      const failed = Boolean(div.querySelector('.failed-send'));
+      const edit = div.querySelector('.message-edit');
+      if (edit) edit.hidden = !available || failed;
     }
   }
 
@@ -2273,6 +2288,20 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     form.onsubmit = event => { event.preventDefault(); void resendEditedMessage(state); };
     updateConversationControls(); resize(); textarea.focus(); textarea.setSelectionRange(textarea.value.length, textarea.value.length);
     controls.scrollIntoView({ block: 'nearest' });
+  }
+
+  function resendUserMessage(div) {
+    if (editingMessage || sending || conversationBusy() || contextBusy()) return;
+    beginMessageEdit(div);
+    if (editingMessage?.div !== div) return;
+    // A retry replaces the failed attempt. Keep its stale error and edit
+    // action out of the transcript while the replacement request runs.
+    const failed = div.querySelector('.failed-send');
+    if (failed) {
+      writeUi('failed-send:' + context.sessionId, null);
+      failed.remove();
+    }
+    void resendEditedMessage(editingMessage);
   }
 
   function messageEditErrorText(text) {
@@ -2333,15 +2362,15 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     setUserMessageContent(state.div, text, at);
   }
 
-  // The composer may hold an unrelated draft, so a pending send carries its
-  // own stop action instead of relying on the composer's send button.
-  function showPendingSend(sessionId, parent, text = 'Restarting this turn…') {
+  // The composer may hold an unrelated draft, so a pending send keeps its own
+  // stop action whenever the composer is offering to queue that draft instead.
+  function showPendingSend(sessionId, parent, text = 'Restarting this turn…', stopText = 'Stop') {
     const row = document.createElement('div');
     row.className = 'pending-send'; row.setAttribute('role', 'status');
     const label = document.createElement('span'); label.dataset.i18n = '';
     label.textContent = text;
     const stop = document.createElement('button'); stop.type = 'button';
-    stop.textContent = 'Stop'; stop.dataset.i18n = '';
+    stop.textContent = stopText; stop.dataset.i18n = '';
     stop.onclick = async () => {
       if (stop.disabled) return;
       stop.disabled = true; label.textContent = window.CamelliaI18n.t('Stopping…');
@@ -2356,7 +2385,13 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     };
     row.append(label, stop);
     parent.appendChild(row);
+    updatePendingSendStops();
     return row;
+  }
+
+  function updatePendingSendStops() {
+    const composerOwnsStop = sendBtn.dataset.action === 'stop' && !sendBtn.disabled;
+    chat.querySelectorAll('.pending-send button').forEach(stop => { stop.hidden = composerOwnsStop; });
   }
 
   function reopenMessageEditor(state, originalText, originalAt, text, error, isError = true) {
@@ -2458,7 +2493,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     // Compaction can hold the request for a while, so the pending row carries
     // the stop action while the request is being accepted.
     suspendMessageEditor(state, text, Date.now());
-    const pendingRow = showPendingSend(state.sessionId, state.div);
+    const pendingRow = showPendingSend(state.sessionId, state.div, 'Restarting this turn…', 'Stop resending');
     turnEl = null; blocks = {}; pendingTools = {}; todoItems = null; todoPanelEl = null;
     turnEngine = loadedEngine || harnessId;
     setRunning(true);
@@ -3645,11 +3680,11 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       const retry = document.createElement('button'); retry.type = 'button'; retry.className = 'run-retry';
       retry.textContent = window.CamelliaI18n.t('Retry turn');
       retry.title = window.CamelliaI18n.t('Restart this turn from the saved history');
+      retry.dataset.retrySeq = String(retrySeq);
       retry.onclick = () => {
         const user = [...chat.querySelectorAll('.msg-user')].at(-1);
         if (!user || user.messageData?.seq !== retrySeq || conversationBusy() || contextBusy()) return;
-        beginMessageEdit(user);
-        if (editingMessage?.div === user) void resendEditedMessage(editingMessage);
+        resendUserMessage(user);
       };
       chip.append(retry);
     }
@@ -3851,7 +3886,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       handleConversationStatus({ sessionId: ev.session_id, text: ev.state === 'running' ? 'Compacting context…' : '',
         compaction: { state: ev.state, native: ev.native !== false, engine: ev.engine || turnEngine || loadedEngine, seq: ev.compactionSeq,
           durationMs: ev.compactionDurationMs, startedAt: ev.compactionStartedAt, elapsedMs: ev.compactionElapsedMs } });
-      contextPanel?.refresh();
+      contextPanel?.refresh({ includeStatic: true });
       return;
     }
 
@@ -3871,7 +3906,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       else if (ev.session_id && ev.session_id !== context.sessionId)
         reportRendererDiagnostic('init reported session ' + ev.session_id + ' while the view holds ' + context.sessionId);
       context.workspaceId = ev.workspaceId || null;
-      contextPanel?.refresh();
+      contextPanel?.refresh({ includeStatic: true });
       sidebar.render();
       scheduleSidebarLoad();
       return;
@@ -4062,7 +4097,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       currentRunId = null;
       scheduleSidebarLoad();
       void gitUI.refresh(true);
-      contextPanel?.refresh();
+      contextPanel?.refresh({ includeStatic: true });
       maybeScroll(was);
       drainMessageQueue();
       if (ok && !messageQueue.length && !goalUI.isActive()) {
@@ -4106,6 +4141,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     }
     const handoffHere = handoffSessions.has(context.sessionId);
     sendBtn.disabled = (handoffHere && !active) || (loadingSession && !(active && !hasMessage)) || (sending && !(pendingSend && (hasMessage || (active && !hasMessage)))) || (Boolean(editingMessage) && !(pendingSend && active && !hasMessage)) || (!active && goalUI.isActive() && !goalUI.waitingId?.()) || (!active && !hasMessage);
+    updatePendingSendStops();
     renderMessageQueue();
   }
 
@@ -5520,7 +5556,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
         if (!/archived/i.test(err.message)) setStatus("Could not load: " + err.message);
         // Do not leave the panel on its switch-in-progress row when opening
         // the session failed after the id was adopted.
-        contextPanel?.refresh();
+        contextPanel?.refresh({ includeStatic: true });
       }
       return false;
     }

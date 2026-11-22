@@ -279,7 +279,12 @@
     }
     return fragment;
   }
-  const api = { render, safeLink, cells };
+  function renderHtml(document, text, options) {
+    const host = document.createElement('div');
+    host.append(render(document, text, options));
+    return host.innerHTML;
+  }
+  const api = { render, renderHtml, safeLink, cells };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.CamelliaMarkdown = api;
 })(typeof window === 'undefined' ? globalThis : window);

@@ -11,6 +11,7 @@ const { createLocalRuntimeDiscovery } = require('../src/main/local-runtimes');
 const { validateRuntimePath } = require('../src/main/custom-runtimes');
 const { subscriptionSpawnSpec } = require('../src/engines/antigravity');
 const { createGoogleAccount } = require('../src/engines/antigravity/subscription');
+const { checkedAntigravityCliVersionAsync } = require('../src/main/antigravity-cli-runtime');
 
 const help = 'Usage of agy:\n --input-format stream-json\n --output-format stream-json\n models List available models\n';
 function fixture(t, options = {}) {
@@ -59,12 +60,12 @@ test('a real unrelated executable with a valid version is rejected', async () =>
     /Choose the Antigravity CLI/);
 });
 
-test('an invalid CLI path saved by an older release becomes a readable error without breaking account settings', t => {
+test('an invalid CLI path saved by an older release becomes a readable error without breaking account settings', async t => {
   const f = fixture(t, { customPaths: () => ({ antigravity: { file: process.execPath, version: '1.2.14' } }) });
-  const row = f.manager.state().find(item => item.id === 'antigravity');
+  const row = (await f.manager.stateAsync()).find(item => item.id === 'antigravity');
   assert.equal(row.subscriptionRuntime.status, 'error');
   assert.match(row.subscriptionRuntime.message, /Choose the Antigravity CLI/);
-  assert.throws(() => f.manager.ensure('antigravity', 'subscription'), /Choose the Antigravity CLI/);
+  await assert.rejects(f.manager.ensure('antigravity', 'subscription'), /Choose the Antigravity CLI/);
   const account = createGoogleAccount({ home: f.root, runtime: () => f.manager,
     environment: () => ({}), settings: () => ({}), cliSettingsFile: path.join(f.root, 'cli.json') });
   assert.equal(account.state().installed, false);
@@ -75,7 +76,7 @@ test('changing a previously validated executable invalidates the CLI readiness c
   const f = fixture(t), cli = f.put('agy.exe');
   await f.manager.setPath('antigravity', cli, 'subscription');
   fs.writeFileSync(cli, 'MZthis executable has changed');
-  const row = f.manager.state().find(item => item.id === 'antigravity');
+  const row = (await f.manager.stateAsync()).find(item => item.id === 'antigravity');
   assert.equal(row.subscriptionRuntime.status, 'error');
   assert.equal(fs.readFileSync(cli, 'utf8'), 'MZthis executable has changed');
 });
@@ -138,4 +139,25 @@ test('a failed help probe cannot leave a detected CLI marked ready', t => {
     probe: (_exe, args) => { if (args[0] === '--help') throw new Error('probe failed'); return '1.2.14'; } });
   assert.equal(locate('antigravity', 'subscription'), null);
   assert.equal(fs.existsSync(cli), true);
+});
+
+test('async CLI validation yields to the event loop and shares one in-flight probe', async t => {
+  const f = fixture(t), cli = f.put('agy.exe'), calls = [];
+  let release;
+  const gate = new Promise(resolve => { release = resolve; });
+  const probe = async (_file, args) => {
+    calls.push(args[0]);
+    await gate;
+    return args[0] === '--help' ? help : '1.2.14';
+  };
+  const first = checkedAntigravityCliVersionAsync(cli, {}, probe);
+  const second = checkedAntigravityCliVersionAsync(cli, {}, probe);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(calls, ['--version']);
+  release();
+  assert.equal(await first, '1.2.14');
+  assert.equal(await second, '1.2.14');
+  assert.deepEqual(calls, ['--version', '--help']);
+  assert.equal(await checkedAntigravityCliVersionAsync(cli, {}, probe), '1.2.14');
+  assert.deepEqual(calls, ['--version', '--help']);
 });

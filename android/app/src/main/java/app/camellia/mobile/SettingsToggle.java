@@ -22,6 +22,7 @@ final class SettingsToggle extends Switch {
         // separately painted switch left an offset halo after release.
         setBackground(null); setForeground(null); setButtonDrawable((Drawable) null);
         setDefaultFocusHighlightEnabled(false);
+        setStateListAnimator(null);
         setThumbTintList(null); setTrackTintList(null);
         setSwitchMinWidth(dp(48)); setSwitchPadding(0); setThumbTextPadding(0);
         setPadding(dp(2), dp(10), dp(2), dp(10));

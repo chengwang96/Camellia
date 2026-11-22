@@ -12,6 +12,9 @@ import android.widget.EditText;
 /** Transfers an active editor to its replacement when the window layout changes. */
 final class EditorFocusState {
     private static final java.util.WeakHashMap<EditText, Boolean> pendingIme = new java.util.WeakHashMap<>();
+    private static final java.util.WeakHashMap<View, Boolean> watchedIme = new java.util.WeakHashMap<>();
+    private static final java.util.WeakHashMap<View, Boolean> stableIme = new java.util.WeakHashMap<>();
+    private static final java.util.WeakHashMap<View, int[]> configurationRevision = new java.util.WeakHashMap<>();
     private final boolean focused, keyboardVisible;
     private final int start, end;
     private final EditText source;
@@ -43,25 +46,47 @@ final class EditorFocusState {
 
     static EditorFocusState capture(android.view.Window window) { return capture(window.getDecorView()); }
 
+    static void watch(EditText input) {
+        View root = input.getRootView();
+        if (watchedIme.put(root, true) != null) return;
+        root.getViewTreeObserver().addOnGlobalLayoutListener(() -> {
+            boolean visible = imeVisible(root);
+            if (visible || root.hasWindowFocus() && !configurationRevision.containsKey(root)) stableIme.put(root, visible);
+        });
+    }
+
     private static EditorFocusState capture(View root) {
         View currentFocus = root.findFocus();
         EditText input = currentFocus instanceof EditText ? (EditText) currentFocus : null;
         if (input == null) return new EditorFocusState(null, false, false, 0, 0);
+        watch(input);
+        int[] revision = configurationRevision.computeIfAbsent(root, key -> new int[1]);
+        int expected = ++revision[0];
+        root.postDelayed(() -> {
+            if (revision[0] != expected) return;
+            configurationRevision.remove(root);
+            boolean visible = imeVisible(root);
+            if (visible || root.hasWindowFocus()) stableIme.put(root, visible);
+        }, 1200);
         // A rotating window can temporarily lose window/IME ownership while its
         // editor still owns logical focus. Capture that intent before IME calls.
         boolean focused = input.hasFocus();
         int selectionStart = input.getSelectionStart(), selectionEnd = input.getSelectionEnd();
-        boolean visible;
-        WindowInsets insets = input.getRootWindowInsets();
-        if (Build.VERSION.SDK_INT >= 30 && insets != null) visible = insets.isVisible(WindowInsets.Type.ime());
-        else {
-            Rect frame = new Rect(); input.getWindowVisibleDisplayFrame(frame);
-            visible = input.getRootView().getHeight() - frame.bottom > 120 * input.getResources().getDisplayMetrics().density;
-        }
+        Boolean stable = stableIme.get(root);
+        boolean visible = stable == null ? imeVisible(input) : stable;
         InputMethodManager keyboard = input.getContext().getSystemService(InputMethodManager.class);
         boolean served = keyboard != null && keyboard.isActive(input);
         visible = visible && (root.hasWindowFocus() || served) || !served && pendingIme.containsKey(input);
         return new EditorFocusState(input, focused, visible, selectionStart, selectionEnd);
+    }
+
+    private static boolean imeVisible(View input) {
+        if (Build.VERSION.SDK_INT >= 30) {
+            WindowInsets insets = input.getRootWindowInsets();
+            if (insets != null) return insets.isVisible(WindowInsets.Type.ime());
+        }
+        Rect frame = new Rect(); input.getWindowVisibleDisplayFrame(frame);
+        return input.getRootView().getHeight() - frame.bottom > 120 * input.getResources().getDisplayMetrics().density;
     }
 
     private static void showWhenServed(EditText input, InputMethodManager keyboard) {
@@ -76,6 +101,28 @@ final class EditorFocusState {
         });
     }
 
+    private static void keepImeHiddenUntilTouch(EditText input) {
+        boolean[] suppressed = {true};
+        Runnable release = () -> {
+            if (!suppressed[0]) return;
+            suppressed[0] = false;
+            input.setOnTouchListener(null);
+            input.setShowSoftInputOnFocus(true);
+        };
+        input.setShowSoftInputOnFocus(false);
+        input.setOnTouchListener((view, event) -> {
+            if (event.getActionMasked() == android.view.MotionEvent.ACTION_DOWN) release.run();
+            return false;
+        });
+        input.postDelayed(() -> {
+            if (suppressed[0] && input.isAttachedToWindow() && imeVisible(input)) {
+                InputMethodManager keyboard = input.getContext().getSystemService(InputMethodManager.class);
+                if (keyboard != null) keyboard.hideSoftInputFromWindow(input.getWindowToken(), 0);
+            }
+            release.run();
+        }, 750);
+    }
+
     void restore(Activity activity) {
         restore(activity.getWindow().getDecorView());
     }
@@ -86,6 +133,7 @@ final class EditorFocusState {
         if (!focused) return;
         View replacement = tag == null ? null : root.findViewWithTag(tag);
         EditText input = replacement instanceof EditText ? (EditText) replacement : null;
+        if (input != null && !keyboardVisible) keepImeHiddenUntilTouch(input);
         // Focusing can create an input connection immediately. Its initial
         // EditorInfo must already contain the restored selection.
         if (input instanceof EditorInput) ((EditorInput) input).prepareSelectionRestore(start, end);

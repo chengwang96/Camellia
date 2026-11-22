@@ -117,9 +117,12 @@ def exercise_design(browser, theme, language, width, height):
     page.locator('#workPanelBody').evaluate('(node)=>node.scrollTop=200')
     before = page.locator('#workPanelBody').evaluate('(node)=>node.scrollTop')
     assert before > 0
+    page.evaluate('() => { window.streamingHeading = document.querySelector(".work-detail-heading"); window.streamingHistory = document.querySelector(".work-history"); }')
     updated = {**child, 'progress': progress + ' ✓'}
     page.evaluate('tasks => deliverChild(tasks)', [updated, waiting, finished])
     expect(page.locator('.work-progress')).to_contain_text('✓')
+    assert page.evaluate('document.querySelector(".work-detail-heading") === window.streamingHeading')
+    assert page.evaluate('document.querySelector(".work-history") === window.streamingHistory')
     page.evaluate('() => new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))')
     assert page.locator('.work-history').evaluate('(node)=>node.open')
     after = page.locator('#workPanelBody').evaluate('(node)=>node.scrollTop')

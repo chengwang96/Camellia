@@ -49,9 +49,12 @@ public class RemoteApi {
     private final Set<HttpURLConnection> connections = ConcurrentHashMap.newKeySet();
     private volatile boolean cancelled;
     private volatile boolean incremental;
+    private volatile boolean liveDelta;
     private volatile String historyVersion = "";
     void incremental(boolean enabled) { incremental = enabled; }
     boolean incremental() { return incremental; }
+    void liveDelta(boolean enabled) { liveDelta = enabled; }
+    boolean liveDelta() { return liveDelta; }
     void historyVersion(String version) { historyVersion = version == null ? "" : version; }
     String historyVersion() { return historyVersion; }
     boolean embeddedCapable() { return context != null; }
@@ -81,7 +84,11 @@ public class RemoteApi {
     }
 
     static RemoteApi explicit(android.content.Context context, String url) {
-        return new RemoteApi(context, new Endpoint(url), "");
+        return explicit(context, url, "");
+    }
+
+    static RemoteApi explicit(android.content.Context context, String url, String fingerprint) {
+        return new RemoteApi(context, new Endpoint(url), fingerprint);
     }
 
     private HttpURLConnection open(String path, String token) throws IOException {
@@ -294,7 +301,7 @@ public class RemoteApi {
 
     void events(String id, String token, SnapshotListener listener, SseReader.HeartbeatListener heartbeat) throws IOException {
         String version = historyVersion;
-        String query = incremental ? "?incremental=1" + (version.isEmpty() ? "" : "&historyVersion=" + version) : "";
+        String query = incremental ? "?incremental=1" + (liveDelta ? "&delta=live-v1" : "") + (version.isEmpty() ? "" : "&historyVersion=" + version) : "";
         eventsAt("/v1/conversations/" + id + "/events" + query, token, listener, heartbeat);
     }
 
@@ -327,9 +334,10 @@ public class RemoteApi {
             if (status != 200) throw new Failure(status, readFailure(connection));
             if (!String.valueOf(connection.getContentType()).toLowerCase(java.util.Locale.ROOT).startsWith("text/event-stream")) throw new IOException("Unexpected event stream");
             try (var reader = new InputStreamReader(connection.getInputStream(), StandardCharsets.UTF_8)) {
-                SseReader.read(reader, data -> {
+                final JSONObject[] previous = { null };
+            SseReader.read(reader, data -> {
                     if (cancelled) throw new IOException("Cancelled");
-                    try { listener.onSnapshot(new JSONObject(data)); }
+                    try { previous[0] = RemoteDelta.merge(previous[0], new JSONObject(data)); listener.onSnapshot(previous[0]); }
                     catch (JSONException error) { throw new IOException("Invalid snapshot", error); }
                 }, heartbeat == null ? null : () -> {
                     if (cancelled) throw new IOException("Cancelled");
@@ -450,9 +458,10 @@ public class RemoteApi {
         tailnet.Response response = embeddedOpen(path, token, null);
         try (var reader = new InputStreamReader(input(response), StandardCharsets.UTF_8)) {
             if (!response.contentType().startsWith("text/event-stream")) throw new IOException("Unexpected stream type");
+            final JSONObject[] previous = { null };
             SseReader.read(reader, data -> {
                 if (cancelled) throw new IOException("Cancelled");
-                try { listener.onSnapshot(new JSONObject(data)); }
+                try { previous[0] = RemoteDelta.merge(previous[0], new JSONObject(data)); listener.onSnapshot(previous[0]); }
                 catch (JSONException error) { throw new IOException("Invalid snapshot", error); }
             }, heartbeat == null ? null : () -> {
                 if (cancelled) throw new IOException("Cancelled");

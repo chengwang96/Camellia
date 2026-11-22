@@ -34,6 +34,14 @@
       <div class="device-name-row"><label for="lanPin" data-copy="lanPin">连接 PIN</label><input id="lanPin" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" autocomplete="one-time-code" spellcheck="false"><button id="lanSavePin" data-copy="lanSavePin">保存 PIN</button></div>
       <p id="lanAddress" class="address"></p>
       <p id="lanPinStatus" class="hint" role="status" aria-live="polite"></p>
+      <button id="lanFirewallRetry" type="button" hidden></button>
+      <details id="lanMacPermissions" class="mobile-help" hidden>
+        <summary data-copy="lanMacPermissions">macOS 连接权限</summary>
+        <p id="lanMacPrivacyHint" class="hint" data-copy="lanMacPrivacyHint"></p>
+        <button id="lanMacPrivacy" type="button" data-copy="lanMacPrivacy"></button>
+        <p class="hint" data-copy="lanMacFirewallHint"></p>
+        <button id="lanMacFirewall" type="button" data-copy="lanMacFirewall"></button>
+      </details>
       <div class="relay-setting"><span id="lanJoinLabel" data-copy="lanAllowJoin">允许新设备加入</span><input id="lanAllowJoin" type="checkbox" role="switch" aria-labelledby="lanJoinLabel"></div>
       <p class="hint" data-copy="lanSecurity">PIN 不会通过 mDNS 广播。家庭网络之外不建议开启新设备加入。</p>
     </section>

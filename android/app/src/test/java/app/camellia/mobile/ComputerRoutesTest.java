@@ -75,4 +75,48 @@ public class ComputerRoutesTest {
             fail(error.toString());
         }
     }
+
+    @Test public void preservesLegacyLanPreferenceUntilTheUserChangesIt() throws Exception {
+        String tail = "http://100.80.1.2:43127";
+        String lan = "https://192.168.1.8:43127";
+        JSONObject computer = new JSONObject().put("address", tail).put("token", "x".repeat(43))
+            .put("lanAddress", lan).put("lanFingerprint", FP);
+        assertFalse(ComputerRoutes.prefersLan(computer));
+        computer.put("autoLan", true);
+        assertTrue(ComputerRoutes.prefersLan(computer));
+        computer.put("autoLan", false).put("lanPaired", true).put("activeTransport", ComputerRoutes.LAN);
+        assertTrue(ComputerRoutes.prefersLan(computer));
+        ComputerRoutes.configure(List.of(computer));
+        assertEquals(lan, ComputerRoutes.route(tail).url);
+
+        computer.put("lanPreferred", false);
+        ComputerRoutes.configure(List.of(computer));
+        assertFalse(ComputerRoutes.prefersLan(computer));
+        assertEquals(tail, ComputerRoutes.route(tail).url);
+
+        computer.put("address", lan);
+        assertTrue(ComputerRoutes.prefersLan(computer));
+        ComputerRoutes.configure(List.of(computer));
+        assertEquals(lan, ComputerRoutes.route(lan).url);
+    }
+
+    @Test public void checksBothIdentityAndFingerprintBeforeReusingLocalTrust() throws Exception {
+        JSONObject computer = new JSONObject().put("computerId", "desktop").put("lanFingerprint", FP);
+        assertTrue(ComputerRoutes.matchesLanFingerprint(computer, "desktop", "A".repeat(64)));
+        assertFalse(ComputerRoutes.matchesLanFingerprint(computer, "another-desktop", FP));
+        assertFalse(ComputerRoutes.matchesLanFingerprint(computer, "desktop", "b".repeat(64)));
+        assertFalse(ComputerRoutes.matchesLanFingerprint(computer, "desktop", ""));
+    }
+
+    @Test public void usesNewTailscaleRouteWhenTheLanOnlyComputerIsAwayFromItsNetwork() throws Exception {
+        String lan = "https://192.168.1.8:43127", tail = "http://100.80.1.2:43127";
+        JSONObject computer = new JSONObject().put("address", lan).put("token", "x".repeat(43))
+            .put("lanAddress", lan).put("lanFingerprint", FP).put("activeTransport", ComputerRoutes.LAN);
+        assertFalse(ComputerRoutes.updateDiscoveredRoute(computer, null));
+        computer.put("tailscaleAddress", tail);
+        assertTrue(ComputerRoutes.updateDiscoveredRoute(computer, null));
+        assertTrue(ComputerRoutes.prefersLan(computer));
+        ComputerRoutes.configure(List.of(computer));
+        assertEquals(tail, ComputerRoutes.route(lan).url);
+    }
 }

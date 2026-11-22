@@ -18,7 +18,7 @@ const DISCOVERY_PORT = 52638;
 const DISCOVERY_MESSAGE = 'CAMELLIA_DISCOVER_V1';
 const DISCOVERY_MULTICAST = '239.192.52.63';
 const PRIVATE_NAME = /^(?:10\.|127\.|192\.168\.|172\.(?:1[6-9]|2\d|3[01])\.)/;
-const VIRTUAL_NAME = /(?:vethernet|virtual|vmware|virtualbox|docker|wsl|hyper-v|loopback|tailscale|zerotier|bluetooth)/i;
+const VIRTUAL_NAME = /(?:vethernet|virtual|vmware|virtualbox|docker|wsl|hyper-v|loopback|tailscale|zerotier|bluetooth|^(?:utun|bridge|vmnet|tap|tun)\d+$)/i;
 
 function isPrivateIPv4(value) {
   if (typeof value !== 'string') return false;
@@ -59,7 +59,7 @@ function interfaceScore(name, address) {
   let score = 0;
   if (VIRTUAL_NAME.test(name)) score -= 100;
   if (/(?:wi-?fi|wlan|wireless)/i.test(name)) score += 20;
-  else if (/(?:ethernet|eth|lan)/i.test(name)) score += 10;
+  else if (/(?:ethernet|eth|lan|^en\d+$)/i.test(name)) score += 10;
   if (address.startsWith('192.168.')) score += 4;
   else if (address.startsWith('10.')) score += 2;
   return score;

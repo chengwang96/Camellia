@@ -4,9 +4,9 @@ const path = require('node:path');
 const { spawn } = require('node:child_process');
 const { randomUUID } = require('node:crypto');
 const patchDsh = require('../../integrations/dsh/patch.cjs');
-const { locatePythonRuntime, installPythonRuntime, globalPythonEnvironment, detectSystemPython } = require('./python-runtime');
+const { locatePythonRuntime, installPythonRuntime, globalPythonEnvironment, detectSystemPythonAsync, detectSystemPythonCached } = require('./python-runtime');
 const { createDownloadConnection } = require('./download-network');
-const { locateAntigravityCli, installAntigravityCli, checkedAntigravityCliVersion } = require('./antigravity-cli-runtime');
+const { locateAntigravityCliAsync, locateAntigravityCliCached, installAntigravityCli, checkedAntigravityCliVersionAsync, checkedAntigravityCliVersionCached, checkedAntigravityCliError } = require('./antigravity-cli-runtime');
 const { createLocalRuntimeDiscovery } = require('./local-runtimes');
 const { checkRuntimeFile, validateRuntimePath, validatePythonPath } = require('./custom-runtimes');
 const { runtimeRemovalPlan, removeRuntime } = require('./runtime-removal');
@@ -14,8 +14,8 @@ const { runtimeRemovalPlan, removeRuntime } = require('./runtime-removal');
 // Python is not an engine runtime: one interpreter is shared by every harness
 // and is stored as its own top-level setting.
 const PYTHON_KEY = 'python';
-// Probing PATH is synchronous and runs on every state read, so results are
-// cached for the lifetime of the manager and invalidated only by file changes.
+// Fast runtime reads consult cached probes. Full executable validation runs
+// asynchronously and is shared by identical file versions.
 const pythonCache = new Map();
 
 const ENGINES = {
@@ -63,7 +63,12 @@ function createRuntimeManager({ root, installRoot, node, npm, onChange = () => {
     if (saved?.file) return { ...saved, source: 'Custom local path', configured: true };
     // Auto-detection is part of local discovery: profiles that opt out of
     // scanning for local CLIs must not probe the machine for Python either.
-    return discoverLocal ? detectSystemPython({ platform, env, home, cache: pythonCache }) : null;
+    return discoverLocal ? detectSystemPythonCached({ platform, env, home, cache: pythonCache }) : null;
+  };
+  const pythonSelectionAsync = async () => {
+    const saved = customPaths()[PYTHON_KEY];
+    if (saved?.file) return { ...saved, source: 'Custom local path', configured: true };
+    return discoverLocal ? detectSystemPythonAsync({ platform, env, home, cache: pythonCache }) : null;
   };
   const entry = (dir, engine) => {
     if (engine === 'codex') {
@@ -80,7 +85,7 @@ function createRuntimeManager({ root, installRoot, node, npm, onChange = () => {
   // runs on the shared Python interpreter instead.
   const usesCustomPath = (engine, mode) => engine !== 'antigravity' || mode === 'subscription';
   function locateIn(dir, engine, mode) {
-    if (ENGINES[engine].type === 'python') return (mode === 'subscription' ? locateAntigravityCli
+    if (ENGINES[engine].type === 'python') return (mode === 'subscription' ? locateAntigravityCliCached
       : runtimeDir => locatePythonRuntime(runtimeDir, pythonSelection()))(dir);
     const file = entry(dir, engine);
     const complete = (ENGINES[engine].requires || []).every(relative => fs.existsSync(path.join(dir, relative)));
@@ -94,14 +99,38 @@ function createRuntimeManager({ root, installRoot, node, npm, onChange = () => {
       checkRuntimeFile(custom.file, platform);
       // Older releases accepted any executable with a version number. Recheck
       // saved CLI paths after restart or file changes before declaring Ready.
-      const version = engine === 'antigravity' ? checkedAntigravityCliVersion(custom.file, env) : custom.version;
+      const version = engine === 'antigravity' ? checkedAntigravityCliVersionCached(custom.file) || custom.version : custom.version;
+      if (engine === 'antigravity') {
+        const failure = checkedAntigravityCliError(custom.file);
+        if (failure) throw failure;
+      }
       return { ...custom, version, dir: path.dirname(custom.file), external: true, custom: true, mode, source: 'Custom local path' };
     }
     for (const [base, source] of [[installRoot, "Installed by Camellia"], [root, "Available locally"]]) {
       const found = locateIn(path.join(base, 'runtimes', engine), engine, mode);
       if (found) return { ...found, source };
     }
-    return discoverLocal ? locateLocal(engine, mode) : null;
+    return discoverLocal ? locateLocal.cached(engine, mode) : null;
+  }
+  async function locateAsync(engine, mode = runtimeMode(engine)) {
+    if (!ENGINES[engine]) throw new Error('Unknown runtime');
+    const custom = usesCustomPath(engine, mode) ? customPaths()[engine] : null;
+    if (custom?.file) {
+      checkRuntimeFile(custom.file, platform);
+      const version = engine === 'antigravity' ? await checkedAntigravityCliVersionAsync(custom.file, env) : custom.version;
+      return { ...custom, version, dir: path.dirname(custom.file), external: true, custom: true, mode, source: 'Custom local path' };
+    }
+    for (const [base, source] of [[installRoot, 'Installed by Camellia'], [root, 'Available locally']]) {
+      const dir = path.join(base, 'runtimes', engine);
+      let found;
+      if (ENGINES[engine].type === 'python') {
+        found = mode === 'subscription' ? await locateAntigravityCliAsync(dir)
+          : locatePythonRuntime(dir, await pythonSelectionAsync());
+        if (found) found = { ...found };
+      } else found = locateIn(dir, engine, mode);
+      if (found) return { ...found, source };
+    }
+    return discoverLocal ? locateLocal.async(engine, mode) : null;
   }
   function runtimeState(id, engine, mode) {
     const customPath = usesCustomPath(id, mode) ? customPaths()[id]?.file || '' : '';
@@ -121,6 +150,27 @@ function createRuntimeManager({ root, installRoot, node, npm, onChange = () => {
       if (id === 'antigravity') row.subscriptionRuntime = mode === 'subscription' ? { ...row } : runtimeState(id, engine, 'subscription');
       return row;
     });
+  }
+  async function stateAsync() {
+    return Promise.all(Object.entries(ENGINES).map(async ([id, engine]) => {
+      const mode = runtimeMode(id);
+      const runtimeStateAsync = async connection => {
+        const customPath = usesCustomPath(id, connection) ? customPaths()[id]?.file || '' : '';
+        try {
+          const found = await locateAsync(id, connection);
+          return { id, name: engine.name, mode: connection, customPath,
+            paths: Object.fromEntries(['api', 'subscription'].map(value => [value, usesCustomPath(id, value) ? customPaths()[id]?.file || '' : ''])),
+            ...found, status: found ? 'ready' : 'missing', ...progress.get(id + ':' + connection) };
+        } catch (error) {
+          return { id, name: engine.name, mode: connection, customPath,
+            paths: Object.fromEntries(['api', 'subscription'].map(value => [value, usesCustomPath(id, value) ? customPaths()[id]?.file || '' : ''])),
+            external: Boolean(customPath), status: 'error', message: error.message };
+        }
+      };
+      const row = await runtimeStateAsync(mode);
+      if (id === 'antigravity') row.subscriptionRuntime = mode === 'subscription' ? { ...row } : await runtimeStateAsync('subscription');
+      return row;
+    }));
   }
   function report(engine, mode, value) { progress.set(engine + ':' + mode, value); onChange(state()); }
   async function install(engine, mode, options) {
@@ -183,7 +233,7 @@ function createRuntimeManager({ root, installRoot, node, npm, onChange = () => {
         try { fs.rmSync(staging, { recursive: true, force: true }); }
         catch (error) { cleanupWarning = 'Runtime temporary cleanup is pending: ' + error.message; }
       }
-      const found = locate(engine);
+      const found = await locateAsync(engine);
       if (!found) throw new Error("Installation did not produce an executable. Please retry.");
       update({ status: 'ready', message: cleanupWarning || 'Ready', ...(cleanupWarning ? { warning: cleanupWarning } : {}) });
       return found;
@@ -191,21 +241,21 @@ function createRuntimeManager({ root, installRoot, node, npm, onChange = () => {
     finally { await connection.close(); }
   }
   function ensure(engine, mode = runtimeMode(engine)) {
-    if (!Object.hasOwn(ENGINES, engine) || !['api', 'subscription'].includes(mode)) throw new Error('Unknown runtime');
+    if (!Object.hasOwn(ENGINES, engine) || !['api', 'subscription'].includes(mode)) return Promise.reject(new Error('Unknown runtime'));
     if (uninstalling.has(engine)) return Promise.reject(new Error('Wait for the engine uninstall to finish'));
     if (changingPaths.has(engine)) return Promise.reject(new Error('Wait for runtime path validation to finish'));
     const key = engine + ':' + mode;
     if (pending.has(key)) return pending.get(key);
-    const found = locate(engine, mode);
-    if (found) {
-      // Downloaded DSH survives application upgrades; refresh our integration
-      // when it is reused so it stays in step with the installed workbench.
-      if (engine === 'dsh' && !found.external) patchDsh(found.dir);
-      progress.delete(key);
-      return Promise.resolve(found);
-    }
-    const task = Promise.resolve().then(() => downloadOptions(engine, mode)).then(options => install(engine, mode, options))
-      .finally(() => pending.delete(key));
+    const task = Promise.resolve().then(() => locateAsync(engine, mode)).then(found => {
+      if (found) {
+        // Downloaded DSH survives application upgrades; refresh our integration
+        // when it is reused so it stays in step with the installed workbench.
+        if (engine === 'dsh' && !found.external) patchDsh(found.dir);
+        progress.delete(key);
+        return found;
+      }
+      return Promise.resolve().then(() => downloadOptions(engine, mode)).then(options => install(engine, mode, options));
+    }).finally(() => pending.delete(key));
     pending.set(key, task);
     return task;
   }
@@ -412,7 +462,7 @@ function createRuntimeManager({ root, installRoot, node, npm, onChange = () => {
       else delete paths[engine];
       saveCustomPaths(paths);
       progress.delete(engine + ':' + mode);
-      const engines = state();
+      const engines = await stateAsync();
       onChange(engines);
       return engines;
     } finally { changingPaths.delete(engine); }
@@ -434,7 +484,7 @@ function createRuntimeManager({ root, installRoot, node, npm, onChange = () => {
       if (selected) paths[PYTHON_KEY] = selected;
       else delete paths[PYTHON_KEY];
       saveCustomPaths(paths);
-      const snapshot = state();
+      const snapshot = await stateAsync();
       onChange(snapshot);
       return snapshot;
     } finally { changingPaths.delete(PYTHON_KEY); }
@@ -446,9 +496,17 @@ function createRuntimeManager({ root, installRoot, node, npm, onChange = () => {
     return { ...selected, file: selected?.file || '', packages: managedPackages(),
       configured: Boolean(customPaths()[PYTHON_KEY]?.file) };
   }
+  async function pythonStateAsync() {
+    const selected = await pythonSelectionAsync();
+    return { ...selected, file: selected?.file || '', packages: managedPackages(),
+      configured: Boolean(customPaths()[PYTHON_KEY]?.file) };
+  }
   // pythonSelection is handed to engine launchers so the same interpreter
   // serves every harness; pythonState carries it to the settings page.
-  return { locate, ensure, reinstallPlan, reinstall, uninstallPlan, uninstall, state, setPath, setPython, pythonState, pythonSelection,
+  return { locate, locateAsync, ensure, reinstallPlan, reinstall, uninstallPlan, uninstall, state, stateAsync, setPath, setPython, pythonState, pythonStateAsync, pythonSelection,
     get busy() { return pending.size > 0 || changingPaths.size > 0; } };
 }
-module.exports = { ENGINES, createRuntimeManager, run };
+async function locateRuntime(manager, engine, mode) {
+  return manager.locateAsync ? manager.locateAsync(engine, mode) : manager.locate(engine, mode);
+}
+module.exports = { ENGINES, createRuntimeManager, locateRuntime, run };

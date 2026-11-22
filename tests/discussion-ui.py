@@ -93,9 +93,9 @@ with tempfile.TemporaryDirectory(prefix='discussion-ui-', ignore_cleanup_errors=
         try:
             page.set_viewport_size({'width': 1440, 'height': 1000})
             tools = page.locator('.home-tools > button')
-            expect(tools).to_have_count(4)
-            bounds = [tools.nth(i).bounding_box() for i in range(4)]
-            assert bounds[0]['y'] == bounds[1]['y'] and bounds[2]['y'] == bounds[3]['y']
+            expect(tools).to_have_count(3)
+            bounds = [tools.nth(i).bounding_box() for i in range(3)]
+            assert bounds[0]['y'] == bounds[1]['y'] and bounds[2]['y'] > bounds[1]['y']
             page.screenshot(path=str(preview / 'discussion-home.png'), full_page=True)
             await_free = page.evaluate("window.dshDesktop.discussion('list')")
             assert not await_free['ok'], 'Non-discussion pages cannot use discussion IPC'

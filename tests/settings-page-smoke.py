@@ -24,7 +24,8 @@ with sync_playwright() as playwright:
           return window.deferRouter ? new Promise(resolve => window.pendingRouters.push(() => resolve(state))) : state;
         };
         if (name === 'workbenchSettings') return async () => ({ ...empty, version: '0.3.0', dataPath: '/test-profile/camellia', language: 'en', theme: 'system',
-          portableSkills: window.savedPreferences.portableSkills !== false, hiddenSubscriptionModels: window.hiddenModels });
+          portableSkills: window.savedPreferences.portableSkills !== false,
+          verboseLogging: window.savedPreferences.verboseLogging === true, hiddenSubscriptionModels: window.hiddenModels });
         if (name === 'codexAccountState') return async payload => payload?.id === 'other'
           ? {ok:true, models:[{id:'gpt-other',name:'GPT Other'}]}
           : {ok:true, activeId:'default', accounts:[{id:'default',signedIn:true},{id:'other',signedIn:true}], models:[{id:'gpt-a',name:'GPT A'},{id:'gpt-b',name:'GPT B'}]};
@@ -175,14 +176,17 @@ with sync_playwright() as playwright:
     expect(page.locator('#shortcutsPage')).to_be_visible()
     assert page.locator('#shortcutsPage > .settings-group').evaluate_all(
         "els => els.map(el => el.dataset.settingsGroup)") == ['shortcuts', 'zoom-shortcuts']
+    mac = page.evaluate("navigator.platform.startsWith('Mac')")
+    control = '⌘' if mac else 'Ctrl'
     goal = page.locator('[data-shortcut-record=goal]')
-    expect(goal).to_contain_text('Ctrl+G')
+    expect(goal).to_contain_text(control + '+G')
     expect(page.locator('[data-shortcut-clear=goal]')).to_be_visible()
     goal.click()
-    modifier = 'Meta' if page.evaluate("navigator.platform.startsWith('Mac')") else 'Control'
+    modifier = 'Meta' if mac else 'Control'
+    option = '⌥' if mac else 'Alt'
     page.keyboard.press(modifier + '+Alt+G')
     page.wait_for_function("savedPreferences.shortcuts?.goal === 'CommandOrControl+Alt+G'")
-    expect(goal).to_contain_text('Ctrl+Alt+G')
+    expect(goal).to_contain_text(control + '+' + option + '+G')
     goal.click()
     page.keyboard.press('Backspace')
     page.wait_for_function("savedPreferences.shortcuts?.goal === ''")
@@ -264,6 +268,38 @@ with sync_playwright() as playwright:
     page.locator('#portableSkills').check()
     page.wait_for_function('savedPreferences.portableSkills === true')
     expect(page.locator('#status')).to_contain_text('Preferences saved')
+    page.locator('[data-view=data]').click()
+    assert page.locator('#dataPage > .settings-group').evaluate_all(
+        "els => els.map(el => el.dataset.settingsGroup)") == ['local-data', 'diagnostics', 'data-transfer', 'storage']
+    expect(page.locator('#verboseLogging')).not_to_be_checked()
+    page.locator('#verboseLogging').check()
+    page.wait_for_function('savedPreferences.verboseLogging === true')
+    expect(page.locator('#verboseLoggingStatus')).to_have_text('On')
+    page.evaluate('window.failPreferences = true')
+    page.locator('#verboseLogging').click()
+    expect(page.locator('#verboseLogging')).to_be_checked()
+    expect(page.locator('#verboseLogging')).to_be_enabled()
+    expect(page.locator('#status')).to_contain_text('Could not save preferences')
+    expect(page.locator('#verboseLoggingStatus')).to_contain_text('previous setting is still active')
+    page.evaluate('window.failPreferences = false')
+    for language in ['en', 'zh-CN']:
+        page.evaluate('language => CamelliaI18n.setLanguage(language)', language)
+        expect(page.locator('label[for=verboseLogging]')).to_have_text(
+            'Detailed diagnostic logs' if language == 'en' else '详细诊断日志')
+        for width in [1180, 390, 320]:
+            page.set_viewport_size({'width': width, 'height': 820})
+            page.locator('#verboseLogging').scroll_into_view_if_needed()
+            assert page.evaluate('document.documentElement.scrollWidth <= innerWidth'), (language, width, 'data')
+            assert page.locator('#verboseLoggingSection').evaluate('row => row.scrollWidth <= row.clientWidth')
+            if (language, width) in [('en', 1180), ('zh-CN', 390)]:
+                output = root / 'dist/engine-settings-qa'
+                output.mkdir(parents=True, exist_ok=True)
+                page.screenshot(path=str(output / f'data-verbose-{language}-{width}.png'))
+    page.evaluate("CamelliaI18n.setLanguage('en')")
+    page.set_viewport_size({'width': 1180, 'height': 820})
+    page.locator('#verboseLogging').uncheck()
+    page.wait_for_function('savedPreferences.verboseLogging === false')
+    page.locator('[data-view=general]').click()
     for language in ["en", "zh-CN"]:
         page.evaluate("language => CamelliaI18n.setLanguage(language)", language)
         for width in [1180, 850, 700, 390, 320]:

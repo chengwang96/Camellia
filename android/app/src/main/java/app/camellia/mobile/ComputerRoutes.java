@@ -1,5 +1,6 @@
 package app.camellia.mobile;
 
+import org.json.JSONException;
 import org.json.JSONObject;
 import java.util.List;
 import java.util.Map;
@@ -70,16 +71,14 @@ final class ComputerRoutes {
             if (key.isEmpty()) continue;
             String lan = computer.optString("lanAddress");
             String lanFingerprint = computer.optString("lanFingerprint");
-            String tailscale = computer.optString("tailscaleAddress");
-            if (tailscale.isEmpty() && "tailscale".equals(transportOf(key))) tailscale = key;
+            String tailscale = tailscaleUrl(computer);
             String active = computer.optString("activeTransport");
             Choices choices = new Choices(key);
             choices.lanUrl = lan;
             choices.lanFingerprint = LanTls.validFingerprint(lanFingerprint) ? LanTls.normalize(lanFingerprint) : "";
             choices.tailscaleUrl = tailscale;
             CHOICES.put(key, choices);
-            boolean preferLan = LAN.equals(active) || tailscale.isEmpty() && !lan.isEmpty();
-            if (preferLan && !choices.lanUrl.isEmpty() && !choices.lanFingerprint.isEmpty()) {
+            if (LAN.equals(active) && prefersLan(computer) && !choices.lanUrl.isEmpty() && !choices.lanFingerprint.isEmpty()) {
                 put(key, new Route(choices.lanUrl, choices.lanFingerprint, LAN));
             } else if (!tailscale.isEmpty()) {
                 put(key, new Route(tailscale, "", TAILSCALE));
@@ -119,8 +118,46 @@ final class ComputerRoutes {
         return route == null ? "" : route.transport;
     }
 
-    private static String transportOf(String address) {
-        try { return new Endpoint(address).isLan() ? LAN : TAILSCALE; }
+    static boolean prefersLan(JSONObject computer) {
+        if (computer.optString("token").isEmpty()) return false;
+        if (tailscaleUrl(computer).isEmpty()) return true;
+        // Older LAN pairings preferred LAN even when autoLan was off.
+        boolean legacy = computer.optBoolean("autoLan", false)
+            || computer.optBoolean("lanPaired", LAN.equals(computer.optString("activeTransport")));
+        return computer.optBoolean("lanPreferred", legacy);
+    }
+
+    static String tailscaleUrl(JSONObject computer) {
+        String saved = tailscaleOrigin(computer.optString("tailscaleAddress"));
+        return saved.isEmpty() ? tailscaleOrigin(computer.optString("address")) : saved;
+    }
+
+    static String tailscaleOrigin(String address) {
+        try {
+            Endpoint endpoint = new Endpoint(address);
+            return endpoint.isLan() ? "" : endpoint.origin();
+        }
         catch (IllegalArgumentException error) { return ""; }
+    }
+
+    static boolean matchesLanFingerprint(JSONObject computer, String computerId, String fingerprint) {
+        return !computerId.isEmpty() && computerId.equals(computer.optString("computerId"))
+            && LanTls.validFingerprint(fingerprint) && fingerprint.equalsIgnoreCase(computer.optString("lanFingerprint"));
+    }
+
+    static boolean updateDiscoveredRoute(JSONObject computer, LanDiscovery.Service service) throws JSONException {
+        boolean preferLan = prefersLan(computer);
+        String transport = computer.optString("activeTransport");
+        if (preferLan && service != null && matchesLanFingerprint(computer, service.computerId, service.fingerprint)) {
+            if (LAN.equals(transport) && service.url.equals(computer.optString("lanAddress"))) return false;
+            computer.put("lanAddress", service.url).put("activeTransport", LAN);
+        } else if (LAN.equals(transport) && !tailscaleUrl(computer).isEmpty()) {
+            computer.put("activeTransport", TAILSCALE);
+        } else {
+            return false;
+        }
+        // Older profiles may have inferred this preference from the previous route.
+        computer.put("lanPreferred", preferLan);
+        return true;
     }
 }

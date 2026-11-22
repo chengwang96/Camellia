@@ -168,6 +168,7 @@ bridge = r"""(() => {
   window.dshDesktop = {
     sharedConversations: true,
     conversationCommand: async ({action, payload}) => {
+      if (action.startsWith('context-') || action === 'agent-graph') (window.contextActions ||= []).push(action);
       if (action === 'list-sessions') return {ok:true,sessions:[{...fixture,mtimeMs:Date.now()},{...second,mtimeMs:Date.now()-60000},{...many,mtimeMs:Date.now()-120000}],workspaces:[],pagination:{}};
       if (action === 'get-live') return {ok:true,live:null};
       if (action === 'load-session') {
@@ -431,6 +432,12 @@ with sync_playwright() as p:
     expect(page.locator('.ctx-node:not([hidden])')).to_have_count(5)
     expect(more).to_have_text('Show 7 more items')
     page.screenshot(path=str(preview / 'context-many-collapsed.png'), animations='disabled')
+    page.evaluate("() => { window.contextActions = []; contextPanel.refresh(); }")
+    page.wait_for_function('window.contextActions.length === 1')
+    assert page.evaluate('window.contextActions') == ['context-snapshot']
+    page.evaluate("() => { window.contextActions = []; contextPanel.refresh({includeStatic: true}); }")
+    page.wait_for_function('window.contextActions.length === 4')
+    assert set(page.evaluate('window.contextActions')) == {'context-snapshot', 'agent-graph', 'context-blocks', 'context-memory-status'}
     assert errors == [], errors
     browser.close()
     print('PASS context browser: composition, node, block, agents, memory, switching, long-list collapse')

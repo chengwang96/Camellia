@@ -41,7 +41,7 @@ test('Grok defaults and native configuration stay isolated from personal CLI set
     getModels: () => ['model-exact'], getRoute: () => f.route, runtimes: () => ({ locate: () => ({ file: '/grok/grok.exe' }) }),
     environment: () => ({}), onEvent() {}, nativeConfig: f.service.grokConfig, nativeRevision: f.service.grokConfigRevision });
   t.after(() => driver.shutdown());
-  const session = driver.ensure({ cwd: f.home });
+  const session = await driver.ensure({ cwd: f.home });
   assert.deepEqual(session.spec.args, ['--model', 'camellia', '--no-auto-update', 'agent', 'stdio']);
   assert.equal(session.spec.applyThinking, false);
   assert.equal(session.settings.permissionMode, 'auto');
@@ -55,7 +55,7 @@ test('Grok defaults and native configuration stay isolated from personal CLI set
   assert.equal(f.desktop.grok.contextWindow, 131072);
   assert.equal(f.desktop.grok.model, 'model-exact');
   assert.notEqual(f.service.grokConfigRevision(), firstRevision);
-  const next = driver.ensure({ cwd: f.home });
+  const next = await driver.ensure({ cwd: f.home });
   assert.notEqual(next, session);
   assert.equal(next.settings.thinkingBudget, '');
 });

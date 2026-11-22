@@ -125,6 +125,20 @@ class DiscussionPayloads {
     } catch (error) { throw new Error('Invalid discussion payload storage', { cause: error }); }
     return { state, bytes };
   }
+  referenceSnapshot(state) {
+    return textFields(state).map(([object, key]) => this.known.get(object)?.get(key)?.ref);
+  }
+  validate(id, state, references = []) {
+    const fields = textFields(state);
+    try {
+      for (let index = 0; index < fields.length; index++) {
+        if (!references[index]) continue;
+        const [object, key] = fields[index], value = this.get(id, references[index]);
+        if (value !== object[key]) throw new Error('Invalid cached discussion payload');
+      }
+    } catch (error) { throw new Error('Invalid discussion payload storage', { cause: error }); }
+    return state;
+  }
   encode(state) {
     // Clone metadata without copying the large strings; no object returned to
     // a caller is changed into a storage reference.

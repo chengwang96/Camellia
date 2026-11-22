@@ -45,6 +45,7 @@ public struct RemoteCapabilities: OptionSet, Sendable {
     public static let listQuery = Self(rawValue: 1 << 13)
     public static let codexResetCredits = Self(rawValue: 1 << 14)
     public static let stopBackgroundWork = Self(rawValue: 1 << 15)
+    public static let liveDeltas = Self(rawValue: 1 << 16)
 
     /// These actions additionally require `permission == "control"`.
     /// The gateway further restricts reset credits to full-device control.
@@ -58,6 +59,7 @@ public struct RemoteCapabilities: OptionSet, Sendable {
             case "fork": value.insert(.fork)
             case "command-receipts": value.insert(.commandReceipts)
             case "incremental-snapshots": value.insert(.incrementalSnapshots)
+            case "live-deltas": value.insert(.liveDeltas)
             case "stop-start": value.insert(.stopStart)
             case "list-query": value.insert(.listQuery)
             case "codex-reset-credits": value.insert(.codexResetCredits)
