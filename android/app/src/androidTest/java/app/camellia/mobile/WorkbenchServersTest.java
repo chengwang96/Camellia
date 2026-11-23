@@ -139,7 +139,7 @@ public class WorkbenchServersTest extends InstrumentationTestCase {
             invoke("updateHomeConversations");
             assertNull("Local reads must override an older server receipt", view(tag("homeRecentStatus:", other, "same-id")));
             assertSame("Unchanged cards should stay attached", unchanged[0], view(tag("homeRecent:", hp, "same-id")));
-            assertFalse(view(tag("homeRecent:", other, "same-id")).getContentDescription().toString().matches(".*(新消息|New reply).*"));
+            assertFalse(view(tag("homeRecent:", other, "same-id")).getContentDescription().toString().matches(".*(未读回复|Unread reply).*"));
         });
         seed(other, new JSONObject(otherReply.toString()).put("lastReplyAt", now + 1));
         main(() -> {
@@ -208,7 +208,7 @@ public class WorkbenchServersTest extends InstrumentationTestCase {
     private void assertNewReply(JSONObject computer, String id) {
         TextView status = (TextView) view(tag("homeRecentStatus:", computer, id));
         assertNotNull("Unread recent replies need a status pill", status);
-        assertTrue(status.getText().toString().matches("新消息|New reply"));
+        assertTrue(status.getText().toString().matches("未读回复|Unread reply"));
         assertEquals(Palette.of(activity).accent, status.getCurrentTextColor());
         assertTrue(view(tag("homeRecent:", computer, id)).getContentDescription().toString().contains(status.getText()));
     }
@@ -260,7 +260,7 @@ public class WorkbenchServersTest extends InstrumentationTestCase {
                     try { listener.onSnapshot(new JSONObject().put("workbench", new JSONObject().put("conversations", new JSONArray().put(summary)))); }
                     catch (org.json.JSONException error) { throw new java.io.IOException(error); }
                 }
-                @Override void listEvents(String token, SnapshotListener listener, SseReader.HeartbeatListener heartbeat) throws java.io.IOException {
+                @Override public void listEvents(String token, SnapshotListener listener, SseReader.HeartbeatListener heartbeat) throws java.io.IOException {
                     boolean target = address.equals(hp.optString("address"));
                     if (target) listListener[0] = listener;
                     try {
@@ -334,7 +334,7 @@ public class WorkbenchServersTest extends InstrumentationTestCase {
             assertNotNull(slowStatus); assertTrue(slowStatus.getText().toString().equals("正在确认状态…")
                 || slowStatus.getText().toString().equals("Checking status…"));
             String fastStatus = ((TextView) view(tag("homeActiveStatus:", other, "fast"))).getText().toString();
-            assertTrue(fastStatus.equals("正在运行") || fastStatus.equals("Running"));
+            assertTrue(fastStatus.equals("运行中") || fastStatus.equals("Running"));
             assertEquals(hp.optString("address"), store.load().optString("address"));
         });
         capture("fast-live-slow-cached");
@@ -410,7 +410,7 @@ public class WorkbenchServersTest extends InstrumentationTestCase {
         getInstrumentation().waitForIdleSync();
         main(() -> {
             assertTrue(((TextView) view(tag("homeActiveStatus:", other, "fast"))).getText().toString()
-                .matches("正在运行|Running"));
+                .matches("运行中|Running"));
             assertTrue(((TextView) view(tag("homeActiveStatus:", hp, "slow"))).getText().toString()
                 .matches("正在确认状态…|Checking status…"));
             assertTrue(offlineStatus.matches("离线 · 上次运行中|Offline · Previously running"));
@@ -494,7 +494,7 @@ public class WorkbenchServersTest extends InstrumentationTestCase {
             @Override public void listEvents(String token, SnapshotListener listener) throws java.io.IOException {
                 listEvents(token, listener, null);
             }
-            @Override void listEvents(String token, SnapshotListener listener, SseReader.HeartbeatListener heartbeat) throws java.io.IOException {
+            @Override public void listEvents(String token, SnapshotListener listener, SseReader.HeartbeatListener heartbeat) throws java.io.IOException {
                 try {
                     if (actionOutsideFirstPage) listener.onSnapshot(new JSONObject().put("conversationList", actionPage(0)));
                 } catch (org.json.JSONException error) { throw new java.io.IOException(error); }

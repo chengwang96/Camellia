@@ -8,20 +8,16 @@ window.createReviewPanel = ({ context, getEngine, setStatus, onOpen }) => {
   const modelSelect = document.getElementById('reviewModel');
   const modeSelect = document.getElementById('reviewMode');
   const baseInput = document.getElementById('reviewBase');
-  const maxTokensInput = document.getElementById('reviewMaxTokens');
   const focusInput = document.getElementById('reviewFocus');
   const agentConsent = document.getElementById('reviewAgentConsent');
-  const gateToggle = document.getElementById('reviewGate');
-  const turnGateToggle = document.getElementById('reviewTurnGate');
   const sameEngineToggle = document.getElementById('reviewSameEngine');
   const status = document.getElementById('reviewStatus');
   const startButton = document.getElementById('reviewStart');
   const cancelButton = document.getElementById('reviewCancel');
-  const overrideButton = document.getElementById('reviewOverrideGate');
   const closeButton = document.getElementById('reviewClose');
   const main = panel?.closest('.main');
-  if (!toggle || !panel || !form || !engineSelect || !modelSelect || !modeSelect || !maxTokensInput || !agentConsent || !gateToggle || !turnGateToggle || !sameEngineToggle
-      || !status || !startButton || !overrideButton) return null;
+  if (!toggle || !panel || !form || !engineSelect || !modelSelect || !modeSelect || !agentConsent || !sameEngineToggle
+      || !status || !startButton) return null;
   const t = value => window.CamelliaI18n?.t(value) || value;
   const shortcutBindings = window.CamelliaShortcuts?.watchBindings(window.dshDesktop);
   let options = null;
@@ -120,11 +116,8 @@ window.createReviewPanel = ({ context, getEngine, setStatus, onOpen }) => {
     modelSelect.disabled = busy;
     modeSelect.disabled = busy;
     baseInput.disabled = busy;
-    maxTokensInput.disabled = busy;
     focusInput.disabled = busy;
     agentConsent.disabled = busy;
-    gateToggle.disabled = busy;
-    turnGateToggle.disabled = busy;
     sameEngineToggle.disabled = busy;
   }
   function modelOptions(preferred = '') {
@@ -155,10 +148,7 @@ window.createReviewPanel = ({ context, getEngine, setStatus, onOpen }) => {
       ? preferred : value.engines?.find(item => item.available)?.engine || '';
     modelOptions(value.settings?.model);
     modeSelect.value = value.settings?.mode === 'adversarial' ? 'adversarial' : 'standard';
-    maxTokensInput.value = String(value.settings?.maxTokens || 50000);
     agentConsent.checked = value.settings?.allowAgentReviews === true;
-    gateToggle.checked = value.settings?.gate === true;
-    turnGateToggle.checked = value.settings?.turnGate === true;
     sameEngineToggle.checked = value.settings?.allowSameEngine === true;
   }
   async function savePolicy(patch, { quiet = false } = {}) {
@@ -178,8 +168,6 @@ window.createReviewPanel = ({ context, getEngine, setStatus, onOpen }) => {
       setStatusText(error.message);
       if (options?.settings) {
         agentConsent.checked = options.settings.allowAgentReviews === true;
-        gateToggle.checked = options.settings.gate === true;
-        turnGateToggle.checked = options.settings.turnGate === true;
         sameEngineToggle.checked = options.settings.allowSameEngine === true;
       }
       return false;
@@ -246,8 +234,6 @@ window.createReviewPanel = ({ context, getEngine, setStatus, onOpen }) => {
     renderReport(review.report);
     const active = ['running', 'queued'].includes(review.status);
     cancelButton.hidden = !active;
-    overrideButton.hidden = !(options?.settings?.gate && !active && review.status
-      && (!['completed'].includes(review.status) || review.report?.verdict !== 'pass'));
     startButton.textContent = t(active ? 'Review running…' : 'Start review');
     startButton.disabled = active;
     if (!active) setBusy(false);
@@ -333,14 +319,13 @@ window.createReviewPanel = ({ context, getEngine, setStatus, onOpen }) => {
         engine: getEngine(), action: 'review-start', payload: {
           sessionId: context.sessionId, reviewerEngine: engineSelect.value, model: modelSelect.value || undefined,
           mode: modeSelect.value, base: baseInput.value.trim(), focus: focusInput.value,
-          maxTokens: Number(maxTokensInput.value) || 50000,
           allowSameEngine: options?.settings?.allowSameEngine === true,
         },
       });
       if (!result?.ok) throw new Error(result?.error || 'Could not start review');
       render(result.review);
       void savePolicy({ reviewerEngine: engineSelect.value, model: modelSelect.value || '',
-        mode: modeSelect.value, maxTokens: Number(maxTokensInput.value) || 50000 }, { quiet: true });
+        mode: modeSelect.value }, { quiet: true });
       poll();
     } catch (error) {
       setBusy(false);
@@ -357,25 +342,6 @@ window.createReviewPanel = ({ context, getEngine, setStatus, onOpen }) => {
       if (result?.ok) render(result.review);
     } catch (error) { setStatusText(error.message); }
     finally { cancelButton.disabled = false; }
-  }
-  async function overrideGate() {
-    if (!context.sessionId) return;
-    overrideButton.disabled = true;
-    try {
-      const goalResult = await window.dshDesktop.conversationCommand({
-        engine: getEngine(), action: 'goal-get', payload: { sessionId: context.sessionId },
-      });
-      const goalId = goalResult?.goal?.id;
-      if (!goalResult?.ok || !goalId) throw new Error(t('No active goal to override.'));
-      const result = await window.dshDesktop.conversationCommand({
-        engine: getEngine(), action: 'review-gate-override',
-        payload: { sessionId: context.sessionId, goalId, reason: 'User override from the Review dialog' },
-      });
-      if (!result?.ok) throw new Error(result?.error || 'Could not override the review gate');
-      overrideButton.hidden = true;
-      setStatusText('Review gate overridden for this goal.');
-    } catch (error) { setStatusText(error.message); }
-    finally { overrideButton.disabled = false; }
   }
   function reset() {
     stopPolling();
@@ -398,14 +364,11 @@ window.createReviewPanel = ({ context, getEngine, setStatus, onOpen }) => {
 
   engineSelect.onchange = () => modelOptions();
   agentConsent.onchange = () => void savePolicy({ allowAgentReviews: agentConsent.checked });
-  gateToggle.onchange = () => void savePolicy({ gate: gateToggle.checked });
-  turnGateToggle.onchange = () => void savePolicy({ turnGate: turnGateToggle.checked });
   sameEngineToggle.onchange = async () => {
     if (await savePolicy({ allowSameEngine: sameEngineToggle.checked })) await loadOptions();
   };
   form.onsubmit = start;
   cancelButton.onclick = cancel;
-  overrideButton.onclick = overrideGate;
   toggle.onclick = () => panelIsOpen() ? setOpen(false) : void open();
   closeButton.onclick = () => { setOpen(false); toggle.focus(); };
   panel.onkeydown = event => {

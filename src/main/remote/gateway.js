@@ -313,7 +313,7 @@ class RemoteGateway {
   }
   connectionInfo(device) {
     const fullControl = device.permission === 'control' && device.allWorkspaces === true;
-    const capabilities = this.commands ? ['artifacts', 'attachments', 'expanded-attachments', 'send', 'stop', 'approve', 'create', 'image', 'multi-image', 'configure', 'move', 'archive', 'restore', 'conversation-actions',
+    const capabilities = this.commands ? ['artifacts', 'attachments', 'expanded-attachments', 'conversation-attachments', 'send', 'stop', 'approve', 'create', 'image', 'multi-image', 'configure', 'move', 'archive', 'restore', 'conversation-actions',
       ...(fullControl ? ['create-workspace', 'delete-workspace', 'rename-workspace'] : [])] : ['artifacts'];
     if (this.apiRoutes && fullControl) capabilities.push('api-keys');
     if (this.accountUsage && fullControl) capabilities.push('account-usage');

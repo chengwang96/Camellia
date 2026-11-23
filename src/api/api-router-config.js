@@ -102,7 +102,10 @@ function normalizeUsage(value) {
   for (const [id, state] of Object.entries(record(source.models) ? source.models : {})) {
     if (!record(state) || !counter(state.until)) continue;
     const name = modelId(id), until = counter(state.until);
-    if (until > (usage.models[name]?.until || 0)) usage.models[name] = { until, reason: String(state.reason || '').slice(0, 200) };
+    const transientFailures = Math.min(counter(state.transientFailures), 6);
+    if (until > (usage.models[name]?.until || 0)) usage.models[name] = {
+      until, reason: String(state.reason || '').slice(0, 200), ...(transientFailures ? { transientFailures } : {}),
+    };
   }
   return usage;
 }

@@ -50,7 +50,7 @@ final class CamelliaDialog extends AlertDialog {
     @Override protected void onCreate(Bundle saved) {
         super.onCreate(saved);
         LinearLayout panel = new EditorLayout(getContext()); panel.setTag("camelliaDialog"); style.sheetPanel(panel);
-        ScrollView scroll = ScrollViews.plain(getContext()); scroll.setFillViewport(false);
+        ScrollView scroll = ScrollViews.plain(getContext()); scroll.setFillViewport(false); scroll.setDefaultFocusHighlightEnabled(false);
         LinearLayout body = column(); body.setTag("camelliaDialogBody"); scroll.addView(body);
         if (options.title != null && options.title.length() > 0) {
             TextView title = text(options.title, Palette.TEXT_DISPLAY, style.ink); title.setTag("camelliaDialogTitle");

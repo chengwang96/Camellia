@@ -50,7 +50,7 @@ let latestScrollFrame = null;
 let followingOutput = true, scrollInteracting = false, scrollIntentUntil = 0, lastScrollTop = 0;
 let groupMenu = null, renamingId = null, deleteTarget = null;
 const openStatuses = new Set(['queued', 'preparing', 'running', 'stopping']);
-const stateLabels = { queued: 'Waiting', preparing: 'Preparing context', context: 'Preparing context', running: 'Replying', stopping: 'Stopping',
+const stateLabels = { queued: 'Waiting', verifying: 'Waiting for connection check', preparing: 'Preparing context', context: 'Preparing context', running: 'Replying', stopping: 'Stopping',
   failed: 'Response failed', cancelled: 'Stopped', interrupted: 'Interrupted', completed: 'Finished', summary: 'Preparing context', approval: 'Waiting for your input' };
 const rich = window.CamelliaDiscussionRich.create({ root, isVisible, getGroup: () => group, call, mutate: (action, payload) => mutate(action, payload, true),
   getAttachments: () => attachments, setAttachments: value => { attachments = value; }, changed: () => { rememberDraft(); resizeComposer(); }, error });
@@ -368,8 +368,9 @@ function renderMembers() {
     chip.disabled = p.removalPending || p.recoveryRequired; return chip;
   }));
   $('sendHint').textContent = selected.size ? t($('replyMode').value === 'serial' ? 'Each member sees the previous reply.' : 'Selected members reply independently.') : t('No mentions: save a note without calling a model.');
-  if ([...selected].some(id => members.find(p => p.id === id)?.capability.canVerify)) $('sendHint').textContent = t('The first send checks the selected connections using two short messages, then sends your question.');
-  if (group.verifying) $('sendHint').textContent = t(isSending() ? 'Checking connections before sending… You can stop this check.' : 'Verifying member connections… You can keep writing.');
+  const unchecked = [...selected].map(id => members.find(p => p.id === id)).filter(p => p && !p.capability.available && p.capability.canVerify);
+  if (group.verifying) $('sendHint').textContent = t('Verifying selected connections in the background. Ready members reply now.');
+  else if (unchecked.length) $('sendHint').textContent = t('Unverified members are checked after sending; their replies start automatically.');
   else if (group.preparing && isSending()) $('sendHint').textContent = t('Preparing to send…');
   else if (selected.size && group.participants.some(p => selected.has(p.id) && p.capability.mode === 'native-tools')) $('sendHint').textContent = t('Tool tasks share this group folder and run one at a time.');
   $('stopAll').disabled = !group.preparing && !group.verifying && !group.stopping && !group.deliveries.some(d => openStatuses.has(d.status));
@@ -424,18 +425,21 @@ function renderMessages() {
   for (const d of group.deliveries.filter(d => d.status !== 'completed' && !d.serialResolution)) {
     activeDeliveries.add(d.id);
     const member = group.participants.find(p => p.id === d.participantId), item = node('article', 'message pending turn'); item.dataset.deliveryId = d.id;
+    const phase = d.status === 'queued' && member?.verifying ? 'verifying' : d.phase || d.status;
     const header = node('div', 'message-header turn-meta');
-    header.append(identityButton(d.participantId, member?.name || '', member?.engine), node('span', 'response-status', '· ' + t(stateLabels[d.phase || d.status] || d.status)));
+    header.append(identityButton(d.participantId, member?.name || '', member?.engine), node('span', 'response-status', '· ' + t(stateLabels[phase] || d.status)));
     item.append(header);
     rich.renderTools(item, d);
     if (d.partialText) item.append(partialBody(d));
     if (openStatuses.has(d.status)) {
-      if (!d.partialText) { const status = node('div', 'run-status'); status.append(node('span', 'pulse'), node('span', '', t(stateLabels[d.phase || d.status] || d.status))); item.append(status); }
+      if (!d.partialText) { const status = node('div', 'run-status'); status.append(node('span', 'pulse'), node('span', '', t(stateLabels[phase] || d.status))); item.append(status); }
       const actions = node('div', 'response-actions'); actions.append(button(t('Stop'), () => mutate('stop', { deliveryId: d.id }))); item.append(actions);
     }
     if (['failed', 'cancelled', 'interrupted'].includes(d.status)) {
       const unavailable = ['unknown-runtime-policy', 'unverified-connection', 'incomplete-enforcement', 'evidence-mismatch'].includes(d.reason);
-      item.append(node('p', 'pending-state', d.status === 'failed' ? reason(unavailable && member?.capability.detail || d.reason || failures.get(d.id)) : t(stateLabels[d.status])));
+      const detail = verificationErrors.get(member?.id) || member?.verificationError || failures.get(d.id);
+      item.append(node('p', 'pending-state', d.status === 'failed'
+        ? reason(detail || unavailable && member?.capability.detail || d.reason) : t(stateLabels[d.status])));
       const actions = node('div', 'response-actions');
       if (!member?.removed) {
         if (member?.capability.supported === false) actions.append(button(t('View members'), () => $('membersPanel').showModal()));
@@ -562,7 +566,7 @@ function updateBindingStatus() {
   const missingRuntime = canInstallRuntime();
   $('bindingStatus').textContent = installingRuntime ? t('Installing Harness…') : missingRuntime ? t('This harness is not installed. Install it here to continue.')
     : !row ? t('Add an API route or sign in to a subscription in Settings, then refresh models.') : row.capability.available ? t('Ready for discussions.') : t(row.capability.canVerify
-    ? 'After adding this member, its connection will be checked automatically with two short messages. This uses a small amount of model quota.'
+    ? 'You can add this member now. Its connection is checked after you send, without holding up the message.'
     : row.capability.detail || 'This connection is not verified for discussions yet.');
   $('installRuntime').hidden = !desktop.runtimeEnsure || !missingRuntime && !installingRuntime;
   $('saveMember').hidden = !$('installRuntime').hidden;

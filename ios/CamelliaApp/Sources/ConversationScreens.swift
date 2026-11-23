@@ -823,16 +823,16 @@ struct ConversationRowView: View {
                 .frame(minHeight: 36)
             if !badge.isEmpty {
                 // Sized to its own text, not to a limit: Android's badge is
-                // WRAP_CONTENT with `setMaxWidth(dp(152))`, and the longest
-                // badge it can build — "等待电脑处理 · 新消息 · 已置顶" — is
-                // under 152 anyway, so the cap never binds. What does bind is
+                // WRAP_CONTENT with `setMaxWidth(dp(210))`, and the longest
+                // badge it can build — "等待确认 · 未读回复 · 置顶" — stays
+                // inside that cap. What does bind is
                 // that the badge must not *grow*: a `frame(maxWidth:)` reports
                 // the width it is offered rather than the width it needs, and
                 // with the title also flexible the two came out splitting the
                 // row in half.
                 Text(badge)
                     .font(.system(size: Palette.textSmall))
-                    .foregroundColor(Palette.accent)
+                    .foregroundColor(badgeColor)
                     .lineLimit(1)
                     // `setEllipsize(END)`: the badge is one string joined by
                     // separators, and which part survives has to be the front of
@@ -850,8 +850,9 @@ struct ConversationRowView: View {
     private var badge: String {
         var parts: [String] = []
         switch conversation.activity {
-        case .running: parts.append(model.usesChinese ? "正在运行" : "Running")
-        case .permission, .question: parts.append(model.usesChinese ? "等待电脑处理" : "Waiting for desktop input")
+        case .running: parts.append(model.usesChinese ? "运行中" : "Running")
+        case .permission: parts.append(model.usesChinese ? "等待确认" : "Needs approval")
+        case .question: parts.append(model.usesChinese ? "等待回答" : "Needs input")
         case nil:
             // Work that outlives its reply is the only sign a row is busy while
             // the desktop is not replying. Android draws the same word here;
@@ -862,9 +863,30 @@ struct ConversationRowView: View {
                     : (model.usesChinese ? "后台任务" : "Background tasks"))
             }
         }
-        if unread { parts.append(model.usesChinese ? "新消息" : "New messages") }
-        if conversation.pinned { parts.append(model.usesChinese ? "已置顶" : "Pinned") }
+        if unread { parts.append(model.usesChinese ? "未读回复" : "Unread reply") }
+        else if conversation.activity == nil, conversation.backgroundWork == nil, model.hasDraft(conversation) {
+            parts.append(model.usesChinese ? "草稿" : "Draft")
+        }
+        if conversation.pinned { parts.append(model.usesChinese ? "置顶" : "Pinned") }
         return parts.joined(separator: " · ")
+    }
+
+    /// The badge's tone follows the state that needs attention first: a live
+    /// reply wins over an unread marker, and a draft is the quietest state.
+    private var badgeColor: Color {
+        switch conversation.activity {
+        case .running:
+            return Palette.success
+        case .permission, .question:
+            return Palette.warning
+        case nil:
+            if let work = conversation.backgroundWork {
+                return work.statusUnknown ? Palette.warning : Palette.success
+            }
+            if unread { return Palette.accent }
+            if model.hasDraft(conversation) { return Palette.error }
+            return Palette.muted
+        }
     }
 }
 
@@ -1062,6 +1084,7 @@ struct ConversationDetailView: View {
     @State private var showCamera = false
     @State private var showImages = false
     @State private var showDocuments = false
+    @State private var showConversationAttach = false
     @State private var attachPanelHeight: CGFloat = 460
     /// The picker for moving to another paired computer, which Android keeps in
     /// the same header as the title.
@@ -1362,7 +1385,7 @@ struct ConversationDetailView: View {
         }
         .sheet(isPresented: $showImages) {
             let computer = model.current?.address
-            PhotoPicker(limit: max(1, model.access.attachmentCount - model.attachments.count),
+            PhotoPicker(limit: max(1, model.access.attachmentCount - model.attachments.count - model.conversationAttachments.count),
                         onPicked: { images in
                             showImages = false
                             guard model.openId == conversation.id, model.current?.address == computer else { return }
@@ -1383,6 +1406,10 @@ struct ConversationDetailView: View {
                 guard model.openId == conversation.id, model.current?.address == computer else { return }
                 model.addFiles(files)
             }, onCancel: { showDocuments = false })
+        }
+        .sheet(isPresented: $showConversationAttach) {
+            ConversationAttachPicker(onClose: { showConversationAttach = false })
+                .environmentObject(model)
         }
         .sheet(item: $model.locationConsent, onDismiss: { model.locationDismissed() }) { consent in
             LocationConsentSheet(
@@ -1431,6 +1458,7 @@ struct ConversationDetailView: View {
         case .camera: showCamera = true
         case .photos: showImages = true
         case .files: showDocuments = true
+        case .conversation: showConversationAttach = true
         case .artifacts: artifactSelection = nil; showArtifacts = true
         case .permission: remotePopup = .permissions
         }
@@ -2432,7 +2460,9 @@ struct Composer: View {
             // page are the 28dp corners, the hairline and the shadow — and an
             // inset bar reads as a card floating in a well instead.
             VStack(spacing: 0) {
-                if !model.attachments.isEmpty { AttachmentTray().environmentObject(model) }
+                if !model.attachments.isEmpty || !model.conversationAttachments.isEmpty {
+                    AttachmentTray().environmentObject(model)
+                }
                 if model.editingSeq != nil { editingBanner }
                 // The field is inset 12/12/8/12 and stands 48 points tall until
                 // it has more than one line to show, which is the `minHeight
@@ -2696,7 +2726,7 @@ struct Composer: View {
 /// Android's `AttachSheet` draws square source tiles and capability rows in a
 /// bottom dialog, not in a new navigation page.
 struct AttachSheetView: View {
-    enum Action { case camera, photos, files, artifacts, permission }
+    enum Action { case camera, photos, files, conversation, artifacts, permission }
 
     let onClose: () -> Void
     let onPick: (Action) -> Void
@@ -2730,6 +2760,9 @@ struct AttachSheetView: View {
                 .font(.system(size: Palette.textNote))
                 .foregroundColor(Palette.secondary)
                 .padding(.horizontal, 4)
+                .padding(.bottom, 14)
+            sectionLabel("从电脑添加")
+            conversationCapability
                 .padding(.bottom, 14)
             capabilities
             if !imagesEnabled {
@@ -2821,6 +2854,29 @@ struct AttachSheetView: View {
             .fill(Palette.card))
     }
 
+    private func sectionLabel(_ title: String) -> some View {
+        Text(LocalizedStringKey(title))
+            .font(.system(size: Palette.textNote, weight: .medium))
+            .foregroundColor(Palette.secondary)
+            .padding(.horizontal, 4)
+            .padding(.bottom, 8)
+    }
+
+    private var conversationCapability: some View {
+        VStack(spacing: 0) {
+            capability("bubble.left.and.bubble.right.fill", title: "会话记录",
+                       subtitle: "把另一段对话的快照作为附件",
+                       value: "", enabled: conversationEnabled, action: .conversation)
+        }
+        .background(RoundedRectangle(cornerRadius: Palette.groupRadius, style: .continuous)
+            .fill(Palette.card))
+    }
+
+    private var conversationEnabled: Bool {
+        sendable && model.editingSeq == nil
+            && model.access.capabilities.contains(.conversationAttachments)
+    }
+
     private func capability(_ symbol: String, title: String, subtitle: String,
                             value: String, enabled: Bool, action: Action) -> some View {
         Button { onPick(action) } label: {
@@ -2906,7 +2962,9 @@ struct AttachSheetView: View {
     }
 
     /// How many more attachments this chat has room for.
-    private var room: Int { max(0, model.access.attachmentCount - model.attachments.count) }
+    private var room: Int {
+        max(0, model.access.attachmentCount - model.attachments.count - model.conversationAttachments.count)
+    }
 
     /// Whether anything can be attached right now.
     private var sendable: Bool {
@@ -2934,6 +2992,9 @@ struct AttachmentTray: View {
             HStack(spacing: 10) {
                 ForEach(model.attachments, id: \.data) { attachment in
                     chip(attachment)
+                }
+                ForEach(model.conversationAttachments) { conversation in
+                    conversationChip(conversation)
                 }
             }
             .padding(.horizontal, 12)
@@ -2972,6 +3033,178 @@ struct AttachmentTray: View {
             .accessibilityLabel(model.usesChinese
                 ? "移除 \(attachment.name)" : "Remove \(attachment.name)")
         }
+    }
+
+    private func conversationChip(_ conversation: RemoteConversation) -> some View {
+        ZStack(alignment: .topTrailing) {
+            VStack(alignment: .leading, spacing: 3) {
+                Label("会话快照", systemImage: "bubble.left.and.bubble.right")
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundColor(Palette.accent)
+                    .lineLimit(1)
+                Text(conversation.title.isEmpty ? "未命名会话" : conversation.title)
+                    .font(.system(size: Palette.textSmall, weight: .medium))
+                    .foregroundColor(Palette.ink)
+                    .lineLimit(2)
+                if let workspace = conversation.workspaceName {
+                    Text(workspace)
+                        .font(.system(size: 9))
+                        .foregroundColor(Palette.muted)
+                        .lineLimit(1)
+                }
+            }
+            .padding(8)
+            .frame(width: 156, height: 60, alignment: .leading)
+            .background(RoundedRectangle(cornerRadius: Palette.fieldRadius, style: .continuous)
+                .fill(Palette.surface))
+            Button { model.removeConversationAttachment(conversation) } label: {
+                Image(systemName: "xmark.circle.fill")
+                    .font(.system(size: Palette.textRow))
+                    .foregroundColor(.white)
+                    .background(Circle().fill(Color.black.opacity(0.55)))
+            }
+            .buttonStyle(.plain)
+            .offset(x: 5, y: -5)
+            .accessibilityLabel(model.usesChinese
+                ? "移除会话 \(conversation.title)" : "Remove conversation \(conversation.title)")
+        }
+        .accessibilityIdentifier("conversation-attachment")
+    }
+}
+
+/// Pick another desktop conversation to attach as a snapshot.
+///
+/// The picker sends only ids: the desktop generates the Markdown handoff when
+/// the message is sent, so no transcript bytes travel through the phone.
+struct ConversationAttachPicker: View {
+    let onClose: () -> Void
+    @EnvironmentObject private var model: AppModel
+    @State private var search = ""
+    @State private var loading = false
+    @State private var rows: [RemoteConversation] = []
+    @State private var failure: String?
+    @State private var work: DispatchWorkItem?
+
+    private var visible: [RemoteConversation] {
+        rows.filter { row in
+            row.id != model.openId
+                && !model.conversationAttachments.contains(where: { $0.id == row.id })
+                && (search.isEmpty || row.title.localizedCaseInsensitiveContains(search)
+                    || (row.workspaceName ?? "").localizedCaseInsensitiveContains(search))
+        }
+    }
+
+    var body: some View {
+        NavigationView {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 0) {
+                    HStack(spacing: 8) {
+                        Image(systemName: "magnifyingglass")
+                            .foregroundColor(Palette.muted)
+                        TextField("搜索会话", text: $search)
+                            .font(.system(size: Palette.textRow))
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                    }
+                    .padding(.horizontal, 12)
+                    .frame(height: 48)
+                    .background(RoundedRectangle(cornerRadius: Palette.fieldRadius).fill(Palette.field))
+                    .overlay(RoundedRectangle(cornerRadius: Palette.fieldRadius).stroke(Palette.fieldBorder))
+                    .padding(.bottom, 12)
+                    Text("发送的是当前快照，不会包含之后新增的消息。")
+                        .font(.system(size: Palette.textNote))
+                        .foregroundColor(Palette.secondary)
+                        .padding(.bottom, 12)
+                    LazyVStack(spacing: 0) {
+                        if loading {
+                            ProgressView().padding(24)
+                        } else if let failure {
+                            Text(failure)
+                                .font(.system(size: Palette.textNote))
+                                .foregroundColor(Palette.secondary)
+                                .padding(16)
+                        } else if visible.isEmpty {
+                            Text("没有可附加的会话")
+                                .font(.system(size: Palette.textNote))
+                                .foregroundColor(Palette.secondary)
+                                .padding(16)
+                        } else {
+                            ForEach(Array(visible.enumerated()), id: \.element.id) { index, conversation in
+                                Button {
+                                    model.addConversationAttachment(conversation)
+                                    onClose()
+                                } label: {
+                                    HStack(spacing: 12) {
+                                        VStack(alignment: .leading, spacing: 3) {
+                                            Text(conversation.title.isEmpty ? "未命名会话" : conversation.title)
+                                                .font(.system(size: Palette.textRow, weight: .medium))
+                                                .foregroundColor(Palette.ink)
+                                                .lineLimit(1)
+                                            Text(conversation.workspaceName ?? (model.usesChinese ? "独立会话" : "Unassigned"))
+                                                .font(.system(size: Palette.textSmall))
+                                                .foregroundColor(Palette.muted)
+                                                .lineLimit(1)
+                                        }
+                                        Spacer(minLength: 0)
+                                        Image(systemName: "chevron.right")
+                                            .font(.system(size: 12, weight: .semibold))
+                                            .foregroundColor(Palette.muted)
+                                    }
+                                    .padding(.horizontal, 14)
+                                    .frame(minHeight: 56)
+                                    .contentShape(Rectangle())
+                                }
+                                .buttonStyle(.plain)
+                                if index < visible.count - 1 {
+                                    Palette.divider.frame(height: 1).padding(.leading, 14)
+                                }
+                            }
+                        }
+                    }
+                    .frame(maxHeight: 360)
+                    .background(RoundedRectangle(cornerRadius: Palette.groupRadius).fill(Palette.card))
+                }
+                .padding(.horizontal, 20)
+                .padding(.vertical, 12)
+            }
+            .navigationTitle("附加会话记录")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("关闭") { onClose() }
+                }
+            }
+        }
+        .navigationViewStyle(.stack)
+        .background(Palette.grouped)
+        .onAppear { load() }
+        .onChange(of: search) { _ in scheduleLoad() }
+        .onDisappear { work?.cancel() }
+    }
+
+    private func scheduleLoad() {
+        work?.cancel()
+        let item = DispatchWorkItem { load() }
+        work = item
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35, execute: item)
+    }
+
+    private func load() {
+        guard let session else { return }
+        loading = true
+        failure = nil
+        session.conversations(offset: 0, minimumCount: 0,
+                              query: search.isEmpty ? nil : search, limit: 100) { result in
+            loading = false
+            switch result {
+            case .success(let page): rows = page.conversations
+            case .failure(let error): failure = AppModel.describe(error)
+            }
+        }
+    }
+
+    private var session: RemoteSession? {
+        model.listSession
     }
 }
 

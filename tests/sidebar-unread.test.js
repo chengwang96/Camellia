@@ -10,7 +10,7 @@ const source = fs.readFileSync(path.join(__dirname, '../src/renderer/chat/workbe
 const readSource = source.slice(source.indexOf('  function markReplyRead'), source.indexOf('  // ---------- Workspaces'));
 
 function fixture() {
-  const calls = [], errors = [];
+  const calls = [], errors = [], statusUpdates = [];
   const sessions = [{ id: 'opened', unread: true }, { id: 'other', unread: true }];
   const items = ['opened', 'other', 'opened'].map(id => ({
     dataset: { sid: id },
@@ -22,14 +22,15 @@ function fixture() {
     sessionHistory: sessions,
     window: { dshDesktop: { conversationCommand: payload => { calls.push(payload); return Promise.resolve({ ok: true }); } } },
     setStatus: text => errors.push(text),
+    updateDraftStatus: (item, session) => statusUpdates.push({ item, session }),
     $: id => { assert.equal(id, 'sessionList'); return list; },
   };
   vm.runInNewContext(readSource, context);
-  return { context, sessions, items, list, calls, errors };
+  return { context, sessions, items, list, calls, errors, statusUpdates };
 }
 
 test('marking a reply read immediately clears its rendered dots without rebuilding the sidebar', () => {
-  const { context, sessions, items, list, calls } = fixture();
+  const { context, sessions, items, list, calls, statusUpdates } = fixture();
   context.markReplyRead('opened', 1234);
   assert.equal(sessions[0].unread, false);
   assert.equal(calls[0].payload.id, 'opened');
@@ -40,6 +41,8 @@ test('marking a reply read immediately clears its rendered dots without rebuildi
   assert.equal(list.scrollTop, 120);
   assert.equal(sessions[1].unread, true);
   assert.equal(items[1].classList.classes.has('unread'), true);
+  assert.deepEqual(statusUpdates, [{ item: items[0], session: sessions[0] },
+    { item: items[2], session: sessions[0] }]);
 });
 
 test('repeated read acknowledgements are safe and a missing session does not clear other dots', () => {

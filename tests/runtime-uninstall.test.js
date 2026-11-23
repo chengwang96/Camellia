@@ -24,6 +24,14 @@ function grok(dir) {
   put(path.join(pkg, 'package.json'), { name: ENGINES.grok.package, version: '1.0.70' });
   return put(path.join(dir, ENGINES.grok.entry + (process.platform === 'win32' ? '.exe' : '')), 'fixture');
 }
+function dsh(dir) {
+  const pkg = path.join(dir, 'node_modules', ENGINES.dsh.package);
+  put(path.join(pkg, 'package.json'), { name: ENGINES.dsh.package, version: '0.2.2' });
+  put(path.join(dir, 'node_modules/@deepseek-ai/dsh-app-boot/package.json'), {
+    name: '@deepseek-ai/dsh-app-boot', version: '0.2.2',
+  });
+  return put(path.join(pkg, ENGINES.dsh.entry), '// fixture');
+}
 function fixture(t, extra = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'camellia-uninstall-'));
   t.after(() => removeTree(root));
@@ -171,4 +179,21 @@ test('desktop uninstall requires a fresh preview token, blocks active sessions, 
   assert.equal(result.ok, true, result.error); assert.equal(fs.existsSync(entry), false); assert.equal(fs.existsSync(account), true);
   assert.equal((await h.call('runtime-uninstall', { engine: 'kimi', token: preview.token })).ok, false);
   assert.ok(h.events.some(event => event.channel === 'dsh:runtime-state' && event.data.some(row => row.id === 'kimi' && row.file !== entry && !row.uninstalling)));
+});
+
+test('uninstalling DSH clears only its stale explicit entry path', async t => {
+  const h = createHarness(); t.after(() => h.cleanup());
+  const entry = dsh(path.join(h.userData, 'runtimes/dsh'));
+  const configFile = path.join(h.userData, 'desktop-config.json');
+  fs.writeFileSync(configFile, JSON.stringify({ dshBin: entry, theme: 'dark',
+    runtimePaths: { python: { file: 'keep-python' } } }));
+  const preview = await h.call('runtime-uninstall-preview', { engine: 'dsh' });
+  assert.equal(preview.ok, true, preview.error);
+  const result = await h.call('runtime-uninstall', { engine: 'dsh', token: preview.token });
+  assert.equal(result.ok, true, result.error);
+  const config = JSON.parse(fs.readFileSync(configFile, 'utf8'));
+  assert.equal(config.dshBin, '');
+  assert.equal(config.theme, 'dark');
+  assert.deepEqual(config.runtimePaths, { python: { file: 'keep-python' } });
+  assert.equal(fs.existsSync(entry), false);
 });

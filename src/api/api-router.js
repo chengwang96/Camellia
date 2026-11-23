@@ -19,7 +19,7 @@ const { parseSessionAffinityPath, requestSessionKey } = require('./session-affin
 const { isOpenCodeGoUrl, openCodeGoHeaders } = require('./opencode-go');
 const apiTransport = require('./api-transport');
 
-function retryDelay(headers = {}, now = Date.now()) {
+function retryDelay(headers = {}, now = Date.now(), fallback = 60000) {
   const value = headers['retry-after'];
   if (value !== undefined) {
     const seconds = Number(value);
@@ -32,7 +32,7 @@ function retryDelay(headers = {}, now = Date.now()) {
       if (/^\d+(\.\d+)?s$/.test(v)) return parseFloat(v) * 1000;
       return Date.parse(v) - now;
     }).filter(ms => Number.isFinite(ms) && ms > 0);
-  return resets.length ? Math.max(...resets) : 60000;
+  return resets.length ? Math.max(...resets) : fallback;
 }
 function failureKind(status, body = '') {
   if (status === 401) return 'auth';
@@ -77,6 +77,7 @@ function startApiRouter({ configPath, log = () => {}, onState = () => {}, onCont
   let diskMtime = fs.existsSync(configPath) ? fs.statSync(configPath).mtimeMs : 0;
   const sockets = new Set(), upstreams = new Set();
   const keyRequests = new Map();
+  const recoveryProbes = new Set();
   // Affinity is memory-only: a restart may rebalance cleanly, and a retry
   // after a failed route gets a fresh choice instead of reviving a dead key.
   const sessionRoutes = new Map();
@@ -262,8 +263,11 @@ function startApiRouter({ configPath, log = () => {}, onState = () => {}, onCont
   }
   function available(r, model) {
     const usage = cfg.usage[r.key.id];
-    return !usage?.blocked && !(usage?.models[model]?.until > Date.now()) && !quotaExhausted(r.key.id);
+    return !usage?.blocked && !(usage?.models[model]?.until > Date.now())
+      && !probeInFlight(r, model) && !quotaExhausted(r.key.id);
   }
+  const probeId = (route, model) => quotaIdentity(route.provider, route.key) + ':' + model;
+  const probeInFlight = (route, model) => recoveryProbes.has(probeId(route, model));
   // Load is shared across models/protocols on this account. Credential or
   // endpoint changes get a fresh identity while old requests finish normally.
   function keyLoad(provider, key) { return keyRequests.get(quotaIdentity(provider, key)) || 0; }
@@ -338,24 +342,38 @@ function startApiRouter({ configPath, log = () => {}, onState = () => {}, onCont
     const id = model + '\0' + sessionKey;
     if (!boundId || sessionRoutes.get(id) === boundId) sessionRoutes.delete(id);
   }
-  function failed(route, model, status, kind, headers = {}, tokens = {}, trackUsage = true) {
+  function failed(route, model, status, kind, headers = {}, tokens = {}, trackUsage = true, previousCooldown) {
     const usage = usageFor(route);
     if (!usage) return;
-    const now = Date.now();
-    const delay = kind === 'auth' ? 0 : kind === 'quota' ? Math.max(15 * 60000, retryDelay(headers)) : retryDelay(headers);
     if (trackUsage) recordUsage(usage, model, tokens, 'failures');
+    const transient = kind === 'network' || kind === 'upstream';
+    const singleKey = transient && modelRoutes(cfg, model).every(candidate => candidate.key.id === route.key.id);
+    const currentCooldown = usage.models[model];
+    // An earlier overlapping request must not extend or replace a newer cooldown.
+    if (singleKey && currentCooldown !== previousCooldown) { changed(); return; }
+    const now = Date.now();
+    const transientFailures = singleKey ? Math.min((previousCooldown?.transientFailures || 0) + 1, 6) : 0;
+    const fallback = transientFailures ? Math.min(60000, 3000 * 2 ** (transientFailures - 1)) : 60000;
+    const delay = retryDelay(headers, now, fallback);
     usage.lastError = { status, ...failure(kind), at: new Date(now).toISOString() };
     if (kind === 'auth') usage.blocked = true;
-    else usage.models[model] = { until: now + delay, ...failure(kind) };
+    else usage.models[model] = {
+      until: now + (kind === 'quota' ? Math.max(15 * 60000, delay) : delay), ...failure(kind),
+      ...(transientFailures ? { transientFailures } : {}),
+    };
     log(`${model}: ${route.provider.name} / ${route.key.id} ${failure(kind).reason}`);
     lastRoute = { model, providerId: route.provider.id, providerName: route.provider.name, keyId: route.key.id,
       ...failure(kind), at: new Date(now).toISOString(), status: 'failed' };
     changed();
   }
-  function succeeded(route, model, tokens, switched) {
+  function succeeded(route, model, tokens, switched, previousCooldown) {
     const usage = usageFor(route);
     if (!usage) return;
     recordUsage(usage, model, tokens, 'requests');
+    const currentCooldown = usage.models[model];
+    if (currentCooldown !== previousCooldown && (currentCooldown?.transientFailures || previousCooldown?.transientFailures)) {
+      changed(); return;
+    }
     usage.lastError = null;
     delete usage.models[model];
     cfg.active[model] = route.key.id;
@@ -515,7 +533,7 @@ function startApiRouter({ configPath, log = () => {}, onState = () => {}, onCont
             const message = "The upstream stream was interrupted. Retry the request; started responses are not replayed automatically." + (diagnostic ? ` ${diagnostic}` : '');
             endStreamError(message);
           }
-          finish({ status, kind, detail });
+          finish({ status, kind, detail, headers: response.headers });
           response.destroy();
         }
         const parser = new SSEParser((obj, event) => {
@@ -525,7 +543,7 @@ function startApiRouter({ configPath, log = () => {}, onState = () => {}, onCont
             const text = JSON.stringify(obj.error || obj);
             const status = Number(obj.error?.status) || (/rate_limit|quota|credit|overloaded/i.test(text) ? 429 : 502);
             if (!committed) { finish({ status, kind: failureKind(status, text) || 'upstream', headers: response.headers }); response.destroy(); }
-            else streamError('upstream');
+            else streamError(failureKind(status, text) || 'upstream', '', status);
             return;
           }
           if (source === 'openai' ? Array.isArray(obj?.choices) && obj.choices.some(c => c.delta && typeof c.delta === 'object') : obj?.type === 'message_start' && obj.message) messageStarted = true;
@@ -627,15 +645,19 @@ function startApiRouter({ configPath, log = () => {}, onState = () => {}, onCont
       }
       const requestStarted = Date.now(), requestSequence = scope?.requests;
       const identity = quotaIdentity(route.provider, route.key);
+      const previousCooldown = cfg.usage[route.key.id]?.models[model];
+      const probe = previousCooldown?.transientFailures ? probeId(route, model) : null;
       // Reserve before starting I/O so simultaneous clients see each other's
       // requests. Hold the reservation until the entire stream has finished.
       keyRequests.set(identity, (keyRequests.get(identity) || 0) + 1);
+      if (probe) recoveryProbes.add(probe);
       let pending, result;
       try {
         pending = forward(route, protocol, body, pathname, res, req.headers, bufferTools, thinking.effort, upstreamSessionKey);
         scope?.pending.add(pending);
         result = await pending;
       } finally {
+        if (probe) recoveryProbes.delete(probe);
         scope?.pending.delete(pending);
         const count = keyRequests.get(identity) - 1;
         if (count > 0) keyRequests.set(identity, count); else keyRequests.delete(identity);
@@ -656,7 +678,7 @@ function startApiRouter({ configPath, log = () => {}, onState = () => {}, onCont
       if (result.ok) {
         if (!pathname.endsWith('/count_tokens')) {
           if (!auxiliary) bindSession(route, model, sessionKey);
-          succeeded(route, model, result.tokens, attempts.length > 0);
+          succeeded(route, model, result.tokens, attempts.length > 0, previousCooldown);
         }
         return;
       }
@@ -671,7 +693,8 @@ function startApiRouter({ configPath, log = () => {}, onState = () => {}, onCont
       // its next turn. The session then distributes to another key normally.
       if (!auxiliary && result.kind !== 'protocol') releaseSession(model, sessionKey, route.provider.id + '\0' + route.key.id);
       // Unsupported features are request-specific, not an exhausted credential.
-      if (result.kind !== 'protocol' && !auxiliary) failed(route, model, result.status, result.kind, result.headers, result.tokens, !pathname.endsWith('/count_tokens'));
+      if (result.kind !== 'protocol' && !auxiliary) failed(route, model, result.status, result.kind, result.headers, result.tokens,
+        !pathname.endsWith('/count_tokens'), previousCooldown);
       // Auxiliary callers are told what actually went wrong, so they can skip a
       // rejected credential or model instead of retrying the same way.
       if (auxiliary) auxiliaryFailure = { status: result.status, kind: result.kind };
@@ -685,8 +708,11 @@ function startApiRouter({ configPath, log = () => {}, onState = () => {}, onCont
     const waits = routes.map(r => cfg.usage[r.key.id]?.models[model]?.until - Date.now()).filter(ms => ms > 0);
     const outOfQuota = routes.filter(r => quotaExhausted(r.key.id));
     for (const r of outOfQuota) attempts.push(`${r.provider.name} / ${r.key.id}: ${quotaReason(r.key.id)}`);
+    const probing = routes.some(route => probeInFlight(route, model));
+    if (probing) attempts.push("A recovery request is still in progress.");
     const headers = waits.length ? { 'retry-after': String(Math.ceil(Math.min(...waits) / 1000)) }
-      : outOfQuota.length ? { 'retry-after': String(Math.ceil(quotaIntervalMs / 1000)) } : {};
+      : outOfQuota.length ? { 'retry-after': String(Math.ceil(quotaIntervalMs / 1000)) }
+        : probing ? { 'retry-after': '1' } : {};
     apiError(res, attempts.length && attempts.every(a => a.endsWith(reasonText.protocol)) ? 400 : 503,
       `Model "${model}" has no available routes. The model was not changed. ${attempts.join('; ') || "Wait for quota to recover, or check the key and reset its cooldown in settings."}${cfg.routing.multiKeyFailover ? '' : ' Automatic key failover is disabled. Switch the route or reset the key in settings.'}`, protocol, 'model_routes_exhausted', headers);
   }

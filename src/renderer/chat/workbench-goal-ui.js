@@ -39,6 +39,24 @@ function createClaudeGoalUI({ $, context, setSessionId, watchConversation, canCh
     return text.length > 120 ? text.slice(0, 117).trimEnd() + '…' : text;
   }
 
+  function statusText() {
+    const phase = phaseOf();
+    const blocker = phase === 'blocked'
+      ? blockedSummary(String(goalState.blockedReason?.message || goalState.blockedReason?.code || '').trim())
+      : '';
+    return goalState.verifying && phase === 'active' ? 'Verifying…'
+      : goalState.waiting && phase === 'active' ? 'Goal waiting · ' + elapsed()
+      : { active: 'Goal · ' + elapsed(), paused: 'Goal paused', blocked: 'Goal blocked' + (blocker ? ' · ' + blocker : ''), complete: goalState.verified ? 'Goal verified' : 'Goal completed' }[phase] || 'Goal';
+  }
+
+  function refreshGoalChip() {
+    if (!active()) return;
+    const label = $('goalChipRow').querySelector('.goal-chip-text');
+    if (!label) return;
+    const text = statusText();
+    if (label.textContent !== text) label.textContent = text;
+  }
+
   function render() {
     clearInterval(ticker); ticker = null;
     onChange();
@@ -50,14 +68,10 @@ function createClaudeGoalUI({ $, context, setSessionId, watchConversation, canCh
     if (goalState) {
       const phase = phaseOf();
       const blockerDetail = phase === 'blocked' ? String(goalState.blockedReason?.message || goalState.blockedReason?.code || '').trim() : '';
-      const blocker = blockedSummary(blockerDetail);
-      const text = goalState.verifying && phase === 'active' ? 'Verifying…'
-        : goalState.waiting && phase === 'active' ? 'Goal waiting · ' + elapsed()
-        : { active: 'Goal · ' + elapsed(), paused: 'Goal paused', blocked: 'Goal blocked' + (blocker ? ' · ' + blocker : ''), complete: goalState.verified ? 'Goal verified' : 'Goal completed' }[phase] || 'Goal';
       const title = [goalState.objective, blockerDetail].filter(Boolean).join('\n\n');
-      row.appendChild(chip(text, { className: phase, title, onClick: (e) => openGoalMenu(e.currentTarget) }));
+      row.appendChild(chip(statusText(), { className: phase, title, onClick: (e) => openGoalMenu(e.currentTarget) }));
       row.hidden = false;
-      if (active()) ticker = setInterval(render, 1000);
+      if (active()) ticker = setInterval(refreshGoalChip, 1000);
     } else if (draft) {
       row.appendChild(chip('Goal', { className: 'draft', title: 'Goal mode', onRemove: () => setDraft(false), ariaLabel: 'Goal mode' }));
       if (criterion) {

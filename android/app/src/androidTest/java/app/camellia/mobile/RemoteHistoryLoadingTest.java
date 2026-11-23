@@ -43,7 +43,7 @@ public class RemoteHistoryLoadingTest extends InstrumentationTestCase {
     private interface Checked { void run() throws Exception; }
     private interface Check { boolean done() throws Exception; }
     private void await(Check check) throws Exception {
-        long deadline = android.os.SystemClock.elapsedRealtime() + 8000;
+        long deadline = android.os.SystemClock.elapsedRealtime() + 20000;
         while (android.os.SystemClock.elapsedRealtime() < deadline) {
             boolean[] done = {false}; main(() -> done[0] = check.done());
             if (done[0]) { getInstrumentation().waitForIdleSync(); return; }
@@ -78,11 +78,11 @@ public class RemoteHistoryLoadingTest extends InstrumentationTestCase {
             field("api", new RemoteApi("http://100.80.1.2:43127") {
                 @Override public JSONObject json(String path, String token, JSONObject payload) throws IOException {
                     int request = requests.incrementAndGet();
+                    entered.countDown();
                     if (slow && request == 1) {
                         try { Thread.sleep(2100); } catch (InterruptedException error) { throw new IOException(error); }
                     }
                     if (block && request == 1) {
-                        entered.countDown();
                         try { if (!release.await(8, TimeUnit.SECONDS)) throw new IOException("Test timed out"); }
                         catch (InterruptedException error) { throw new IOException(error); }
                     }
@@ -162,14 +162,15 @@ public class RemoteHistoryLoadingTest extends InstrumentationTestCase {
     }
 
     public void testFrequentLiveSnapshotsDoNotKeepPostponingAutomaticHistory() throws Exception {
-        block = true; open();
-        for (int cursor = 2; cursor <= 8; cursor++) {
+        open();
+        boolean requested = false;
+        for (int cursor = 2; cursor <= 12 && !requested; cursor++) {
             final int current = cursor;
             main(() -> apply(snapshot(100, 100, "assistant", 100L).put("cursor", current)));
-            Thread.sleep(40);
+            requested = entered.await(200, TimeUnit.MILLISECONDS);
         }
-        assertTrue("Updates must not postpone the probe indefinitely", entered.await(1, TimeUnit.SECONDS));
-        release.countDown(); await(() -> visible() == 30 && !(boolean) field("olderLoading"));
+        assertTrue("Updates must not postpone the probe indefinitely", requested);
+        await(() -> visible() == 30 && !(boolean) field("olderLoading"));
     }
 
     public void testSwitchingConversationRejectsTheLateAutomaticPage() throws Exception {

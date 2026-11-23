@@ -187,8 +187,25 @@ async function main() {
     assert.deepEqual(await home.webContents.executeJavaScript("[...document.querySelectorAll('.home-tools .config-title')].map(el => el.textContent)"), ['Agent discussions (beta)', 'Mobile access', 'Settings']);
     assert.equal(await home.webContents.executeJavaScript("document.querySelector('.home-brand').textContent"), 'Camellia');
     assert.deepEqual(await home.webContents.executeJavaScript("[...document.querySelectorAll('[data-mode]')].map(el => el.dataset.mode)"), ['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'grok']);
-    const mobileMenu = electron.Menu.getApplicationMenu().items[0].submenu.items.find(item => item.label === 'Mobile access…');
+    const applicationMenu = electron.Menu.getApplicationMenu().items[0].submenu.items;
+    const mobileMenu = applicationMenu.find(item => item.label === 'Mobile access…');
     assert.ok(mobileMenu);
+    const restartMenu = applicationMenu.find(item => item.label === 'Restart Camellia');
+    assert.ok(restartMenu, 'Application menu must expose a restart action');
+    assert.ok(applicationMenu.indexOf(applicationMenu.find(item => item.label === 'Open logs folder')) < applicationMenu.indexOf(restartMenu));
+    assert.ok(applicationMenu.indexOf(restartMenu) < applicationMenu.indexOf(applicationMenu.find(item => item.label === 'Quit')));
+    const relaunch = app.relaunch, quit = app.quit;
+    let restartCalls = [];
+    app.relaunch = () => restartCalls.push('relaunch');
+    app.quit = () => restartCalls.push('quit');
+    try {
+      restartMenu.click();
+      for (let attempt = 0; attempt < 150 && restartCalls.length < 2; attempt++) await new Promise(resolve => setTimeout(resolve, 20));
+      assert.deepEqual(restartCalls, ['relaunch', 'quit']);
+    } finally {
+      app.relaunch = relaunch; app.quit = quit;
+    }
+    diag('PASS application menu: restart action saves the session then relaunches and quits');
     await home.webContents.executeJavaScript("document.querySelector('#openMobileAccess').click()");
     const mobile = await waitWindow("document.querySelector('#toggle') && !document.querySelector('#toggle').disabled");
     await home.webContents.executeJavaScript("window.dshDesktop.openSettingsWindow({page:'general'})");
@@ -498,6 +515,42 @@ async function main() {
     assert.equal(await home.webContents.executeJavaScript("document.querySelector('#input').placeholder"), 'Message Codex CLI');
     assert.equal((await home.webContents.executeJavaScript('chatApi.getSettings()')).connection, 'subscription');
     assert.equal((await home.webContents.executeJavaScript('window.dshDesktop.codexAccountState()')).account, null);
+    const webSurface = await home.webContents.executeJavaScript(`(async () => {
+      document.querySelector('[data-surface-option="web"]').click();
+      for (let attempt = 0; attempt < 160; attempt++) {
+        const state = await window.dshDesktop.webSurfaceState();
+        if (state.visible) return {
+          state,
+          options: [...document.querySelectorAll('#engineSwitch option')].map(option => [option.value, option.textContent]),
+          webMode: document.body.classList.contains('web-mode'),
+          agentListHidden: document.querySelector('#sessionList').hidden,
+          webListHidden: document.querySelector('#webSessionList').hidden,
+        };
+        await new Promise(resolve => setTimeout(resolve, 25));
+      }
+      return null;
+    })()`);
+    assert.ok(webSurface, 'The Web surface did not become visible');
+    assert.equal(webSurface.state.provider, 'deepseek');
+    assert.deepEqual(webSurface.options.map(option => option[0]), ['deepseek', 'kimi']);
+    assert.equal(await home.webContents.executeJavaScript("document.querySelector('#engineSwitch').hidden"), true);
+    assert.equal(await home.webContents.executeJavaScript("document.querySelector('#webProviderButton').hidden"), false);
+    assert.equal(await home.webContents.executeJavaScript("document.querySelector('#webProviderLabel').textContent"), 'DeepSeek Web');
+    assert.equal(webSurface.webMode, true);
+    assert.equal(webSurface.agentListHidden, true);
+    assert.equal(webSurface.webListHidden, false);
+    await home.webContents.executeJavaScript(`(async () => {
+      document.querySelector('[data-surface-option="agent"]').click();
+      for (let attempt = 0; attempt < 160; attempt++) {
+        const state = await window.dshDesktop.webSurfaceState();
+        if (!state.visible) return true;
+        await new Promise(resolve => setTimeout(resolve, 25));
+      }
+      return false;
+    })()`).then(visible => assert.equal(visible, true));
+    assert.equal(await home.webContents.executeJavaScript("document.querySelector('#engineSwitch').value"), 'codex');
+    assert.equal(await home.webContents.executeJavaScript("document.body.classList.contains('web-mode')"), false);
+    diag('PASS web surface: real Electron Agent/Web switch and independent provider menu');
     const codexFolder = path.join(root, 'codex-workspace'); fs.mkdirSync(codexFolder, { recursive: true });
     const codexWs = await home.webContents.executeJavaScript(`chatApi.metaOp(${JSON.stringify({ op: 'create-workspace', name: 'Codex project', path: codexFolder })})`);
     assert.equal(codexWs.ok, true); await home.webContents.executeJavaScript('sidebar.load()');

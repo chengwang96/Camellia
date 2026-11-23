@@ -9,7 +9,7 @@ const vm = require('node:vm');
 const source = fs.readFileSync(path.join(__dirname, '../src/renderer/chat/chat.js'), 'utf8');
 const start = source.indexOf('  async function showUsageCard()');
 assert.notEqual(start, -1);
-const usageSource = source.slice(start, source.indexOf('  async function compactConversation()', start));
+const usageSource = source.slice(start, source.indexOf('  async function compactConversation(', start));
 
 async function render(usage) {
   const elements = [];

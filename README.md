@@ -13,6 +13,7 @@ Camellia brings **Claude Code, Codex CLI, DeepSeek Harness, Kimi Code, Antigravi
 ## What makes Camellia useful
 
 - **Shared conversations.** Move between engines in one workspace and conversation. Choose a direct continuation or a Markdown handoff when context needs to cross engines. Native histories remain tied to their engines.
+- **Official web surfaces.** Switch between Agent and Web to use DeepSeek or Kimi in isolated embedded sessions. Each provider keeps its own sign-in, layout adaptations and separate conversation list with rename, pin, share, multi-select and delete actions; web sessions are desktop-only and do not enter mobile remote control.
 - **Agent discussions (beta).** Invite up to four configured agents, assign roles, and choose who replies. Discussion messages, member state, tool activity, and approvals stay together in the desktop or paired Android view.
 - **One routing and account view.** Manage API providers, multiple keys, supported subscription sign-ins, same-model failover, usage, balances, and optional engine runtimes in the app.
 - **Remote work.** Approve a mobile device to read and control selected desktop conversations over the embedded Tailscale connection.

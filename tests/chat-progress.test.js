@@ -13,8 +13,8 @@ const handoffSource = source.slice(source.indexOf('  function stopHandoffSession
 function harness() {
   const stopButton = { hidden: true };
   const state = {
-    context: { sessionId: 'conversation-a' }, handoffSessions: new Map(),
-    running: true, runStartedAt: 0, runTimer: null,
+    context: { sessionId: 'conversation-a' }, handoffSessions: new Map(), manualCompactions: new Set(),
+    running: true, runStartedAt: 0, runTimer: null, historyOpening: false,
     pendingConversationSends: new Map(), pendingQuestion: null,
     statusLine: { textContent: '' }, rows: [],
     $: () => stopButton,

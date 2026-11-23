@@ -326,7 +326,9 @@ function createRuntimeManager({ root, installRoot, node, npm, onChange = () => {
       report(engine, plan.mode, { status: 'uninstalling', message: 'Uninstalling…' });
       try {
         if (plan.targets) {
-          for (const target of plan.targets) fs.rmSync(target, { recursive: true, force: true });
+          // DSH owns hundreds of sibling packages. Removing that tree
+          // synchronously blocks every window and IPC call in the main process.
+          for (const target of plan.targets) await fs.promises.rm(target, { recursive: true, force: true });
         } else await removeRuntime(plan.removal, { node, npm, run: runCommand, env });
         if (customPaths()[engine]?.file === plan.file) {
           const paths = { ...customPaths() }; delete paths[engine]; saveCustomPaths(paths);

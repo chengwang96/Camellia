@@ -52,7 +52,10 @@ class CodexSession extends StreamingSession {
     this.starting.catch(() => {});
   }
   async generateTitle(prompt) {
-    if (this.dead || this.settings.connection !== 'subscription' || !this.sessionId) return '';
+    if (this.dead || this.settings.connection !== 'subscription') return '';
+    // The first user turn opens its native thread asynchronously.
+    await this.ready;
+    if (this.dead || !this.sessionId) return '';
     this.titles ||= new CodexTitles({ spec: this.spec, model: this.spec.model || this.settings.model, spawnProcess: this.spawn, log: this.log });
     return this.titles.generate(prompt);
   }

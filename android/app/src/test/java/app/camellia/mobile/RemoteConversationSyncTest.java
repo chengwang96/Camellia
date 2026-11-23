@@ -17,9 +17,11 @@ public class RemoteConversationSyncTest {
         final CountDownLatch opened = new CountDownLatch(1), stopped = new CountDownLatch(1);
         final AtomicInteger reads = new AtomicInteger();
         final boolean legacy;
+        volatile boolean failOnOpen;
         volatile SnapshotListener listener;
         FakeApi(boolean legacy) { super(ADDRESS); this.legacy = legacy; }
-        @Override public void listEvents(String token, SnapshotListener target) throws IOException {
+        @Override public void listEvents(String token, SnapshotListener target, SseReader.HeartbeatListener heartbeat) throws IOException {
+            if (failOnOpen) throw new IOException("Stream unavailable");
             listener = target;
             try {
                 target.onSnapshot(legacy ? new JSONObject().put("listVersion", "1")
@@ -82,6 +84,21 @@ public class RemoteConversationSyncTest {
             assertTrue(second.opened.await(2, TimeUnit.SECONDS));
             first.listener.onSnapshot(new JSONObject().put("conversationList", page("running")));
             assertEquals(2, delivered.get());
+        }
+    }
+
+    @Test public void aFailedStreamIsReplacedWithAFreshClientInsteadOfRetryingOnIt() throws Exception {
+        FakeApi first = new FakeApi(false);
+        FakeApi second = new FakeApi(false);
+        first.failOnOpen = true;
+        AtomicInteger clients = new AtomicInteger();
+        try (RemoteConversationSync sync = new RemoteConversationSync(address ->
+                clients.getAndIncrement() == 0 ? first : second)) {
+            sync.start(ADDRESS, TOKEN, page -> {});
+            assertTrue("A stream that fails to open must hand off to a new client",
+                second.opened.await(3, TimeUnit.SECONDS));
+            assertTrue("The failed client must be cancelled", first.stopped.await(2, TimeUnit.SECONDS));
+            assertEquals(2, clients.get());
         }
     }
 }

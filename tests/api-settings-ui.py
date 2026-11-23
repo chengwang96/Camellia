@@ -703,6 +703,15 @@ try:
         page.locator('#showHoverHints').check()
         expect(page.locator('#status')).to_contain_text('Preferences saved')
         assert rpc('workbenchSettings')['result']['showHoverHints'] is True
+        page.locator('[data-view=models]').click()
+        expect(page.locator('#modelsPage')).to_be_visible()
+        assert page.locator('#preloadWebProviders').is_checked() is False
+        page.locator('#preloadWebProviders').check()
+        expect(page.locator('#status')).to_contain_text('Preferences saved')
+        assert rpc('workbenchSettings')['result']['preloadWebProviders'] is True
+        page.locator('#preloadWebProviders').uncheck()
+        expect(page.locator('#status')).to_contain_text('Preferences saved')
+        assert rpc('workbenchSettings')['result']['preloadWebProviders'] is False
         # Keyboard shortcuts record through the real IPC and can be cleared to an
         # empty binding. The action stops working and the menu loses its accelerator.
         page.locator('[data-view=shortcuts]').click()

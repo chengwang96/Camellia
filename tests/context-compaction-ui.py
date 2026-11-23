@@ -31,6 +31,21 @@ bridge = scope['bridge'].replace('onConversationStatus:()=>{}', 'onConversationS
 bridge = bridge.replace('preferences:window.fixturePreferences,settings};', 'preferences:window.fixturePreferences,settings,compaction:window.fixtureCompaction||null};')
 bridge = bridge.replace('const fixture = ', 'const fixture = window.chatFixture = ')
 bridge = bridge.replace('onConversationEvent:()=>{}', 'onConversationEvent:fn=>{window.deliverEvent=fn;}')
+bridge = bridge.replace("      if(action==='list-sessions')", """
+      if(action==='compact-history-storage' || action==='compact') {
+        window.compactionRequest = {action, sessionId:payload.sessionId};
+        return new Promise(resolve => { window.finishCompaction = resolve; });
+      }
+      if(action==='send') {
+        window.sentFromConversation = payload.sessionId;
+        return {ok:false,error:'Fixture send'};
+      }
+      if(action==='cancel') {
+        window.cancelledConversation = payload.sessionId;
+        finishCompaction({ok:false,error:'Compaction canceled'});
+        return {ok:true};
+      }
+      if(action==='list-sessions')""")
 
 with sync_playwright() as playwright:
     browser = playwright.chromium.launch(headless=True)
@@ -164,5 +179,82 @@ with sync_playwright() as playwright:
         expect(fallback).to_have_text('上下文已压缩：较早内容已省略')
         assert not errors, errors
         page.close()
+
+    page = browser.new_page(viewport={'width': 1100, 'height': 800})
+    errors = []
+    page.on('pageerror', lambda error: errors.append(str(error)))
+    page.add_init_script(bridge)
+    page.goto((repo / 'src/renderer/chat/workbench.html').as_uri() + '?harness=codex', wait_until='networkidle')
+    page.wait_for_function('uiReady')
+    first = page.locator('[data-sid="shared-fixture"]')
+    second = page.locator('[data-sid="another-session"]')
+    composer = page.locator('#input')
+    first.click()
+    expect(composer).to_be_enabled()
+    composer.fill('/compact-storage')
+    composer.press('Enter')
+    storage = page.locator('.context-compaction[data-kind="storage"]')
+    expect(storage).to_contain_text('Compacting stored history…')
+    expect(storage).to_have_attribute('data-state', 'running')
+    expect(composer).to_be_disabled()
+    second.click()
+    page.wait_for_function('!loadingSession && context.sessionId === "another-session"')
+    expect(storage).to_have_count(0)
+    composer.fill('Independent draft')
+    first.click()
+    expect(storage).to_have_attribute('data-state', 'running')
+    expect(composer).to_be_disabled()
+    second.click()
+    expect(composer).to_have_value('Independent draft')
+    page.evaluate('finishCompaction({ok:true, changed:true, removedRows:2})')
+    expect(composer).to_have_value('Independent draft')
+    expect(storage).to_have_count(0)
+    first.click()
+    expect(storage).to_contain_text('Removed 2 transient tool snapshots from stored history.')
+    expect(storage).to_have_attribute('data-state', 'completed')
+    page.evaluate("changeLanguage('zh-CN')")
+    expect(storage).to_contain_text('已从会话历史中清理 2 条临时工具快照。')
+    page.evaluate("changeLanguage('en')")
+    composer.fill('/compact-storage')
+    composer.press('Enter')
+    expect(storage).to_have_attribute('data-state', 'running')
+    page.evaluate('finishCompaction({ok:true, changed:false, removedRows:0})')
+    expect(storage).to_contain_text('No transient tool snapshots found in stored history.')
+    composer.fill('/compact-storage')
+    composer.press('Enter')
+    expect(page.locator('#handoffStop')).to_have_text('Stop compaction')
+    page.locator('#handoffStop').click()
+    expect(storage).to_contain_text('Stored history compaction canceled')
+    assert page.evaluate('window.cancelledConversation') == 'shared-fixture'
+    composer.fill('/compact')
+    composer.press('Enter')
+    page.wait_for_function('window.compactionRequest?.action === "compact"')
+    page.evaluate("""() => deliverStatus({sessionId:'shared-fixture',text:'Compacting context…',
+      compaction:{state:'running'}})""")
+    expect(page.locator('.context-compaction[data-state="running"]')).to_contain_text('Compacting context…')
+    second.click()
+    page.wait_for_function('!loadingSession && context.sessionId === "another-session"')
+    expect(composer).to_have_value('Independent draft')
+    composer.press('Enter')
+    page.wait_for_function('window.sentFromConversation === "another-session"')
+    expect(composer).to_be_enabled()
+    page.evaluate("""() => {
+      fixtureCompaction = {state:'running',startedAt:Date.now()};
+      const navigate = dshDesktop.conversationSwitch;
+      dshDesktop.conversationSwitch = payload => payload.sessionId === 'shared-fixture'
+        ? new Promise(resolve => { window.finishNavigation = resolve; }) : navigate(payload);
+    }""")
+    first.click()
+    page.wait_for_function('typeof window.finishNavigation === "function"')
+    page.evaluate("""() => {
+      deliverStatus({sessionId:'shared-fixture', text:'', compaction:{...fixtureCompaction,state:'failed',error:'Fixture failure'}});
+      finishCompaction({ok:false, error:'Fixture failure'});
+      finishNavigation({ok:true});
+    }""")
+    expect(page.locator('.context-compaction[data-state="failed"]')).to_contain_text('Fixture failure')
+    expect(page.locator('.context-compaction[data-state="running"]')).to_have_count(0)
+    expect(composer).to_be_enabled()
+    assert not errors, errors
+    page.close()
     browser.close()
 print('PASS compaction timeline: running, completed, failure, cancellation, isolation and restoration')

@@ -107,25 +107,27 @@ test('global memory validates a user folder, persists across restart and partial
   } finally { first.cleanup(); }
 });
 
-test('review defaults persist independently and reject invalid policy values', () => {
+test('review defaults preserve active settings and drop legacy budgets and gates', () => {
   const first = createHarness();
   try {
+    const defaults = { reviewerEngine: 'codex', mode: 'adversarial', allowAgentReviews: true, allowSameEngine: true };
+    const legacy = { maxTokens: 64000, gate: true, turnGate: true };
+    const file = path.join(first.userData, 'desktop-config.json');
+    fs.writeFileSync(file, JSON.stringify({ reviewDefaults: { ...defaults, ...legacy } }));
+    assert.deepEqual({ ...first.call('workbench-settings').reviewDefaults }, defaults);
     assert.equal(first.call('workbench-save-settings', {
-      reviewDefaults: { reviewerEngine: 'codex', mode: 'adversarial', maxTokens: 64000,
-        allowAgentReviews: true, gate: true, turnGate: true, allowSameEngine: true },
+      reviewDefaults: { ...legacy, mode: 'standard' },
     }).ok, true);
-    const saved = first.call('workbench-settings').reviewDefaults;
-    assert.deepEqual(saved, { reviewerEngine: 'codex', mode: 'adversarial', maxTokens: 64000,
-      allowAgentReviews: true, gate: true, turnGate: true, allowSameEngine: true });
+    const saved = { ...defaults, mode: 'standard' };
+    assert.deepEqual(JSON.parse(fs.readFileSync(file, 'utf8')).reviewDefaults, saved);
     assert.equal(first.call('workbench-save-settings', { theme: 'dark' }).ok, true);
     const reopened = createHarness(first.root);
-    assert.deepEqual(reopened.call('workbench-settings').reviewDefaults, saved);
+    assert.deepEqual({ ...reopened.call('workbench-settings').reviewDefaults }, saved);
     for (const reviewDefaults of [
-      null, [], { reviewerEngine: 'unknown' }, { mode: 'fast' }, { maxTokens: 999 },
-      { maxTokens: 1000001 }, { gate: 'yes' }, { turnGate: 1 },
+      null, [], { reviewerEngine: 'unknown' }, { mode: 'fast' }, { allowAgentReviews: 'yes' }, { allowSameEngine: 1 },
     ]) {
       assert.equal(reopened.call('workbench-save-settings', { reviewDefaults }).ok, false);
-      assert.deepEqual(reopened.call('workbench-settings').reviewDefaults, saved);
+      assert.deepEqual({ ...reopened.call('workbench-settings').reviewDefaults }, saved);
     }
   } finally { first.cleanup(); }
 });
@@ -193,11 +195,11 @@ test('review defaults live at the end of Model Settings', () => {
   const html = fs.readFileSync(path.join(__dirname, '../src/renderer/settings/api-settings.html'), 'utf8');
   const general = html.slice(html.indexOf('<section id="generalPage"'), html.indexOf('<section id="dataPage"'));
   const models = html.slice(html.indexOf('<section id="modelsPage"'), html.indexOf('<section id="networkPage"'));
-  for (const id of ['reviewDefaultEngine', 'reviewDefaultMode', 'reviewDefaultMaxTokens',
-    'reviewDefaultAgentConsent', 'reviewDefaultGate', 'reviewDefaultTurnGate']) {
+  for (const id of ['reviewDefaultEngine', 'reviewDefaultMode', 'reviewDefaultAgentConsent']) {
     assert.ok(models.includes(`id="${id}"`), id + ' belongs to Model Settings');
     assert.ok(!general.includes(`id="${id}"`), id + ' does not belong to General');
   }
+  assert.doesNotMatch(html, /id="reviewDefault(?:MaxTokens|Gate|TurnGate)"/);
   assert.ok(models.indexOf('Review defaults') > models.indexOf('id="modelSessionsTitle"'),
     'review defaults follow the existing Model Settings content');
 });
@@ -453,6 +455,25 @@ test('hover hints default on, validate, persist, and broadcast only real changes
   } finally { first.cleanup(); }
 });
 
+test('web provider preload defaults off, validates boolean values and persists', () => {
+  const first = createHarness();
+  try {
+    assert.equal(first.call('workbench-settings').preloadWebProviders, false);
+    for (const value of [null, 'yes', 1, {}, []]) {
+      assert.equal(first.call('workbench-save-settings', { preloadWebProviders: value }).ok, false);
+      assert.equal(first.call('workbench-settings').preloadWebProviders, false);
+    }
+    assert.equal(first.call('workbench-save-settings', { preloadWebProviders: true }).ok, true);
+    assert.equal(first.call('workbench-settings').preloadWebProviders, true);
+    assert.equal(first.call('workbench-save-settings', { theme: 'dark' }).ok, true);
+    const reopened = createHarness(first.root);
+    assert.equal(reopened.call('workbench-settings').preloadWebProviders, true);
+    assert.equal(reopened.call('workbench-save-settings', { preloadWebProviders: false }).ok, true);
+    assert.equal(reopened.call('workbench-settings').preloadWebProviders, false);
+    reopened.cleanup();
+  } finally { first.cleanup(); }
+});
+
 test('General exposes the conversation width selector and the chat column reads the variable', () => {
   const html = fs.readFileSync(path.join(__dirname, '../src/renderer/settings/api-settings.html'), 'utf8');
   const general = html.slice(html.indexOf('<section id="generalPage"'), html.indexOf('<section id="networkPage"'));
@@ -475,6 +496,10 @@ test('General exposes the conversation width selector and the chat column reads 
   assert.match(general, /<input id="showHoverHints" type="checkbox"[^>]*>/);
   assert.ok(source.includes("showHoverHints: $('showHoverHints').checked"));
   assert.ok(source.includes("$('showHoverHints').checked = preferences.showHoverHints !== false"));
+  const models = html.slice(html.indexOf('<section id="modelsPage"'), html.indexOf('<section id="networkPage"'));
+  assert.match(models, /<input id="preloadWebProviders" type="checkbox"[^>]*>/);
+  assert.ok(source.includes("preloadWebProviders: $('preloadWebProviders').checked"));
+  assert.ok(source.includes("$('preloadWebProviders').checked = preferences.preloadWebProviders === true"));
   const navigatorCss = fs.readFileSync(path.join(__dirname, '../src/renderer/chat/conversation-navigator.css'), 'utf8');
   assert.match(navigatorCss, /\.conversation-marker\.is-current \.conversation-marker-line/);
 });

@@ -11,9 +11,11 @@ const matchesScope = (profile, scope) => Object.entries(scope).every(([key, valu
 // No native adapters are registered by default. In particular interrupt() or
 // a result event alone is not proof of termination.
 class DiscussionScheduler {
-  constructor({ manager, adapters = {}, registry = null, prepareInput, onEvent = () => {}, onError = () => {} }) {
+  constructor({ manager, adapters = {}, registry = null, prepareInput, deferUnavailable = () => false,
+    onEvent = () => {}, onError = () => {} }) {
     if (registry && Object.keys(adapters).length) throw new Error('Choose the discussion registry or injected test adapters');
     this.manager = manager; this.adapters = adapters; this.registry = registry; this.prepareInput = prepareInput;
+    this.deferUnavailable = deferUnavailable;
     this.onEvent = onEvent; this.onError = onError; this.runs = new Map();
     this.suspensions = new Map();
   }
@@ -25,7 +27,7 @@ class DiscussionScheduler {
     try { Promise.resolve(this.onError(error)).catch(() => {}); }
     catch { /* observers cannot change lifecycle */ }
   }
-  enqueue(id, input) {
+  enqueue(id, input, { pump = true } = {}) {
     const state = this.manager.get(id);
     if (!state.requests.some(request => request.id === input.requestId)) {
       for (const participantId of input.participantIds || []) {
@@ -34,7 +36,8 @@ class DiscussionScheduler {
       }
     }
     const request = this.manager.enqueue(id, input);
-    this.pump(id); return request;
+    if (pump) this.pump(id);
+    return request;
   }
   pump(id) {
     let state;
@@ -75,7 +78,12 @@ class DiscussionScheduler {
       this.publish({ identity: { discussionId: id, threadId: current.threadId, participantId: d.participantId,
         requestId: d.requestId, deliveryId: d.id } }, 'failed', { reason });
     };
-    if (!capability.available) { reject(capability.reason); return; }
+    if (!capability.available) {
+      try {
+        if (this.deferUnavailable(id, d, participant, capability) === true) return;
+      } catch (error) { this.report(error); }
+      reject(capability.reason); return;
+    }
     // A native tool run may write or invoke a command. Keep one owner of this
     // group's directory until its entire process tree has drained.
     if ([...this.runs.values()].some(run => run.identity.discussionId === id

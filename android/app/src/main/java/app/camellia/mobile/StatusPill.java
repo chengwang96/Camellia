@@ -21,7 +21,7 @@ final class StatusPill extends TextView {
         setGravity(Gravity.CENTER);
         setSingleLine(true);
         setEllipsize(TextUtils.TruncateAt.END);
-        setMaxWidth(dp(152));
+        setMaxWidth(dp(210));
         setPadding(dp(7), dp(3), dp(7), dp(3));
         setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
         GradientDrawable fill = new GradientDrawable();
@@ -35,6 +35,7 @@ final class StatusPill extends TextView {
         if (state == null) return palette.muted;
         if (state.equals("running")) return palette.success;
         if (state.equals("permission") || state.equals("question") || state.equals("waiting")) return palette.warning;
+        if (state.equals("draft")) return palette.error;
         if (state.equals("failed") || state.equals("error") || state.equals("offline")) return palette.error;
         return palette.muted;
     }

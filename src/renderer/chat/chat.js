@@ -37,6 +37,8 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
   // A harness handoff keeps running while the user opens another conversation.
   // Track each origin separately so unrelated conversations stay usable.
   const handoffSessions = new Map();
+  const manualCompactions = new Set();
+  const storageCompactions = new Map();
   // A stalled native handoff must not leave its origin locked indefinitely.
   let handoffTimeoutMs = 10 * 60 * 1000;
   let conversationPrefs = { mode: 'direct', warnOnSwitch: false, showOrigin: false };
@@ -3402,6 +3404,13 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     if (!rows.length) { clearInterval(compactionClockTimer); compactionClockTimer = null; }
   }
   function compactionLabel(compaction) {
+    if (compaction.storage) {
+      if (compaction.state === 'running') return 'Compacting stored history…';
+      if (compaction.state === 'failed') return 'Stored history compaction failed';
+      if (compaction.state === 'cancelled') return 'Stored history compaction canceled';
+      return compaction.removedRows ? 'Removed {0} transient tool snapshots from stored history.'
+        .replace('{0}', compaction.removedRows) : 'No transient tool snapshots found in stored history.';
+    }
     if (compaction.state === 'completed' && compaction.fallback) return 'Context compacted: older context omitted';
     const labels = compaction.native ? {
       running: '{0}: compacting context natively…', completed: '{0}: context compacted natively',
@@ -3417,14 +3426,15 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
   function renderCompactionStatus(compaction, historyBefore, { recoverable = true, replay = false } = {}) {
     if (!compaction) return;
     const was = historyBefore === undefined && nearBottom();
-    if (historyBefore === undefined && compaction.state === 'running') clearTransientCompactionStatus();
+    if (historyBefore === undefined && compaction.state === 'running' && !compaction.storage) clearTransientCompactionStatus();
     let row = compaction.seq ? chat.querySelector('.context-compaction[data-seq="' + compaction.seq + '"]') : null;
-    if (!row && historyBefore === undefined) row = chat.querySelector('.context-compaction[data-state="running"]');
+    if (!row && historyBefore === undefined) row = chat.querySelector(compaction.storage
+      ? '.context-compaction[data-kind="storage"]' : '.context-compaction[data-state="running"]:not([data-kind="storage"])');
     // On reload the backend reports the last failed compaction without a
     // message sequence. If history already painted that notice, update it in
     // place instead of appending a second copy at the end of the transcript.
     if (!row && replay && historyBefore === undefined && ['failed', 'cancelled'].includes(compaction.state))
-      row = [...chat.querySelectorAll('.context-compaction')].filter(el => el.dataset.state === compaction.state).at(-1) || null;
+      row = [...chat.querySelectorAll('.context-compaction:not([data-kind="storage"])')].filter(el => el.dataset.state === compaction.state).at(-1) || null;
     if (!row) {
       row = document.createElement('div');
       row.className = 'context-compaction';
@@ -3435,6 +3445,10 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       // at the same point in the transcript, so a turn that is still streaming
       // keeps growing below it instead of leaving the marker pinned at the end.
       chat.insertBefore(row, (historyBefore === undefined ? turnEl : historyBefore) || null);
+    }
+    if (compaction.storage) {
+      row.dataset.kind = 'storage';
+      if (compaction.state === 'running' && row.dataset.compactionStartedAt !== String(compaction.startedAt)) chat.appendChild(row);
     }
     row.dataset.state = compaction.state;
     if (compaction.seq) row.dataset.seq = compaction.seq;
@@ -3454,9 +3468,9 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     let errorEl = row.querySelector('.context-compaction-error');
     if (compaction.state === 'failed' && compaction.error) {
       if (!errorEl) { errorEl = document.createElement('div'); errorEl.className = 'context-compaction-error'; row.appendChild(errorEl); }
-      errorEl.textContent = window.CamelliaContextOverflow.recoverySummary(compaction.error);
+      errorEl.textContent = compaction.storage ? compaction.error : window.CamelliaContextOverflow.recoverySummary(compaction.error);
     } else errorEl?.remove();
-    if (recoverable && compaction.state === 'failed') renderContextRecovery(row, compaction.error, true);
+    if (recoverable && !compaction.storage && compaction.state === 'failed') renderContextRecovery(row, compaction.error, true);
     else row.querySelector('.context-recovery')?.remove();
     // The label is translated in place, so the elapsed time lives beside it
     // instead of inside the translated text node.
@@ -3540,6 +3554,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
   let statusText = '';
   let conversationPhase = '', conversationPhaseSessionId = null;
   const compactionAttempts = new Map();
+  const compactionStatusesDuringRestore = [];
   function setStatus(text) { statusText = text; statusLine.textContent = text; }
   // Live-turn state is invisible to the main process. Send the rare anomalies
   // that can hide an active run's execution process to the application log, so
@@ -3549,7 +3564,12 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       void window.dshDesktop.conversationCommand({ engine: harnessId, action: 'diagnostic', payload: { message } });
     } catch { /* diagnostics must never break the transcript */ }
   }
-  function handleConversationStatus({ sessionId, text, compaction, replay = false }) {
+  function handleConversationStatus(status) {
+    let { sessionId, text, compaction, replay = false } = status;
+    if (!replay && compaction && historyOpening && restoringRun && sessionId === context.sessionId) {
+      compactionStatusesDuringRestore.push(status);
+      return;
+    }
     const pending = pendingConversationSends.get(sessionId);
     // Interrupted summary workers can settle after another attempt starts.
     // Their status must not replace the new attempt or restart a stopped clock.
@@ -3729,17 +3749,6 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     }
     if (ev.type === 'conversation:review-consent') {
       if (ev.session_id === context.sessionId) reviewPanel?.receiveConsent(ev.consent);
-      return;
-    }
-    if (ev.type === 'conversation:turn-review') {
-      if (ev.session_id === context.sessionId) {
-        const state = ev.review?.status;
-        const label = state === 'running' ? 'Completion review running…'
-          : state === 'completed' && ev.review?.report?.verdict === 'pass' ? 'Completion review passed.'
-            : state === 'completed' ? 'Completion review found issues. Your next message can address them.'
-              : 'Completion review did not pass: ' + (state || 'unknown');
-        setStatus(window.CamelliaI18n.t(label));
-      }
       return;
     }
     if (ev.type === 'conversation:review') {
@@ -4151,7 +4160,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
   }
 
   function clearTransientCompactionStatus() {
-    chat.querySelectorAll('.context-compaction[data-state="failed"], .context-compaction[data-state="cancelled"]').forEach(row => {
+    chat.querySelectorAll('.context-compaction:not([data-kind="storage"])[data-state="failed"], .context-compaction:not([data-kind="storage"])[data-state="cancelled"]').forEach(row => {
       if (!row.dataset.seq) row.remove();
       else row.querySelector('.context-recovery')?.remove();
     });
@@ -4416,7 +4425,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       // The uncommitted message already owns its failure and edit action.
       // A cancelled compaction has its own neutral marker, never an error chip.
       if (!cancelled && !keepAttempt
-          && !chat.querySelector('.context-compaction[data-state="failed"]')) {
+          && !chat.querySelector('.context-compaction[data-state="failed"]:not([data-kind="storage"])')) {
         const chip = document.createElement('div');
         chip.className = 'run-result err'; chip.dataset.sendFailure = 'true';
         chip.textContent = 'Failed to start: ' + window.CamelliaContextOverflow.recoverySummary(attempt.error);
@@ -4485,7 +4494,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       run: () => void compactConversation() },
     { id: 'compact-storage', label: '/compact-storage', desc: 'Remove transient tool snapshots from stored history',
       icon: '<path d="M4 7h16M4 12h16M4 17h10"/>',
-      run: () => void compactStoredHistory() },
+      run: () => void compactConversation({ storage: true }) },
   ];
   let slashPop = null, slashIndex = 0;
   function slashMatches() {
@@ -4630,38 +4639,54 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     syncRecoveryHandoff(row);
   }
 
-  async function compactConversation() {
-    if (!context.sessionId) { setStatus('Start a conversation first, then compact it.'); return; }
+  async function compactConversation({ storage = false } = {}) {
+    if (!context.sessionId) {
+      setStatus(storage ? 'Start a conversation first, then compact its stored history.' : 'Start a conversation first, then compact it.');
+      return;
+    }
     if (conversationBusy() || contextBusy() || sending || handoffForCurrentSession()) { setStatus('Available when this conversation stops working'); return; }
     const sessionId = context.sessionId;
-    switchingEngine = true; input.disabled = true; updateConversationControls();
-    setStatus('Compacting context…');
+    const startedAt = Date.now();
+    const action = storage ? 'compact-history-storage' : 'compact';
+    manualCompactions.add(sessionId);
+    input.disabled = true;
+    updateConversationControls();
+    if (storage) {
+      const progress = { storage, startedAt, state: 'running' };
+      storageCompactions.set(sessionId, progress);
+      renderCompactionStatus(progress);
+    }
+    setStatus(storage ? 'Compacting stored history…' : 'Compacting context…');
+    let result;
     try {
-      const res = await window.dshDesktop.conversationCommand({ engine: harnessId, action: 'compact', payload: { sessionId } });
-      if (!res?.ok) setStatus(window.CamelliaContextOverflow.recoverySummary(res?.error) || 'Compaction failed');
+      result = await window.dshDesktop.conversationCommand({ engine: harnessId, action, payload: { sessionId } });
+    } catch (error) {
+      result = { ok: false, error: error.message };
+    } finally {
+      manualCompactions.delete(sessionId);
+    }
+    if (storage) {
+      const cancelled = result?.cancelled || window.CamelliaContextOverflow.requestCancelledText(result?.error);
+      const state = result?.ok ? 'completed' : cancelled ? 'cancelled' : 'failed';
+      const status = { storage, startedAt, state, durationMs: Date.now() - startedAt,
+        removedRows: result?.removedRows, error: result?.error };
+      storageCompactions.set(sessionId, status);
+      if (context.sessionId === sessionId && !loadingSession) renderCompactionStatus(status);
+    }
+    if (context.sessionId === sessionId && !loadingSession && !discussionVisible) {
+      input.disabled = handoffForCurrentSession();
+      updateConversationControls();
+      if (storage) setStatus(compactionLabel(storageCompactions.get(sessionId)));
+      else if (!result?.ok) setStatus(window.CamelliaContextOverflow.recoverySummary(result?.error) || 'Compaction failed');
       else {
-        const duration = compactionDuration(res.durationMs);
-        const label = res.fallback ? 'Context compacted: older context omitted'
-          : res.native ? compactionLabel({ state: 'completed', native: true }) : 'Context compacted. The conversation continues with the summary.';
+        const duration = compactionDuration(result.durationMs);
+        const label = result.fallback ? 'Context compacted: older context omitted'
+          : result.native ? compactionLabel({ state: 'completed', native: true }) : 'Context compacted. The conversation continues with the summary.';
         setStatus(window.CamelliaI18n.t(label) + (duration ? ' · ' + duration : ''));
       }
-      return res;
-    } catch (error) { setStatus(window.CamelliaContextOverflow.recoverySummary(error.message)); return { ok: false, error: error.message }; }
-    finally { switchingEngine = false; input.disabled = loadingSession; updateConversationControls(); }
-  }
-  async function compactStoredHistory() {
-    if (!context.sessionId) { setStatus('Start a conversation first, then compact its stored history.'); return; }
-    if (conversationBusy() || contextBusy() || sending || handoffForCurrentSession()) { setStatus('Available when this conversation stops working'); return; }
-    const sessionId = context.sessionId;
-    switchingEngine = true; input.disabled = true; updateConversationControls();
-    setStatus('Compacting stored history…');
-    try {
-      const res = await window.dshDesktop.conversationCommand({ engine: harnessId, action: 'compact-history-storage', payload: { sessionId } });
-      if (!res?.ok) setStatus(res?.error || 'Stored history compaction failed');
-      else setStatus(res.changed ? `Removed ${res.removedRows} transient tool snapshots from stored history.` : 'No transient tool snapshots found in stored history.');
-      return res;
-    } catch (error) { setStatus(error.message); return { ok: false, error: error.message }; }
-    finally { switchingEngine = false; input.disabled = loadingSession; updateConversationControls(); }
+      drainMessageQueue();
+    }
+    return result;
   }
   input.addEventListener('keydown', (e) => {
     if (slashPop) {
@@ -5117,7 +5142,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     openPops.push(pop);
     pop.querySelector('button:not(:disabled)')?.focus();
   }
-  function conversationBusy() { return running || Boolean(conversationActivity) || Boolean(pendingConversationSend()) || goalUI.isActive(); }
+  function conversationBusy() { return running || Boolean(conversationActivity) || Boolean(pendingConversationSend()) || goalUI.isActive() || manualCompactions.has(context.sessionId); }
   function contextBusy() {
     return (loadingSession && !historyOpening) || switchingEngine || (sending && !pendingConversationSend());
   }
@@ -5128,12 +5153,15 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
   }
   function handoffForCurrentSession() { return handoffSessions.has(context.sessionId); }
   function stopHandoffSessionId() {
-    if (handoffSessions.has(context.sessionId)) return context.sessionId;
+    if (handoffSessions.has(context.sessionId) || manualCompactions.has(context.sessionId)) return context.sessionId;
     if (handoffSessions.size === 1) return handoffSessions.keys().next().value;
     return conversationPhase && conversationPhaseSessionId === context.sessionId ? context.sessionId : null;
   }
   function updateHandoffStop() {
-    $('handoffStop').hidden = !stopHandoffSessionId();
+    const button = $('handoffStop');
+    const sessionId = stopHandoffSessionId();
+    button.hidden = !sessionId;
+    button.textContent = manualCompactions.has(sessionId) ? 'Stop compaction' : 'Stop handoff';
   }
   function clearHandoffSession(sessionId, expected = null) {
     const handoff = handoffSessions.get(sessionId);
@@ -5206,6 +5234,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     acceptSessionEvents = false; currentRunId = null; conversationActivity = null; backgroundWork = null;
     requestTurns.clear();
     restoringRun = false; eventsDuringRestore.length = 0;
+    compactionStatusesDuringRestore.length = 0;
     permRequestId = null; permissionQueue.length = 0; $('permMask').classList.remove('visible');
     seenPermissionBlocks.clear();
     if ($('permissionBlockedDialog').open) $('permissionBlockedDialog').close();
@@ -5533,6 +5562,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       const pending = pendingConversationSend();
       if (pending?.phase || res.compaction) handleConversationStatus({ sessionId: id, replay: true,
         text: pending?.phase || (res.compaction?.state === 'running' ? 'Compacting context…' : ''), compaction: res.compaction });
+      for (const status of compactionStatusesDuringRestore.splice(0)) handleConversationStatus(status);
       if (handoffForCurrentSession()) {
         updateHandoffStop();
         if (!conversationPhase) setStatus('Handoff in progress…');
@@ -5562,7 +5592,10 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     }
     finally {
       if (seq === sessionOpenSeq) {
-        historyOpening = false; loadingSession = false; input.disabled = handoffForCurrentSession(); restoringRun = false;
+        historyOpening = false; loadingSession = false;
+        input.disabled = handoffForCurrentSession() || manualCompactions.has(context.sessionId);
+        restoringRun = false;
+        renderCompactionStatus(storageCompactions.get(context.sessionId));
         updateSendEnabled(); updateConversationControls(); sidebar.updateLabel();
         if (draftRestored) saveDraft(); else restoreDraft();
         if (followRunOutput && !userScrollActive) chatScroll.scrollTop = chatScroll.scrollHeight;
@@ -6252,3 +6285,8 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     });
   };
   window.dshDesktop.onConversationStatus(handleConversationStatus);
+  document.addEventListener('camellia:surface-change', event => {
+    if (event.detail?.surface !== 'agent') return;
+    $('engineSwitch').value = harnessId;
+    updateConversationControls();
+  });

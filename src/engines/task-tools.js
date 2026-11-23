@@ -1,5 +1,7 @@
 'use strict';
 
+const MAX_TASK_HOURS = 8760;
+
 const options = {
   instruction: { type: 'string', minLength: 1, maxLength: 12000 },
   intervalMinutes: { type: 'integer', minimum: 1, maximum: 1440 },
@@ -8,7 +10,7 @@ const options = {
   dailyTime: { type: 'string', minLength: 5, maxLength: 5, description: 'For daily: local HH:mm, such as 09:00.' },
   timeZone: { type: 'string', minLength: 1, maxLength: 100, description: 'For daily: explicit IANA time zone, such as Asia/Hong_Kong. Ask if the user time zone is unknown.' },
   maxRuns: { type: 'integer', minimum: 1, maximum: 1000 },
-  maxHours: { type: 'integer', minimum: 1, maximum: 168 },
+  maxHours: { type: 'integer', minimum: 1, maximum: MAX_TASK_HOURS },
   maxRepairs: { type: 'integer', minimum: 0, maximum: 5 },
 };
 const taskId = { type: 'string', minLength: 1, maxLength: 128 };

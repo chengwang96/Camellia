@@ -456,7 +456,8 @@ public class SettingsTest extends InstrumentationTestCase {
             ui(() -> {
                 View root = root(home); assertNotNull(root.findViewWithTag("localChatEntry")); assertNull(root.findViewWithTag("remoteControlEntry"));
                 root.findViewWithTag("settingsEntry").performClick();
-                assertNotNull(root.findViewWithTag("settings:summaryModels")); assertNotNull(root.findViewWithTag("settings:general")); assertNotNull(root.findViewWithTag("settings:archived"));
+                assertNotNull(root.findViewWithTag("settings:summaryModels")); assertNotNull(root.findViewWithTag("settings:general"));
+                assertNotNull(root.findViewWithTag("settings:downloads")); assertNotNull(root.findViewWithTag("settings:archived"));
                 root.findViewWithTag("settings:network").performClick();
                 home.onBackPressed(); assertNotNull(root.findViewWithTag("settings:network"));
                 // The Mobile access row is the only row here that leads somewhere
@@ -511,8 +512,9 @@ public class SettingsTest extends InstrumentationTestCase {
                 ui(() -> {
                     View root = root(activity);
                     View providers = root.findViewWithTag("settings:summaryModels"), general = root.findViewWithTag("settings:general");
+                    View downloads = root.findViewWithTag("settings:downloads");
                     View archived = root.findViewWithTag("settings:archived"), network = root.findViewWithTag("settings:network");
-                    assertNotNull(providers); assertNotNull(general); assertNotNull(archived); assertNotNull(network);
+                    assertNotNull(providers); assertNotNull(general); assertNotNull(downloads); assertNotNull(archived); assertNotNull(network);
                     assertNotNull(root.findViewWithTag("settings:summaryModels"));
                     assertNull(root.findViewWithTag("settings:summaryComputers"));
                     assertNull(root.findViewWithTag("settings:diagnostics"));

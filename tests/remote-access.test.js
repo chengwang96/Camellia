@@ -2562,6 +2562,50 @@ test('mobile resend rewrites the latest user message through editSeq', async con
   assert.equal((await post(missingSeq)).body.ok, false);
 });
 
+test('mobile resend without replacement attachments keeps the edited message files', async context => {
+  const { gateway, manager, pair } = fixture(context);
+  const { token } = pair();
+  manager.generateTitle = async () => 'Title';
+  const runs = [];
+  manager.drivers.codex.ensure = () => ({ gen: 42, sessionId: 'native-session',
+    sendUserMessage(prompt, attachments) {
+      runs.push({ prompt, attachments: structuredClone(attachments) });
+      manager.capture('codex', { type: 'result', subtype: 'success', result: 'Reply', session_id: 'native-session', runId: 42 });
+      return true;
+    },
+    interrupt() {}, resume() { return { gen: 42, sendUserMessage() { return true; }, interrupt() {} }; } });
+  await gateway.start('127.0.0.1', 0);
+  const created = await request(gateway, '/v1/commands', { token, method: 'POST', payload: {
+    requestId: require('node:crypto').randomUUID(), instanceId: gateway.instanceId,
+    action: 'create', workspaceId: 'allowed', engine: 'codex',
+  } });
+  assert.equal(created.body.ok, true);
+  const conversation = created.body.conversation;
+  const endpoint = `/v1/conversations/${conversation.id}/commands`;
+  const post = payload => request(gateway, endpoint, { token, method: 'POST', payload });
+  const sent = await post({ requestId: require('node:crypto').randomUUID(), instanceId: gateway.instanceId,
+    action: 'send', expectedSeq: conversation.seq, prompt: 'Original request',
+    attachments: [{ name: 'notes.txt', data: Buffer.from('Keep these bytes').toString('base64'), isImage: false }] });
+  assert.equal(sent.body.ok, true, sent.body.error);
+  await manager.active.get(conversation.id)?.done;
+  const before = await request(gateway, `/v1/conversations/${conversation.id}`, { token });
+  const original = before.body.messages.filter(row => row.role === 'user').at(-1);
+  assert.deepEqual(original.attachedFiles, [{ name: 'notes.txt', isImage: false, size: Buffer.byteLength('Keep these bytes') }]);
+  const resend = await post({ requestId: require('node:crypto').randomUUID(), instanceId: gateway.instanceId,
+    action: 'resend', expectedSeq: before.body.conversation.seq, editSeq: original.seq, prompt: 'Revised request' });
+  assert.equal(resend.body.ok, true, resend.body.error);
+  await manager.active.get(conversation.id)?.done;
+  assert.equal(runs.length, 2);
+  assert.equal(runs[1].attachments.length, 1);
+  assert.equal(runs[1].attachments[0].path, runs[0].attachments[0].path);
+  assert.equal(fs.readFileSync(runs[1].attachments[0].path, 'utf8'), 'Keep these bytes');
+  assert.ok(runs[1].prompt.includes(runs[1].attachments[0].path.replace(/\\/g, '\\\\')));
+  const after = await request(gateway, `/v1/conversations/${conversation.id}`, { token });
+  const revised = after.body.messages.filter(row => row.role === 'user').at(-1);
+  assert.equal(revised.text, 'Revised request');
+  assert.deepEqual(revised.attachedFiles, original.attachedFiles);
+});
+
 test('mobile workspace creation requires full control, deduplicates and updates scoped list versions', async context => {
   const { gateway, manager, access, reader, pair, root } = fixture(context);
   const credential = pair(), token = credential.token;
@@ -2742,7 +2786,8 @@ test('remote workspace removal requires full control, checks busy state, retains
   assert.equal((await send({ ...payload, requestId: require('node:crypto').randomUUID() })).body.ok, false);
   manager.controlStarts.delete(visible.id);
   assert.equal((await send({ ...payload, expectedName: 'stale', requestId: require('node:crypto').randomUUID() })).body.ok, false);
-  assert.equal((await send(payload)).body.ok, true);
+  const delivered = await send(payload);
+  assert.equal(delivered.body.ok, true, JSON.stringify(delivered.body));
   assert.equal((await send(payload)).body.ok, true);
   assert.equal(fs.existsSync(root), true);
   assert.equal(manager.workspaces.sessionMeta().sessionWorkspace[visible.id], null);
@@ -2853,6 +2898,81 @@ test('desktop attachments are scoped, bounded and deduplicated without accepting
     { token: credential.token })).status, 404);
   assert.equal((await request(gateway, `/v1/conversations/${hidden.id}/attachments/${snapshotMessage.seq}/0`,
     { token: credential.token })).status, 404);
+});
+
+test('mobile conversation snapshots are generated on the desktop, attached once and downloadable', async context => {
+  const { gateway, manager, visible, pair, root } = fixture(context);
+  const credential = pair();
+  await gateway.start('127.0.0.1', 0);
+  const source = manager.create('codex', 'allowed', 'Source');
+  manager.append(source, { role: 'user', text: 'Remember this design' });
+  let sent;
+  manager.drivers.codex.ensure = () => ({ gen: 42,
+    sendUserMessage(prompt, attachments) {
+      sent = { prompt, attachments };
+      return true;
+    }, interrupt() {} });
+  const payload = { requestId: require('node:crypto').randomUUID(), instanceId: gateway.instanceId,
+    action: 'send', expectedSeq: visible.seq, prompt: 'Use the earlier context', conversations: [source.id] };
+  const send = value => request(gateway, `/v1/conversations/${visible.id}/commands`,
+    { token: credential.token, method: 'POST', payload: value });
+  assert.equal((await send({ ...payload, requestId: require('node:crypto').randomUUID(),
+    conversations: [visible.id] })).body.ok, false);
+  assert.notEqual((await send({ ...payload, requestId: require('node:crypto').randomUUID(),
+    conversations: [require('node:crypto').randomUUID()] })).body.ok, true);
+  const delivered = await send({ ...payload, requestId: require('node:crypto').randomUUID() });
+  assert.equal(delivered.body.ok, true, JSON.stringify(delivered.body));
+  assert.equal(sent.attachments.length, 1);
+  const attachment = sent.attachments[0];
+  assert.equal(attachment.kind, 'conversation');
+  assert.equal(attachment.sourceSessionId, source.id);
+  assert.equal(path.dirname(attachment.path), path.join(root, 'conversations', 'handoffs'));
+  assert.ok(sent.prompt.includes(JSON.stringify(attachment.path).slice(1, -1)));
+  assert.match(fs.readFileSync(attachment.path, 'utf8'), /Remember this design/);
+  assert.ok(fs.existsSync(attachment.fullPath));
+  const snapshot = await request(gateway, `/v1/conversations/${visible.id}`, { token: credential.token });
+  const message = snapshot.body.messages.at(-1);
+  assert.deepEqual(message.attachedFiles,
+    [{ name: 'Source.md', isImage: false, size: fs.statSync(attachment.path).size }]);
+  const download = await fetch(gateway.url + `/v1/conversations/${visible.id}/attachments/${message.seq}/0`,
+    { headers: { Authorization: `Bearer ${credential.token}` } });
+  assert.equal(download.status, 200);
+  assert.match(Buffer.from(await download.arrayBuffer()).toString(), /Camellia conversation handoff/);
+});
+
+test('a rejected mobile send removes the conversation snapshot it generated', async context => {
+  const { gateway, manager, visible, pair, root } = fixture(context);
+  const credential = pair();
+  await gateway.start('127.0.0.1', 0);
+  const target = manager.create('codex', 'allowed', 'Rejected target');
+  manager.send = async () => { throw new Error('Rejected before commit'); };
+  const payload = { requestId: require('node:crypto').randomUUID(), instanceId: gateway.instanceId,
+    action: 'send', expectedSeq: target.seq, prompt: 'Attach this', conversations: [visible.id] };
+  const response = await request(gateway, `/v1/conversations/${target.id}/commands`,
+    { token: credential.token, method: 'POST', payload });
+  assert.equal(response.status, 200);
+  assert.equal(response.body.ok, false);
+  const handoffs = path.join(root, 'conversations', 'handoffs');
+  assert.deepEqual(fs.existsSync(handoffs) ? fs.readdirSync(handoffs) : [], []);
+  assert.equal(target.seq, 0);
+});
+
+test('a rejected mobile conversation send restores its display metadata from the journal', async context => {
+  const { gateway, manager, visible, pair } = fixture(context);
+  const credential = pair();
+  await gateway.start('127.0.0.1', 0);
+  const source = manager.create('codex', 'allowed', 'Source');
+  manager.drivers.codex.ensure = () => ({ gen: 42, sendUserMessage() { throw new Error('Rejected after preparation'); }, interrupt() {} });
+  const payload = { requestId: require('node:crypto').randomUUID(), instanceId: gateway.instanceId,
+    action: 'send', expectedSeq: visible.seq, prompt: 'Use the earlier context',
+    conversations: [source.id], conversationDetails: [{ id: source.id, title: 'Source', engine: 'codex', workspaceName: 'Allowed' }] };
+  const response = await request(gateway, `/v1/conversations/${visible.id}/commands`,
+    { token: credential.token, method: 'POST', payload });
+  assert.notEqual(response.body.ok, true);
+  const receipt = await request(gateway, `/v1/commands/${payload.requestId}`, { token: credential.token });
+  assert.equal(receipt.status, 200);
+  assert.equal(receipt.body.ok, false);
+  assert.equal(receipt.body.state, 'failed');
 });
 
 test('remote PDF and mainstream office attachments reach the computer unchanged', async context => {

@@ -4,6 +4,7 @@ const test = require('node:test'), assert = require('node:assert/strict');
 const fs = require('node:fs'), os = require('node:os'), path = require('node:path');
 const { EventEmitter } = require('node:events'), { PassThrough } = require('node:stream');
 const TOML = require('smol-toml');
+const { CodexSession } = require('../src/engines/codex-session');
 const { CodexTitles, codexTitleSpec } = require('../src/engines/codex-title');
 const { GrokSession } = require('../src/engines/grok-session');
 const { InteractiveCli } = require('../src/engines/antigravity/cli-interactive.cjs');
@@ -75,6 +76,19 @@ test('Codex deduplicates auxiliary title requests, handles early completion, and
   assert.equal(fs.existsSync(start.params.cwd), false, 'Remove the private title workspace');
 });
 
+test('Codex can request a title while the owning thread is still opening', async t => {
+  const { titles, messages } = codexFixture(t);
+  const session = new CodexSession({ settings: { connection: 'subscription' }, titles });
+  const startup = Promise.withResolvers();
+  session.ready = startup.promise;
+  const pending = session.generateTitle('用户请求');
+  assert.deepEqual(messages, []);
+
+  session.sessionId = 'main-thread';
+  startup.resolve();
+  assert.equal(await pending, '原生订阅标题');
+});
+
 test('a stalled Codex title request times out and closes its private process', async t => {
   const { titles, proc } = codexFixture(t, { complete: false, timeoutMs: 25 });
   await assert.rejects(titles.generate('标题'), /timed out/);
@@ -93,15 +107,21 @@ test('closing the owner session cancels pending Codex title work', async t => {
 
 test('Grok waits for its own native generated title and ignores previews, other sessions and manual titles', async t => {
   const home = temporary(t), sessionId = '00000000-0000-4000-8000-000000000001';
-  const session = Object.assign(Object.create(GrokSession.prototype), { spec: { env: { GROK_HOME: home } }, sessionId });
+  const startup = Promise.withResolvers();
+  const session = Object.assign(Object.create(GrokSession.prototype), {
+    spec: { env: { GROK_HOME: home } }, ready: startup.promise, running: true,
+  });
   const dir = path.join(home, 'sessions', 'workspace', sessionId); fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(path.join(dir, 'updates.jsonl'), '');
   const file = path.join(dir, 'summary.json');
   fs.writeFileSync(file, JSON.stringify({ session_summary: 'Provisional user message' }));
   let waits = 0;
-  assert.equal(await session.generateTitle('', { attempts: 2, delay: async () => {
+  const pending = session.generateTitle('', { attempts: 2, delay: async () => {
     waits++; fs.writeFileSync(file, JSON.stringify({ generated_title: 'Grok 模型标题', title_is_manual: false }));
-  } }), 'Grok 模型标题');
+  } });
+  session.sessionId = sessionId;
+  startup.resolve();
+  assert.equal(await pending, 'Grok 模型标题');
   assert.equal(waits, 1);
   fs.writeFileSync(file, JSON.stringify({ generated_title: 'Manual name', title_is_manual: true }));
   assert.equal(await session.generateTitle('', { attempts: 1 }), '');
@@ -109,15 +129,19 @@ test('Grok waits for its own native generated title and ignores previews, other 
   assert.equal(await session.generateTitle('', { attempts: 1 }), '');
 });
 
-test('Antigravity title reads only the root native summary and waits past the startup placeholder', async () => {
+test('Antigravity only returns root titles that are neither placeholders nor prompt previews', async () => {
   const bridge = new InteractiveCli({}, () => {}); bridge.session = { id: 'agy-test', conversationId: 'root' };
+  bridge.prepare = async () => {};
+  bridge.firstTitleInput = 'hidden harness instructions investigate session switching during compaction';
+  const prompt = 'Investigate session switching during compaction';
+  const summaries = ['Starting a Conversation', 'Investigate session switching…', 'Hidden harness instructions…', 'Google 原生标题'];
   let reads = 0;
   bridge.rpc = async method => {
-    assert.equal(method, 'GetAllCascadeTrajectories'); reads++;
-    return { trajectorySummaries: { root: { summary: reads === 1 ? 'Starting a Conversation' : 'Google 原生标题' }, child: { summary: 'Wrong child title' } } };
+    assert.equal(method, 'GetAllCascadeTrajectories');
+    return { trajectorySummaries: { root: { summary: summaries[Math.min(reads++, summaries.length - 1)] }, child: { summary: 'Wrong child title' } } };
   };
-  assert.deepEqual(await bridge.generateTitle({ attempts: 2, delayTitle: async () => {} }), { title: 'Google 原生标题' });
-  assert.equal(reads, 2);
+  assert.deepEqual(await bridge.generateTitle({ prompt, attempts: 4, delayTitle: async () => {} }), { title: 'Google 原生标题' });
+  assert.equal(reads, 4);
   bridge.turn = { running: true };
   assert.deepEqual(await bridge.generateTitle(), { title: 'Google 原生标题' }, 'Metadata remains available if the user has already started the next turn');
   await assert.rejects(bridge.handle('session/camellia_generate_title', { sessionId: 'different-session' }), /identity mismatch/);
@@ -126,11 +150,18 @@ test('Antigravity title reads only the root native summary and waits past the st
 });
 
 test('Antigravity subscription title requests use ACP without appending a user turn', async () => {
-  const session = Object.assign(Object.create(AntigravitySession.prototype), { settings: { connection: 'subscription' }, sessionId: 'agy-test' });
+  const startup = Promise.withResolvers();
+  const session = Object.assign(Object.create(AntigravitySession.prototype), {
+    settings: { connection: 'subscription' }, ready: startup.promise, running: true,
+  });
   const calls = [];
   session.request = async (method, params) => { calls.push({ method, params }); return { title: '原生标题' }; };
-  assert.equal(await session.generateTitle(), '原生标题');
-  assert.deepEqual(calls, [{ method: 'session/camellia_generate_title', params: { sessionId: 'agy-test' } }]);
+  const pending = session.generateTitle('Visible request');
+  assert.deepEqual(calls, []);
+  session.sessionId = 'agy-test';
+  startup.resolve();
+  assert.equal(await pending, '原生标题');
+  assert.deepEqual(calls, [{ method: 'session/camellia_generate_title', params: { sessionId: 'agy-test', prompt: 'Visible request' } }]);
   session.dead = true; assert.equal(await session.generateTitle(), '');
 });
 

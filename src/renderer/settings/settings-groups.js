@@ -132,7 +132,7 @@
       ['quick-switch', [() => get('quickSwitchModels')?.previousElementSibling, '#quickSwitchModels']],
       ['model-sessions', [() => get('conversationSessionTtl')?.closest('.section')]],
       ['review-defaults', ['#reviewDefaultsHeading', '#reviewDefaultEngine', '#reviewDefaultMode',
-        '#reviewDefaultMaxTokens', '#reviewDefaultAgentConsent', '#reviewDefaultGate', '#reviewDefaultTurnGate']],
+        '#reviewDefaultAgentConsent']],
     ]);
     arrange('networkPage', [
       ['connection-mode', ['#networkMode', '#systemProxyStatus']],

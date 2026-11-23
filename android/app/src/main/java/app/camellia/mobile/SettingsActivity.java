@@ -19,6 +19,8 @@ import android.widget.TextView;
 import org.json.JSONArray;
 import org.json.JSONObject;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.UUID;
 
@@ -42,6 +44,27 @@ public final class SettingsActivity extends Activity {
     private String storageError = "";
     private View tabletCategories;
     private int tabletCategoryScroll;
+    private List<DownloadedArtifact> downloadedArtifacts;
+    private final LinkedHashSet<String> selectedDownloadedArtifacts = new LinkedHashSet<>();
+    private final LinkedHashMap<String, DownloadedSelection> downloadedSelections = new LinkedHashMap<>();
+    private LinearLayout downloadedSelectAll;
+    private LinearLayout downloadedDeleteSelected;
+    private int downloadedArtifactsTicket;
+    private boolean downloadedDeleting;
+
+    private static final class DownloadedSelection {
+        final SelectionMark mark;
+        final LinearLayout row;
+        final String description;
+        final String id;
+
+        DownloadedSelection(SelectionMark mark, LinearLayout row, String description, String id) {
+            this.mark = mark;
+            this.row = row;
+            this.description = description;
+            this.id = id;
+        }
+    }
 
     @Override protected void attachBaseContext(Context context) { super.attachBaseContext(MobilePreferences.wrap(context)); }
 
@@ -306,6 +329,7 @@ public final class SettingsActivity extends Activity {
         } else if (section.equals("general")) general();
         else if (section.equals("reading")) reading();
         else if (section.equals("notifications")) notifications();
+        else if (section.equals("downloads")) downloadedArtifactsPage();
         else if (section.equals("archived")) archived(); else providers();
     }
 
@@ -770,6 +794,305 @@ public final class SettingsActivity extends Activity {
                     showStatus(tr("已复制配置（含密钥），请妥善保管。", "Configuration copied (includes keys). Keep it private."));
                 } catch (Exception error) { failure(error); }
             }).show();
+    }
+
+    private void downloadedArtifactsPage() {
+        downloadedArtifacts = null;
+        downloadedDeleting = false;
+        selectedDownloadedArtifacts.clear();
+        downloadedSelections.clear();
+        downloadedSelectAll = null;
+        downloadedDeleteSelected = null;
+        shell(tr("已下载产物", "Downloaded files"));
+        LinearLayout loading = settingsStyle.group(content, "");
+        LinearLayout row = settingsStyle.info(loading, tr("正在读取已下载产物…", "Loading downloaded files…"),
+            tr("正在核对文件是否仍在手机中。", "Checking whether each file is still on this phone."));
+        row.setTag("downloadedArtifactsLoading");
+        settingsStyle.note(content, tr("只显示通过 Camellia 保存且仍保留在下载记录中的文件。",
+            "Lists files saved through Camellia that are still in its download records."));
+        loadDownloadedArtifacts();
+    }
+
+    private void loadDownloadedArtifacts() {
+        int ticket = ++downloadedArtifactsTicket;
+        worker.execute(() -> {
+            try {
+                List<DownloadedArtifact> files = DownloadedArtifact.list(this);
+                runOnUiThread(() -> {
+                    if (isDestroyed() || ticket != downloadedArtifactsTicket || !section.equals("downloads")) return;
+                    downloadedArtifacts = files;
+                    LinkedHashSet<String> availableIds = new LinkedHashSet<>();
+                    for (DownloadedArtifact file : files) availableIds.add(file.id);
+                    selectedDownloadedArtifacts.retainAll(availableIds);
+                    showDownloadedArtifacts();
+                });
+            } catch (Exception error) {
+                runOnUiThread(() -> {
+                    if (isDestroyed() || ticket != downloadedArtifactsTicket || !section.equals("downloads")) return;
+                    shell(tr("已下载产物", "Downloaded files"));
+                    settingsStyle.emptyState(content, tr("无法读取已下载产物", "Could not load downloaded files"),
+                        tr("下载记录仍保留在手机中，请稍后重试。", "The download records are still on this phone. Try again."),
+                        tr("重试", "Retry"), this::downloadedArtifactsPage);
+                    showStatus(error.getMessage() == null ? tr("无法读取下载记录。", "Could not read download records.")
+                        : error.getMessage(), false);
+                });
+            }
+        });
+    }
+
+    private void showDownloadedArtifacts() {
+        shell(tr("已下载产物", "Downloaded files"));
+        if (downloadedArtifacts == null || downloadedArtifacts.isEmpty()) {
+            settingsStyle.emptyState(content, tr("暂无已下载产物", "No downloaded files"),
+                tr("从远程会话或讨论下载的文件会出现在这里，可随时打开或清理。",
+                    "Files saved from remote chats or discussions appear here, ready to open or remove."), "", null);
+            return;
+        }
+        int total = downloadedArtifacts.size();
+        settingsStyle.note(content, tr("共 " + total + " 个文件。点按文件名即可勾选；删除会同时移除手机中的文件和下载记录。",
+            (total == 1 ? "1 file" : total + " files")
+                + ". Tap a file name to select it; deleting removes both the file and its download record."));
+        LinearLayout manage = settingsStyle.group(content, tr("批量管理", "Bulk actions"));
+        downloadedSelectAll = settingsStyle.action(manage, tr("全选", "Select all"),
+            tr("点按文件名也可勾选", "You can also tap a file name"),
+            "downloadedArtifactsSelectAll", false, this::toggleAllDownloadedArtifacts);
+        downloadedDeleteSelected = settingsStyle.action(manage, tr("删除所选", "Delete selected"),
+            tr("同时删除手机中的文件和下载记录", "Deletes both files and download records"),
+            "downloadedArtifactsDeleteSelected", true, this::deleteSelectedDownloadedArtifacts);
+
+        downloadedSelections.clear();
+        LinearLayout list = column();
+        list.setTag("downloadedArtifactList");
+        content.addView(list);
+        for (int index = 0; index < downloadedArtifacts.size(); index++) {
+            final int position = index;
+            final DownloadedArtifact artifact = downloadedArtifacts.get(index);
+            LinearLayout card = settingsStyle.group(list, "");
+            card.setTag("downloadedArtifact:" + position);
+            String meta = downloadedArtifactMeta(artifact);
+            String description = artifact.name + ", " + meta;
+            LinearLayout summary = settingsStyle.info(card, artifact.name, meta);
+            summary.setTag("downloadedArtifactSelect:" + position);
+            summary.setFocusable(true);
+            summary.setBackground(new android.graphics.drawable.RippleDrawable(
+                android.content.res.ColorStateList.valueOf(Palette.RIPPLE_ON_CARD), null,
+                new android.graphics.drawable.ColorDrawable(android.graphics.Color.WHITE)));
+            summary.setAccessibilityDelegate(new View.AccessibilityDelegate() {
+                @Override public void onInitializeAccessibilityNodeInfo(View view, android.view.accessibility.AccessibilityNodeInfo info) {
+                    super.onInitializeAccessibilityNodeInfo(view, info);
+                    info.setClassName("android.widget.CheckBox");
+                    info.setCheckable(true);
+                    info.setChecked(view.isSelected());
+                    info.setClickable(true);
+                }
+            });
+            SelectionMark mark = new SelectionMark(this, false);
+            LinearLayout.LayoutParams markParams = new LinearLayout.LayoutParams(dp(22), dp(22));
+            markParams.setMarginEnd(dp(12));
+            summary.addView(mark, 0, markParams);
+            summary.setOnClickListener(view -> toggleDownloadedArtifact(artifact.id));
+            downloadedSelections.put(artifact.id, new DownloadedSelection(mark, summary, description, artifact.id));
+
+            if (artifact.available) {
+                settingsStyle.action(card, tr("打开", "Open"), "", "downloadedArtifactOpen:" + position, false,
+                    () -> ArtifactOpen.open(this, artifact.uri, artifact.name, chinese));
+            }
+            settingsStyle.action(card, artifact.available ? tr("删除", "Delete") : tr("移除记录", "Remove record"),
+                artifact.available ? tr("同时从手机删除文件", "Also removes the file from this phone")
+                    : tr("文件已不可用", "The file is unavailable"),
+                "downloadedArtifactDelete:" + position, artifact.available, () -> {
+                    if (downloadedDeleting) return;
+                    if (artifact.available) {
+                        confirmDeleteDownloadedArtifacts(java.util.Collections.singletonList(artifact));
+                    } else {
+                        confirmForgetDownloadedArtifact(artifact);
+                    }
+                });
+        }
+        updateDownloadedArtifactSelection();
+        settingsStyle.note(content, tr("在系统文件管理器中删除的文件会显示为不可用，可单独移除记录。无法访问的文件可能无法由 Camellia 删除。",
+            "Files deleted outside Camellia appear as unavailable and can be removed individually. Files without access may not be deletable from Camellia."));
+    }
+
+    private String downloadedArtifactMeta(DownloadedArtifact artifact) {
+        int dot = artifact.name.lastIndexOf('.');
+        String kind = dot >= 0 && dot < artifact.name.length() - 1
+            ? artifact.name.substring(dot + 1).toUpperCase(java.util.Locale.ROOT) : tr("文件类型", "File");
+        if (kind.length() > 10) kind = tr("文件类型", "File");
+        String size = artifact.size < 0 ? tr("大小未知", "Unknown size")
+            : android.text.format.Formatter.formatFileSize(this, artifact.size);
+        String when = artifact.completedAt <= 0 ? "" : java.text.DateFormat.getDateTimeInstance(
+            java.text.DateFormat.MEDIUM, java.text.DateFormat.SHORT).format(new java.util.Date(artifact.completedAt));
+        String meta = kind + " · " + size + (when.isEmpty() ? "" : " · " + when);
+        if (!artifact.available) meta += tr(" · 文件不可用", " · Unavailable");
+        return meta;
+    }
+
+    private void toggleDownloadedArtifact(String id) {
+        if (downloadedDeleting) return;
+        if (!selectedDownloadedArtifacts.remove(id)) selectedDownloadedArtifacts.add(id);
+        updateDownloadedArtifactSelection();
+    }
+
+    private void toggleAllDownloadedArtifacts() {
+        if (downloadedArtifacts == null || downloadedDeleting) return;
+        if (selectedDownloadedArtifacts.size() == downloadedArtifacts.size()) {
+            selectedDownloadedArtifacts.clear();
+        } else {
+            for (DownloadedArtifact artifact : downloadedArtifacts) selectedDownloadedArtifacts.add(artifact.id);
+        }
+        updateDownloadedArtifactSelection();
+    }
+
+    private void updateDownloadedArtifactSelection() {
+        int total = downloadedArtifacts == null ? 0 : downloadedArtifacts.size();
+        int selected = selectedDownloadedArtifacts.size();
+        boolean all = total > 0 && selected == total;
+        settingsStyle.updateAction(downloadedSelectAll,
+            all ? tr("取消全选", "Clear selection") : tr("全选", "Select all"),
+            tr("已选择 " + selected + " / " + total + " 个文件", "Selected " + selected + " of " + total),
+            !downloadedDeleting);
+        settingsStyle.updateAction(downloadedDeleteSelected,
+            tr("删除所选 (" + selected + ")", "Delete selected (" + selected + ")"),
+            selected == 0 ? tr("先勾选要删除的文件", "Select files to delete")
+                : tr("同时删除手机中的文件和下载记录", "Deletes both files and download records"),
+            !downloadedDeleting && selected > 0);
+        for (DownloadedSelection selection : downloadedSelections.values()) {
+            boolean checked = selectedDownloadedArtifacts.contains(selection.id);
+            selection.mark.setChecked(checked);
+            selection.row.setSelected(checked);
+            selection.row.setContentDescription(selection.description
+                + (checked ? tr("，已选择", ", selected") : tr("，未选择", ", not selected")));
+        }
+    }
+
+    private void deleteSelectedDownloadedArtifacts() {
+        if (downloadedDeleting || downloadedArtifacts == null || selectedDownloadedArtifacts.isEmpty()) return;
+        List<DownloadedArtifact> selected = new ArrayList<>();
+        for (DownloadedArtifact artifact : downloadedArtifacts)
+            if (selectedDownloadedArtifacts.contains(artifact.id)) selected.add(artifact);
+        if (!selected.isEmpty()) confirmDeleteDownloadedArtifacts(selected);
+    }
+
+    private void confirmDeleteDownloadedArtifacts(List<DownloadedArtifact> files) {
+        if (files.isEmpty()) return;
+        int unavailable = 0;
+        for (DownloadedArtifact file : files) if (!file.available) unavailable++;
+        boolean single = files.size() == 1;
+        String title;
+        if (single) title = unavailable == 0 ? tr("删除此文件？", "Delete this file?")
+            : tr("移除下载记录？", "Remove download record?");
+        else if (unavailable == files.size()) title = tr("移除选中的记录？", "Remove selected records?");
+        else title = tr("删除选中的 " + files.size() + " 项？", "Delete " + files.size() + " selected items?");
+        String message;
+        if (single && unavailable == 0) {
+            message = tr("文件和下载记录将从这台手机中移除，无法恢复。",
+                "The file and its download record will be removed from this phone. This cannot be undone.");
+        } else if (unavailable == files.size()) {
+            message = tr("这些文件已不可用，只会移除 Camellia 中的下载记录。",
+                "These files are unavailable. Only their Camellia download records will be removed.");
+        } else {
+            message = tr("将删除手机中可访问的文件，并移除所有选中的下载记录，无法恢复。",
+                "Accessible files will be deleted and all selected download records removed. This cannot be undone.");
+        }
+        String action = unavailable == files.size() ? tr("移除", "Remove") : tr("删除", "Delete");
+        boolean unavailableOnly = unavailable == files.size();
+        dialog = new CamelliaDialog.Builder(this).setTitle(title).setMessage(message)
+            .setNegativeButton(tr("取消", "Cancel"), null)
+            .setPositiveButton(action, (prompt, which) -> {
+                if (unavailableOnly) forgetDownloadedArtifacts(files); else deleteDownloadedArtifacts(files);
+            }).show();
+    }
+
+    private void confirmForgetDownloadedArtifact(DownloadedArtifact artifact) {
+        String message = artifact.missing
+            ? tr("文件已不在手机中。移除这条记录不会影响电脑端文件。", "The file is no longer on this phone. Removing this record does not affect the computer.")
+            : tr("文件当前无法访问，Camellia 无法删除文件本身。移除记录后，此文件将不再显示。",
+                "Camellia cannot access this file, so it cannot delete the file itself. Removing the record hides it from this list.");
+        dialog = new CamelliaDialog.Builder(this).setTitle(tr("移除下载记录？", "Remove download record?"))
+            .setMessage(message).setNegativeButton(tr("取消", "Cancel"), null)
+            .setPositiveButton(tr("移除", "Remove"), (prompt, which) ->
+                forgetDownloadedArtifacts(java.util.Collections.singletonList(artifact))).show();
+    }
+
+    private void deleteDownloadedArtifacts(List<DownloadedArtifact> files) {
+        if (downloadedDeleting) return;
+        downloadedDeleting = true;
+        updateDownloadedArtifactSelection();
+        worker.execute(() -> {
+            DownloadedArtifact.DeleteResult result = null;
+            Exception failure = null;
+            try {
+                result = DownloadedArtifact.delete(this, files);
+            } catch (Exception error) {
+                failure = error;
+            }
+            DownloadedArtifact.DeleteResult completed = result;
+            Exception error = failure;
+            runOnUiThread(() -> {
+                downloadedDeleting = false;
+                if (isDestroyed()) return;
+                if (!section.equals("downloads")) return;
+                if (error != null) {
+                    updateDownloadedArtifactSelection();
+                    showStatus(error.getMessage() == null ? tr("无法删除文件，请稍后重试。", "Could not delete the files. Try again.")
+                        : error.getMessage(), false);
+                    return;
+                }
+                LinkedHashSet<String> removed = new LinkedHashSet<>(completed.removed);
+                selectedDownloadedArtifacts.removeAll(removed);
+                List<DownloadedArtifact> remaining = new ArrayList<>();
+                for (DownloadedArtifact artifact : downloadedArtifacts == null ? List.<DownloadedArtifact>of() : downloadedArtifacts)
+                    if (!removed.contains(artifact.id)) remaining.add(artifact);
+                downloadedArtifacts = remaining;
+                showDownloadedArtifacts();
+                showStatus(downloadedDeletionMessage(completed), completed.failed == 0);
+            });
+        });
+    }
+
+    private String downloadedDeletionMessage(DownloadedArtifact.DeleteResult result) {
+        if (result.failed == 0)
+            return tr("已删除或移除 " + result.deleted + " 项下载。", "Deleted or removed " + result.deleted + " downloads.");
+        if (result.deleted == 0)
+            return tr("未能删除文件。请检查系统文件权限后重试。", "Could not delete the files. Check file permissions and try again.");
+        return tr("已清理 " + result.deleted + " 项，另有 " + result.failed + " 项未能删除。请检查权限后重试。",
+            "Cleaned up " + result.deleted + " downloads; " + result.failed + " could not be removed. Check permissions and try again.");
+    }
+
+    private void forgetDownloadedArtifacts(List<DownloadedArtifact> files) {
+        if (downloadedDeleting) return;
+        downloadedDeleting = true;
+        updateDownloadedArtifactSelection();
+        worker.execute(() -> {
+            Exception failure = null;
+            try {
+                DownloadedArtifact.forget(this, files);
+            } catch (Exception error) {
+                failure = error;
+            }
+            Exception error = failure;
+            runOnUiThread(() -> {
+                downloadedDeleting = false;
+                if (isDestroyed()) return;
+                if (!section.equals("downloads")) return;
+                if (error != null) {
+                    updateDownloadedArtifactSelection();
+                    showStatus(error.getMessage() == null ? tr("无法移除下载记录，请稍后重试。", "Could not remove the record. Try again.")
+                        : error.getMessage(), false);
+                    return;
+                }
+                LinkedHashSet<String> removed = new LinkedHashSet<>();
+                for (DownloadedArtifact file : files) removed.add(file.id);
+                selectedDownloadedArtifacts.removeAll(removed);
+                List<DownloadedArtifact> remaining = new ArrayList<>();
+                for (DownloadedArtifact artifact : downloadedArtifacts == null ? List.<DownloadedArtifact>of() : downloadedArtifacts)
+                    if (!removed.contains(artifact.id)) remaining.add(artifact);
+                downloadedArtifacts = remaining;
+                showDownloadedArtifacts();
+                showStatus(tr("已移除下载记录。", "Download record removed."));
+            });
+        });
     }
 
     private void archived() throws Exception {

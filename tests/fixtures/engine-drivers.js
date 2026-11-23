@@ -204,9 +204,9 @@ function createEngineDrivers({ root, dataDir, loadConfig, saveConfig, onEvent, g
     shutdown: async () => { await grok.shutdown(); await grokAccount.shutdown(); } }, codex: { sessions: codex.sessions, history: codex.history, settings: codex.settings, saveSettings: codex.saveSettings, ensure: codex.ensureSession,
     subscriptionAccounts: () => codex.accountState(),
     resetCredits: { preview: payload => codex.handlers['account-reset-preview'](payload), consume: payload => codex.handlers['account-reset-consume'](payload) },
-    generateTitle: codex.generateTitle, forkNative: codex.forkNative, nativeCompaction: true, nativeEditing: true, shutdown: () => codex.shutdown() }, kimi, claude };
+    generateTitle: codex.generateTitle, titleDuringTurn: true, forkNative: codex.forkNative, nativeCompaction: true, nativeEditing: true, shutdown: () => codex.shutdown() }, kimi, claude };
   drivers.antigravity = { sessions: antigravity.sessions, history: antigravity.history, settings: antigravity.settings, saveSettings: antigravity.saveSettings,
-    ensure: antigravity.ensureSession, generateTitle: antigravity.generateTitle, forkNative: antigravity.forkNative, nativeAutoCompaction: true, shutdown: () => antigravity.shutdown() };
+    ensure: antigravity.ensureSession, generateTitle: antigravity.generateTitle, titleDuringTurn: true, forkNative: antigravity.forkNative, nativeAutoCompaction: true, shutdown: () => antigravity.shutdown() };
   require('../../src/engines/discussions/native-access').installDiscussionGuards({ dataDir, drivers: {
     codex, antigravity, dsh, grok,
     claude: { sessions: claudePool, history: claudeHistory }, kimi: { sessions: kimiPool, history: kimiHistory },

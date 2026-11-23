@@ -14,6 +14,8 @@ import android.widget.LinearLayout;
 import android.widget.TextView;
 
 final class SettingsStyle {
+    private static final String ACTION_TITLE = "settingsActionTitle";
+    private static final String ACTION_DESCRIPTION = "settingsActionDescription";
     final int background, card, ink, secondary, divider, error, field, fieldBorder, accent;
     private final Context context;
     private final Palette palette;
@@ -94,6 +96,16 @@ final class SettingsStyle {
     }
 
     void sheetWindow(android.view.Window window, View panel) {
+        sheetWindow(window, panel, false);
+    }
+
+    /** A content sheet keeps one stable height instead of shrinking to fit short content. */
+    void contentSheetWindow(android.view.Window window, View panel) {
+        sheetWindow(window, panel, true);
+    }
+
+    void sheetWindow(android.view.Window window, View panel, boolean fillContent) {
+        DisplayRefreshRate.request(window);
         window.clearFlags(android.view.WindowManager.LayoutParams.FLAG_ALT_FOCUSABLE_IM);
         window.setBackgroundDrawable(new android.graphics.drawable.ColorDrawable(Color.TRANSPARENT));
         window.addFlags(android.view.WindowManager.LayoutParams.FLAG_DIM_BEHIND); window.setDimAmount(.28f);
@@ -115,8 +127,10 @@ final class SettingsStyle {
             android.graphics.Rect visible = new android.graphics.Rect(); decor.getWindowVisibleDisplayFrame(visible);
             int available = visible.height() > 0 ? visible.height() : context.getResources().getDisplayMetrics().heightPixels;
             int limit = Math.max(dp(160), available - dp(32));
-            panel.measure(View.MeasureSpec.makeMeasureSpec(currentWidth, View.MeasureSpec.EXACTLY), View.MeasureSpec.makeMeasureSpec(limit, View.MeasureSpec.AT_MOST));
-            int height = Math.min(limit, panel.getMeasuredHeight());
+            int target = fillContent ? contentSheetHeight(available) : limit;
+            panel.measure(View.MeasureSpec.makeMeasureSpec(currentWidth, View.MeasureSpec.EXACTLY),
+                View.MeasureSpec.makeMeasureSpec(target, fillContent ? View.MeasureSpec.EXACTLY : View.MeasureSpec.AT_MOST));
+            int height = fillContent ? target : Math.min(limit, panel.getMeasuredHeight());
             var updated = window.getAttributes();
             if (updated.height != height || updated.width != currentWidth) {
                 updated.width = currentWidth;
@@ -126,6 +140,17 @@ final class SettingsStyle {
         };
         panel.setOnApplyWindowInsetsListener((view, insets) -> { view.post(resize); return insets; });
         panel.post(resize);
+    }
+
+    int contentSheetHeight(int available) {
+        return contentSheetHeight(available, context.getResources().getDisplayMetrics().density);
+    }
+
+    static int contentSheetHeight(int available, float density) {
+        int gap = Math.max(160, Math.round(32 * density));
+        int minimum = Math.max(160, Math.round(420 * density));
+        int limit = Math.max(gap, available - gap);
+        return Math.min(limit, Math.max(minimum, Math.round(available * .58f)));
     }
 
     int sheetWidth() {
@@ -390,15 +415,16 @@ final class SettingsStyle {
         row.setGravity(Gravity.CENTER_VERTICAL);
         row.setMinimumHeight(dp(56)); row.setPadding(dp(14), dp(10), dp(12), dp(10));
         LinearLayout copy = new LinearLayout(context); copy.setOrientation(LinearLayout.VERTICAL);
-        TextView heading = new TextView(context); heading.setText(title); heading.setTextSize(Palette.TEXT_ROW_STRONG); heading.setTextColor(titleColor); copy.addView(heading);
+        TextView heading = new TextView(context); heading.setText(title); heading.setTextSize(Palette.TEXT_ROW_STRONG); heading.setTextColor(titleColor);
+        heading.setTag(ACTION_TITLE); copy.addView(heading);
         if (!description.isEmpty()) {
             TextView note = new TextView(context); note.setText(description); note.setTextSize(Palette.TEXT_BODY); note.setTextColor(secondary);
-            note.setPadding(0, dp(2), 0, 0); note.setLineSpacing(dp(3), 1); copy.addView(note);
+            note.setTag(ACTION_DESCRIPTION); note.setPadding(0, dp(2), 0, 0); note.setLineSpacing(dp(3), 1); copy.addView(note);
         }
         row.addView(copy, new LinearLayout.LayoutParams(0, -2, 1)); group.addView(row, new LinearLayout.LayoutParams(-1, -2)); return row;
     }
 
-    void info(LinearLayout group, String title, String description) { detailRow(group, title, description, ink); }
+    LinearLayout info(LinearLayout group, String title, String description) { return detailRow(group, title, description, ink); }
 
     /**
      * A row that opens a picker: the setting's name on the first line, the
@@ -581,7 +607,7 @@ final class SettingsStyle {
         return button;
     }
 
-    void action(LinearLayout group, String title, String description, String tag, boolean destructive, Runnable action) {
+    LinearLayout action(LinearLayout group, String title, String description, String tag, boolean destructive, Runnable action) {
         int color = destructive ? error : ink;
         LinearLayout row = detailRow(group, title, description, color); row.setTag(tag); row.setFocusable(true);
         row.setBackground(new RippleDrawable(ColorStateList.valueOf(Palette.RIPPLE_ON_CARD), null, new android.graphics.drawable.ColorDrawable(Color.WHITE)));
@@ -589,6 +615,24 @@ final class SettingsStyle {
         for (int index = 0; index < row.getChildCount(); index++) row.getChildAt(index).setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS);
         ImageView arrow = new ImageView(context); arrow.setImageDrawable(new LineIcon("right", secondary)); arrow.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
         LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(dp(18), dp(18)); params.setMarginStart(dp(8)); row.addView(arrow, params);
+        return row;
+    }
+
+    /** Updates a dynamic action row without replacing it, so selection keeps its scroll position. */
+    void updateAction(LinearLayout row, String title, String description, boolean enabled) {
+        if (row == null) return;
+        View titleView = row.findViewWithTag(ACTION_TITLE);
+        if (titleView instanceof TextView && !title.contentEquals(((TextView) titleView).getText())) {
+            ((TextView) titleView).setText(title);
+        }
+        View descriptionView = row.findViewWithTag(ACTION_DESCRIPTION);
+        if (descriptionView instanceof TextView) {
+            ((TextView) descriptionView).setText(description);
+            descriptionView.setVisibility(description.isEmpty() ? View.GONE : View.VISIBLE);
+        }
+        row.setContentDescription(description.isEmpty() ? title : title + ", " + description);
+        row.setEnabled(enabled);
+        row.setAlpha(enabled ? 1f : .45f);
     }
 
     android.widget.Switch toggle(LinearLayout group, String title, String description, String tag, boolean checked,

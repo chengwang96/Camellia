@@ -29,10 +29,13 @@ class DiscussionService {
     this.assets = new DiscussionAssets(this.root);
     this.manager = manager || new DiscussionManager({ dir: this.root, onError });
     this.registry = registry; this.production = production; this.adapters = adapters || {};
-    this.pendingStarts = new Map();
     this.memberChecks = new Map();
     this.verificationErrors = new Map();
     this.scheduler = new DiscussionScheduler({ manager: this.manager, registry, adapters: this.adapters,
+      deferUnavailable: (id, _delivery, participant) => {
+        const check = this.memberChecks.get(participant?.id);
+        return check?.id === id;
+      },
       prepareInput: (state, delivery, signal, capability) => {
         const plan = prepareTextInput(state, delivery, signal, capability);
         if (plan.attachments?.length) this.assets.resolve(state.id, plan.attachments, 256);
@@ -69,15 +72,16 @@ class DiscussionService {
   view(state) {
     // The renderer needs public discussion state, not native IDs, directories,
     // generated input plans, account homes, launch credentials or ownership records.
+    const checks = [...this.memberChecks.values()].filter(row => row.id === state.id);
     return { id: state.id, title: state.title, pinned: Boolean(state.pinned), revision: state.revision, seq: state.seq, stopping: Boolean(state.stopPending),
       lastMessageAt: state.lastMessageAt || 0,
       cwd: state.cwd, permissionMode: state.permissionMode || 'ask', permissions: this.scheduler.permissions(state.id),
-      preparing: [...this.pendingStarts.values()].some(row => row.id === state.id),
-      verifying: [...this.pendingStarts.values()].some(row => row.id === state.id && row.verificationIds.length > 0),
+      preparing: false,
+      verifying: checks.length > 0,
       participants: state.participants.map(p => ({ id: p.id, name: p.name, engine: p.engine, connection: p.connection,
         model: p.model, accountLabel: p.accountLabel || '', identityPrompt: p.identityPrompt || '', thinking: p.thinking, contextWindow: p.contextWindow, removed: p.removed,
         removalPending: Boolean(p.removalPending), recoveryRequired: p.retiredSessions.some(s => s.recoveryRequired),
-        verifying: [...this.pendingStarts.values()].some(row => row.id === state.id && row.verificationIds.includes(p.id)),
+        verifying: checks.some(row => row.participantId === p.id),
         verificationError: this.verificationErrors.get(p.id) || null,
         coveredThroughSeq: p.session.coveredThroughSeq, capability: this.capability(p) })),
       messages: state.messages.map(m => ({ id: m.id, seq: m.seq, role: m.role, speakerId: m.speakerId,
@@ -99,7 +103,6 @@ class DiscussionService {
   }
   busy(id, state = this.manager.get(id)) {
     return state.stopPending || state.deliveries.some(d => OPEN.has(d.status))
-      || [...this.pendingStarts.values()].some(row => row.id === id)
       || [...this.memberChecks.values()].some(row => row.id === id)
       || [...this.scheduler.runs.values()].some(run => run.identity.discussionId === id)
       || state.participants.some(p => this.production?.checks.has(bindingFingerprint(p)) || p.retiredSessions.some(s => s.recoveryRequired));
@@ -117,16 +120,11 @@ class DiscussionService {
     return this.manager.configureMember(id, member.id, { accountRef, accountLabel: row.accountLabel,
       contextWindow: member.contextWindow || row.binding.contextWindow });
   }
-  async prepareMembers(id, participantIds, dispatch) {
-    // Adding a member, explicit verification and sending can check connections.
-    // Loading a saved group never starts a check. Keep the user's text
-    // uncommitted until every selected connection can actually answer.
+  async resolveMembers(id, participantIds) {
     const assertSelectedAvailable = () => {
       for (const member of this.manager.get(id).participants.filter(p => participantIds.includes(p.id) && !p.removed)) this.assertAvailable(member.engine);
     };
     assertSelectedAvailable();
-    if (!this.production || !participantIds.length) return dispatch();
-    this.production.refresh();
     const readMember = participantId => {
       const member = this.manager.get(id).participants.find(p => p.id === participantId && !p.removed);
       if (!member) throw new Error('Member not found');
@@ -135,54 +133,95 @@ class DiscussionService {
       return member;
     };
     const selected = participantIds.map(readMember);
+    this.production?.refresh();
+    if (!this.production || !participantIds.length) return selected;
     if (selected.every(member => member.contextWindow && member.contextWindow !== UNKNOWN_CONTEXT_BUDGET
       && !(member.connection === 'api' && apiProviderRef(member.accountRef) && apiProviderRef(member.accountRef) !== member.accountRef)
-      && this.capability(member).available)) return dispatch();
-    const pending = { id, participantIds: [...participantIds], cancelled: false,
-      verificationIds: selected.filter(member => !this.capability(member).available).map(member => member.id) };
-    const token = randomUUID(); this.pendingStarts.set(token, pending); this.publish(id);
-    try {
-      this.production.refresh();
-      const catalog = await this.getCatalog();
-      const members = participantIds.map(participantId => {
-        let member = readMember(participantId);
-        member = this.upgradeApiMember(id, member, catalog);
-        // Refresh legacy missing/default budgets from this exact binding's
-        // current metadata. Preserve explicitly selected non-default limits.
-        if (!member.contextWindow || member.contextWindow === UNKNOWN_CONTEXT_BUDGET) {
-          const row = catalog.find(row => ['engine', 'connection', 'model', 'accountRef', 'thinking']
-            .every(key => (row.binding[key] ?? '') === (member[key] ?? '')) && row.binding.contextWindow > 0);
-          if (row && row.binding.contextWindow !== member.contextWindow)
-            member = this.manager.configureMember(id, member.id, { contextWindow: row.binding.contextWindow });
-        }
-        const capability = this.capability(member);
-        if (!capability.available && !capability.canVerify) throw new Error(capability.detail || 'This connection cannot be verified in this version.');
-        if (!member.contextWindow) throw new Error('Set a context window for this model before sending.');
-        return member;
-      });
-      if (pending.cancelled) throw new Error('Discussion cancelled');
-      pending.verificationIds = members.filter(member => !this.capability(member).available).map(member => member.id);
-      this.publish(id);
-      for (const member of members) {
-        if (pending.cancelled) throw new Error('Discussion cancelled');
-        if (!this.capability(member).available) await this.production.verify(member);
+      && this.capability(member).available)) return selected;
+    const catalog = await this.getCatalog();
+    const members = participantIds.map(participantId => {
+      let member = readMember(participantId);
+      member = this.upgradeApiMember(id, member, catalog);
+      // Refresh legacy missing/default budgets from this exact binding's
+      // current metadata. Preserve explicitly selected non-default limits.
+      if (!member.contextWindow || member.contextWindow === UNKNOWN_CONTEXT_BUDGET) {
+        const row = catalog.find(row => ['engine', 'connection', 'model', 'accountRef', 'thinking']
+          .every(key => (row.binding[key] ?? '') === (member[key] ?? '')) && row.binding.contextWindow > 0);
+        if (row && row.binding.contextWindow !== member.contextWindow)
+          member = this.manager.configureMember(id, member.id, { contextWindow: row.binding.contextWindow });
       }
-      if (pending.cancelled) throw new Error('Discussion cancelled');
-      assertSelectedAvailable();
-      return dispatch();
-    } finally { this.pendingStarts.delete(token); this.publish(id); }
+      const capability = this.capability(member);
+      if (!capability.available && !capability.canVerify) throw new Error(capability.detail || 'This connection cannot be verified in this version.');
+      if (!member.contextWindow) throw new Error('Set a context window for this model before sending.');
+      return member;
+    });
+    assertSelectedAvailable();
+    return members;
+  }
+  async prepareMembers(id, participantIds, dispatch, cancelled = () => false) {
+    const members = await this.resolveMembers(id, participantIds);
+    if (cancelled()) throw new Error('Discussion cancelled');
+    if (this.production && participantIds.length) {
+      for (const member of members) {
+        if (cancelled()) throw new Error('Discussion cancelled');
+        if (!this.capability(member).available) await this.production.verify(member);
+        if (cancelled()) throw new Error('Discussion cancelled');
+      }
+      for (const member of this.manager.get(id).participants.filter(p => participantIds.includes(p.id) && !p.removed)) {
+        this.assertAvailable(member.engine);
+      }
+    }
+    return dispatch();
   }
   verifyMember(id, participantId) {
     const current = this.memberChecks.get(participantId);
-    if (current) return current.promise;
+    if (current?.id === id) return current.promise;
     this.verificationErrors.delete(participantId);
-    const promise = this.prepareMembers(id, [participantId], () => {}).catch(error => {
-      const member = this.manager.get(id).participants.find(p => p.id === participantId);
-      if (member && !member.removed) this.verificationErrors.set(participantId, String(error.message || error));
+    const entry = { id, participantId, cancelled: false };
+    const promise = this.prepareMembers(id, [participantId], () => {}, () => entry.cancelled).catch(error => {
+      let member;
+      try { member = this.manager.get(id).participants.find(p => p.id === participantId); } catch { /* removed group */ }
+      if (!entry.cancelled && member && !member.removed) this.verificationErrors.set(participantId, String(error.message || error));
       throw error;
-    }).finally(() => { this.memberChecks.delete(participantId); this.publish(id); });
-    this.memberChecks.set(participantId, { id, promise });
+    }).finally(() => {
+      if (this.memberChecks.get(participantId) === entry) this.memberChecks.delete(participantId);
+      try { this.publish(id); } catch { /* a deleted group still needs its check drained */ }
+      try { this.scheduler.pump(id); } catch (error) { this.onError(error); }
+    });
+    entry.promise = promise;
+    this.memberChecks.set(participantId, entry);
+    this.publish(id);
     return promise;
+  }
+  startMemberCheck(id, participantId) {
+    const current = this.memberChecks.get(participantId);
+    if (current?.id === id) return current.promise;
+    return this.verifyMember(id, participantId).catch(() => {});
+  }
+  sharedBindingCheck(id, participantId) {
+    let state;
+    try { state = this.manager.get(id); } catch { return false; }
+    const member = state.participants.find(p => p.id === participantId);
+    const key = member && bindingFingerprint(member);
+    return Boolean(key) && [...this.memberChecks.values()].some(check => {
+      if (check.id !== id || check.participantId === participantId || check.cancelled) return false;
+      const other = state.participants.find(p => p.id === check.participantId);
+      return other && bindingFingerprint(other) === key;
+    });
+  }
+  cancelMemberCheck(id, participantId) {
+    const check = this.memberChecks.get(participantId);
+    if (check?.id === id) check.cancelled = true;
+    if (this.sharedBindingCheck(id, participantId)) return;
+    let member;
+    try { member = this.manager.get(id).participants.find(p => p.id === participantId); } catch { /* deleted group */ }
+    if (member) this.production?.cancel?.(bindingFingerprint(member));
+  }
+  cancelUnusedMemberCheck(id, participantId) {
+    let state;
+    try { state = this.manager.get(id); } catch { return; }
+    if (state.deliveries.some(d => d.participantId === participantId && OPEN.has(d.status))) return;
+    this.cancelMemberCheck(id, participantId);
   }
   async call(action, payload = {}, { authorize = () => {} } = {}) {
     input(payload);
@@ -240,9 +279,8 @@ class DiscussionService {
       this.publish(state.id); return { group: this.view(this.manager.get(state.id)), groups: this.list() };
     }
     if (action === 'cancel-member-verification') {
-      for (const pending of this.pendingStarts.values()) if (pending.id === state.id && pending.participantIds.includes(payload.participantId)) pending.cancelled = true;
-      const member = state.participants.find(p => p.id === payload.participantId);
-      if (member) this.production?.cancel(bindingFingerprint(member));
+      this.cancelMemberCheck(state.id, payload.participantId);
+      this.publish(state.id);
       return {};
     }
     if (action === 'permission-response') {
@@ -258,7 +296,7 @@ class DiscussionService {
     } else if (action === 'set-identity') {
       const member = state.participants.find(p => p.id === payload.participantId && !p.removed);
       if (!member) throw new Error('Member not found');
-      if ([...this.pendingStarts.values()].some(row => row.id === state.id && row.participantIds.includes(member.id))
+      if (this.memberChecks.get(member.id)?.id === state.id
         || this.production?.checks.has(bindingFingerprint(member)))
         throw new Error('Wait for this member to finish replying or stop it before editing its identity.');
       this.manager.setIdentityPrompt(state.id, member.id, payload.identityPrompt);
@@ -274,17 +312,9 @@ class DiscussionService {
       if (this.manager.get(state.id).participants.filter(p => !p.removed).length >= 4) throw new Error('A discussion can have at most 4 members.');
       const name = String(payload.name || row.binding.model).trim();
       if (!name || name.length > 80) throw new Error('Use a member name between 1 and 80 characters.');
-      const member = this.manager.addMember(state.id, { ...row.binding, accountLabel: row.accountLabel, name, identityPrompt: payload.identityPrompt });
-      // Save immediately, then check in the background. Verification failures
-      // belong to the saved member and must not turn a successful add into an
-      // error or cause the UI to add the same member again.
-      if (this.production && !row.capability.available && row.capability.canVerify) {
-        void this.verifyMember(state.id, member.id).catch(() => {});
-      }
+      this.manager.addMember(state.id, { ...row.binding, accountLabel: row.accountLabel, name, identityPrompt: payload.identityPrompt });
     } else if (action === 'remove-member') {
-      for (const pending of this.pendingStarts.values()) if (pending.id === state.id && pending.participantIds.includes(payload.participantId)) pending.cancelled = true;
-      const member = state.participants.find(p => p.id === payload.participantId);
-      if (member) this.production?.cancel(bindingFingerprint(member));
+      this.cancelMemberCheck(state.id, payload.participantId);
       await this.scheduler.removeMember(state.id, payload.participantId);
       this.verificationErrors.delete(payload.participantId);
     } else if (action === 'send') {
@@ -298,21 +328,44 @@ class DiscussionService {
         || !['parallel', 'serial'].includes(payload.mode || 'parallel')) throw new Error('Choose the members to mention.');
       if (state.requests.some(r => r.id === payload.requestId)) {
         this.scheduler.enqueue(state.id, { requestId: payload.requestId, text: payload.text, participantIds: payload.participantIds, mode: payload.mode || 'parallel', attachments });
-      } else await this.prepareMembers(state.id, payload.participantIds, () => {
+      } else {
+        const members = await this.resolveMembers(state.id, payload.participantIds);
         authorize();
         const current = this.manager.get(state.id);
         const historyAttachments = [...new Map([...current.messages.flatMap(m => m.attachments || []), ...attachments].map(a => [a.id, a])).values()];
         this.assets.resolve(state.id, historyAttachments, 256);
         if (historyAttachments.some(a => a.isImage)) for (const p of current.participants.filter(p => payload.participantIds.includes(p.id))) {
-          if (this.capability(p).supportsImages !== true) throw new Error(p.name + ': This connection does not support image input.');
+          const capability = this.capability(p);
+          if (capability.available && capability.supportsImages !== true) throw new Error(p.name + ': This connection does not support image input.');
         }
-        return this.scheduler.enqueue(state.id, { requestId: payload.requestId, text: payload.text, participantIds: payload.participantIds, mode: payload.mode || 'parallel', attachments });
-      });
+        // Commit the public message first. Verified members start immediately;
+        // unverified members are checked in the background and resume from the
+        // same queued delivery, so a slow check never holds up the group send.
+        this.scheduler.enqueue(state.id, { requestId: payload.requestId, text: payload.text, participantIds: payload.participantIds,
+          mode: payload.mode || 'parallel', attachments }, { pump: false });
+        for (const member of members) {
+          const capability = this.capability(member);
+          if (!capability.available && capability.canVerify) this.startMemberCheck(state.id, member.id);
+        }
+        this.scheduler.pump(state.id);
+      }
     } else if (action === 'stop') {
-      for (const pending of this.pendingStarts.values()) if (pending.id === state.id
-        && (!payload.participantId || pending.participantIds.includes(payload.participantId))) pending.cancelled = true;
-      for (const member of state.participants) if (!payload.participantId || member.id === payload.participantId) this.production?.cancel(bindingFingerprint(member));
-      if (payload.deliveryId) await this.scheduler.stop(state.id, payload.deliveryId);
+      if (!payload.deliveryId || payload.participantId) {
+        for (const check of [...this.memberChecks.values()]) {
+          if (check.id === state.id && (!payload.participantId || check.participantId === payload.participantId))
+            this.cancelMemberCheck(state.id, check.participantId);
+        }
+      }
+      if (!payload.deliveryId) {
+        for (const member of state.participants) if (!payload.participantId || member.id === payload.participantId) {
+          this.production?.cancel?.(bindingFingerprint(member));
+        }
+      }
+      if (payload.deliveryId) {
+        const delivery = state.deliveries.find(d => d.id === payload.deliveryId);
+        await this.scheduler.stop(state.id, payload.deliveryId);
+        if (delivery) this.cancelUnusedMemberCheck(state.id, delivery.participantId);
+      }
       else {
         const results = await this.scheduler.stopAll(state.id, payload.participantId || null);
         if (results.some(r => r.status === 'rejected')) throw new Error('Some activities have not confirmed stopping. Try Stop again.');
@@ -330,10 +383,10 @@ class DiscussionService {
     } else throw Object.assign(new Error('Unknown discussion action'), { code: 'DISCUSSION_ACTION_UNSUPPORTED' });
     this.publish(state.id); return { group: this.view(this.manager.get(state.id)), groups: this.list() };
   }
-  get active() { return this.scheduler.runs.size > 0 || this.pendingStarts.size > 0 || this.memberChecks.size > 0 || Boolean(this.production?.checks.size); }
+  get active() { return this.scheduler.runs.size > 0 || this.memberChecks.size > 0 || Boolean(this.production?.checks.size); }
   async shutdown() {
     const token = this.scheduler.suspend({ reason: 'app-exit' });
-    for (const pending of this.pendingStarts.values()) pending.cancelled = true;
+    for (const check of this.memberChecks.values()) check.cancelled = true;
     await this.production?.shutdown();
     await Promise.allSettled([...this.memberChecks.values()].map(check => check.promise));
     try { return await this.scheduler.drainSuspension(token); }

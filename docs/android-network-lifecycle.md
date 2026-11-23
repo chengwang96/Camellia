@@ -32,6 +32,12 @@ Each connection generation owns a single event executor. Stopping that generatio
 
 `RemoteStreamHealth` uses elapsed realtime. A usable first snapshot must arrive within 30 seconds; heartbeats alone cannot complete startup. After synchronization, complete snapshots and heartbeat frames extend a 35-second idle deadline. Expiry starts a replacement connection and displays the sync timeout or lost-connection reason while retaining the visible transcript and draft. A retained foreground service is checked again on return, covering time spent asleep even when no network-route callback arrives. Existing authorization failures and retry backoff remain in effect.
 
+A failed chat or list stream is never retried on the client that owned the failed read. The replacement starts in a new generation with a new `RemoteApi` and read worker, because an embedded or socket read can ignore cancellation indefinitely and otherwise pin every later retry to the old transport. The conversation-list stream also reports heartbeat frames, so a quiet but healthy list stays live while a stalled one is rebuilt by the same health deadline. Returning after at least ten seconds in the background rebuilds the selected chat even when the foreground service is still retained.
+
+`RemoteConversationSync` and every `RemoteWorkbenchSync` host use separate retry scheduling. A stopped or failed subscription replaces its worker as well as its client; retries never queue behind the read they are meant to replace. A route switch still preserves the embedded node and queued lifecycle work, but the page reopens its own stream so a socket bound to the old path is not reused.
+
+`RemoteStartupTest` adds a failed-chat-stream regression: the first client throws before its first snapshot, and the test requires a second client to open the replacement stream with the recovered transcript. `RemoteConversationSyncTest` does the same for the silent list subscription. The test suite compiles both the debug and instrumentation sources, but device tests require an attached emulator or phone.
+
 ## Verification
 
 `NetworkLifecycleTest` uses controlled startup, shutdown and persistence barriers to verify concurrent initialization, independent caller cancellation, route and mode changes, identity removal, directory ownership, persistence failure, foreground recovery, download leases and callback execution outside the state lock.

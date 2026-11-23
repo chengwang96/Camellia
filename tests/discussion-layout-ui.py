@@ -170,7 +170,7 @@ def check_verification_navigation(page, embedded=False):
     surface.locator('#mentions .mention').first.click()
     surface.locator('#message').fill('Verify the source group before sending')
     surface.locator('#message').press('Enter')
-    expect(surface.locator('#sendHint')).to_contain_text('正在检查连接')
+    expect(surface.locator('#sendHint')).to_contain_text('正在后台验证所选连接')
     surface.locator('#message').fill('A newer source draft')
     # A pending verification cannot prevent ordinary conversation navigation.
     before = page.evaluate('handoffs.length')

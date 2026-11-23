@@ -20,6 +20,7 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const DONE = new Set(['CORTEX_STEP_STATUS_DONE', 'CORTEX_STEP_STATUS_ERROR', 'CORTEX_STEP_STATUS_CANCELED']);
 const OPTIONS = [{ optionId: 'allow', name: 'Allow once', kind: 'allow_once' }, { optionId: 'deny', name: 'Deny', kind: 'reject_once' }];
 const idle = status => ['CASCADE_RUN_STATUS_IDLE', 'CASCADE_RUN_STATUS_DONE', 'CASCADE_RUN_STATUS_CANCELED'].includes(status);
+const titlePreview = value => String(value || '').trim().toLowerCase().replace(/\s+/gu, ' ').replace(/[.。…]+$/u, '').trimEnd();
 function interactiveLaunch(exe, args, platform = process.platform) {
   if (platform === 'win32') return { exe, args, stdin: 'ignore' };
   // On Unix the native interactive reader exits on /dev/null, while a plain
@@ -142,16 +143,24 @@ class InteractiveCli {
   async prepare() {
     return this.preparing ||= this.start().catch(async error => { await this.stop(); throw error; });
   }
-  async generateTitle({ attempts = 60, delayTitle = ms => delay(ms) } = {}) {
-    if (!this.session?.conversationId || this.closed) return { title: '' };
+  async generateTitle({ prompt = '', attempts = 60, delayTitle = ms => delay(ms) } = {}) {
+    if (!this.session || this.closed) return { title: '' };
+    // Share CLI startup with the first prompt, including when resuming a cascade.
+    await this.prepare();
+    if (!this.session.conversationId || this.closed) return { title: '' };
     // The CLI generates its own summary with the signed-in Google account.
-    // It can reach the local index shortly after the turn becomes idle.
+    // Until then the index can expose the first prompt as a preview.
     const deadline = Date.now() + 45000;
+    const visiblePrompt = titlePreview(prompt);
     for (let attempt = 0; attempt < attempts && !this.closed && Date.now() < deadline; attempt++) {
       const { trajectorySummaries } = await this.rpc('GetAllCascadeTrajectories', {}, AbortSignal.timeout(5000));
       const summary = trajectorySummaries?.[this.session.conversationId];
-      const title = [summary?.summary, summary?.title].find(value => typeof value === 'string' && value.trim()
-        && !/^(?:new (?:session|conversation|chat)|starting a conversation|untitled)$/i.test(value.trim()));
+      const title = [summary?.summary, summary?.title].find(value => {
+        if (typeof value !== 'string') return false;
+        const preview = titlePreview(value);
+        return preview && !/^(?:new (?:session|conversation|chat)|starting a conversation|untitled)$/u.test(preview)
+          && !visiblePrompt.startsWith(preview) && !this.firstTitleInput?.startsWith(preview);
+      });
       if (title) return { title };
       if (attempt + 1 < attempts) await delayTitle(750);
     }
@@ -262,6 +271,7 @@ class InteractiveCli {
       const offset = before.numTotalSteps || 0;
       const baseline = new Map(ownedTrajectories((await this.rpc('GetAllCascadeTrajectories')).trajectorySummaries, cascadeId)
         .map(([id, value]) => [id, value.stepCount || 0]));
+      this.firstTitleInput ||= titlePreview(items.map(item => item.text).join('\n'));
       await this.rpc('SendUserCascadeMessage', { cascadeId, items, media,
         cascadeConfig: { plannerConfig: { planModel: this.selected.modelOrAlias.model } } }, turn.controller.signal);
       let sawInput = false;
@@ -459,7 +469,7 @@ class InteractiveCli {
       this.mode = params.modeId; return {};
     }
     if (method === 'session/camellia_prepare') return this.prepare();
-    if (method === 'session/camellia_generate_title') return this.generateTitle();
+    if (method === 'session/camellia_generate_title') return this.generateTitle({ prompt: params.prompt });
     if (method === 'session/prompt') return this.prompt(params.prompt);
     if (method === 'session/camellia_subagent_cancel') {
       const task = this.children.get(params.taskId);

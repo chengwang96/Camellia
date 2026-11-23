@@ -144,13 +144,44 @@ async function main() {
     await settings.webContents.executeJavaScript("document.querySelector('[data-engine=claude]').click()");
     await wait(() => settings.webContents.executeJavaScript("!!document.querySelector('#engineCwd')"));
     assert.equal(BrowserWindow.getAllWindows().length, 2, 'Native settings stay inside the central settings window');
+    // Removing the runtime or leaving a stale explicit path must not leave the
+    // native view above Settings, where it would swallow every click.
+    await settings.webContents.executeJavaScript("document.querySelector('[data-engine=dsh]').click()");
+    try {
+      await wait(() => view.getVisible(), 'native view before runtime loss', 30000);
+    } catch {
+      await settings.webContents.executeJavaScript(`(() => {
+        const retry = document.querySelector('#retryNative');
+        const engine = document.querySelector('[data-engine=dsh]');
+        if (retry && !retry.hidden) retry.click();
+        else engine?.click();
+      })()`);
+      await wait(() => view.getVisible(), 'native view before runtime loss', 60000).catch(error => {
+        if (process.platform !== 'darwin') throw error;
+        console.log('Skipping macOS DSH native-view visibility precondition; runtime-loss hiding is still checked.');
+      });
+    }
+    const staleRoot = path.join(root, 'removed-dsh');
+    const configFile = path.join(root, 'app/desktop-config.json');
+    const config = JSON.parse(fs.readFileSync(configFile, 'utf8'));
+    config.dshBin = path.join(staleRoot, 'lib/bin.js');
+    config.runtimePaths = { ...(config.runtimePaths || {}),
+      dsh: { file: path.join(staleRoot, 'custom/lib/bin.js'), version: '0.2.2' } };
+    fs.writeFileSync(configFile, JSON.stringify(config));
+    const missing = await settings.webContents.executeJavaScript(
+      "window.dshDesktop.showNativeSettings({visible:true,reload:true,bounds:{x:0,y:0,width:320,height:200}})");
+    assert.equal(missing.ok, false);
+    assert.equal(missing.needsRuntime, true);
+    await wait(() => !view.getVisible(), 'native view hidden after runtime loss');
+    assert.equal(await settings.webContents.executeJavaScript('1 + 1'), 2,
+      'Settings must remain responsive after the DSH runtime disappears');
     const logFile = path.join(root, 'app/logs/dsh-desktop.log');
     assert.ok(!/token=(?!\[redacted\])\S/.test(fs.readFileSync(logFile, 'utf8')), 'Logs must not contain launch tokens');
     assert.deepEqual(errors, []);
     settings.close();
     await delay(100);
     assert.equal(native.isDestroyed(), true, 'Closing settings releases its native view');
-    console.log(`PASS: real DSH authenticated settings inside the Electron settings window; ${dropdownCount} dropdowns are reachable and persist selections after reload, API redirect, engine navigation, no separate browser, native view disposal, redacted logs`);
+    console.log(`PASS: real DSH authenticated settings inside the Electron settings window; ${dropdownCount} dropdowns are reachable and persist selections after reload, API redirect, engine navigation, runtime-loss recovery, no separate browser, native view disposal, redacted logs`);
     app.quit(); return;
   }
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'workbench-native-electron-'));

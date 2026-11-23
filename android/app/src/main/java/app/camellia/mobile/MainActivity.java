@@ -43,6 +43,8 @@ public final class MainActivity extends Activity {
     private static final long COMMAND_CONFIRM_TIMEOUT_MS = 30_000;
     private static final long COMMAND_POLL_INTERVAL_MS = 1_500;
     private static final long FOREGROUND_STREAM_GRACE_MS = 5_000;
+    private static final long BACKGROUND_RECONNECT_MS = 10_000;
+    static long reconnectBaseDelayMs = 1_000;
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final Handler commandHandler = new Handler(Looper.getMainLooper());
     private final LocationConsent locationConsent = new LocationConsent(this);
@@ -106,6 +108,7 @@ public final class MainActivity extends Activity {
     private volatile int generation;
     private boolean foreground;
     private boolean backgroundConnection;
+    private long backgroundedAt;
     private JSONObject displayedConversation;
     private boolean chinese;
     private int background, surface, ink, muted, accent;
@@ -243,7 +246,7 @@ public final class MainActivity extends Activity {
     private boolean canFork;
     private boolean canCodexReset;
     private android.app.AlertDialog codexResetDialog;
-    private boolean canAttachments, canFileAttachments;
+    private boolean canAttachments, canFileAttachments, canConversationAttachments;
     private ConversationMenu conversationPopup;
     private RemoteApi homeMenuClient;
     private android.widget.Toast homeMenuNotice;
@@ -257,10 +260,13 @@ public final class MainActivity extends Activity {
     private long listCursor = -1;
     private final ArrayList<String> selectedImages = new ArrayList<>();
     private final ArrayList<JSONObject> selectedDocuments = new ArrayList<>();
+    private final ArrayList<JSONObject> selectedConversationAttachments = new ArrayList<>();
     private boolean loadingImages;
     private boolean listEventsUnavailable;
     private long listLastFrameAt;
     private boolean listRetryPending;
+    private RemoteStreamHealth listHealth;
+    private final Runnable inspectListStream = this::inspectListStream;
     private boolean listLoaded, listLoadFailed;
     private LinearLayout imageTray;
     private android.widget.HorizontalScrollView imageStrip;
@@ -445,6 +451,9 @@ public final class MainActivity extends Activity {
         super.onStart();
         AttachmentMaintenance.foreground(this);
         boolean retained = backgroundConnection && RemoteKeepAliveService.active() && api != null;
+        long away = backgroundedAt == 0 ? 0 : android.os.SystemClock.elapsedRealtime() - backgroundedAt;
+        boolean longAway = away >= BACKGROUND_RECONNECT_MS;
+        backgroundedAt = 0;
         foreground = true;
         backgroundConnection = false;
         RemoteKeepAliveService.finish(this, true);
@@ -465,7 +474,7 @@ public final class MainActivity extends Activity {
             }
         }
         resumePendingCommands();
-        if (retained) {
+        if (retained && !longAway) {
             if (screen.equals("detail")) { resumeDetail(); return; }
             if (screen.equals("list")) { resumeList(); return; }
         }
@@ -483,7 +492,7 @@ public final class MainActivity extends Activity {
             return;
         }
         if (credentials.has("token")) {
-            if (screen.equals("detail") && conversationId != null) connectEvents();
+            if (screen.equals("detail") && conversationId != null) connectEvents(longAway);
             else if (screen.equals("list")) loadList(false);
         } else if (credentials.has("claim")) waitForApproval();
     }
@@ -509,6 +518,8 @@ public final class MainActivity extends Activity {
             connectionFailure(tr("网络已断开，联网后自动重连。未确认的消息不会重复发送。", "Offline. Reconnecting when the network returns; unconfirmed messages will not be resent."));
             return;
         }
+        // A route switch keeps the embedded node but cannot invalidate an
+        // already-open socket. Rebuild the transport before reusing a stream.
         if (screen.equals("computers")) refreshComputers();
         else if (credentials.has("token")) {
             if (screen.equals("detail")) {
@@ -909,6 +920,7 @@ public final class MainActivity extends Activity {
         locationConsent.cancel();
         if (pages != null) pages.finishTransition();
         foreground = false;
+        backgroundedAt = android.os.SystemClock.elapsedRealtime();
         handler.removeCallbacks(prefetchViewportUpdate); prefetchViewportPosted = false;
         prefetch.cancel();
         if (!backgroundConnection || !RemoteKeepAliveService.active() || isFinishing() || isChangingConfigurations()) {
@@ -989,6 +1001,8 @@ public final class MainActivity extends Activity {
         streamRetryPending = false;
         listLastFrameAt = 0;
         listRetryPending = false;
+        listHealth = null;
+        handler.removeCallbacks(inspectListStream);
         statusWorker.getQueue().clear();
         autoLanChecks.clear();
         handler.removeCallbacksAndMessages(null);
@@ -1617,17 +1631,19 @@ public final class MainActivity extends Activity {
 
     private WorkbenchList.Item homeConversationItem(JSONObject conversation, boolean active, String tag, String statusTag) {
         Palette palette = Palette.of(this);
-        boolean unread = replies().unread(conversationComputer(conversation), conversation);
-        String state = conversation.optString("activity");
-        int statusColor = state.equals("running") ? palette.success
-            : state.equals("permission") || state.equals("question") ? palette.warning
-            : RemoteWorkStatus.backgroundCount(conversation) > 0 || unread ? palette.accent : palette.muted;
-        String indicator = active ? activity(conversation) : "";
+        String id = conversation.optString("id");
+        JSONObject computer = conversationComputer(conversation);
+        boolean unread = replies().unread(computer, conversation);
+        boolean draft = hasSavedDraft(computer, id);
+        String indicator = conversationStatusBase(conversation, unread, draft);
+        int statusColor = conversationStatusColor(conversation, palette, unread, draft, false);
         if (active && !conversation.optBoolean("homeFresh")) {
             indicator = cachedHomeActivity(conversation);
             statusColor = palette.muted;
         }
         indicator = withReplyIndicator(indicator, unread);
+        if (conversation.optBoolean("pinned"))
+            indicator += (indicator.isEmpty() ? "" : " · ") + tr("置顶", "Pinned");
         String engine = conversationEngine(conversation), title = conversation.optString("title");
         String meta = conversation.optString("homeComputerName") + " · " + conversationMeta(conversation), time = conversationTime(conversation);
         // Ignore stream counters, previews and other metadata that this page does not display.
@@ -1942,6 +1958,8 @@ public final class MainActivity extends Activity {
             tr("模型、思考等级和权限在会话内调整，沿用电脑端授权范围。", "Model, thinking level and permissions are adjusted inside a conversation within the desktop's authorized scope."));
 
         LinearLayout data = settingsStyle.group(content, tr("数据与诊断", "Data & diagnostics"));
+        settingsStyle.row(data, "download", tr("已下载产物", "Downloaded files"), "", "settings:downloads",
+            () -> openSettingsSection("downloads"));
         settingsStyle.row(data, "archive", tr("已归档", "Archived"), "", "settings:archived",
             () -> openSettingsSection("archived"));
 
@@ -2436,6 +2454,18 @@ public final class MainActivity extends Activity {
         if (negative != null) builder.setNegativeButton(negative, null);
         android.app.Dialog dialog = builder.create();
         computerDialog = dialog;
+        return dialog;
+    }
+
+    private android.app.Dialog createAttachmentDialog(View panel) {
+        if (computerDialog != null) computerDialog.dismiss();
+        android.app.Dialog dialog = new android.app.Dialog(this);
+        dialog.requestWindowFeature(android.view.Window.FEATURE_NO_TITLE);
+        dialog.setContentView(panel);
+        dialog.setCanceledOnTouchOutside(true);
+        computerDialog = dialog;
+        SettingsStyle style = new SettingsStyle(this);
+        dialog.setOnShowListener(ignored -> style.contentSheetWindow(dialog.getWindow(), panel));
         return dialog;
     }
 
@@ -3295,6 +3325,7 @@ public final class MainActivity extends Activity {
         availableWorkspaces = new JSONArray(); allowIndependent = false;
         listEventsUnavailable = false;
         listLoaded = false; listLoadFailed = false;
+        listHealth = null; handler.removeCallbacks(inspectListStream);
         shell("", "");
         if (tabletConversationList == null || !tabletConversationList.initialized)
             initializeConversationList(root, scroll, content, status);
@@ -3711,7 +3742,7 @@ public final class MainActivity extends Activity {
             if (!query.isEmpty() && !title.toLowerCase(Locale.ROOT).contains(query)) continue;
             found = true; if (collapsed && query.isEmpty()) continue;
             String indicator = group.optBoolean("active") ? tr("运行中", "Running") : "";
-            if (group.optBoolean("pinned")) indicator += (indicator.isEmpty() ? "" : " · ") + tr("已置顶", "Pinned");
+            if (group.optBoolean("pinned")) indicator += (indicator.isEmpty() ? "" : " · ") + tr("置顶", "Pinned");
             section.addView(new ConversationRow(this, chatStyle, false, title, indicator, "discussion:" + id, "discussionStatus:" + id,
                 () -> openDiscussion(id, false, false), () -> openDiscussion(id, false, true)));
         }
@@ -3730,39 +3761,34 @@ public final class MainActivity extends Activity {
     }
 
     private View conversationCard(JSONObject conversation) {
+        String id = conversation.optString("id");
         String title = conversation.optString("title");
-        String state = conversation.optString("activity", "");
         boolean archived = conversation.optLong("archivedAt", 0) > 0 || conversationFilter.equals("archived");
         boolean unread = replies().unread(credentials, conversation);
-        boolean working = state.equals("running") || state.equals("permission") || state.equals("question");
+        boolean draft = !archived && hasSavedDraft(credentials, id);
         // Work that outlives its reply still belongs in the state column: it is
         // the one sign the desktop is busy while the row would otherwise read
         // as idle. A live reply keeps the column, as it does on the desktop.
-        String indicator = working || RemoteWorkStatus.backgroundCount(conversation) > 0 ? activity(conversation) : "";
+        String indicator = conversationStatusBase(conversation, unread, draft);
         indicator = withReplyIndicator(indicator, unread);
-        if (conversation.optBoolean("pinned")) indicator += (indicator.isEmpty() ? "" : " · ") + tr("已置顶", "Pinned");
         if (archived) indicator = tr("已归档", "Archived");
+        else if (conversation.optBoolean("pinned")) indicator += (indicator.isEmpty() ? "" : " · ") + tr("置顶", "Pinned");
         Palette statusPalette = Palette.of(this);
-        int statusColor = archived ? statusPalette.muted
-            : state.equals("running") ? statusPalette.success
-            : state.equals("permission") || state.equals("question") ? statusPalette.warning
-            : state.equals("failed") || state.equals("error") ? statusPalette.error
-            : RemoteWorkStatus.backgroundCount(conversation) > 0 || unread ? statusPalette.accent : statusPalette.muted;
+        int statusColor = conversationStatusColor(conversation, statusPalette, unread, draft, archived);
         String meta = conversationMeta(conversation);
         String time = conversationTime(conversation);
         ConversationRow card = new ConversationRow(this, chatStyle, !conversation.isNull("workspaceId") && !conversation.optString("workspaceId").isEmpty(),
             conversationEngine(conversation), title, meta, indicator, statusColor, time,
-            "conversation:" + conversation.optString("id"), "conversationStatus:" + conversation.optString("id"),
+            "conversation:" + id, "conversationStatus:" + id,
             () -> {
-                String id = conversation.optString("id");
                 if (selectingConversations) {
                     if (!selectedConversations.add(id)) selectedConversations.remove(id);
                     renderConversations();
                 } else if (archived) restoreArchivedConversation(conversation);
                 else openListConversation(id, title);
             }, () -> { if (archived) restoreArchivedConversation(conversation); else conversationMenu(conversation); });
-        card.setContentDescription(title + (meta.isEmpty() ? "" : " · " + meta) + " · " + activity(conversation)
-            + (unread ? " · " + tr("新消息", "New reply") : ""));
+        card.setContentDescription(title + (meta.isEmpty() ? "" : " · " + meta)
+            + (indicator.isEmpty() ? "" : " · " + indicator));
         card.selection(selectingConversations, selectedConversations.contains(conversation.optString("id")));
         if (!archived) prefetchRows.add(card);
         return card;
@@ -3842,25 +3868,28 @@ public final class MainActivity extends Activity {
     }
 
     private ConversationSidebar.Item sidebarItem(JSONObject conversation, boolean selected) {
+        String id = conversation.optString("id");
         String state = conversation.optString("activity");
         boolean running = state.equals("running");
         boolean waiting = state.equals("permission") || state.equals("question");
         int background = RemoteWorkStatus.backgroundCount(conversation);
         boolean active = running || waiting || background > 0;
         Palette palette = Palette.of(this);
-        int color = running ? palette.success
-            : waiting ? palette.warning
-            : background > 0 ? (RemoteWorkStatus.backgroundUnknown(conversation) ? palette.warning : palette.accent)
-            : 0;
+        boolean unread = replies().unread(credentials, conversation);
+        boolean draft = hasSavedDraft(credentials, id);
+        int color = active || unread || draft
+            ? conversationStatusColor(conversation, palette, unread, draft, false) : 0;
         String status = conversationMeta(conversation);
-        if (active) status += (status.isEmpty() ? "" : " · ") + activity(conversation);
+        String label = withReplyIndicator(conversationStatusBase(conversation, unread, draft), unread);
+        if (conversation.optBoolean("pinned"))
+            label += (label.isEmpty() ? "" : " · ") + tr("置顶", "Pinned");
+        if (!label.isEmpty()) status += (status.isEmpty() ? "" : " · ") + label;
         String time = conversationTime(conversation);
         String detail = status.isEmpty() ? time : time.isEmpty() ? status : status + " · " + time;
         if (detail.isEmpty()) detail = tr("空闲", "Idle");
         String title = conversation.optString("title");
         if (title.isEmpty()) title = tr("未命名会话", "Untitled conversation");
-        boolean unread = conversation.optLong("lastReplyAt", 0) > conversation.optLong("replyReadAt", 0);
-        return new ConversationSidebar.Item(conversation.optString("id"), title,
+        return new ConversationSidebar.Item(id, title,
             conversationEngine(conversation), detail, color, selected, unread,
             conversation.optString("workspaceName", tr("独立会话", "Independent conversations")), conversation.optString("activity"));
     }
@@ -4059,14 +4088,16 @@ public final class MainActivity extends Activity {
     }
 
     private String withReplyIndicator(String indicator, boolean unread) {
-        return unread ? indicator + (indicator.isEmpty() ? "" : " · ") + tr("新消息", "New reply") : indicator;
+        return unread ? indicator + (indicator.isEmpty() ? "" : " · ") + tr("未读回复", "Unread reply") : indicator;
     }
 
     private void resumeList() {
         long now = android.os.SystemClock.elapsedRealtime();
-        boolean stale = !connected || listRetryPending || listLastFrameAt == 0
-            || now - listLastFrameAt > FOREGROUND_STREAM_GRACE_MS;
+        boolean fresh = listHealth != null ? listHealth.fresh(now, FOREGROUND_STREAM_GRACE_MS)
+            : listLastFrameAt != 0 && now - listLastFrameAt <= FOREGROUND_STREAM_GRACE_MS;
+        boolean stale = !connected || listRetryPending || !fresh;
         if (stale) { reconnecting = true; loadList(false); }
+        else inspectListStream();
     }
 
     private void loadList(boolean append) { loadList(append, 0); }
@@ -4237,6 +4268,7 @@ public final class MainActivity extends Activity {
         canMultiImage = capabilities.contains("\"multi-image\"");
         canAttachments = capabilities.contains("\"expanded-attachments\"");
         canFileAttachments = canAttachments || capabilities.contains("\"attachments\"");
+        canConversationAttachments = capabilities.contains("\"conversation-attachments\"");
         canArchive = info.optString("permission").equals("control") && capabilities.contains("\"archive\"");
         canManageConversations = info.optString("permission").equals("control") && capabilities.contains("\"conversation-actions\"");
         listInstance = info.optString("instanceId"); allowIndependent = info.optBoolean("includeUnassigned");
@@ -4436,22 +4468,37 @@ public final class MainActivity extends Activity {
         // and this chat still has room; the sheet still opens so the capability
         // rows stay reachable.
         int limit = ChatAttachments.remoteCount(canAttachments, canFileAttachments, canMultiImage);
-        boolean images = sendable && (canImage || canFileAttachments) && selectedImages.size() + selectedDocuments.size() < limit;
+        boolean images = sendable && (canImage || canFileAttachments)
+            && selectedImages.size() + selectedDocuments.size() + selectedConversationAttachments.size() < limit;
         imageConversation = conversationId; imageComputer = credentials.optString("address");
         AttachSheet sheet = new AttachSheet(this);
-        LinearLayout panel = sheet.panel();
-        android.app.Dialog dialog = createComputerDialog(panel);
-        sheet.header(panel, "plus", tr("添加内容", "Add"), tr("关闭", "Close"), () -> dialog.dismiss());
-        sheet.sectionLabel(panel, tr("从手机添加", "From this phone"));
-        sheet.tiles(panel, java.util.Arrays.asList(
+        LinearLayout sheetPanel = sheet.panel();
+        ScrollView panel = ScrollViews.plain(this);
+        panel.setFillViewport(true); panel.setTag("attachContentScroll"); panel.addView(sheetPanel);
+        panel.setLayoutParams(new android.widget.FrameLayout.LayoutParams(-1, -1));
+        android.app.Dialog dialog = createAttachmentDialog(panel);
+        sheet.header(sheetPanel, "plus", tr("添加内容", "Add"), tr("关闭", "Close"), () -> dialog.dismiss());
+        sheet.sectionLabel(sheetPanel, tr("从手机添加", "From this phone"));
+        sheet.tiles(sheetPanel, java.util.Arrays.asList(
             new AttachSheet.Tile("camera", tr("拍照", "Camera"), "imageCamera", images, () -> { dialog.dismiss(); openCamera(); }),
             new AttachSheet.Tile("image", tr("照片", "Photos"), "imageGallery", images, () -> { dialog.dismiss(); openGallery(); }),
-            new AttachSheet.Tile("file", tr("文件", "Files"), "remoteDocumentPicker", sendable && (canAttachments || canFileAttachments) && selectedImages.size() + selectedDocuments.size() < limit, () -> { dialog.dismiss(); openDocuments(); })));
-        sheet.note(panel, (canAttachments ? ChatAttachments.limits(chinese, true)
+            new AttachSheet.Tile("file", tr("文件", "Files"), "remoteDocumentPicker", sendable && (canAttachments || canFileAttachments)
+                && selectedImages.size() + selectedDocuments.size() + selectedConversationAttachments.size() < limit, () -> { dialog.dismiss(); openDocuments(); })));
+        sheet.note(sheetPanel, (canAttachments ? ChatAttachments.limits(chinese, true)
             : canFileAttachments ? tr("当前电脑最多 9 个附件 · 合计 8 MiB；更新电脑端可提高限额。", "This desktop supports 9 attachments · 8 MiB total; update it for higher limits.")
             : tr("更新并重启电脑端后，可发送最多 20 个附件。", "Update and restart the desktop for up to 20 attachments."))
             + " " + tr("支持 PDF、Word、Excel、PPT 和文本。", "PDF, Word, Excel, PowerPoint and text."));
-        LinearLayout group = sheet.group(panel, tr("附件选项", "Attachment options"));
+        sheet.sectionLabel(sheetPanel, tr("从电脑添加", "From your computer"));
+        LinearLayout computerGroup = sheet.group(sheetPanel, "");
+        sheet.row(computerGroup, "sessions", tr("会话记录", "Conversation"),
+            tr("把另一段对话的快照作为附件", "Attach a snapshot of another conversation"),
+            "", "attachConversation", sendable && canConversationAttachments && editingSeq <= 0, () -> {
+                dialog.dismiss(); showConversationAttachmentPicker();
+            });
+        if (!canConversationAttachments) {
+            sheet.note(sheetPanel, tr("更新并重启电脑端后，可附加会话记录。", "Update and restart the desktop to attach conversations."));
+        }
+        LinearLayout group = sheet.group(sheetPanel, tr("附件选项", "Attachment options"));
         sheet.row(group, "folder", tr("查看产物", "Files"),
             tr("查看并下载会话产物", "Review and download files"),
             "", "attachArtifacts", sendable, () -> {
@@ -4459,7 +4506,7 @@ public final class MainActivity extends Activity {
                 artifactDownloads.show(credentials.optString("address"), credentials.optString("token"), conversationId);
             });
         if (!images && sendable) {
-            String reason = selectedImages.size() + selectedDocuments.size() >= limit
+            String reason = selectedImages.size() + selectedDocuments.size() + selectedConversationAttachments.size() >= limit
                 ? (canAttachments ? tr("最多添加 20 个附件。", "Add up to 20 attachments.")
                     : canFileAttachments ? tr("当前电脑最多 9 个附件，请更新电脑端提高限额。", "This desktop supports up to 9 attachments; update it for higher limits.")
                     : canMultiImage ? tr("旧版电脑端最多 9 张图片，请更新电脑端。", "This desktop supports up to 9 images; update it.")
@@ -4467,15 +4514,102 @@ public final class MainActivity extends Activity {
                 : !canImage && !canFileAttachments
                     ? tr("当前电脑端不具备图片附件能力。", "This desktop does not support image attachments.")
                     : tr("连接电脑后可添加图片。", "Connect to your computer to add images.");
-            sheet.note(panel, reason);
+            sheet.note(sheetPanel, reason);
         }
         showComputerDialog(dialog);
     }
 
     private void openGallery() {
-        int remaining = ChatAttachments.remoteCount(canAttachments, canFileAttachments, canMultiImage) - selectedImages.size() - selectedDocuments.size();
+        int remaining = ChatAttachments.remoteCount(canAttachments, canFileAttachments, canMultiImage)
+            - selectedImages.size() - selectedDocuments.size() - selectedConversationAttachments.size();
         try { PhotoPicker.open(this, PICK_IMAGE_REQUEST, remaining); }
         catch (Exception error) { reportError("无法打开图片选择器", "Cannot open the image picker", error); }
+    }
+
+    private void showConversationAttachmentPicker() {
+        if (!canConversationAttachments || archivedConversation != null || editingSeq > 0) return;
+        AttachSheet sheet = new AttachSheet(this);
+        LinearLayout panel = sheet.panel();
+        panel.setLayoutParams(new android.widget.FrameLayout.LayoutParams(-1, -1));
+        android.app.Dialog dialog = createAttachmentDialog(panel);
+        sheet.header(panel, "sessions", tr("附加会话记录", "Attach a conversation"), tr("关闭", "Close"), () -> dialog.dismiss());
+        sheet.subtitle(panel, tr("发送的是当前快照，不会包含之后新增的消息。", "The snapshot is taken when you send; later messages are not included."));
+        if (editingSeq > 0) {
+            sheet.note(panel, tr("编辑消息时不能附加会话记录。", "Conversation snapshots cannot be added while editing."));
+            showComputerDialog(dialog);
+            return;
+        }
+        EditText search = new EditorInput(this);
+        search.setSingleLine(true); search.setHint(tr("搜索会话", "Search conversations"));
+        search.setTextSize(Palette.TEXT_ROW); search.setTextColor(ink); search.setHintTextColor(muted);
+        search.setPadding(dp(12), dp(10), dp(12), dp(10));
+        GradientDrawable searchFace = rounded(Palette.of(this).field);
+        searchFace.setStroke(dp(1), Palette.of(this).fieldBorder); search.setBackground(searchFace);
+        search.setTag("attachConversationSearch");
+        panel.addView(search, new LinearLayout.LayoutParams(-1, -2));
+        LinearLayout rows = column();
+        ScrollView sessionList = ScrollViews.plain(this);
+        sessionList.setFillViewport(false); sessionList.setTag("attachConversationList");
+        sessionList.addView(rows);
+        LinearLayout.LayoutParams listParams = new LinearLayout.LayoutParams(-1, 0, 1);
+        listParams.topMargin = dp(10); panel.addView(sessionList, listParams);
+        final int[] sequence = {0};
+        Runnable[] load = new Runnable[1];
+        load[0] = () -> {
+            int ticket = ++sequence[0]; rows.removeAllViews();
+            TextView loading = text(tr("正在加载会话…", "Loading conversations…"), Palette.TEXT_NOTE, muted);
+            loading.setPadding(dp(12), dp(14), dp(12), dp(14)); rows.addView(loading);
+            String address = credentials.optString("address"), token = credentials.optString("token");
+            String query = search.getText().toString().trim();
+            new Thread(() -> {
+                String problem = null; JSONArray sessions = null;
+                try {
+                    RemoteApi client = commandClient(new JSONObject().put("address", address).put("token", token));
+                    sessions = client.json(conversationListPath(0, 100, query, true), token, null).optJSONArray("conversations");
+                    if (sessions == null) sessions = new JSONArray();
+                } catch (Exception error) { problem = RemoteApi.failureMessage(error, chinese); }
+                String failure = problem; JSONArray result = sessions;
+                runOnUiThread(() -> {
+                    if (ticket != sequence[0] || !dialog.isShowing()) return;
+                    rows.removeAllViews();
+                    if (failure != null) { rows.addView(text(failure, Palette.TEXT_NOTE, muted)); return; }
+                    try {
+                    java.util.Set<String> attached = new java.util.HashSet<>();
+                    for (JSONObject item : selectedConversationAttachments) attached.add(item.optString("id"));
+                    int shown = 0;
+                    for (int index = 0; index < result.length() && shown < 20; index++) {
+                        JSONObject session = result.optJSONObject(index); if (session == null) continue;
+                        String id = session.optString("id");
+                        if (id.isEmpty() || id.equals(conversationId) || attached.contains(id)) continue;
+                        if (session.has("archivedAt") && session.optLong("archivedAt") > 0) continue;
+                        String title = session.optString("title");
+                        if (title.trim().isEmpty()) title = tr("未命名会话", "Untitled conversation");
+                        String engine = RemoteEngines.label(session.optString("engine"));
+                        String workspace = session.optString("workspaceName");
+                        String detail = (engine.isEmpty() ? "" : engine + " · ") + (workspace.isEmpty() || workspace.equals("null") ? tr("独立会话", "Unassigned") : workspace);
+                        JSONObject attachment = new JSONObject().put("id", id).put("title", title).put("engine", session.optString("engine")).put("workspaceName", workspace);
+                        rows.addView(new ChatChoiceRow(this, chinese, ink, muted, title, detail, "right", false,
+                            "attachConversationOption:" + id, () -> {
+                                selectedConversationAttachments.add(attachment);
+                                imageConversation = conversationId; imageComputer = credentials.optString("address");
+                                renderImage(); persistDraft(); updateControls(); dialog.dismiss();
+                            }));
+                        shown++;
+                    }
+                    if (shown == 0) rows.addView(text(tr("没有可附加的会话", "No conversations to attach"), Palette.TEXT_NOTE, muted));
+                    } catch (org.json.JSONException error) {
+                        rows.addView(text(tr("无法读取会话列表", "Could not read the conversation list"), Palette.TEXT_NOTE, muted));
+                    }
+                });
+            }, "camellia-attach-conversations").start();
+        };
+        search.addTextChangedListener(new android.text.TextWatcher() {
+            @Override public void beforeTextChanged(CharSequence value, int start, int count, int after) {}
+            @Override public void onTextChanged(CharSequence value, int start, int before, int count) {}
+            @Override public void afterTextChanged(android.text.Editable value) { load[0].run(); }
+        });
+        showComputerDialog(dialog);
+        load[0].run();
     }
 
     private void openDocuments() {
@@ -4547,7 +4681,8 @@ public final class MainActivity extends Activity {
             } else if (data != null && data.getData() != null) uris.add(data.getData());
         }
         if (uris.isEmpty()) { if (request == TAKE_PHOTO_REQUEST) clearCameraImage(); return; }
-        if (loadingImages || selectedImages.size() + selectedDocuments.size() + uris.size() > ChatAttachments.remoteCount(canAttachments, canFileAttachments, canMultiImage)) {
+        if (loadingImages || selectedImages.size() + selectedDocuments.size() + selectedConversationAttachments.size() + uris.size()
+                > ChatAttachments.remoteCount(canAttachments, canFileAttachments, canMultiImage)) {
             setStatusNotice(canAttachments ? tr("最多添加 20 个附件。", "Add up to 20 attachments.") : tr("更多附件需要更新并重启电脑端。", "More attachments require an updated and restarted desktop."));
             if (request == TAKE_PHOTO_REQUEST) clearCameraImage(); return;
         }
@@ -4588,14 +4723,70 @@ public final class MainActivity extends Activity {
     }
 
     private void renderImage() {
-        if (!java.util.Objects.equals(imageConversation, conversationId) || !java.util.Objects.equals(imageComputer, credentials.optString("address"))) { selectedImages.clear(); selectedDocuments.clear(); }
+        if (!java.util.Objects.equals(imageConversation, conversationId) || !java.util.Objects.equals(imageComputer, credentials.optString("address"))) {
+            selectedImages.clear(); selectedDocuments.clear(); selectedConversationAttachments.clear();
+        }
         composerAttachments.replace(selectedImages, selectedDocuments);
         if (imageTray == null) return;
-        imageStrip.setVisibility(selectedImages.isEmpty() && selectedDocuments.isEmpty() ? View.GONE : View.VISIBLE);
+        imageStrip.setVisibility(selectedImages.isEmpty() && selectedDocuments.isEmpty() && selectedConversationAttachments.isEmpty() ? View.GONE : View.VISIBLE);
         ChatImageTray.fill(this, imageTray, selectedImages, surface, chinese,
             index -> { selectedImages.remove(index); renderImage(); persistDraft(); updateControls(); });
         ChatDocumentTray.append(this, imageTray, selectedDocuments, chinese,
             index -> { selectedDocuments.remove(index); renderImage(); persistDraft(); updateControls(); });
+        for (int index = 0; index < selectedConversationAttachments.size(); index++) {
+            final int position = index;
+            imageTray.addView(conversationAttachmentChip(selectedConversationAttachments.get(index),
+                () -> { selectedConversationAttachments.remove(position); renderImage(); persistDraft(); updateControls(); }));
+        }
+    }
+
+    private View conversationAttachmentChip(JSONObject conversation, Runnable remove) {
+        LinearLayout chip = new LinearLayout(this);
+        chip.setOrientation(LinearLayout.VERTICAL);
+        chip.setGravity(Gravity.CENTER_VERTICAL);
+        Palette palette = Palette.of(this);
+        GradientDrawable face = new GradientDrawable();
+        face.setColor(palette.card);
+        face.setCornerRadius(dp(14));
+        face.setStroke(dp(1), palette.cardBorder);
+        chip.setBackground(face);
+        chip.setClipToOutline(true);
+        chip.setPadding(dp(12), dp(8), 0, dp(8));
+        chip.setTag("conversationAttachment:" + conversation.optString("id"));
+        LinearLayout top = new LinearLayout(this);
+        top.setGravity(Gravity.CENTER_VERTICAL);
+        AgentBadge badge = new AgentBadge(this, conversation.optString("engine"), 24);
+        LinearLayout.LayoutParams badgeParams = new LinearLayout.LayoutParams(dp(24), dp(24));
+        badgeParams.setMarginEnd(dp(8));
+        top.addView(badge, badgeParams);
+        TextView title = new TextView(this);
+        title.setText(conversation.optString("title"));
+        title.setTextSize(Palette.TEXT_NOTE);
+        title.setTextColor(chatStyle.ink);
+        title.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        title.setSingleLine(true);
+        title.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        top.addView(title, new LinearLayout.LayoutParams(0, -2, 1));
+        ImageButton close = chatStyle.composerToolButton("close",
+            tr("移除会话 ", "Remove conversation ") + conversation.optString("title"), chatStyle.muted, remove);
+        top.addView(close, new LinearLayout.LayoutParams(dp(40), dp(40)));
+        chip.addView(top, new LinearLayout.LayoutParams(-1, -2));
+        TextView detail = new TextView(this);
+        String engine = RemoteEngines.label(conversation.optString("engine"));
+        String workspace = conversation.optString("workspaceName");
+        if (workspace.isEmpty() || workspace.equals("null")) workspace = tr("独立会话", "Unassigned");
+        detail.setText(tr("会话快照", "Conversation snapshot") + " · " + (engine.isEmpty() ? workspace : engine + " · " + workspace));
+        detail.setTextSize(Palette.TEXT_TINY);
+        detail.setTextColor(chatStyle.muted);
+        detail.setSingleLine(true);
+        detail.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        detail.setPadding(0, dp(2), 0, 0);
+        chip.addView(detail, new LinearLayout.LayoutParams(-1, -2));
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(dp(220), dp(88));
+        params.setMarginEnd(dp(8));
+        chip.setLayoutParams(params);
+        chip.setMinimumWidth(dp(180));
+        return chip;
     }
 
     private void attachPastedText(CharSequence text) {
@@ -4611,7 +4802,7 @@ public final class MainActivity extends Activity {
             setStatusError(tr("正在添加附件，请稍后再粘贴。", "Attachments are still being added; paste again shortly."));
             return;
         }
-        if (selectedImages.size() + selectedDocuments.size() >= ChatAttachments.MAX_COUNT) {
+        if (selectedImages.size() + selectedDocuments.size() + selectedConversationAttachments.size() >= ChatAttachments.MAX_COUNT) {
             setStatusError(tr("每条消息最多 20 个附件。", "Up to 20 attachments per message."));
             return;
         }
@@ -4661,6 +4852,7 @@ public final class MainActivity extends Activity {
                 if (networkActive() && ticket == generation && screen.equals("list")) loadList(false);
             }, 15_000);
         } else {
+            listHealth = new RemoteStreamHealth(android.os.SystemClock.elapsedRealtime());
             streamList(client, ticket, 0);
         }
     }
@@ -4671,6 +4863,9 @@ public final class MainActivity extends Activity {
         int limit = Math.max(100, conversations.size());
         long syncedCursor = listCursor;
         String syncedInstance = listInstance;
+        RemoteStreamHealth health = new RemoteStreamHealth(android.os.SystemClock.elapsedRealtime());
+        listHealth = health;
+        inspectListStream();
         job = eventWorker.submit(() -> {
             boolean[] received = { false };
             boolean[] streamOpened = { false };
@@ -4682,16 +4877,19 @@ public final class MainActivity extends Activity {
                     if (initial && attempt == 0 && syncedCursor >= 0 && syncedCursor == snapshot.optLong("cursor", -1)
                             && syncedInstance.equals(snapshot.optString("instanceId"))) {
                         received[0] = true;
-                        deliver(ticket, () -> { markListFrame(); listConnected(); });
+                        deliver(ticket, () -> { markListFrame(); health.snapshot(android.os.SystemClock.elapsedRealtime()); listConnected(); });
                         return;
                     }
                     received[0] = true;
-                    deliver(ticket, () -> { markListFrame(); scheduleListRefresh(client, ticket, snapshot); });
-                });
+                    deliver(ticket, () -> { markListFrame(); health.snapshot(android.os.SystemClock.elapsedRealtime()); scheduleListRefresh(client, ticket, snapshot); });
+                }, () -> health.heartbeat(android.os.SystemClock.elapsedRealtime()));
             } catch (Exception error) { failure = error; }
             final Exception error = failure;
             int nextAttempt = received[0] ? 0 : Math.min(attempt + 1, 5);
             deliver(ticket, () -> {
+                if (listHealth != health) return;
+                listHealth = null;
+                handler.removeCallbacks(inspectListStream);
                 if (!streamOpened[0] && error instanceof RemoteApi.Failure && ((RemoteApi.Failure) error).status == 404) {
                     listEventsUnavailable = true;
                     watchList(client, ticket); return;
@@ -4702,8 +4900,11 @@ public final class MainActivity extends Activity {
                 }
                 listRetryPending = true;
                 connectionFailure(RemoteApi.failureMessage(error, chinese) + tr(" 正在重连，当前显示上次同步内容。", " Reconnecting; displayed content may be stale."));
-                long delay = error instanceof RemoteApi.Failure && ((RemoteApi.Failure) error).status == 429 ? 60_000 : Math.min(30_000, 1000L << nextAttempt);
-                handler.postDelayed(() -> streamList(client, ticket, nextAttempt), delay);
+                long delay = error instanceof RemoteApi.Failure && ((RemoteApi.Failure) error).status == 429 ? 60_000
+                    : Math.min(30_000, reconnectBaseDelayMs << Math.min(nextAttempt, 5));
+                // A failed stream owns a client that may never close its read.
+                // Rebuild the whole list generation instead of retrying on it.
+                handler.postDelayed(() -> { if (ticket == generation && screen.equals("list")) loadList(false, nextAttempt); }, delay);
             });
         });
     }
@@ -4711,6 +4912,29 @@ public final class MainActivity extends Activity {
     private void markListFrame() {
         listLastFrameAt = android.os.SystemClock.elapsedRealtime();
         listRetryPending = false;
+    }
+
+    private void inspectListStream() {
+        handler.removeCallbacks(inspectListStream);
+        if (!networkActive() || !screen.equals("list") || listHealth == null) return;
+        long remaining = listHealth.remaining(android.os.SystemClock.elapsedRealtime());
+        if (remaining > 0) { handler.postDelayed(inspectListStream, remaining); return; }
+        boolean synced = listHealth.synced();
+        listHealth = null;
+        listRetryPending = true;
+        // Replace the stream generation directly; a full list reload would
+        // synchronously start another stream and restart this watchdog.
+        int ticket = generation;
+        boolean pollingFallback = listEventsUnavailable;
+        handler.postDelayed(() -> {
+            if (ticket == generation && screen.equals("list") && listHealth == null) {
+                if (pollingFallback) loadList(false);
+                else { RemoteApi client = begin(); watchList(client, generation); }
+            }
+        }, 0);
+        connectionFailure(synced
+            ? tr("会话列表实时连接已失去响应，正在重新同步。", "The live conversation list stopped responding. Resyncing the list.")
+            : tr("会话列表同步超时，正在重新连接。", "Conversation list sync timed out. Reconnecting."));
     }
 
     private void scheduleListRefresh(RemoteApi client, int ticket, JSONObject snapshot) {
@@ -4777,10 +5001,44 @@ public final class MainActivity extends Activity {
 
     private String activity(JSONObject conversation) {
         String activity = conversation.optString("activity", "");
-        if (activity.equals("running")) return tr("正在运行", "Running");
-        if (activity.equals("permission") || activity.equals("question")) return tr("等待电脑处理", "Waiting for desktop input");
+        if (activity.equals("running")) return tr("运行中", "Running");
+        if (activity.equals("permission")) return tr("等待确认", "Needs approval");
+        if (activity.equals("question")) return tr("等待回答", "Needs input");
         return RemoteWorkStatus.backgroundUnknown(conversation) ? tr("后台状态未知", "Background status unknown")
             : RemoteWorkStatus.backgroundCount(conversation) > 0 ? tr("后台任务", "Background tasks") : tr("空闲", "Idle");
+    }
+
+    private String conversationStatusBase(JSONObject conversation, boolean unread, boolean draft) {
+        String state = conversation.optString("activity");
+        boolean working = state.equals("running") || state.equals("permission") || state.equals("question");
+        if (working || RemoteWorkStatus.backgroundCount(conversation) > 0) return activity(conversation);
+        return draft && !unread ? tr("草稿", "Draft") : "";
+    }
+
+    private int conversationStatusColor(JSONObject conversation, Palette palette, boolean unread, boolean draft,
+                                        boolean archived) {
+        if (archived) return palette.muted;
+        String state = conversation.optString("activity");
+        if (state.equals("running")) return palette.success;
+        if (state.equals("permission") || state.equals("question")) return palette.warning;
+        if (state.equals("failed") || state.equals("error")) return palette.error;
+        if (RemoteWorkStatus.backgroundCount(conversation) > 0)
+            return RemoteWorkStatus.backgroundUnknown(conversation) ? palette.warning : palette.success;
+        if (unread) return palette.accent;
+        if (draft) return palette.error;
+        return palette.muted;
+    }
+
+    private boolean hasSavedDraft(JSONObject computer, String conversationId) {
+        if (computer == null || conversationId == null || conversationId.isEmpty()) return false;
+        JSONObject drafts = computer.optJSONObject("drafts");
+        if (drafts != null && !drafts.optString(conversationId, "").isEmpty()) return true;
+        JSONObject edits = computer.optJSONObject("draftEdits");
+        if (edits != null && edits.optLong(conversationId, 0) > 0) return true;
+        JSONObject files = computer.optJSONObject("draftAttachments");
+        JSONObject saved = files == null ? null : files.optJSONObject(conversationId);
+        JSONArray attachments = saved == null ? null : saved.optJSONArray("attachments");
+        return attachments != null && attachments.length() > 0;
     }
 
     private void detailScreen() {
@@ -4887,7 +5145,10 @@ public final class MainActivity extends Activity {
         JSONObject attachmentDrafts = credentials.optJSONObject("draftAttachments");
         JSONObject attachmentDraft = attachmentDrafts == null ? null : attachmentDrafts.optJSONObject(conversationId);
         if (attachmentDraft != null && outgoingMessage == null) {
-            try { ChatAttachments.restore(attachmentDraft, selectedImages, selectedDocuments); }
+            try {
+                ChatAttachments.restore(attachmentDraft, selectedImages, selectedDocuments);
+                ChatAttachments.restoreConversations(attachmentDraft, selectedConversationAttachments);
+            }
             catch (Exception error) { reportError("无法恢复附件草稿", "Cannot restore attachment draft", error); }
             imageConversation = conversationId; imageComputer = credentials.optString("address"); renderImage();
         }
@@ -4942,9 +5203,13 @@ public final class MainActivity extends Activity {
             saved.put("drafts", drafts).put("draftEdits", edits);
             JSONObject attachmentDrafts = saved.optJSONObject("draftAttachments");
             if (attachmentDrafts == null) attachmentDrafts = new JSONObject();
-            if (selectedImages.isEmpty() && selectedDocuments.isEmpty()) attachmentDrafts.remove(conversationId);
-            else if (java.util.Objects.equals(imageConversation, conversationId)) attachmentDrafts.put(conversationId,
-                new JSONObject().put("attachments", ChatAttachments.remote(selectedImages, selectedDocuments)));
+            if (selectedImages.isEmpty() && selectedDocuments.isEmpty() && selectedConversationAttachments.isEmpty()) attachmentDrafts.remove(conversationId);
+            else if (java.util.Objects.equals(imageConversation, conversationId)) {
+                JSONObject draft = new JSONObject().put("attachments", ChatAttachments.remote(selectedImages, selectedDocuments));
+                if (!selectedConversationAttachments.isEmpty())
+                    draft.put("conversations", new JSONArray(selectedConversationAttachments.toString()));
+                attachmentDrafts.put(conversationId, draft);
+            }
             saved.put("draftAttachments", attachmentDrafts);
             store.save(saved);
             credentials = saved;
@@ -5131,7 +5396,7 @@ public final class MainActivity extends Activity {
                     // The desktop may have been downgraded since the cached
                     // capability was read. Retry the legacy stream once.
                     client.incremental(false); client.liveDelta(false); canIncremental = false; canLiveDelta = false; capabilityAddress = ""; capabilityToken = "";
-                    stream(client, ticket, 0);
+                    connectEvents(true);
                     return;
                 }
                 if (error instanceof RemoteApi.Failure && (((RemoteApi.Failure) error).status == 401 || ((RemoteApi.Failure) error).status == 403 || ((RemoteApi.Failure) error).status == 404)) {
@@ -5140,8 +5405,13 @@ public final class MainActivity extends Activity {
                 }
                 streamRetryPending = true;
                 connectionFailure(RemoteApi.failureMessage(error, chinese) + tr(" 正在重连，当前显示上次同步内容。", " Reconnecting; displayed content may be stale."));
-                long delay = error instanceof RemoteApi.Failure && ((RemoteApi.Failure) error).status == 429 ? 60_000 : Math.min(30_000, 1000L << nextAttempt);
-                handler.postDelayed(() -> stream(client, ticket, nextAttempt), delay);
+                long delay = error instanceof RemoteApi.Failure && ((RemoteApi.Failure) error).status == 429 ? 60_000
+                    : Math.min(30_000, reconnectBaseDelayMs << Math.min(nextAttempt, 5));
+                // A failed stream owns a client and worker that may never
+                // observe cancellation. Rebuild both instead of retrying on it.
+                handler.postDelayed(() -> {
+                    if (ticket == generation && screen.equals("detail")) connectEvents(true);
+                }, delay);
             });
         });
     }
@@ -6185,7 +6455,8 @@ public final class MainActivity extends Activity {
         // A bare "/find" is a valid request: it lists the files produced most
         // recently. Any other bare slash command is still not worth sending.
         boolean bareSlash = composed.matches("(?i)^/[a-z]+$") && !composed.equalsIgnoreCase("/find");
-        boolean hasMessage = ((!composed.isEmpty() && !bareSlash) || !selectedImages.isEmpty() || !selectedDocuments.isEmpty());
+        boolean hasMessage = ((!composed.isEmpty() && !bareSlash) || !selectedImages.isEmpty() || !selectedDocuments.isEmpty()
+                || !selectedConversationAttachments.isEmpty());
         boolean busy = remoteBusy();
         boolean queueing = canQueue && editingSeq <= 0 && (busy || remoteQueue.length() > 0);
         boolean findWhileBusy = busy && composed.matches("(?is)^/find(?:\\s.*)?$");
@@ -7049,20 +7320,27 @@ public final class MainActivity extends Activity {
         String prompt = composer.getText().toString(), target = conversationId, address = credentials.optString("address"), server = instance;
         ArrayList<String> images = new ArrayList<>(selectedImages);
         ArrayList<JSONObject> documents = new ArrayList<>(selectedDocuments);
+        ArrayList<JSONObject> conversations = new ArrayList<>(selectedConversationAttachments);
         EditText input = composer;
         locationConsent.request(prompt, computerName(credentials) + tr("（电脑及其模型服务商；会保存到会话历史）", " (computer and its model provider; saved in conversation history)"), context -> {
             if (input == composer && prompt.equals(input.getText().toString()) && target.equals(conversationId)
                     && address.equals(credentials.optString("address")) && server.equals(instance)
-                    && images.equals(selectedImages) && documents.equals(selectedDocuments)) sendMessage(context);
+                    && images.equals(selectedImages) && documents.equals(selectedDocuments)
+                    && conversations.equals(selectedConversationAttachments)) sendMessage(context);
         });
     }
 
     private void sendMessage(String locationContext) {
         if (!connected || !controlAllowed || remoteBusy() && (!canQueue || editingSeq > 0) || commandBusy || (pendingCommand() != null) || awaitingSentMessage()) return;
         String prompt = composer.getText().toString();
-        if (loadingImages || (prompt.trim().isEmpty() && selectedImages.isEmpty() && selectedDocuments.isEmpty())) return;
+        if (loadingImages || (prompt.trim().isEmpty() && selectedImages.isEmpty() && selectedDocuments.isEmpty()
+                && selectedConversationAttachments.isEmpty())) return;
         try {
             ChatAttachments.validateRemote(this, selectedImages, selectedDocuments, canAttachments, canFileAttachments, canMultiImage);
+            if (!selectedConversationAttachments.isEmpty() && !(canConversationAttachments && canAttachments))
+                throw new IOException(tr("附加会话记录需要更新并重启电脑端。", "Update and restart the desktop to attach conversations."));
+            if (selectedImages.size() + selectedDocuments.size() + selectedConversationAttachments.size() > ChatAttachments.MAX_COUNT)
+                throw new IOException(tr("每条消息最多 20 个附件。", "Up to 20 attachments per message."));
             boolean editing = editingSeq > 0;
             JSONObject payload = command(editing ? "resend" : "send").put("prompt", (prompt.trim().isEmpty() ? tr("请查看这些附件。", "Please review these attachments.") : prompt) + locationContext).put("expectedSeq", conversationSeq);
             if (editing) payload.put("editSeq", editingSeq);
@@ -7070,6 +7348,8 @@ public final class MainActivity extends Activity {
             if ((canAttachments || canFileAttachments) && (!selectedImages.isEmpty() || !selectedDocuments.isEmpty())) payload.put("attachments", ChatAttachments.remote(selectedImages, selectedDocuments));
             else if (selectedImages.size() == 1) payload.put("image", selectedImages.get(0));
             else if (!selectedImages.isEmpty()) payload.put("images", new JSONArray(selectedImages));
+            if (!selectedConversationAttachments.isEmpty()) payload.put("conversations", ChatAttachments.conversations(selectedConversationAttachments));
+            if (!selectedConversationAttachments.isEmpty()) payload.put("conversationDetails", ChatAttachments.conversationDetails(selectedConversationAttachments));
             submitCommand(payload);
         }
         catch (Exception error) { reportError("无法保存操作，请重试。", "Could not save the operation. Retry.", error); }
@@ -7335,7 +7615,7 @@ public final class MainActivity extends Activity {
             ((ChatScrollView) scroll).followOutput();
             outgoingMessage = pending;
             editingSeq = -1; editingText = "";
-            composer.setText(""); selectedImages.clear(); selectedDocuments.clear(); renderImage();
+            composer.setText(""); selectedImages.clear(); selectedDocuments.clear(); selectedConversationAttachments.clear(); renderImage();
             persistDraft();
             outgoingState("sending");
             ScrollView sentScroll = scroll;
@@ -7760,6 +8040,8 @@ public final class MainActivity extends Activity {
                     if (payload.has("editSeq") && conversationId.equals(target)) editingSeq = payload.optLong("editSeq");
                     composer.setText(outgoingMessage.optString("draft", payload.optString("prompt")));
                     ChatAttachments.restore(payload, selectedImages, selectedDocuments);
+                    try { ChatAttachments.restoreConversations(payload, selectedConversationAttachments); }
+                    catch (Exception error) { selectedConversationAttachments.clear(); }
                     imageConversation = conversationId; imageComputer = credentials.optString("address"); renderImage();
                     persistDraft();
                     outgoingState("failed");

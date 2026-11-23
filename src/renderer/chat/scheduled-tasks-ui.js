@@ -5,6 +5,7 @@ function createScheduledTasksUI({ $, context, setStatus }) {
   let sessionId = null, editing = null, pending = false, refreshSequence = 0, toggleSessionId = null;
   const translate = text => window.CamelliaI18n.t(text);
   const scheduling = window.CamelliaTaskSchedule;
+  $('taskHours').max = scheduling.MAX_TASK_HOURS;
   const localInput = at => {
     const value = new Date(at);
     return new Date(value.getTime() - value.getTimezoneOffset() * 60000).toISOString().slice(0, 16);

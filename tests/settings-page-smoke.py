@@ -73,9 +73,7 @@ with sync_playwright() as playwright:
     expect(page.locator('#pythonCard')).to_be_hidden()
     expect(page.locator('#contextCapacityPanel, #contextProbeDialog')).to_have_count(0)
 
-    # Review defaults are one topic: the heading and its six controls share a
-    # group, so they get one divider instead of a rule under every row.
-    expect(page.locator('#modelsPage > .settings-group[data-settings-group=review-defaults] .setting-row')).to_have_count(7)
+    expect(page.locator('#modelsPage > .settings-group[data-settings-group=review-defaults] .setting-row')).to_have_count(4)
     # One model and one reasoning-level menu per engine, aligned in one grid.
     expect(page.locator('#quickSwitchModels .quick-switch-model')).to_have_count(6)
     expect(page.locator('#quickSwitchModels .quick-switch-level')).to_have_count(6)

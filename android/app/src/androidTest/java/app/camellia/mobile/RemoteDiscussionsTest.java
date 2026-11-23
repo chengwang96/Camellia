@@ -78,6 +78,48 @@ public class RemoteDiscussionsTest extends InstrumentationTestCase {
         });
     }
 
+    public void testMemberSheetUsesAlignedActionsAndSeparateAddEntry() throws Exception {
+        offlineFixture();
+        String secondId = "00000000-0000-0000-0000-000000000003";
+        JSONObject second = new JSONObject().put("id", secondId).put("name", "K3.1 Pro").put("engine", "kimi")
+            .put("connection", "subscription").put("model", "kimi-code/k3.1-pro").put("identityPrompt", "")
+            .put("verificationError", "Refresh this Kimi account in Settings before sending.")
+            .put("capability", new JSONObject().put("available", false));
+        JSONObject next = snapshot(11, "Initial title", "Initial reply");
+        next.getJSONObject("group").getJSONArray("participants").put(second);
+        ui(() -> invoke("apply", new Class<?>[]{JSONObject.class, boolean.class}, next, false));
+        ui(() -> view("discussionMembers").performClick());
+        waitFor(() -> {
+            try {
+                View verify = dialogView("discussionVerify:" + memberId);
+                return verify != null && verify.getWidth() > 0;
+            } catch (Exception notShownYet) {
+                return false;
+            }
+        });
+        Thread.sleep(1200);
+        screenshot("discussion-members.png");
+        ui(() -> {
+            View card = dialogView("discussionMemberCard:" + memberId);
+            View verify = dialogView("discussionVerify:" + memberId);
+            View remove = dialogView("discussionRemove:" + memberId);
+            View add = dialogView("discussionAddMember");
+            assertNotNull(card); assertNotNull(verify); assertNotNull(remove); assertNotNull(add);
+            assertNotNull(dialogView("discussionMemberCard:" + secondId));
+            assertNotNull(dialogView("discussionMemberStatus:" + secondId));
+            assertTrue("Member actions must be equal width", Math.abs(verify.getWidth() - remove.getWidth()) <= 1);
+            assertEquals(verify.getTop(), remove.getTop()); assertEquals(verify.getBottom(), remove.getBottom());
+            float density = activity.getResources().getDisplayMetrics().density;
+            assertTrue(verify.getHeight() >= Math.round(48 * density));
+            assertTrue(remove.getHeight() >= Math.round(48 * density));
+            assertTrue(add.getHeight() >= Math.round(48 * density));
+            assertTrue("Add member must remain outside the member card", add.getTop() >= card.getBottom());
+            android.widget.Button close = ((AlertDialog) field(activity, "dialog")).getButton(AlertDialog.BUTTON_NEGATIVE);
+            assertNotNull(close);
+            assertTrue(close.getMinimumHeight() >= Math.round(52 * density));
+        });
+    }
+
     public void testDiscussionTypingAndConnectionOwnerSurviveBothTabletRotations() throws Exception {
         NativeActivityCleanup.prepareTabletLandscape(getInstrumentation());
         offlineFixture();

@@ -57,16 +57,6 @@ function fixture(t, overrides = {}) {
     restart: () => { manager = new SharedConversations(args); return manager; } };
 }
 
-async function waitForReview(h, parentId, predicate = () => true) {
-  const deadline = Date.now() + 10000;
-  while (Date.now() < deadline) {
-    const review = h.manager.reviews.list(parentId).find(predicate);
-    if (review) return review;
-    await new Promise(resolve => setTimeout(resolve, 5));
-  }
-  assert.fail('Timed out waiting for the review to start');
-}
-
 async function waitForReviewResult(h, reviewId) {
   const deadline = Date.now() + 10000;
   while (Date.now() < deadline) {
@@ -391,7 +381,9 @@ test('agent-requested reviews require explicit consent and replay one request id
   execFileSync('git', ['init'], { cwd: workspace, windowsHide: true });
   fs.writeFileSync(path.join(workspace, 'app.js'), 'const value = 1;\n');
   const parent = h.manager.create('claude', null, 'Agent review parent', workspace);
-  assert.equal(h.manager.dynamicGoalTools(parent).some(tool => tool.name === 'camellia_review_start'), true);
+  const startTool = h.manager.dynamicGoalTools(parent).find(tool => tool.name === 'camellia_review_start');
+  assert.ok(startTool);
+  assert.equal(Object.hasOwn(startTool.inputSchema.properties, 'max_tokens'), false);
   assert.equal(h.manager.dynamicGoalTools(parent).some(tool => tool.name === 'camellia_review_status'), false);
   assert.match(h.manager.dynamicGoalInstructions(parent), /explicitly asks another engine or model/);
   assert.match(h.manager.dynamicGoalInstructions(parent), /consent request/);
@@ -399,7 +391,6 @@ test('agent-requested reviews require explicit consent and replay one request id
     sessionId: parent.id, allowAgentReviews: true, reviewerEngine: 'codex', mode: 'adversarial',
   });
   assert.equal(saved.settings.allowAgentReviews, true);
-  assert.equal(saved.settings.gate, false);
   assert.equal(h.manager.dynamicGoalTools(parent).some(tool => tool.name === 'camellia_review_status'), true);
   assert.match(h.manager.dynamicGoalInstructions(parent), /call camellia_review_start/);
   const run = await h.manager.send('claude', { sessionId: parent.id, prompt: 'Review this with Codex.' });
@@ -423,6 +414,56 @@ test('agent-requested reviews require explicit consent and replay one request id
   const cancelled = await call('camellia_review_cancel', { review_id: started.review.id });
   assert.equal(cancelled.review.status, 'cancelled');
   h.finish('claude', 'success', 'Parent finished', h.sent.find(entry => entry.engine === 'claude').session);
+  await run.done;
+  await h.flush();
+});
+
+test('the review tool refuses turns that do not ask for a review', async t => {
+  const h = fixture(t, {
+    portableSkills: true,
+    createGoalBridge: async options => ({ call: options.call, close() {} }),
+  });
+  t.after(() => h.manager.closeGoalTools());
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'camellia-review-intent-'));
+  t.after(() => removeTree(workspace));
+  execFileSync('git', ['init'], { cwd: workspace, windowsHide: true });
+  fs.writeFileSync(path.join(workspace, 'app.js'), 'const value = 1;\n');
+  const parent = h.manager.create('claude', null, 'Unrelated work', workspace);
+  const run = await h.manager.send('claude', { sessionId: parent.id, prompt: '接手内务总管，整理今天的待办。' });
+  const token = h.manager.active.get(parent.id).goalRunToken;
+  const refused = await h.manager.callGoalTool(parent.id, 'camellia_review_start',
+    { run_token: token, request_id: 'noop', focus: 'noop' });
+  assert.equal(refused.ok, false);
+  assert.equal(refused.consent_required, undefined);
+  assert.match(refused.error, /does not explicitly ask for a review/);
+  assert.ok(!h.events.some(event => event.type === 'conversation:review-consent'));
+  assert.equal(h.manager.reviews.pendingConsent(parent.id), null);
+  h.finish('claude', 'success', 'Done', h.sent.find(entry => entry.engine === 'claude').session);
+  await run.done;
+  await h.flush();
+});
+
+test('the review tool refuses a review request when nothing changed', async t => {
+  const h = fixture(t, {
+    portableSkills: true,
+    createGoalBridge: async options => ({ call: options.call, close() {} }),
+  });
+  t.after(() => h.manager.closeGoalTools());
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'camellia-review-empty-'));
+  t.after(() => removeTree(workspace));
+  execFileSync('git', ['init'], { cwd: workspace, windowsHide: true });
+  execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '--allow-empty', '-m', 'clean'],
+    { cwd: workspace, windowsHide: true });
+  const parent = h.manager.create('claude', null, 'Clean agent review', workspace);
+  const run = await h.manager.send('claude', { sessionId: parent.id, prompt: 'Ask Codex to review this.' });
+  const token = h.manager.active.get(parent.id).goalRunToken;
+  const refused = await h.manager.callGoalTool(parent.id, 'camellia_review_start',
+    { run_token: token, request_id: 'empty-1', focus: 'check data loss' });
+  assert.equal(refused.ok, false);
+  assert.equal(refused.consent_required, undefined);
+  assert.match(refused.error, /no reviewable changes/i);
+  assert.ok(!h.events.some(event => event.type === 'conversation:review-consent'));
+  h.finish('claude', 'success', 'Done', h.sent.find(entry => entry.engine === 'claude').session);
   await run.done;
   await h.flush();
 });
@@ -515,7 +556,7 @@ test('restart marks an in-flight persisted review as interrupted and clears its 
   assert.equal(fs.existsSync(snapshot), false);
 });
 
-test('review token budgets prevent an over-budget pass from completing', async t => {
+test('Camellia supplies the review token limit and rejects an over-limit pass', async t => {
   const h = fixture(t);
   const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'camellia-review-budget-'));
   t.after(() => removeTree(workspace));
@@ -523,8 +564,9 @@ test('review token budgets prevent an over-budget pass from completing', async t
   fs.writeFileSync(path.join(workspace, 'app.js'), 'const value = 1;\n');
   const parent = h.manager.create('claude', null, 'Review budget', workspace);
   const started = await h.manager.reviews.start(parent.id,
-    { reviewerEngine: 'codex', requestId: 'budget', maxTokens: 1000 });
+    { reviewerEngine: 'codex', requestId: 'budget', maxTokens: 1000000 });
   const review = h.manager.reviews.get(started.review.id);
+  assert.equal(review.maxTokens, 50000);
   h.manager.reviews.report(started.review.childConversationId, {
     review_id: review.id, target_hash: review.target.targetHash, verdict: 'pass',
     summary: 'Looks correct', findings: [],
@@ -532,14 +574,14 @@ test('review token budgets prevent an over-budget pass from completing', async t
   const session = h.sent.at(-1).session;
   session.running = false;
   h.manager.capture('codex', { type: 'result', subtype: 'success', result: 'Reported', session_id: session.sessionId,
-    runId: session.gen, usage: { input_tokens: 1200, output_tokens: 20 } });
+    runId: session.gen, usage: { input_tokens: review.maxTokens, output_tokens: 20 } });
   const result = await waitForReviewResult(h, review.id);
   assert.equal(result.status, 'failed');
   assert.match(result.error, /token budget/);
   assert.equal(result.report.verdict, 'pass');
 });
 
-test('review token budgets stop a reviewer as soon as live usage exceeds the limit', async t => {
+test('Camellia stops a reviewer when live usage exceeds its internal limit', async t => {
   const h = fixture(t);
   const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'camellia-review-live-budget-'));
   t.after(() => removeTree(workspace));
@@ -551,6 +593,9 @@ test('review token budgets stop a reviewer as soon as live usage exceeds the lim
   const session = h.sent.at(-1).session;
   h.manager.capture('codex', { type: 'gui:usage', conversationId: started.review.childConversationId,
     session_id: session.sessionId, runId: session.gen, usage: { input_tokens: 1500 } });
+  assert.equal(h.manager.reviews.result(started.review.id).status, 'running');
+  h.manager.capture('codex', { type: 'gui:usage', conversationId: started.review.childConversationId,
+    session_id: session.sessionId, runId: session.gen, usage: { input_tokens: started.review.maxTokens + 1 } });
   await h.flush();
   const result = await h.manager.reviews.result(started.review.id);
   assert.equal(result.status, 'failed');
@@ -558,92 +603,63 @@ test('review token budgets stop a reviewer as soon as live usage exceeds the lim
   assert.equal(h.manager.get(started.review.childConversationId).interrupted, true);
 });
 
-test('review gate never treats a stale or failed review as a pass', async t => {
+test('a requested review becomes stale if the workspace changes', async t => {
   const h = fixture(t);
-  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'camellia-review-stale-gate-'));
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'camellia-review-stale-'));
   t.after(() => removeTree(workspace));
   execFileSync('git', ['init'], { cwd: workspace, windowsHide: true });
   fs.writeFileSync(path.join(workspace, 'app.js'), 'const value = 1;\n');
-  const parent = h.manager.create('claude', null, 'Stale gate', workspace);
-  await h.manager.command('claude', 'review-save-settings',
-    { sessionId: parent.id, gate: true, reviewerEngine: 'codex' });
-  const gate = h.manager.reviews.gate(parent.id, { goalId: 'goal-stale' });
-  const review = await waitForReview(h, parent.id);
-  const hash = h.manager.reviews.get(review.id).target.targetHash;
+  const parent = h.manager.create('claude', null, 'Stale review', workspace);
+  const { review } = await h.manager.reviews.start(parent.id, { reviewerEngine: 'codex' });
   h.manager.reviews.report(review.childConversationId, {
-    review_id: review.id, target_hash: hash, verdict: 'pass', summary: 'Looks fine', findings: [],
+    review_id: review.id, target_hash: review.target.targetHash, verdict: 'pass', summary: 'Looks fine', findings: [],
   });
   fs.appendFileSync(path.join(workspace, 'app.js'), 'const changed = true;\n');
   h.finish('codex', 'success', 'Pass', h.sent.filter(entry => entry.engine === 'codex').at(-1).session);
-  const result = await gate;
-  assert.equal(result.passed, false);
-  assert.match(result.error, /stale/i);
+  const result = await waitForReviewResult(h, review.id);
+  assert.equal(result.status, 'stale');
+  assert.match(result.error, /workspace changed/i);
   await h.flush();
 });
 
-test('review gate blocks Goal completion on findings and accepts a fresh pass', async t => {
+test('Goal completion still uses its verifier despite a legacy review gate', async t => {
   const h = fixture(t, {
     portableSkills: true,
     createGoalBridge: async options => ({ call: options.call, close() {} }),
   });
   t.after(() => h.manager.closeGoalTools());
-  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'camellia-review-gate-'));
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'camellia-goal-verifier-'));
   t.after(() => removeTree(workspace));
   execFileSync('git', ['init'], { cwd: workspace, windowsHide: true });
   fs.writeFileSync(path.join(workspace, 'app.js'), 'const value = 1;\n');
-  const parent = h.manager.create('claude', null, 'Review gate', workspace);
-  await h.manager.command('claude', 'review-save-settings', {
-    sessionId: parent.id, gate: true, reviewerEngine: 'codex', mode: 'standard',
-  });
+  h.setConfig({ reviewDefaults: { gate: true, reviewerEngine: 'codex' } });
+  const parent = h.manager.create('claude', null, 'Verified Goal', workspace);
+  parent.reviewSettings = { gate: true, maxTokens: 1000 };
+  h.manager.save(parent);
+  assert.equal(Object.hasOwn(h.manager.reviews.settings(parent.id), 'gate'), false);
   const run = await h.manager.send('claude', { sessionId: parent.id, prompt: 'Implement and complete the goal.' });
-  const parentSession = h.sent.find(entry => entry.engine === 'claude').session;
   const token = h.manager.active.get(parent.id).goalRunToken;
   const call = (name, args) => h.manager.callGoalTool(parent.id, name, { run_token: token, ...args });
   assert.equal(call('camellia_create_goal', {
     objective: 'Ship the fix', user_request: 'Implement and complete the goal.',
   }).ok, true);
-  const firstCompletion = call('camellia_update_goal', { status: 'complete', reason: 'The fix is ready.' });
-  const firstReview = await waitForReview(h, parent.id);
-  assert.ok(firstReview);
-  assert.equal(firstReview.reviewerEngine, 'codex');
-  const targetHash = h.manager.reviews.get(firstReview.id).target.targetHash;
-  h.manager.reviews.report(firstReview.childConversationId, {
-    review_id: firstReview.id, target_hash: targetHash, verdict: 'changes_requested',
-    summary: 'The retry can duplicate work.',
-    findings: [{ id: 'f1', severity: 'high', evidence: 'The side effect precedes the retry boundary.',
-      recommendation: 'Persist the boundary first.', file: 'app.js', line: 1 }],
-  });
-  h.finish('codex', 'success', 'Report submitted', h.sent.filter(entry => entry.engine === 'codex').at(-1).session);
-  const blocked = await firstCompletion;
-  assert.equal(blocked.ok, false);
-  assert.match(blocked.error, /Review gate did not pass/);
-  assert.match(blocked.error, /retry can duplicate work/);
-  assert.equal(h.manager.active.get(parent.id).goalReport, undefined);
-
-  const sends = h.sent.length;
-  const repeated = await call('camellia_update_goal', { status: 'complete', reason: 'Try again.' });
-  assert.equal(repeated.ok, false);
-  assert.equal(h.sent.length, sends);
-
-  fs.appendFileSync(path.join(workspace, 'app.js'), 'const persisted = true;\n');
-  const secondCompletion = call('camellia_update_goal', { status: 'complete', reason: 'The finding is fixed.' });
-  const secondReview = await waitForReview(h, parent.id, review => review.id !== firstReview.id);
-  assert.notEqual(secondReview.id, firstReview.id);
-  const secondHash = h.manager.reviews.get(secondReview.id).target.targetHash;
-  h.manager.reviews.report(secondReview.childConversationId, {
-    review_id: secondReview.id, target_hash: secondHash, verdict: 'pass',
-    summary: 'The retry boundary is persisted.', findings: [],
-  });
-  h.finish('codex', 'success', 'Passing report submitted', h.sent.filter(entry => entry.engine === 'codex').at(-1).session);
-  const passed = await secondCompletion;
-  assert.equal(passed.ok, true);
-  assert.equal(passed.status, 'verification_pending');
-  await h.manager.cancel({ sessionId: parent.id });
+  const reported = call('camellia_update_goal', { status: 'complete', reason: 'The fix is ready.' });
+  assert.equal(reported.status, 'verification_pending');
+  h.finish('claude', 'success', 'Implemented');
   await run.done;
   await h.flush();
+  const goal = h.manager.goalFor(parent.id);
+  assert.notEqual(goal.view().phase, 'complete');
+  const verifier = h.sent.at(-1);
+  assert.notEqual(verifier.opts.conversationId, parent.id);
+  assert.equal(h.manager.get(verifier.opts.conversationId).title, 'Goal verification');
+  assert.deepEqual(h.manager.reviews.list(parent.id), []);
+  h.finish('claude', 'success', '<verify:pass> checked', verifier.session);
+  await h.flush();
+  assert.equal(goal.view().phase, 'complete');
 });
 
-test('manual Goal completion uses the review gate and accepts an explicit override', async t => {
+test('manual Goal completion ignores legacy review gates', async t => {
   const h = fixture(t, {
     portableSkills: true,
     createGoalBridge: async options => ({ call: options.call, close() {} }),
@@ -653,89 +669,24 @@ test('manual Goal completion uses the review gate and accepts an explicit overri
   t.after(() => removeTree(workspace));
   execFileSync('git', ['init'], { cwd: workspace, windowsHide: true });
   fs.writeFileSync(path.join(workspace, 'app.js'), 'const value = 1;\n');
-  const parent = h.manager.create('claude', null, 'Manual gate', workspace);
-  await h.manager.command('claude', 'review-save-settings',
-    { sessionId: parent.id, gate: true, reviewerEngine: 'codex', mode: 'standard' });
+  h.setConfig({ reviewDefaults: { gate: true, reviewerEngine: 'codex' } });
+  const parent = h.manager.create('claude', null, 'Manual Goal', workspace);
   const run = await h.manager.send('claude', { sessionId: parent.id, prompt: 'Finish the goal.' });
   const token = h.manager.active.get(parent.id).goalRunToken;
   const created = h.manager.callGoalTool(parent.id, 'camellia_create_goal',
     { run_token: token, objective: 'Finish safely', user_request: 'Finish the goal.' });
   assert.equal(created.ok, true);
-  const completion = h.manager.command('claude', 'goal-complete', { sessionId: parent.id });
-  const review = await waitForReview(h, parent.id);
-  assert.ok(review);
-  const hash = h.manager.reviews.get(review.id).target.targetHash;
-  h.manager.reviews.report(review.childConversationId, {
-    review_id: review.id, target_hash: hash, verdict: 'changes_requested',
-    summary: 'A manual completion still needs a fix.',
-    findings: [{ id: 'f1', severity: 'high', file: 'app.js', line: 1,
-      evidence: 'The boundary is not persisted.', recommendation: 'Persist it.' }],
-  });
-  h.finish('codex', 'success', 'Review complete', h.sent.filter(entry => entry.engine === 'codex').at(-1).session);
-  const blocked = await completion;
-  assert.equal(blocked.ok, false);
-  assert.match(blocked.error, /Review gate did not pass/);
-  const goal = h.manager.goalFor(parent.id);
-  assert.notEqual(goal.view().phase, 'complete');
-  const override = await h.manager.command('claude', 'review-gate-override',
-    { sessionId: parent.id, goalId: goal.goal.id, reason: 'Ship this turn' });
-  assert.equal(override.ok, true);
-  const sends = h.sent.length;
   const completed = await h.manager.command('claude', 'goal-complete', { sessionId: parent.id });
   assert.equal(completed.ok, true, completed.error);
-  assert.equal(completed.overridden, true);
-  assert.equal(goal.view().phase, 'complete');
-  assert.equal(h.sent.length, sends);
+  assert.equal(h.manager.goalFor(parent.id).view().phase, 'complete');
+  assert.deepEqual(h.manager.reviews.list(parent.id), []);
+  assert.equal(h.sent.length, 1);
   await h.manager.cancel({ sessionId: parent.id });
   await run.done;
   await h.flush();
 });
 
-test('review gate allows one initial review and one re-review before requiring an override', async t => {
-  const h = fixture(t, {
-    portableSkills: true,
-    createGoalBridge: async options => ({ call: options.call, close() {} }),
-  });
-  t.after(() => h.manager.closeGoalTools());
-  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'camellia-review-gate-limit-'));
-  t.after(() => removeTree(workspace));
-  execFileSync('git', ['init'], { cwd: workspace, windowsHide: true });
-  fs.writeFileSync(path.join(workspace, 'app.js'), 'const value = 1;\n');
-  const parent = h.manager.create('claude', null, 'Gate limit', workspace);
-  await h.manager.command('claude', 'review-save-settings',
-    { sessionId: parent.id, gate: true, reviewerEngine: 'codex' });
-  const run = await h.manager.send('claude', { sessionId: parent.id, prompt: 'Finish the bounded goal.' });
-  const token = h.manager.active.get(parent.id).goalRunToken;
-  const call = (name, args) => h.manager.callGoalTool(parent.id, name, { run_token: token, ...args });
-  call('camellia_create_goal', { objective: 'Finish', user_request: 'Finish the bounded goal.' });
-  const seenReviews = new Set();
-  for (let pass = 1; pass <= 2; pass++) {
-    const pending = call('camellia_update_goal', { status: 'complete', reason: 'Pass ' + pass });
-    const review = await waitForReview(h, parent.id, candidate => !seenReviews.has(candidate.id));
-    seenReviews.add(review.id);
-    const hash = h.manager.reviews.get(review.id).target.targetHash;
-    h.manager.reviews.report(review.childConversationId, {
-      review_id: review.id, target_hash: hash, verdict: 'changes_requested',
-      summary: 'Pass ' + pass + ' needs work',
-      findings: [{ id: 'f1', severity: 'high', file: 'app.js', line: 1,
-        evidence: 'Still incomplete.', recommendation: 'Continue.' }],
-    });
-    h.finish('codex', 'success', 'Reported', h.sent.filter(entry => entry.engine === 'codex').at(-1).session);
-    const blocked = await pending;
-    assert.equal(blocked.ok, false);
-    fs.appendFileSync(path.join(workspace, 'app.js'), 'const pass' + pass + ' = true;\n');
-  }
-  const sends = h.sent.length;
-  const limited = await call('camellia_update_goal', { status: 'complete', reason: 'Third try' });
-  assert.equal(limited.ok, false);
-  assert.match(limited.error, /one initial review and one re-review/);
-  assert.equal(h.sent.length, sends);
-  await h.manager.cancel({ sessionId: parent.id });
-  await run.done;
-  await h.flush();
-});
-
-test('turn review pauses the next message until the automatic review settles', async t => {
+test('legacy turn review settings neither start reviews nor block new messages or scheduled checks', async t => {
   const h = fixture(t, {
     portableSkills: true,
     createGoalBridge: async options => ({ call: options.call, close() {} }),
@@ -745,31 +696,26 @@ test('turn review pauses the next message until the automatic review settles', a
   t.after(() => removeTree(workspace));
   execFileSync('git', ['init'], { cwd: workspace, windowsHide: true });
   fs.writeFileSync(path.join(workspace, 'app.js'), 'const value = 1;\n');
-  const parent = h.manager.create('claude', null, 'Turn review', workspace);
-  await h.manager.command('claude', 'review-save-settings',
-    { sessionId: parent.id, turnGate: true, reviewerEngine: 'codex', mode: 'standard' });
-  const first = await h.manager.send('claude', { sessionId: parent.id, prompt: 'Change the implementation.' });
+  h.setConfig({ reviewDefaults: { turnGate: true, reviewerEngine: 'codex' } });
+  const parent = h.manager.create('claude', null, 'Legacy turn review', workspace);
+  parent.reviewSettings = { turnGate: true, maxTokens: 1000 };
+  parent.pendingTurnReview = { state: 'running', userSeq: 1, reviewId: 'legacy-review' };
+  h.manager.save(parent);
+  const manager = h.restart();
+  assert.equal(manager.taskWaitReason(parent.id), null);
+  const { settings } = manager.reviews.saveSettings(parent.id, { turnGate: true, maxTokens: 1000, mode: 'adversarial' });
+  assert.deepEqual(settings, { allowAgentReviews: false, reviewerEngine: 'codex', model: '', mode: 'adversarial', allowSameEngine: false });
+  const first = await manager.send('claude', { sessionId: parent.id, prompt: 'Change the implementation.' });
   const parentSession = h.sent.find(entry => entry.engine === 'claude').session;
   h.finish('claude', 'success', 'Changed', parentSession);
   await first.done;
-  const review = await waitForReview(h, parent.id);
-  assert.ok(review);
-  assert.equal(h.manager.get(parent.id).pendingTurnReview.reviewId, review.id);
-  await assert.rejects(h.manager.send('claude', { sessionId: parent.id, prompt: 'Next request' }),
-    /completed turn review/);
-  const hash = h.manager.reviews.get(review.id).target.targetHash;
-  h.manager.reviews.report(review.childConversationId, {
-    review_id: review.id, target_hash: hash, verdict: 'pass', summary: 'Turn is safe', findings: [],
-  });
-  h.finish('codex', 'success', 'Pass', h.sent.filter(entry => entry.engine === 'codex').at(-1).session);
-  await waitForReviewResult(h, review.id);
-  assert.equal(h.manager.get(parent.id).pendingTurnReview, undefined);
-  await h.manager.command('claude', 'review-save-settings',
-    { sessionId: parent.id, turnGate: false });
-  const second = await h.manager.send('claude', { sessionId: parent.id, prompt: 'Next request' });
+  assert.equal(manager.taskWaitReason(parent.id), null);
+  const second = await manager.send('claude', { sessionId: parent.id, prompt: 'Next request' });
   h.finish('claude', 'success', 'Done', h.sent.filter(entry => entry.engine === 'claude').at(-1).session);
   await second.done;
   await h.flush();
+  assert.deepEqual(h.sent.map(entry => entry.engine), ['claude', 'claude']);
+  assert.deepEqual(manager.reviews.list(parent.id), []);
 });
 
 test('retiring a resident portable summary removes it from the next context window and restore returns it', async t => {
@@ -5485,6 +5431,35 @@ test('Kimi queues the completed-turn title retry when the early request is still
   assert.equal(harness.manager.get(run.sessionId).title, '首轮补充标题');
   assert.equal(harness.manager.titleFollowUps.size, 0);
 });
+
+for (const engine of ['codex', 'antigravity', 'grok']) {
+  test(engine + ': subscription publishes the generated title while the first reply is still running', async t => {
+    const harness = fixture(t);
+    const driver = harness.drivers[engine];
+    driver.settings = () => ({ connection: 'subscription', model: engine + '-subscription' });
+    driver.titleDuringTurn = true;
+    const calls = [];
+    const title = Promise.withResolvers();
+    driver.generateTitle = ({ prompt, duringTurn }) => {
+      calls.push({ prompt, duringTurn });
+      return title.promise;
+    };
+    const visible = 'Investigate session switching during context compaction';
+    const run = await harness.manager.send(engine, { prompt: 'Hidden harness context', displayText: visible });
+    assert.equal(harness.manager.get(run.sessionId).titleSource, 'message');
+    assert.deepEqual(calls, [{ prompt: visible, duringTurn: true }]);
+
+    title.resolve('Compaction issue');
+    await harness.flush();
+    assert.equal(harness.sent[0].session.running, true);
+    const saved = JSON.parse(fs.readFileSync(harness.manager.file(run.sessionId)));
+    assert.equal(saved.title, 'Compaction issue');
+    assert.equal(saved.titleSource, 'model');
+    assert.ok(harness.events.some(event => event.type === 'conversation:title' && event.title === saved.title));
+    harness.finish(engine); await run.done; await harness.flush();
+    assert.equal(calls.length, 1);
+  });
+}
 
 test('attachment-only first turns name the visible file without exposing its path or hidden prompt', async t => {
   for (const engine of ENGINES) {

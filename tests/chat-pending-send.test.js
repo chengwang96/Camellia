@@ -19,7 +19,7 @@ function fixture() {
   const requests = [], requestEngines = [], replies = [], settings = deferred(), drafts = new Map(), cancellations = [], userTexts = [];
   const state = {
     sharedChat: true, context: { sessionId: 'conversation-a', workspaceId: 'workspace-a' }, sessionOpenSeq: 1,
-    sending: false, loadingSession: false, switchingEngine: false, handoffSessions: new Map(), running: false, conversationActivity: null,
+    sending: false, loadingSession: false, switchingEngine: false, handoffSessions: new Map(), manualCompactions: new Set(), running: false, conversationActivity: null,
     editingMessage: null, turnEl: null, harnessId: 'codex', loadedEngine: 'codex', pendingForkId: null, currentRunId: null, currentFastMode: false,
     input: { value: 'Continue' }, attachments: [], chatProfile: {}, statusText: '', eventsDuringRestore: [],
     messageQueue: [], messageQueuePaused: false, conversationQueues: new Map(), drainingQueue: false,

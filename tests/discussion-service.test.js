@@ -256,22 +256,29 @@ function autoVerification(h, verify) {
   };
 }
 
-test('adding members starts background verification and shares it with manual verification and first send', async t => {
+test('adding members stays local; sending commits immediately and shares one background check', async t => {
   const h = setup(t); let checks = 0, finish;
   autoVerification(h, () => { checks++; return new Promise(resolve => { finish = resolve; }); });
   const { group } = await h.service.call('create', { title: 'Automatic member checks' });
   const { bindings } = await h.service.call('catalog');
   const added = await h.service.call('add-member', { id: group.id, bindingId: bindings[0].id, name: 'First' });
   const first = added.group.participants[0];
-  assert.equal(added.group.verifying, true); assert.equal(first.verifying, true);
+  assert.equal(added.group.verifying, false); assert.equal(first.verifying, false);
   assert.equal(first.capability.available, false); assert.equal(first.verificationError, null);
   assert.equal(h.service.manager.get(group.id).participants.length, 1);
   assert.deepEqual(added.group.messages, []); assert.equal(h.calls.length, 0);
   await h.service.call('add-member', { id: group.id, bindingId: bindings[0].id, name: 'Second' });
+  assert.equal(checks, 0, 'Adding a member never spends model quota');
+  await h.service.call('send', { id: group.id, requestId: 'send-during-check', text: 'Ready when checked', participantIds: [first.id] });
+  for (let i = 0; i < 10 && !checks; i++) await tick();
+  const committed = (await h.service.call('load', { id: group.id })).group;
+  assert.equal(committed.messages.length, 1);
+  assert.equal(committed.deliveries[0].status, 'queued');
+  assert.equal(committed.verifying, true); assert.equal(committed.participants[0].verifying, true);
+  assert.equal(checks, 1); assert.equal(h.calls.length, 0);
   const manual = h.service.call('verify-member', { id: group.id, participantId: first.id });
-  const send = h.service.call('send', { id: group.id, requestId: 'send-during-check', text: 'Ready when checked', participantIds: [first.id] });
-  await tick(); assert.equal(checks, 1); assert.equal(h.calls.length, 0);
-  finish(); await Promise.all([manual, send]);
+  await tick(); assert.equal(checks, 1);
+  finish(); await manual;
   for (let i = 0; i < 20 && h.service.active; i++) await tick();
   const loaded = (await h.service.call('load', { id: group.id })).group;
   assert.equal(loaded.verifying, false);
@@ -282,37 +289,72 @@ test('adding members starts background verification and shares it with manual ve
   assert.equal(checks, 1, 'verified connections and reopening groups do not trigger more checks');
 });
 
-test('verified members send repeatedly without new checks, catalog preparation or a verification banner', async t => {
+test('verified members reply immediately while another selected member is still being checked', async t => {
+  const h = setup(t), secondBinding = { ...h.binding, model: 'test-model-2' };
+  h.service.getCatalog = () => [{ binding: h.binding, label: 'First model' }, { binding: secondBinding, label: 'Second model' }];
+  let finish, checks = 0;
+  autoVerification(h, binding => {
+    checks++;
+    if (binding.model === h.binding.model) return new Promise(resolve => { finish = resolve; });
+  });
+  const { group } = await h.service.call('create', { title: 'Mixed readiness' });
+  const { bindings } = await h.service.call('catalog');
+  const first = (await h.service.call('add-member', { id: group.id, bindingId: bindings[0].id, name: 'Waiting' })).group.participants.at(-1);
+  const second = (await h.service.call('add-member', { id: group.id, bindingId: bindings[1].id, name: 'Ready' })).group.participants.at(-1);
+  await h.service.call('verify-member', { id: group.id, participantId: second.id });
+  assert.equal(checks, 1);
+  await h.service.call('send', { id: group.id, requestId: 'mixed', text: 'Answer as soon as each connection is ready',
+    participantIds: [first.id, second.id], mode: 'parallel' });
+  for (let i = 0; i < 20 && h.calls.length < 1; i++) await tick();
+  const pending = (await h.service.call('load', { id: group.id })).group;
+  assert.equal(pending.messages.filter(message => message.role === 'user').length, 1);
+  assert.equal(pending.deliveries.find(d => d.participantId === second.id).status, 'completed');
+  assert.equal(pending.deliveries.find(d => d.participantId === first.id).status, 'queued');
+  assert.equal(pending.participants.find(p => p.id === first.id).verifying, true);
+  assert.equal(h.calls.length, 1);
+  finish();
+  for (let i = 0; i < 20 && h.service.active; i++) await tick();
+  const settled = (await h.service.call('load', { id: group.id })).group;
+  assert.ok(settled.deliveries.every(d => d.status === 'completed'));
+  assert.equal(h.calls.length, 2);
+  await h.service.shutdown();
+});
+
+test('the first send checks once, then verified members send without more checks or verification banners', async t => {
   const h = setup(t); let checks = 0;
   autoVerification(h, async () => { checks++; });
   const group = await createMembers(h.service, 1), memberId = group.participants[0].id;
-  await h.service.memberChecks.get(memberId)?.promise;
-  assert.equal(checks, 1);
+  assert.equal(checks, 0);
+  await h.service.call('send', { id: group.id, requestId: 'initial', text: 'Start the discussion', participantIds: [memberId] });
+  for (let i = 0; i < 20 && h.service.active; i++) await tick();
+  assert.equal(checks, 1); assert.equal(h.calls.length, 1);
   const events = []; let catalogReads = 0;
   const catalog = h.service.getCatalog;
   h.service.getCatalog = () => { catalogReads++; return catalog(); };
   h.service.onEvent = () => events.push(h.service.view(h.service.manager.get(group.id)).verifying);
-  for (const requestId of ['first', 'second']) {
+  for (const requestId of ['second', 'third']) {
     await h.service.call('send', { id: group.id, requestId, text: 'Continue the discussion', participantIds: [memberId] });
     for (let i = 0; i < 20 && h.service.active; i++) await tick();
   }
-  assert.equal(h.calls.length, 2);
-  assert.equal(checks, 1, 'Only adding the member verifies the connection');
+  assert.equal(h.calls.length, 3);
+  assert.equal(checks, 1, 'Only the first send verifies the connection');
   assert.equal(catalogReads, 0, 'Unchanged verified bindings dispatch directly');
   assert.ok(events.length > 0);
-  assert.ok(events.every(verifying => verifying === false), 'Normal sends never claim a verification is running');
+  assert.ok(events.every(verifying => verifying === false), 'Later sends never claim a verification is running');
   await h.service.shutdown();
 });
 
-test('an automatic verification failure preserves the member and error until an explicit retry', async t => {
+test('a failed background check keeps the sent message, preserves its error, and does not retry on its own', async t => {
   const h = setup(t); let checks = 0;
   autoVerification(h, async () => { if (++checks === 1) throw new Error('Selected account quota is exhausted.'); });
-  const group = await createMembers(h.service, 1);
+  const group = await createMembers(h.service, 1), participantId = group.participants[0].id;
+  await h.service.call('send', { id: group.id, requestId: 'check-failure', text: 'This must not disappear', participantIds: [participantId] });
   for (let i = 0; i < 10 && h.service.active; i++) await tick();
   const loaded = (await h.service.call('load', { id: group.id })).group, member = loaded.participants[0];
   assert.equal(loaded.participants.length, 1); assert.equal(loaded.verifying, false);
   assert.equal(member.capability.available, false); assert.equal(member.verificationError, 'Selected account quota is exhausted.');
-  assert.deepEqual(loaded.messages, []); assert.equal(h.calls.length, 0);
+  assert.equal(loaded.messages.length, 1); assert.equal(loaded.deliveries[0].status, 'failed');
+  assert.equal(h.calls.length, 0);
   await h.service.call('catalog'); await h.service.call('load', { id: group.id });
   assert.equal(checks, 1, 'failure never causes a background retry loop');
   const retried = (await h.service.call('verify-member', { id: group.id, participantId: member.id })).group;
@@ -320,7 +362,7 @@ test('an automatic verification failure preserves the member and error until an 
   assert.equal(retried.participants[0].verificationError, null);
 });
 
-test('automatic member checks can be cancelled, removed and drained on shutdown', async t => {
+test('background member checks can be cancelled, removed and drained on shutdown', async t => {
   for (const action of ['cancel-member-verification', 'remove-member', 'shutdown']) {
     const h = setup(t); let started;
     const ready = new Promise(resolve => { started = resolve; });
@@ -328,6 +370,7 @@ test('automatic member checks can be cancelled, removed and drained on shutdown'
       signal.addEventListener('abort', () => reject(new Error('Discussion cancelled')), { once: true }); started();
     }));
     const group = await createMembers(h.service, 1), participantId = group.participants[0].id;
+    await h.service.call('send', { id: group.id, requestId: 'pending-' + action, text: 'Keep this sent message', participantIds: [participantId] });
     await ready;
     if (action === 'shutdown') await h.service.shutdown();
     else await h.service.call(action, { id: group.id, participantId });
@@ -335,6 +378,7 @@ test('automatic member checks can be cancelled, removed and drained on shutdown'
     assert.equal(h.service.active, false, action); assert.equal(h.calls.length, 0);
     const loaded = (await h.service.call('load', { id: group.id })).group;
     assert.equal(loaded.verifying, false); assert.equal(loaded.participants[0].verifying, false);
+    assert.equal(loaded.messages.length, 1); assert.notEqual(loaded.deliveries[0].status, 'completed');
     assert.equal(loaded.participants[0].removed, action === 'remove-member');
     if (action === 'remove-member') assert.equal(loaded.participants[0].verificationError, null);
   }
@@ -525,20 +569,40 @@ test('identity edits cannot change an active or queued member input', async t =>
   assert.equal(h.service.manager.get(group.id).deliveries[0].identityPrompt, 'Scientist');
 });
 
-test('stop cancels first-send checks without storing the question or dispatching; deletion waits for cancellation', async t => {
+test('stop cancels a background first-send check, keeps the committed message and permits deletion after drain', async t => {
   const h = setup(t), group = await createMembers(h.service, 1);
   let started; const ready = new Promise(resolve => { started = resolve; });
   autoVerification(h, (_binding, signal) => new Promise((_resolve, reject) => {
     started(); signal.addEventListener('abort', () => reject(new Error('Discussion cancelled')), { once: true });
   }));
-  const send = h.service.call('send', { id: group.id, requestId: 'cancel', text: 'Keep in composer', participantIds: [group.participants[0].id] });
-  const rejected = assert.rejects(send, /cancelled/); await ready;
+  await h.service.call('send', { id: group.id, requestId: 'cancel', text: 'Keep in history', participantIds: [group.participants[0].id] });
+  await ready;
   assert.equal((await h.service.call('load', { id: group.id })).group.verifying, true);
   await assert.rejects(h.service.call('delete', { id: group.id }), /Stop all/);
-  await h.service.call('stop', { id: group.id }); await rejected;
-  assert.equal(h.calls.length, 0); assert.equal(h.service.manager.get(group.id).messages.length, 0);
+  await h.service.call('stop', { id: group.id });
+  assert.equal(h.calls.length, 0); assert.equal(h.service.manager.get(group.id).messages.length, 1);
+  assert.notEqual(h.service.manager.get(group.id).deliveries[0].status, 'completed');
+  for (let i = 0; i < 10 && h.service.active; i++) await tick();
   assert.equal(h.service.active, false);
   await h.service.call('delete', { id: group.id }); assert.equal(h.service.list().length, 0);
+});
+
+test('stopping one queued reply also cancels its now-unused background check', async t => {
+  const h = setup(t), group = await createMembers(h.service, 1);
+  let started; const ready = new Promise(resolve => { started = resolve; });
+  autoVerification(h, (_binding, signal) => new Promise((_resolve, reject) => {
+    started(); signal.addEventListener('abort', () => reject(new Error('Discussion cancelled')), { once: true });
+  }));
+  await h.service.call('send', { id: group.id, requestId: 'stop-one', text: 'Keep the note, stop the reply', participantIds: [group.participants[0].id] });
+  await ready;
+  const deliveryId = h.service.manager.get(group.id).deliveries[0].id;
+  await h.service.call('stop', { id: group.id, deliveryId });
+  for (let i = 0; i < 10 && h.service.active; i++) await tick();
+  assert.equal(h.service.active, false);
+  assert.equal(h.calls.length, 0);
+  assert.equal(h.service.manager.get(group.id).messages.length, 1);
+  assert.equal(h.service.manager.get(group.id).deliveries[0].status, 'cancelled');
+  assert.equal((await h.service.call('load', { id: group.id })).group.verifying, false);
 });
 
 test('unsupported saved members are rejected before verification, history changes or any model call', async t => {

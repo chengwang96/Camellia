@@ -62,7 +62,7 @@ public class TabletSettingsNavigationTest extends InstrumentationTestCase {
     public void testOrdinarySettingsCategoriesReplaceOnlyTheContent() throws Exception {
         SettingsActivity settings = open(main, "nav:settings", SettingsActivity.class);
         awaitSection(settings, "general");
-        for (String section : new String[]{"providers", "reading", "notifications", "deviceName", "archived", "about", "general"}) {
+        for (String section : new String[]{"providers", "reading", "notifications", "deviceName", "downloads", "archived", "about", "general"}) {
             ui(() -> find(settings, "tabletSettings:" + section).performClick());
             awaitSection(settings, section);
             ui(() -> {

@@ -106,4 +106,26 @@ test('a saved standalone draft replaces the timestamp with a localized status', 
   const independent = list.children.find(child => child.id === 'independentSessions');
   const item = independent.children.find(child => child.dataset?.sid === 'draft-session');
   assert.equal(item.stamp.textContent, 'Draft');
+  assert.equal(item.stamp.classes.has('is-draft'), true);
+});
+
+test('an unread reply is blue and wins over the draft label', () => {
+  const { context, list } = fixture();
+  context.sessionHistory[0].unread = true;
+  context.renderSessionSidebar();
+  const independent = list.children.find(child => child.id === 'independentSessions');
+  const item = independent.children.find(child => child.dataset?.sid === 'draft-session');
+  assert.equal(item.stamp.textContent, 'Unread reply');
+  assert.equal(item.stamp.classes.has('is-unread'), true);
+  assert.equal(item.stamp.classes.has('is-draft'), false);
+});
+
+test('desktop joins running, unread and pinned state in the same order as mobile', () => {
+  const { context, list } = fixture();
+  Object.assign(context.sessionHistory[0], { activity: 'running', unread: true, pinned: true });
+  context.renderSessionSidebar();
+  const item = list.children.find(child => child.dataset?.sid === 'draft-session');
+  assert.equal(item.stamp.textContent, 'Running · Unread reply · Pinned');
+  assert.equal(item.stamp.classes.has('is-unread'), false);
+  assert.equal(item.stamp.classes.has('is-draft'), false);
 });

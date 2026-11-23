@@ -101,7 +101,8 @@ final class TabletScaffold {
             {"network", "手机访问", "Mobile access"}, {"", "应用与权限", "Application & permissions"},
             {"general", "通用与外观", "General & appearance"}, {"reading", "阅读与显示", "Reading & display"},
             {"notifications", "通知控制", "Notifications"}, {"deviceName", "本机名称", "Device name"},
-            {"", "数据与诊断", "Data & diagnostics"}, {"archived", "已归档", "Archived"},
+            {"", "数据与诊断", "Data & diagnostics"}, {"downloads", "已下载产物", "Downloaded files"},
+            {"archived", "已归档", "Archived"},
             {"", "关于", "About"}, {"about", "Camellia 版本", "Camellia version"}
         };
         for (String[] item : items) {

@@ -218,6 +218,14 @@ test('run and wall-clock limits stop checks, including a hung check', async cont
   harness.runs[1].resolve({ subtype: 'stopped' }); await harness.flush();
 });
 
+test('daily schedules allow deadlines up to one year while rejecting longer ones', async context => {
+  const h = fixture(context);
+  const task = h.create({ scheduleType: 'daily', dailyTime: '09:00', timeZone: 'UTC', maxHours: 8760, maxRuns: 365 });
+  assert.equal(task.maxHours, 8760);
+  assert.equal(task.expiresAt - task.createdAt, 8760 * 3600000);
+  assert.throws(() => h.create({ scheduleType: 'daily', dailyTime: '09:00', timeZone: 'UTC', maxHours: 8761 }), /Invalid task option: maxHours/);
+});
+
 test('missing or failed reports pause instead of looping or accepting completion', async context => {
   const harness = fixture(context), task = harness.create();
   harness.advance(1); await harness.scheduler.tick();

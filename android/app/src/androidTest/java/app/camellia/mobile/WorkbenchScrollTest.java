@@ -113,7 +113,7 @@ public class WorkbenchScrollTest extends InstrumentationTestCase {
             assertSame(original[1], view("homeActive:http://100.80.1.8:43127#scroll-1"));
             assertSame(original[2], view("workbenchNav"));
             String status = ((TextView) view("homeActiveStatus:http://100.80.1.8:43127#scroll-0")).getText().toString();
-            assertTrue(status.equals("等待电脑处理") || status.equals("Waiting for desktop input"));
+            assertTrue(status.equals("等待确认") || status.equals("Needs approval"));
         });
     }
 

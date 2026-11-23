@@ -7,7 +7,7 @@ const schema = (properties, required = []) => ({ type: 'object',
 const tools = [
   {
     name: 'camellia_review_start',
-    description: 'Use when the user explicitly asks another engine or model to review, audit, challenge or double-check the current change. Starts a read-only cross-engine review. If conversation consent is missing this returns a consent request instead of spending quota. Reuse the same request_id for a retry.',
+    description: 'Use only when the current user message explicitly asks another engine or model to review, audit, challenge or double-check the current change, and the workspace has uncommitted changes. Never call this for an ordinary request, a status summary, or a workspace with no changes. Starts a read-only cross-engine review. If conversation consent is missing this returns a consent request instead of spending quota. Reuse the same request_id for a retry.',
     inputSchema: schema({
       request_id: { type: 'string', minLength: 1, maxLength: 128 },
       reviewer_engine: { type: 'string', minLength: 1, maxLength: 32 },
@@ -15,7 +15,6 @@ const tools = [
       focus: { type: 'string', maxLength: 4000 },
       base: { type: 'string', maxLength: 200 },
       wait: { type: 'boolean' },
-      max_tokens: { type: 'integer', minimum: 1000, maximum: 1000000 },
     }, ['request_id']),
   },
   {
@@ -35,8 +34,8 @@ const tools = [
   },
 ];
 
-const instructions = 'When the user explicitly asks another engine or model to review, audit, challenge, double-check or 审查/复核 this change, call camellia_review_start instead of saying cross-engine review is unavailable. Use the engine the user names; otherwise choose an available different engine according to the conversation defaults. Use adversarial mode for challenge or design review. A review consumes reviewer quota and runs in a read-only snapshot. Reuse request_id on retries, then use status/result to report the structured outcome. Never treat a stale, failed, cancelled or missing report as a pass.';
+const instructions = 'When the current user message explicitly asks another engine or model to review, audit, challenge, double-check or 审查/复核 this change, and the workspace has uncommitted changes, call camellia_review_start instead of saying cross-engine review is unavailable. Do not call it for general conversation, routine status summaries, or a workspace with no changed files. Use the engine the user names; otherwise choose an available different engine according to the conversation defaults. Use adversarial mode for challenge or design review. A review consumes reviewer quota and runs in a read-only snapshot. Reuse request_id on retries, then use status/result to report the structured outcome. Never treat a stale, failed, cancelled or missing report as a pass.';
 
-const consentInstructions = 'When the user explicitly asks another engine or model to review, audit, challenge, double-check or 审查/复核 this change, call camellia_review_start instead of saying cross-engine review is unavailable. The first call returns an in-conversation consent request without spending reviewer quota. Tell the user a confirmation card is waiting; do not retry until it is approved.';
+const consentInstructions = 'When the current user message explicitly asks another engine or model to review, audit, challenge, double-check or 审查/复核 this change, and the workspace has uncommitted changes, call camellia_review_start instead of saying cross-engine review is unavailable. Do not call it for general conversation, routine status summaries, or a workspace with no changed files. The first call returns an in-conversation consent request without spending reviewer quota; a call that does not meet these conditions is rejected instead of showing a card. Tell the user a confirmation card is waiting; do not retry until it is approved.';
 
 module.exports = { tools, startTool: tools[0], instructions, consentInstructions };

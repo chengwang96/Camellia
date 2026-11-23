@@ -4,7 +4,7 @@
   else root.CamelliaTaskSchedule = api;
 })(globalThis, function () {
   'use strict';
-  const MINUTE = 60000, DAY = 86400000;
+  const MINUTE = 60000, DAY = 86400000, MAX_TASK_HOURS = 8760;
   const formatters = new Map();
   function zonedParts(at, zone) {
     if (!formatters.has(zone)) {
@@ -93,7 +93,6 @@
     const waiting = {
       goal: ['Waiting for Goal to pause or finish.', '等待目标模式暂停或结束。'],
       compaction: ['Waiting for context compaction.', '等待上下文压缩完成。'],
-      review: ['Waiting for the turn review.', '等待本轮审查完成。'],
       conversation: ['Waiting for the current conversation turn.', '等待当前回复结束。'],
       task: ['Waiting for another scheduled check.', '等待另一项定时检查结束。'],
     };
@@ -112,5 +111,5 @@
     const message = task.status === 'scheduled' ? waiting[task.waitingReason] : task.status === 'paused' ? paused[task.pauseReason] : null;
     return message?.[zh ? 1 : 0] || '';
   }
-  return { normalizeSchedule, nextTaskRun, scheduleLabel, taskNotice };
+  return { normalizeSchedule, nextTaskRun, scheduleLabel, taskNotice, MAX_TASK_HOURS };
 });

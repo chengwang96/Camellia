@@ -105,7 +105,7 @@ final class RemoteWorkbenchSync implements AutoCloseable {
     private final class Host {
         JSONObject computer;
         final String key;
-        final ScheduledExecutorService worker = executor("camellia-home-host");
+        ScheduledExecutorService worker = executor("camellia-home-host");
         RemoteApi client;
         ScheduledFuture<?> deadline;
         State state = State.CONNECTING;
@@ -118,6 +118,11 @@ final class RemoteWorkbenchSync implements AutoCloseable {
         boolean valid(RemoteApi api) { return !disposed && hosts.get(key) == this && client == api; }
         void emit(JSONObject page) { if (listener != null) listener.accept(new Update(computer, page, state, this)); }
         void schedule(long delay) { if (!disposed) worker.schedule(this::watch, delay, TimeUnit.MILLISECONDS); }
+        void replaceWorker() {
+            ScheduledExecutorService previous = worker;
+            worker = executor("camellia-home-host");
+            previous.shutdownNow();
+        }
         void close() {
             disposed = true;
             if (deadline != null) deadline.cancel(false);
@@ -203,7 +208,7 @@ final class RemoteWorkbenchSync implements AutoCloseable {
                     // Old hosts without streams are polled independently, more slowly on a slow route.
                     delay = now() - started > 2_000 ? 30_000 : 15_000;
                 }
-                cancel(api); schedule(delay);
+                cancel(api); replaceWorker(); schedule(delay);
             }
         }
         JSONObject legacyPage(RemoteApi api, String token, JSONObject first) throws IOException {

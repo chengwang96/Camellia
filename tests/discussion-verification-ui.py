@@ -15,24 +15,26 @@ bridge = r"""(() => {
   })));
   const subscriptions = ['antigravity','kimi','grok'].map(engine=>({id:engine+'-subscription',label:engine+' test',accountLabel:'Subscription account',
     binding:{engine,connection:'subscription',model:engine+'-test'},capability:{...pending,supported:true}}));
-  window.calls=[]; window.verificationOutcome='pending'; let resolveCheck, resolveSend, emit=()=>{}, sent;
-  let automaticMember;
-  window.automaticAdds=false;
+  window.calls=[]; window.verificationOutcome='pending'; let resolveCheck, emit=()=>{};
   window.finishAutomaticVerification=(error='')=>{
-    automaticMember.verifying=false; automaticMember.verificationError=error || null;
-    automaticMember.capability=error ? {...pending} : {available:true};
-    group.verifying=false; emit({discussionId:group.id});
+    const queued=group.deliveries.filter(d=>d.status==='queued');
+    const targets=queued.map(d=>group.participants.find(p=>p.id===d.participantId)).filter(Boolean);
+    for(const target of targets){
+      target.verifying=false; target.verificationError=error || null;
+      target.capability=error ? {...pending} : {available:true};
+    }
+    if(error) for(const delivery of queued){delivery.status='failed';delivery.reason='unverified-connection';}
+    else for(const delivery of queued){
+      delivery.status='completed';
+      group.messages.push({id:'reply-'+delivery.id,role:'assistant',speakerId:delivery.participantId,
+        speakerName:targets.find(p=>p.id===delivery.participantId)?.name || '',text:'[UI fixture] Answer received.',deliveryId:delivery.id});
+    }
+    group.verifying=false; group.revision++; emit({discussionId:group.id});
   };
   window.resetConnection=()=>{member.capability={...pending};};
-  window.prepareSend=()=>{group.verifying=false;group.preparing=true;member.capability={available:true};emit({discussionId:group.id});};
   window.failRuntime=detail=>{
     member.capability=binding.capability={available:false,canVerify:false,supported:false,detail};
     emit({discussionId:group.id});
-  };
-  window.finishSend=()=>{
-    group.verifying=false; group.preparing=false; member.capability={available:true}; group.revision++;
-    group.messages=[{id:'user-one',role:'user',text:sent.text},{id:'reply-one',role:'assistant',speakerId:member.id,speakerName:member.name,text:'[UI fixture] Answer received.'}];
-    resolveSend({ok:true,group});emit({discussionId:group.id});
   };
   window.finishVerification=()=>{member.capability={available:true};binding.capability={available:true};resolveCheck({ok:true,group,bindings:[binding]});};
   window.dshDesktop={
@@ -45,21 +47,39 @@ bridge = r"""(() => {
       if(action==='catalog')return {ok:true,bindings:[binding,...subscriptions,...apiBindings]};
       if(action==='add-member'){
         window.addedBinding=payload.bindingId;
-        if(window.automaticAdds){
-          automaticMember={...member,id:'automatic-member',name:payload.name,capability:{...pending},verifying:true};
-          group.participants.push(automaticMember); group.revision++; group.verifying=true;
-        }
+        group.participants.push({...member,id:'automatic-member',name:payload.name,capability:{...pending},verifying:false});
+        group.revision++;
         return {ok:true,group};
       }
-      if(action==='send'){sent=payload;group.verifying=true;emit({discussionId:group.id});return new Promise(resolve=>{resolveSend=resolve;});}
-      if(action==='stop'){group.verifying=false;group.preparing=false;resolveSend({ok:false,error:'Discussion cancelled'});emit({discussionId:group.id});return {ok:true,group};}
+      if(action==='send'){
+        group.revision++;
+        group.messages.push({id:'user-'+group.revision,role:'user',requestId:payload.requestId,text:payload.text});
+        const targets=(payload.participantIds||[]).map(id=>group.participants.find(p=>p.id===id)).filter(Boolean);
+        const unverified=targets.filter(p=>!p.capability?.available);
+        for(const target of targets) group.deliveries.push({id:'delivery-'+group.revision+'-'+target.id,
+          participantId:target.id,requestId:payload.requestId,status:unverified.length?'queued':'completed'});
+        if(unverified.length){group.verifying=true;for(const target of unverified)target.verifying=true;}
+        emit({discussionId:group.id});return {ok:true,group};
+      }
+      if(action==='stop'){
+        group.verifying=false;group.preparing=false;
+        for(const delivery of group.deliveries)if(delivery.status==='queued')delivery.status='cancelled';
+        for(const participant of group.participants)participant.verifying=false;
+        emit({discussionId:group.id});return {ok:true,group};
+      }
       if(action==='verify-binding'||action==='verify-member'){
         if(window.verificationOutcome==='fail')return {ok:false,error:'Selected account quota is exhausted.'};
         return new Promise(resolve=>{resolveCheck=resolve;});
       }
-      if(action==='cancel-verification'||action==='cancel-member-verification'){
-        if(automaticMember?.verifying && payload.participantId===automaticMember.id){window.finishAutomaticVerification('Discussion cancelled');return {ok:true};}
-        resolveCheck({ok:false,error:'Discussion cancelled'});return {ok:true};
+      if(action==='cancel-verification'){resolveCheck({ok:false,error:'Discussion cancelled'});return {ok:true};}
+      if(action==='cancel-member-verification'){
+        if(resolveCheck)resolveCheck({ok:false,error:'Discussion cancelled'});
+        group.verifying=false;
+        for(const participant of group.participants)if(participant.id===payload.participantId)participant.verifying=false;
+        for(const delivery of group.deliveries)if(delivery.participantId===payload.participantId&&delivery.status==='queued'){
+          delivery.status='failed';delivery.reason='unverified-connection';
+        }
+        emit({discussionId:group.id});return {ok:true,group};
       }
       return {ok:false,error:'Unexpected fixture action: '+action};
     },
@@ -107,25 +127,17 @@ with sync_playwright() as p:
     page.evaluate('resetConnection()')
     page.locator('.mention').click()
     page.locator('#message').fill('保留我的问题')
-    expect(page.locator('#sendHint')).to_contain_text('首次发送')
+    expect(page.locator('#sendHint')).to_contain_text('发送后自动检查')
     page.locator('#message').press('Enter')
-    expect(page.locator('#sendHint')).to_contain_text('正在检查连接')
-    expect(page.locator('#message')).to_have_value('保留我的问题')
-    expect(page.locator('#send')).to_be_disabled()
-    page.locator('#stopAll').click()
-    expect(page.locator('#notice')).to_contain_text('已取消讨论请求')
-    expect(page.locator('#message')).to_have_value('保留我的问题')
-    expect(page.locator('#messages')).to_be_empty()
-    page.locator('#message').press('Enter')
-    expect(page.locator('#stopAll')).to_be_enabled()
-    page.evaluate('prepareSend()')
-    expect(page.locator('#sendHint')).to_have_text('正在准备发送…')
-    expect(page.locator('#connectionNotice')).to_be_hidden()
-    expect(page.locator('#stopAll')).to_be_enabled()
-    page.evaluate('finishSend()')
     expect(page.locator('#message')).to_have_value('')
+    expect(page.locator('#messages')).to_contain_text('保留我的问题')
+    expect(page.locator('#sendHint')).to_contain_text('正在后台验证所选连接')
+    expect(page.locator('#connectionNotice')).to_contain_text('正在验证成员连接')
+    expect(page.locator('#stopAll')).to_be_enabled()
+    assert page.evaluate("calls.filter(x=>x==='send').length") == 1
+    page.evaluate('finishAutomaticVerification()')
     expect(page.locator('#messages')).to_contain_text('[UI fixture] Answer received.')
-    assert page.evaluate("calls.filter(x=>x==='send').length") == 2
+    assert page.evaluate("calls.filter(x=>x==='send').length") == 1
     page.locator('#addMember').click()
     expect(page.locator('#providerField')).to_be_hidden()
     page.locator('#connection').select_option('api')
@@ -195,38 +207,46 @@ with sync_playwright() as p:
         page.on('pageerror', lambda error: errors.append(str(error)))
         page.add_init_script(bridge)
         page.goto((repo / 'src/renderer/discussions/discussions.html').as_uri(), wait_until='networkidle')
-        page.evaluate('automaticAdds=true')
-        page.locator('#message').fill('Keep this draft during verification')
         page.locator('#addMember').click()
-        expect(page.locator('#bindingStatus')).to_contain_text('添加成员后会自动')
+        expect(page.locator('#bindingStatus')).to_contain_text('现在即可添加成员')
         page.locator('#memberName').fill('Automatic reviewer')
         page.locator('#saveMember').click()
         expect(page.locator('#memberDialog')).not_to_be_visible()
+        assert page.evaluate("calls.filter(x=>x==='verify-member'||x==='verify-binding'||x==='send').length") == 0
+        page.locator('.mention[data-mention-id="automatic-member"]').click()
+        page.locator('#message').fill('Keep this sent message during verification')
+        expect(page.locator('#sendHint')).to_contain_text('发送后自动检查')
+        page.locator('#message').press('Enter')
+        expect(page.locator('#message')).to_have_value('')
+        expect(page.locator('#messages')).to_contain_text('Keep this sent message during verification')
+        expect(page.locator('#sendHint')).to_contain_text('正在后台验证所选连接')
         expect(page.locator('#connectionNotice')).to_contain_text('正在验证成员连接')
-        expect(page.locator('#sendHint')).to_contain_text('你可以继续输入')
+        assert page.evaluate("calls.filter(x=>x==='send').length") == 1
         page.locator('#membersToggle').click()
         card = page.locator('.member-card[data-member-id="automatic-member"]')
         expect(card.locator('.member-state')).to_have_text('正在验证连接…')
         expect(card.get_by_role('button', name='取消验证', exact=True)).to_be_visible()
-        assert page.evaluate("calls.filter(x=>x==='verify-member'||x==='verify-binding').length") == 0
         if outcome == 'cancelled':
             card.get_by_role('button', name='取消验证', exact=True).click()
-            expect(card).to_contain_text('已取消讨论请求')
             expect(card.locator('.member-state')).to_have_text('连接待验证')
+            expect(page.locator('#messages')).not_to_contain_text('[UI fixture] Answer received.')
         elif outcome in ['failed', 'runtime-changed']:
             error = 'The harness runtime changed during verification. Refresh models and try again.' if outcome == 'runtime-changed' else 'Selected account quota is exhausted.'
             page.evaluate('finishAutomaticVerification', error)
             expect(card.locator('.member-state')).to_have_text('连接验证失败')
             expect(card).to_contain_text('验证期间 Harness 运行时发生变化' if outcome == 'runtime-changed' else error)
             expect(card.get_by_role('button', name='验证连接', exact=True)).to_be_visible()
+            expect(page.locator('#messages')).not_to_contain_text('[UI fixture] Answer received.')
         else:
             page.evaluate('finishAutomaticVerification()')
             expect(card.locator('.member-state')).to_have_text('就绪')
             expect(card.get_by_role('button', name='验证连接', exact=True)).not_to_be_visible()
-        expect(page.locator('#message')).to_have_value('Keep this draft during verification')
-        expect(page.locator('#messages')).to_be_empty()
+            expect(page.locator('#messages')).to_contain_text('[UI fixture] Answer received.')
+        expect(page.locator('#message')).to_have_value('')
+        expect(page.locator('#messages')).to_contain_text('Keep this sent message during verification')
         assert page.evaluate("calls.filter(x=>x==='add-member').length") == 1
+        assert page.evaluate("calls.filter(x=>x==='verify-member'||x==='verify-binding').length") == 0
         page.close()
     assert not errors, errors
     browser.close()
-print('PASS: automatic member verification status/success/failure/cancel without extra verify calls; drafts preserved; first-send checks, replies, manual verification; six harnesses, five API providers, three subscription paths and narrow layout. Synthetic backend only.')
+print('PASS: add-member is local; first send commits immediately and verifies in the background; success, failure and stop preserve the message; manual verification; six harnesses, five API providers, three subscription paths and narrow layout. Synthetic backend only.')

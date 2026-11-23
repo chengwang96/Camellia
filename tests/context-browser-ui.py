@@ -200,7 +200,7 @@ bridge = r"""(() => {
       if (action === 'context-node') return {ok:true,node:{content:'Exact user content',truncated:false,redacted:false}};
       if (action === 'context-expand') return {ok:true,text:'Recovered original rows',truncated:false};
       if (action === 'review-options') return {ok:true,authorEngine:'codex',defaultEngine:'claude',
-        settings:{allowAgentReviews:false,gate:false,allowSameEngine:false,reviewerEngine:'claude',model:'',mode:'standard',maxTokens:50000},
+        settings:{allowAgentReviews:false,allowSameEngine:false,reviewerEngine:'claude',model:'',mode:'standard'},
         engines:[{engine:'claude',available:true,models:[{id:'reviewer-model',name:'Reviewer Model'}]}]};
       if (action === 'review-context') return {ok:true,reviewable:true,changedFiles:3,files:[]};
       if (action === 'review-consent-pending') return {ok:true,consent:reviewConsent};
@@ -209,8 +209,8 @@ bridge = r"""(() => {
         return {ok:true,consent,review:{id:'consent-review',status:'completed',reviewerEngine:'claude',mode:'adversarial',report:null}};
       }
       if (action === 'review-consent-dismiss') { reviewConsent = null; return {ok:true,dismissed:true}; }
-      if (action === 'review-save-settings') return {ok:true,settings:{allowAgentReviews:false,gate:false,
-        allowSameEngine:false,reviewerEngine:'claude',model:'',mode:'standard',maxTokens:50000,...payload}};
+      if (action === 'review-save-settings') return {ok:true,settings:{allowAgentReviews:false,
+        allowSameEngine:false,reviewerEngine:'claude',model:'',mode:'standard',...payload}};
       if (action === 'review-start') return {ok:true,review:{id:'review-1',status:'running',
         reviewerEngine:'claude',mode:payload?.mode || 'standard',childConversationId:'review-child',
         target:{files:[{path:'src/app.js',status:' M'}]}}};
@@ -401,8 +401,7 @@ with sync_playwright() as p:
     expect(page.locator('#reviewAgentConsent')).not_to_be_checked()
     page.locator('#reviewAgentConsent').check()
     expect(page.locator('#reviewAgentConsent')).to_be_checked()
-    page.locator('#reviewGate').check()
-    expect(page.locator('#reviewGate')).to_be_checked()
+    expect(page.locator('#reviewMaxTokens, #reviewGate, #reviewTurnGate, #reviewOverrideGate')).to_have_count(0)
     page.locator('#reviewAdvanced').evaluate("node => { node.open = false; }")
     page.locator('#reviewStart').click()
     expect(page.locator('#reviewStatus')).to_contain_text('Review completed')

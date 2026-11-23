@@ -160,22 +160,49 @@ public class RemoteConversationStatusTest extends InstrumentationTestCase {
 
     public void testRunningWaitingAndUnreadVisibleTogether() {
         ui(() -> {
+            Palette palette = Palette.of(activity);
             JSONObject conversation = conversation().put("activity", "running");
             TextView badge = card(conversation).findViewWithTag("conversationStatus:status-test");
-            assertEquals("正在运行 · 新消息", badge.getText().toString());
+            assertEquals("运行中 · 未读回复", badge.getText().toString());
+            assertEquals(palette.success, badge.getCurrentTextColor());
             for (String state : new String[] { "permission", "question" }) {
                 conversation.put("activity", state);
                 badge = card(conversation).findViewWithTag("conversationStatus:status-test");
-                assertEquals("等待电脑处理 · 新消息", badge.getText().toString());
+                assertEquals((state.equals("permission") ? "等待确认" : "等待回答") + " · 未读回复",
+                    badge.getText().toString());
+                assertEquals(palette.warning, badge.getCurrentTextColor());
             }
             conversation.put("activity", JSONObject.NULL);
-            assertTrue(card(conversation).getContentDescription().toString().contains("新消息"));
+            assertTrue(card(conversation).getContentDescription().toString().contains("未读回复"));
             replies.markRead(credentials, conversation);
             assertNull(card(conversation).findViewWithTag("conversationStatus:status-test"));
+            conversation.put("lastReplyAt", 1001);
+            badge = card(conversation).findViewWithTag("conversationStatus:status-test");
+            assertEquals("未读回复", badge.getText().toString());
+            assertEquals(palette.accent, badge.getCurrentTextColor());
+            replies.markRead(credentials, conversation);
             conversation.remove("lastReplyAt");
             conversation.put("activity", "running");
             badge = card(conversation).findViewWithTag("conversationStatus:status-test");
-            assertEquals("正在运行", badge.getText().toString());
+            assertEquals("运行中", badge.getText().toString());
+            assertEquals(palette.success, badge.getCurrentTextColor());
+        });
+    }
+
+    public void testDraftUsesRedStatusTextUntilTheDesktopStartsRunning() {
+        ui(() -> {
+            Palette palette = Palette.of(activity);
+            JSONObject conversation = conversation();
+            conversation.remove("lastReplyAt");
+            credentials.put("drafts", new JSONObject().put("status-test", "Unfinished prompt"));
+            TextView badge = card(conversation).findViewWithTag("conversationStatus:status-test");
+            assertEquals("草稿", badge.getText().toString());
+            assertEquals(palette.error, badge.getCurrentTextColor());
+
+            conversation.put("activity", "running");
+            badge = card(conversation).findViewWithTag("conversationStatus:status-test");
+            assertEquals("运行中", badge.getText().toString());
+            assertEquals(palette.success, badge.getCurrentTextColor());
         });
     }
 
@@ -184,12 +211,23 @@ public class RemoteConversationStatusTest extends InstrumentationTestCase {
             JSONObject conversation = conversation().put("backgroundWork", new JSONObject().put("engine", "kimi")
                 .put("tasks", new org.json.JSONArray().put(new JSONObject().put("id", "task-1").put("description", "Run the analysis"))));
             TextView badge = card(conversation).findViewWithTag("conversationStatus:status-test");
-            assertEquals("后台任务 · 新消息", badge.getText().toString());
+            assertEquals("后台任务 · 未读回复", badge.getText().toString());
             assertTrue(card(conversation).getContentDescription().toString().contains("后台任务"));
             // A running reply keeps the one state column, as on the desktop.
             conversation.put("activity", "running");
             badge = card(conversation).findViewWithTag("conversationStatus:status-test");
-            assertEquals("正在运行 · 新消息", badge.getText().toString());
+            assertEquals("运行中 · 未读回复", badge.getText().toString());
+        });
+    }
+
+    public void testRunningUnreadAndPinnedUseTheSameOrderAsDesktop() {
+        ui(() -> {
+            JSONObject conversation = conversation().put("activity", "running").put("pinned", true);
+            TextView badge = card(conversation).findViewWithTag("conversationStatus:status-test");
+            assertEquals("运行中 · 未读回复 · 置顶", badge.getText().toString());
+            replies.markRead(credentials, conversation);
+            badge = card(conversation).findViewWithTag("conversationStatus:status-test");
+            assertEquals("运行中 · 置顶", badge.getText().toString());
         });
     }
 

@@ -58,6 +58,15 @@ const usageTotal = usage => USAGE_KEYS.reduce((total, key) => total + (usage?.[k
 // Pi was replaced by Grok. Keep its conversation records intact for export or
 // manual recovery instead of treating a valid legacy record as corrupt.
 const LEGACY_ENGINES = new Set(['pi']);
+// Reviews target uncommitted workspace changes. A model may only start one
+// when the current user message actually asks for another engine's review;
+// otherwise small models fire the tool on unrelated verbs like 审查.
+const reviewRequestPattern = /(?:\breview(?:ed|ing|s)?\b|\baudit(?:ed|ing|s)?\b|\bdouble[-\s]?check(?:ed|ing|s)?\b|\bchallenge\b|\bcritique\b|\bsecond[-\s]?opinion\b|审查|审核|复核|评审|校对|挑剔|唱反调|把关)/i;
+const reviewRequestNegation = /(?:不要|不需要|不必|无需|不用|别|勿|禁止)[^。.!?！？\n，,；;]{0,8}(?:审查|审核|复核|评审|校对)/;
+const reviewRequest = prompt => {
+  const text = typeof prompt === 'string' ? prompt : '';
+  return Boolean(text.trim()) && reviewRequestPattern.test(text) && !reviewRequestNegation.test(text);
+};
 const presentationInstructions = 'Camellia media presentation: To intentionally show an image or video in the conversation, put ![concise alt text](media-path) in the final response at the desired location. Images and videos use this same Markdown syntax; a supported video extension such as .mp4, .webm, .mov or .m4v makes the result an inline player. Use an absolute path or a workspace-relative path, wrapping paths with spaces in <...>. Only this explicit Markdown image syntax requests an inline preview. For media that is merely an output artifact, use a normal [label](path) link instead; never turn file references or media-reading tool results into inline previews automatically.\n\n';
 
 // Store a compact citation snapshot on the assistant row. Rendering can then
@@ -438,7 +447,6 @@ class SharedConversations {
   taskWaitReason(id) {
     if (this.goals.get(id)?.armed) return 'goal';
     if (this.switching.has(id) || this.recovering.has(id)) return 'compaction';
-    if (this.get(id).pendingTurnReview) return 'review';
     return this.busy(id) ? 'conversation' : null;
   }
   isBusy(engine) { return [...this.items.values()].some(c => (!engine || c.currentEngine === engine || this.active.get(c.id)?.engine === engine || this.switching.get(c.id)?.target === engine) && this.busy(c.id)); }
@@ -569,13 +577,11 @@ class SharedConversations {
     const reviewTools = this.portableSkills && c && !c.controlParentId
       ? require('./review-agent-tools') : null;
     const agentReviews = Boolean(reviewTools && this.reviews.settings(c.id).allowAgentReviews);
-    const gated = Boolean(c && !c.controlParentId && this.reviews.settings(c.id).gate);
     const visualizeTools = this.visualizeEnabled && c && !c.controlParentId
       ? require('./visualize-tools') : null;
     return [
       ...(this.portableSkills ? [require('./skill-tools').instructions] : []),
       ...(agentReviews ? [reviewTools.instructions] : reviewTools ? [reviewTools.consentInstructions] : []),
-      ...(gated ? ['A cross-engine review gate is enabled for this conversation. Do not report Goal completion unless a fresh review returns a pass; a stale, failed, cancelled or missing review is not a pass.'] : []),
       ...(visualizeTools ? [visualizeTools.instructions] : []),
     ].join('\n');
   }
@@ -665,12 +671,6 @@ class SharedConversations {
         return result;
       }
       if (!driver.armed || driver.ownedSession() !== active.facade) throw new Error('No active goal owned by this turn');
-      if (args.status === 'complete' && this.reviews.settings(id).gate) {
-        return this.reviews.gate(id, { goalId: driver.goal?.id }).then(gate => {
-          if (!gate.passed) throw new Error(gate.error || 'The cross-engine review gate did not pass');
-          return this.recordGoalReport(active, args);
-        }).catch(error => ({ ok: false, error: error.message }));
-      }
       return this.recordGoalReport(active, args);
     } catch (error) { return { ok: false, error: error.message }; }
   }
@@ -795,36 +795,7 @@ class SharedConversations {
     if (active.scheduledTaskId) throw new Error('Scheduled checks cannot start or manage reviews');
     if (active.c?.controlParentId) throw new Error('Tool-created children cannot start reviews');
     const policy = this.reviews.settings(id);
-    if (name === 'camellia_review_start') {
-      const available = this.reviews.options(id).engines.filter(engine => engine.available);
-      const reviewerEngine = String(args.reviewer_engine || (policy.reviewerEngine
-        && (policy.reviewerEngine !== active.c?.currentEngine || policy.allowSameEngine) ? policy.reviewerEngine : '')
-        || available.find(engine => engine.engine !== active.c?.currentEngine)?.engine || '');
-      if (!reviewerEngine) throw new Error('No reviewer engine is available');
-      if (!policy.allowAgentReviews) {
-        const consent = this.reviews.requestConsent(id, {
-          reviewerEngine,
-          mode: args.mode || policy.mode,
-          focus: args.focus,
-          base: args.base,
-          requestId: args.request_id,
-          maxTokens: args.max_tokens || policy.maxTokens,
-        });
-        return { ok: false, consent_required: true, consent_id: consent.id,
-          message: 'The user must approve this review in the conversation card before reviewer quota is used' };
-      }
-      return this.reviews.start(id, {
-        reviewerEngine,
-        model: policy.model,
-        mode: args.mode || policy.mode,
-        focus: args.focus,
-        base: args.base,
-        requestId: args.request_id,
-        wait: args.wait === true,
-        maxTokens: args.max_tokens,
-        viaAgent: true,
-      }).catch(error => ({ ok: false, error: error.message }));
-    }
+    if (name === 'camellia_review_start') return this.startAgentReview(id, args, active, policy);
     if (!policy.allowAgentReviews) throw new Error('The user has not allowed agent-requested reviews in this conversation');
     const review = this.reviews.owned(id, args.review_id);
     if (name === 'camellia_review_status') return { ok: true, review: this.reviews.publicReview(review) };
@@ -833,6 +804,43 @@ class SharedConversations {
     if (name === 'camellia_review_cancel') return this.reviews.cancel(review.id)
       .catch(error => ({ ok: false, error: error.message }));
     throw new Error('Unknown Camellia review tool');
+  }
+
+  async startAgentReview(id, args, active, policy) {
+    // The tool stays advertised so the bridge does not restart every turn, but
+    // a call only becomes a consent request when this turn is actually about a
+    // review and the workspace really has something to review.
+    const request = active.goalUserPrompt ?? active.prompt ?? '';
+    if (!reviewRequest(request))
+      return { ok: false, error: 'The current user message does not explicitly ask for a review. Do not call camellia_review_start for an ordinary request or status summary' };
+    const available = this.reviews.options(id).engines.filter(engine => engine.available);
+    const reviewerEngine = String(args.reviewer_engine || (policy.reviewerEngine
+      && (policy.reviewerEngine !== active.c?.currentEngine || policy.allowSameEngine) ? policy.reviewerEngine : '')
+      || available.find(engine => engine.engine !== active.c?.currentEngine)?.engine || '');
+    if (!reviewerEngine) return { ok: false, error: 'No reviewer engine is available' };
+    if (!(await this.reviews.hasChanges(id)))
+      return { ok: false, error: 'There are no reviewable changes in the workspace' };
+    if (!policy.allowAgentReviews) {
+      const consent = this.reviews.requestConsent(id, {
+        reviewerEngine,
+        mode: args.mode || policy.mode,
+        focus: args.focus,
+        base: args.base,
+        requestId: args.request_id,
+      });
+      return { ok: false, consent_required: true, consent_id: consent.id,
+        message: 'The user must approve this review in the conversation card before reviewer quota is used' };
+    }
+    return this.reviews.start(id, {
+      reviewerEngine,
+      model: policy.model,
+      mode: args.mode || policy.mode,
+      focus: args.focus,
+      base: args.base,
+      requestId: args.request_id,
+      wait: args.wait === true,
+      viaAgent: true,
+    }).catch(error => ({ ok: false, error: error.message }));
   }
 
   callMemoryTool(id, name, args = {}, active = {}) {
@@ -1775,75 +1783,6 @@ class SharedConversations {
     const entry = { id: event.id || 'event:' + randomUUID(), at: event.at || Date.now(), ...event };
     c.contextEvents = [...(c.contextEvents || []), entry].slice(-128);
   }
-  scheduleTurnReview(c, run) {
-    if (!c || run?.internal || run?.goalContinuation || run?.createdGoal || run?.goalReport) return;
-    const policy = this.reviews.settings(c.id);
-    if (!policy.turnGate || c.controlParentId || c.controlReviewId) return;
-    if (this.goals.get(c.id)?.armed) return;
-    if (c.pendingTurnReview?.userSeq === run.userSeq) return;
-    c.pendingTurnReview = { state: 'starting', userSeq: run.userSeq, at: Date.now() };
-    this.save(c);
-    setImmediate(() => {
-      void this.startTurnReview(c, run.userSeq).catch(error => {
-        if (this.items.get(c.id) === c && c.pendingTurnReview?.userSeq === run.userSeq) {
-          delete c.pendingTurnReview;
-          this.save(c);
-        }
-        this.log('Turn review failed to start: ' + error.message);
-        this.onStatus({ sessionId: c.id, text: 'Completion review could not start: ' + error.message });
-      });
-    });
-  }
-  async startTurnReview(c, userSeq) {
-    if (this.items.get(c.id) !== c || this.deleting.has(c.id)) return;
-    let policy = this.reviews.settings(c.id);
-    if (!policy.turnGate) {
-      delete c.pendingTurnReview;
-      this.save(c);
-      return;
-    }
-    const changed = await this.reviews.hasChanges(c.id);
-    if (this.items.get(c.id) !== c || this.deleting.has(c.id) || c.pendingTurnReview?.userSeq !== userSeq) return;
-    policy = this.reviews.settings(c.id);
-    if (!policy.turnGate || !changed) {
-      delete c.pendingTurnReview;
-      this.save(c);
-      return;
-    }
-    const available = this.reviews.options(c.id).engines.filter(engine => engine.available);
-    const reviewerEngine = policy.reviewerEngine && (policy.reviewerEngine !== c.currentEngine || policy.allowSameEngine)
-      ? policy.reviewerEngine
-      : available.find(engine => engine.engine !== c.currentEngine)?.engine || '';
-    if (!reviewerEngine) throw new Error('no alternate reviewer engine is available');
-    const started = await this.reviews.start(c.id, {
-      reviewerEngine,
-      model: policy.model,
-      mode: policy.mode,
-      focus: 'Review the completed turn before the user continues.',
-      maxTokens: policy.maxTokens,
-      requestId: 'turn:' + c.id + ':' + userSeq,
-      allowWhileBusy: true,
-      viaAgent: true,
-    });
-    if (this.items.get(c.id) !== c || this.deleting.has(c.id) || c.pendingTurnReview?.userSeq !== userSeq
-        || !this.reviews.settings(c.id).turnGate) {
-      await this.reviews.cancel(started.review.id);
-      return;
-    }
-    c.pendingTurnReview = { state: 'running', userSeq, reviewId: started.review.id, at: Date.now() };
-    this.save(c);
-    this.onEvent({ type: 'conversation:turn-review', session_id: c.id, review: started.review });
-  }
-  completeTurnReview(review) {
-    const c = this.items.get(review?.parentConversationId);
-    if (!c) return;
-    c.lastTurnReview = { reviewId: review.id, status: review.status,
-      verdict: review.report?.verdict || '', at: Date.now() };
-    if (c.pendingTurnReview?.reviewId === review.id) delete c.pendingTurnReview;
-    this.save(c);
-    this.onEvent({ type: 'conversation:turn-review', session_id: c.id, review: this.reviews.publicReview(review) });
-    this.publishActivity(c.id);
-  }
   saveSettings(engine, payload) {
     this.validateEngine(engine);
     const c = payload.sessionId ? this.get(payload.sessionId) : null;
@@ -2010,7 +1949,6 @@ class SharedConversations {
       if (this.stopping.has(c.id) || this.deleting.has(c.id)) throw new Error('This conversation is stopping or being deleted');
       if (controlStart && (controlStart.cancelled || this.goalToolsClosed || this.items.get(c.id) !== c || this.controlStarts.get(c.id) !== controlStart)) throw new Error('Child start was cancelled');
       if (!internal && !continuation && this.controlStarts.has(c.id) && this.controlStarts.get(c.id) !== controlStart) throw new Error('Child response is starting');
-      if (!internal && !continuation && c.pendingTurnReview) throw new Error('Wait for the completed turn review before sending another message');
       if (this.active.has(c.id) || this.switching.has(c.id) && !internal || this.recovering.has(c.id) && !internal && !continuation || this.goals.get(c.id)?.armed && !facade && !internal)
         throw new Error('Wait for this conversation to finish or stop it first.');
     };
@@ -2826,8 +2764,6 @@ class SharedConversations {
       // The turn is over, so any engine waiting to be retired for a network
       // change can be replaced before the next message.
       this.onEvent({ type: 'conversation:turn-end', session_id: c.id, engine });
-      if (!a.internal && !a.cancelled && !event.is_error && event.subtype !== 'stopped')
-        this.scheduleTurnReview(c, a);
     } else if (toolBoundary && !a.internal && !a.cancelled && !a.compactRequested && !a.tools.size && !a.permissions.size
         && !this.usesNativeCompaction(c, engine, this.runSettings(a, engine, c))) {
       const context = this.contextPressure(c, engine, this.runSettings(a, engine, c), a);
@@ -3006,7 +2942,7 @@ class SharedConversations {
       switching.cancelled = true;
       switching.stop?.(new Error('Compaction canceled'));
       try { switching.session?.interrupt(); } catch (error) { this.log('Conversation compaction interrupt failed: ' + error.message); }
-      switching.abort?.abort();
+      switching.abort?.abort(switching.storage ? new Error('Compaction canceled') : undefined);
       this.stopCompactionSummary(id, this.get(id).currentEngine, switching);
     }
     const goal = this.goals.get(id); if (!scheduledTaskId && goal?.armed) goal.setPhase('paused');
@@ -4384,18 +4320,10 @@ class SharedConversations {
         return driver.resume();
       }
       case 'goal-complete': {
-        const driver = this.goalFor(payload.sessionId);
-        let gate;
-        if (driver.goal && driver.goal.phase !== 'complete' && this.reviews.settings(payload.sessionId).gate) {
-          gate = await this.reviews.gate(payload.sessionId, { goalId: driver.goal.id });
-          if (!gate.passed) return { ok: false, error: gate.error, review: gate.review || null };
-        }
-        const result = driver.setPhase('complete');
+        const result = this.goalFor(payload.sessionId).setPhase('complete');
         if (this.stopping.has(payload.sessionId)) await this.stopping.get(payload.sessionId);
-        return { ...result, ...(gate ? { review: gate.review || null, overridden: gate.overridden === true } : {}) };
+        return result;
       }
-      case 'review-gate-override':
-        return this.reviews.overrideGate(payload.sessionId, { goalId: payload.goalId, reason: payload.reason });
       case 'goal-clear': {
         const result = this.goalFor(payload.sessionId).clear({ interrupt: false });
         if (this.stopping.has(payload.sessionId)) await this.stopping.get(payload.sessionId);

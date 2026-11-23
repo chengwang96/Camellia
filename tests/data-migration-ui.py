@@ -174,6 +174,9 @@ with sync_playwright() as playwright:
     expect(page.locator("#importScopeSettings")).not_to_be_checked()
     page.locator("#confirmImportData").click()
     expect(page.locator("#importData")).to_be_enabled()
+    expect(page.locator("#dataMigrationSection .app-update-actions button:visible")).to_have_count(2)
+    expect(page.locator("#importData")).to_have_text("Import data")
+    expect(page.locator("#importDataAgain")).to_have_count(0)
     assert page.evaluate("transferCalls.at(-1)") == {"type": "import", "file": "C:/exports/camellia.zip", "scope": ["api"]}
     page.locator('[data-view="providers"]').click()
     expect(page.locator("#providerSummary")).to_have_text("Providers: 1 · Keys: 1")
@@ -276,6 +279,8 @@ with sync_playwright() as playwright:
     for language in ["en", "zh-CN"]:
         page.evaluate("language => CamelliaI18n.setLanguage(language)", language)
         expect(page.locator("#pageTitle")).to_have_text("Data & backups" if language == "en" else "数据与备份")
+        expect(page.locator("#dataMigrationSection .app-update-actions button:visible")).to_have_count(2)
+        expect(page.locator("#importData")).to_have_text("Import data" if language == "en" else "导入数据")
         data_nav = page.locator('[data-view="data"]')
         expect(data_nav).to_have_text("Data & backups" if language == "en" else "数据与备份")
         assert data_nav.get_attribute("title") is None

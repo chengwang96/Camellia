@@ -87,10 +87,10 @@ async function run() {
     const models = groupModels(parseModels(await runCli(runtime.file, ['models'], { env: fixtureEnv, cwd })));
     selected = models[0]; assert.ok(selected);
     start();
-    const first = await send('GOOGLE SMOKE hello');
+    const [first, title] = await Promise.all([send('GOOGLE SMOKE hello'), session.generateTitle()]);
     assert.equal(first.subtype, 'success', JSON.stringify(first) + errors.join('\n'));
     assert.match(first.session_id, /^agy-/); assert.match(first.result, /Google CLI fixture reply/);
-    assert.equal(await session.generateTitle(), 'Google CLI fixture reply.', 'The real CLI exposes its model-generated native summary as a title');
+    assert.equal(title, 'Google CLI fixture reply.', 'The real CLI accepts native title reads started during the first turn');
     if (process.argv.includes('--title-only')) {
       console.log('PASS: Official Antigravity CLI ' + runtime.version + ' exposes a model-generated native title over ACP. Local endpoint only.');
       return;

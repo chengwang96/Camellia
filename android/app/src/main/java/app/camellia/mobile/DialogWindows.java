@@ -24,6 +24,7 @@ final class DialogWindows {
 
     static void shown(Context context, Dialog dialog) {
         Activity activity = owner(context); if (activity == null) return;
+        DisplayRefreshRate.request(dialog.getWindow());
         var shown = windows.computeIfAbsent(activity, ignored -> new ArrayList<>());
         shown.removeIf(reference -> reference.get() == null || reference.get() == dialog);
         shown.add(new WeakReference<>(dialog));

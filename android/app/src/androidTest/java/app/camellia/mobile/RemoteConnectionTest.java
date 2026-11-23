@@ -164,7 +164,7 @@ public class RemoteConnectionTest extends InstrumentationTestCase {
                 try { return new JSONObject().put("protocol", 1).put("instanceId", instance).put("cursor", cursor); }
                 catch (Exception error) { throw new IOException(error); }
             }
-            @Override public void listEvents(String token, SnapshotListener listener) throws IOException {
+            @Override public void listEvents(String token, SnapshotListener listener, SseReader.HeartbeatListener heartbeat) throws IOException {
                 try {
                     listener.onSnapshot(snapshot); handled.countDown(); release.await(5, TimeUnit.SECONDS);
                 } catch (InterruptedException error) { Thread.currentThread().interrupt(); }

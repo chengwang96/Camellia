@@ -2,14 +2,14 @@
 
 const { randomUUID } = require('node:crypto');
 const { readRecoverableJson, writeJson } = require('../shared/json-store');
-const { normalizeSchedule, nextTaskRun, scheduleLabel } = require('../shared/task-schedule');
+const { normalizeSchedule, nextTaskRun, scheduleLabel, MAX_TASK_HOURS } = require('../shared/task-schedule');
 
 function taskOptions(value) {
   const instruction = String(value.instruction || '').trim();
   if (!instruction || instruction.length > 12000) throw new Error('Enter a task instruction (up to 12000 characters)');
   const schedule = normalizeSchedule(value);
   const options = { instruction, schedule, intervalMinutes: schedule.type === 'interval' ? schedule.minutes : 0 };
-  for (const [key, fallback, minimum, maximum] of [['maxRuns', schedule.type === 'once' ? 1 : schedule.type === 'daily' ? 7 : 24, 1, 1000], ['maxHours', schedule.type === 'interval' ? 24 : 168, 1, 168], ['maxRepairs', 0, 0, 5]]) {
+  for (const [key, fallback, minimum, maximum] of [['maxRuns', schedule.type === 'once' ? 1 : schedule.type === 'daily' ? 7 : 24, 1, 1000], ['maxHours', schedule.type === 'interval' ? 24 : 168, 1, MAX_TASK_HOURS], ['maxRepairs', 0, 0, 5]]) {
     const number = value[key] ?? fallback;
     if (!Number.isSafeInteger(number) || number < minimum || number > maximum) throw new Error('Invalid task option: ' + key);
     options[key] = number;
@@ -296,4 +296,4 @@ Recovery budget: ${task.repairs}/${task.maxRepairs} used. Before EVERY recovery 
 Never create goals or new tasks from this scheduled turn. Do not sleep or poll repeatedly. End this check by calling camellia_task_report with task_id, status (continue, complete, blocked), and a concise evidence-based summary. Complete only after checking the output, not just process exit. Report blocked on failure requiring user input. The application schedules the next check.`;
 }
 
-module.exports = { ScheduledTasks, taskOptions, taskPrompt };
+module.exports = { ScheduledTasks, taskOptions, taskPrompt, MAX_TASK_HOURS };

@@ -198,7 +198,7 @@ function setView(next, engine, focus) {
   if (next === 'balances') next = 'providers';
   if (next === 'storage') { next = 'data'; focus ||= 'storageSection'; }
   if (next === 'general' && ['dataDirectorySection', 'dataPath', 'dataDirectoryStatus', 'migrateDataDirectory', 'openLogs',
-    'dataMigrationSection', 'dataMigrationStatus', 'exportData', 'importData', 'importDataAgain', 'storageSection'].includes(focus)) next = 'data';
+    'dataMigrationSection', 'dataMigrationStatus', 'exportData', 'importData', 'storageSection'].includes(focus)) next = 'data';
   // The connection settings live on their own page now; the download prompt and
   // older links still ask for General or Runtime, so redirect them.
   if (next === 'general' && (focus === 'networkMode' || focus === 'downloadProxyUrl')) next = 'network';
@@ -826,14 +826,12 @@ $('verboseLogging').addEventListener('change', async () => {
 // Move the profile to another install, folder or computer. Both directions are
 // explicit and the page reports real progress; importing overwrites matching
 // files, so the main process asks for confirmation first.
-let dataMigrationBusy = false, dataMigrationActive = false, dataMigrationPackage = null, dataDirectory = null;
+let dataMigrationBusy = false, dataMigrationActive = false, dataDirectory = null;
 const migrationBytes = bytes => bytes < 1024 ? bytes + ' B' : bytes < 1024 ** 2 ? (bytes / 1024).toFixed(1) + ' KiB' : bytes < 1024 ** 3 ? (bytes / 1024 ** 2).toFixed(1) + ' MiB' : (bytes / 1024 ** 3).toFixed(2) + ' GiB';
 const migrationIdle = () => window.CamelliaI18n.t('Transfer API configuration, settings or conversations. Subscription sign-ins are excluded.');
 function dataMigrationControls() {
   $('exportData').disabled = dataMigrationBusy;
   $('importData').disabled = dataMigrationBusy;
-  $('importDataAgain').hidden = !dataMigrationPackage;
-  $('importDataAgain').disabled = dataMigrationBusy;
   $('migrateDataDirectory').disabled = dataMigrationBusy || !dataDirectory?.canMigrate;
   $('maintainPluginCaches').disabled = dataMigrationBusy || !api.pluginCacheMaintain;
 }
@@ -929,7 +927,6 @@ const importData = async file => {
         .replace('{0}', () => fmt(result.restored)).replace('{1}', () => migrationBytes(result.bytes)).replace('{2}', () => scope);
       const backup = result.backupDir ? ' ' + window.CamelliaI18n.t('Previous files were backed up; review them only if something looks wrong.') : '';
       $('dataMigrationStatus').textContent = note + backup + migrationCompatibility(result) + (result.warning ? '\n' + result.warning : '');
-      dataMigrationPackage = selectedFile || true;
     }
   } catch (error) { $('dataMigrationStatus').hidden = false; $('dataMigrationStatus').textContent = error.message; $('dataMigrationStatus').classList.add('error'); }
   finally { dataMigrationBusy = false; dataMigrationActive = false; dataMigrationControls(); $('dataMigrationProgress').hidden = true; }
@@ -1014,9 +1011,7 @@ function chooseDataScope({ mode = 'import', categories = {}, skippedEngines = []
     };
   });
 }
-// Reuse the exact file when the main process already knows it, otherwise ask.
 $('importData').onclick = () => importData(null);
-$('importDataAgain').onclick = () => importData(typeof dataMigrationPackage === 'string' ? dataMigrationPackage : null);
 api.onDataMigrationProgress(state => {
   // Ignore any progress event that arrives after the call already finished, so
   // a late percentage cannot overwrite the final result text.
@@ -1322,14 +1317,8 @@ $('reviewDefaultEngine').addEventListener('change', () =>
   void saveReviewDefaults({ reviewerEngine: $('reviewDefaultEngine').value }));
 $('reviewDefaultMode').addEventListener('change', () =>
   void saveReviewDefaults({ mode: $('reviewDefaultMode').value }));
-$('reviewDefaultMaxTokens').addEventListener('change', () =>
-  void saveReviewDefaults({ maxTokens: Number($('reviewDefaultMaxTokens').value) || 50000 }));
 $('reviewDefaultAgentConsent').addEventListener('change', () =>
   void saveReviewDefaults({ allowAgentReviews: $('reviewDefaultAgentConsent').checked }));
-$('reviewDefaultGate').addEventListener('change', () =>
-  void saveReviewDefaults({ gate: $('reviewDefaultGate').checked }));
-$('reviewDefaultTurnGate').addEventListener('change', () =>
-  void saveReviewDefaults({ turnGate: $('reviewDefaultTurnGate').checked }));
 $('chooseMemoryDirectory').onclick = async () => {
   try {
     const result = await api.pickFile({ kind: 'directory', title: 'Choose a memory folder' });
@@ -1426,6 +1415,7 @@ async function saveGeneral() {
   try {
     const result = await api.workbenchSaveSettings({ language: $('language').value, theme: $('theme').value, autoRefreshBalances: $('autoRefreshBalances').checked, closeToTray: $('closeToTray').checked,
       chatContentWidth: $('chatContentWidth').value, advancedAnimations: $('advancedAnimations').checked,
+      preloadWebProviders: $('preloadWebProviders').checked,
       showConversationNavigator: $('showConversationNavigator').checked,
       showHoverHints: $('showHoverHints').checked,
       portableSkills: $('portableSkills').checked,
@@ -1438,7 +1428,7 @@ async function saveGeneral() {
     window.CamelliaI18n.setLanguage($('language').value); status("Preferences saved");
   } catch (e) { status(e.message, true); }
 }
-for (const id of ['language', 'theme', 'chatContentWidth', 'advancedAnimations', 'showConversationNavigator', 'showHoverHints', 'portableSkills', 'autoRefreshBalances', 'antigravityAutoRefresh', 'accountRefreshMinutes', 'closeToTray', 'conversationMode', 'conversationWarn', 'conversationOriginSetting', 'conversationSessionTtl', 'conversationSessionLimit']) {
+for (const id of ['language', 'theme', 'chatContentWidth', 'advancedAnimations', 'preloadWebProviders', 'showConversationNavigator', 'showHoverHints', 'portableSkills', 'autoRefreshBalances', 'antigravityAutoRefresh', 'accountRefreshMinutes', 'closeToTray', 'conversationMode', 'conversationWarn', 'conversationOriginSetting', 'conversationSessionTtl', 'conversationSessionLimit']) {
   $(id).addEventListener('change', saveGeneral);
 }
 // ---- Keyboard shortcuts -------------------------------------------------
@@ -1762,6 +1752,7 @@ async function refreshPreferences() {
     $('theme').value = preferences.theme; syncThemeChoices(); $('autoRefreshBalances').checked = preferences.autoRefreshBalances; $('closeToTray').checked = !!preferences.closeToTray;
     $('antigravityAutoRefresh').checked = preferences.subscriptionAutoRefresh?.antigravity !== false;
     $('chatContentWidth').value = preferences.chatContentWidth || 'standard';
+    $('preloadWebProviders').checked = preferences.preloadWebProviders === true;
     $('showConversationNavigator').checked = preferences.showConversationNavigator !== false;
     $('showHoverHints').checked = preferences.showHoverHints !== false;
     $('advancedAnimations').checked = preferences.advancedAnimations !== false;
@@ -1774,10 +1765,7 @@ async function refreshPreferences() {
     const reviewDefaults = preferences.reviewDefaults || {};
     $('reviewDefaultEngine').value = reviewDefaults.reviewerEngine || '';
     $('reviewDefaultMode').value = reviewDefaults.mode === 'adversarial' ? 'adversarial' : 'standard';
-    $('reviewDefaultMaxTokens').value = String(reviewDefaults.maxTokens || 50000);
     $('reviewDefaultAgentConsent').checked = reviewDefaults.allowAgentReviews === true;
-    $('reviewDefaultGate').checked = reviewDefaults.gate === true;
-    $('reviewDefaultTurnGate').checked = reviewDefaults.turnGate === true;
     void refreshVSCodeSettings(preferences.vscodePath);
     $('accountRefreshMinutes').value = String(preferences.accountRefreshMinutes || 15);
     $('conversationMode').value = preferences.conversations?.mode || 'direct'; $('conversationWarn').checked = !!preferences.conversations?.warnOnSwitch;

@@ -21,26 +21,21 @@ Date: 2026-11-13
 - Idempotent `request_id` replay, per-conversation/global active-review caps,
   bounded timeouts, and restart recovery that marks interrupted reviews as
   failed rather than silently passing them.
-- Optional Goal completion gate: a fresh passing review is required before the
-  agent can report `status: "complete"`. A stale, failed, cancelled, interrupted
-  or missing report cannot pass.
-- Review settings in the Review dialog for agent-requested reviews and the Goal
-  gate. The reviewer and mode selected there become the conversation defaults.
+- The Review dialog saves the selected reviewer and mode as conversation
+  defaults and lets users manage consent for agent-requested reviews.
 - Review jobs now run in disposable workspace snapshots. The snapshot contains
   the current tracked and untracked worktree, rejects symlinks, is size bounded,
   and is deleted when the review settles or Camellia restarts.
 - Reviewer children expose only `camellia_review_report` through the Camellia
   bridge, force native web tools off, and cannot call tasks, conversations,
   memory writes, web tools, or nested delegation.
-- Per-conversation and global review defaults cover reviewer engine, mode,
-  token budget, agent consent, same-engine warning, Goal gate, and completed
-  turn review.
+- Model Settings exposes only the default reviewer engine, mode, and agent
+  consent. Camellia manages the token limit internally.
 - Agent-requested reviews use an in-conversation consent card. No reviewer
   quota is spent before approval.
-- Goal completion is gated for both agent completion claims and the manual Goal
-  action. Each Goal has one initial review and one re-review; further attempts
-  require a user override. Ordinary turns can optionally pause the next message
-  until their automatic review settles.
+- Cross-engine reviews start only on request. They do not run automatically
+  or block sending the next message or completing a Goal. Goal completion
+  claims still use the independent Goal verifier.
 - Review reports validate target paths and line bounds. Token budget overruns,
   stale targets, failures, cancellations, and interrupted jobs cannot pass.
 - Portable skills have registry state, preview, app/custom installation,
@@ -54,8 +49,8 @@ Date: 2026-11-13
 - The header Review action and `Ctrl/Cmd+Shift+R` are the entry points. The
   composer Review chip is intentionally omitted to keep the editor uncluttered.
 - The Review sheet keeps only reviewer engine, reviewer model and review mode
-  visible by default; comparison, token budget, focus, same-engine warning and
-  gate policies live under Advanced options.
+  visible by default; comparison, focus, agent consent, and the same-engine
+  warning live under Advanced options.
 - `camellia_review_start` is available to the parent agent from the first turn.
   The tool description and prompt explicitly direct the agent to use it when the
   user asks another model or engine to review, audit or challenge the change.
@@ -390,8 +385,8 @@ The reviewer receives a `ReviewPacket`, not the author's full transcript:
 
 ### Structured report
 
-The reviewer must call a report tool; free-form prose is not enough for a
-blocking gate:
+The reviewer must call a report tool; free-form prose is not a structured
+result:
 
 ```json
 {
@@ -442,38 +437,12 @@ state.
 
 The work panel gets a review card with engine, mode, state, target hash, and
 findings. Context events record `review-start`, `review-settle`,
-`review-stale`, and optional `review-gate`.
-
-### Review gate
-
-An optional gate can run after an implementation turn and before the parent
-declares completion. It must be explicitly enabled because it can cause a
-review/fix loop.
-
-Hard limits:
-
-- at most one re-review after a `changes_requested` report
-- maximum one reviewer turn per pass
-- token, time, and concurrency budgets
-- no automatic fix by the reviewer
-- no gate for a report marked stale
-- no gate if the reviewer engine is unavailable
-
-The gate can block completion, but cannot silently apply patches, commit, or
-retry forever.
-
-Current implementation: the Goal gate is enforced when the agent reports
-`camellia_update_goal` with `status: "complete"` and when the user chooses the
-manual Goal completion action. The explicit turn-review setting adds a separate
-barrier for ordinary successful turns. Re-running completion against the same
-frozen target reuses the existing review instead of spending quota again; a
-changed target requires a fresh review. Each Goal is limited to one initial
-review and one re-review unless the user grants an override.
+and `review-stale`.
 
 ## Entry points and activation
 
-Use one primary entry and two secondary entries. The user should not have to
-discover a hidden slash command.
+Use the header Review button or its keyboard shortcut. Users can also ask for
+another engine to review a change in chat.
 
 ### Primary: header Review button
 
@@ -503,16 +472,15 @@ Review 3 files with Codex
 The chip is a shortcut to the same review sheet. It is not a second workflow and
 never starts a review on click alone.
 
-### Secondary: conversation menu and Settings
+### Review defaults
 
-The conversation menu gets **Review settings…** for per-conversation defaults
-and the optional completion gate. Settings → Review gets the global defaults:
+Settings → Model Settings → Review defaults configures:
 
 - preferred reviewer engine
-- preferred reviewer model
 - standard/adversarial default
-- background default
 - whether agents may request a review without an extra confirmation
+
+The Review dialog can override these settings for one conversation.
 
 ### Review sheet
 
@@ -521,14 +489,8 @@ The first screen stays small:
 ```text
 Review this change
 
-Author    Claude Code
 Reviewer  [Codex CLI v]  [Model v]
 Mode      (Standard) (Adversarial)
-Scope     [Working tree v]
-Focus     optional text
-
-[ ] Keep running in background
-[ ] Before completion, require a clean review
 
 [Start review]
 ```
@@ -536,12 +498,12 @@ Focus     optional text
 Advanced options are collapsed:
 
 - compare against a branch/commit
-- include untracked files
-- token/time budget
-- reviewer network access
-- reviewer test execution
+- focus the review on specific concerns
+- allow agent-requested reviews in this conversation
+- allow same-engine review with a warning
 
-Defaults are read-only, no network, no tests, and background on.
+Reviews run in the background with read-only permissions, no network or tests,
+and app-managed token and time limits.
 
 ### First-run consent
 
@@ -584,24 +546,6 @@ Current implementation: the first request renders a consent card in the
 conversation. Approving it enables agent-requested reviews for that conversation
 and starts the stored request. The Review dialog checkbox remains available for
 manual policy changes.
-
-### Completion gate
-
-The gate is off by default. Enabling it is a separate explicit action:
-
-1. Settings → Review chooses the default reviewer and global gate policy.
-2. The conversation menu or review sheet enables **Before completion** for this
-   conversation.
-3. The first gated turn explains the quota and loop limits.
-
-When enabled, the gate:
-
-- runs only after the author turn has finished
-- reviews the frozen target for that turn
-- blocks completion only for a fresh `changes_requested` report
-- allows at most one re-review
-- treats a failed, cancelled, unavailable, or stale review as **not passed**
-- offers **Override for this turn** only after showing the reason
 
 The report is shown in the Work panel; it is never applied or committed
 automatically.
@@ -685,18 +629,16 @@ Acceptance:
 - retry with the same request ID does not duplicate a review
 - a changed workspace marks the report stale
 
-### Phase 4: UI and gate
+### Phase 4: UI and consent
 
-- Add review actions to the header/composer and work panel.
-- Show engine/model, mode, focus, budget, status, findings, and stale state.
-- Add optional review gate with explicit confirmation and hard loop limits.
+- Add review actions to the header and work panel.
+- Show engine/model, mode, focus, status, findings, and stale state.
 - Add skill-driven review invocation from the portable bridge.
 
 Acceptance:
 
 - review can run in the background and survive a renderer reopen
-- a parent cannot mark a gated turn complete while a fresh blocking finding
-  exists
+- review remains opt-in and does not gate Goal completion or ordinary turns
 - a stale or failed review does not produce a false pass
 - the UI clearly separates reviewer findings from author edits
 
@@ -725,7 +667,7 @@ Acceptance:
 - reviewer timeout, cancel, crash, and restart
 - target changes during review
 - duplicate request ID
-- review gate one-pass limit and stale report handling
+- app-managed token limit and stale report handling
 - child limits and concurrent reviews
 
 ### UI
@@ -746,7 +688,7 @@ Acceptance:
 | Skill supply-chain risk | Hash, trust state, resource scan, explicit install |
 | Reviewer edits by mistake | Read-only engine policy plus isolated worktree fallback |
 | Reviewer hallucinated findings | Evidence and target hash required; user/host verification |
-| Review/fix loop burns quota | One re-review, budgets, background, explicit gate |
+| Repeated reviews burn quota | Explicit requests, consent, and app-managed limits |
 | Large diff context blowup | Bounded manifest, file-on-demand reads, diff caps |
 | Cross-engine auth unavailable | Report unavailable; never silently substitute |
 | Native compaction/tooling differences | Portable bridge and per-host capability matrix |

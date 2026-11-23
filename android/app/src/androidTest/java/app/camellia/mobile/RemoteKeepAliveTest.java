@@ -94,7 +94,7 @@ public class RemoteKeepAliveTest extends InstrumentationTestCase {
             @Override void events(String id, String token, SnapshotListener listener, SseReader.HeartbeatListener heartbeat) throws java.io.IOException {
                 throw new java.io.IOException("Test stream unavailable");
             }
-            @Override public void listEvents(String token, SnapshotListener listener) throws java.io.IOException {
+            @Override public void listEvents(String token, SnapshotListener listener, SseReader.HeartbeatListener heartbeat) throws java.io.IOException {
                 throw new java.io.IOException("Test stream unavailable");
             }
         });
@@ -282,7 +282,7 @@ public class RemoteKeepAliveTest extends InstrumentationTestCase {
                 @Override void events(String id, String token, SnapshotListener listener, SseReader.HeartbeatListener heartbeat) throws java.io.IOException {
                     throw new java.io.IOException("Test stream unavailable");
                 }
-                @Override public void listEvents(String token, SnapshotListener listener) throws java.io.IOException { throw new java.io.IOException("Test stream unavailable"); }
+                @Override public void listEvents(String token, SnapshotListener listener, SseReader.HeartbeatListener heartbeat) throws java.io.IOException { throw new java.io.IOException("Test stream unavailable"); }
             });
             invoke("onPause"); invoke("onStop");
             assertTrue(RemoteKeepAliveService.active());

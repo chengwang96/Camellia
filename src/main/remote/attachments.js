@@ -126,7 +126,7 @@ async function openStoredAttachment({ root, file }) {
   const relative = path.relative(canonicalRoot, canonical);
   const folder = relative.split(path.sep)[0];
   if (!relative || path.isAbsolute(relative) || relative === '..' || relative.startsWith('..' + path.sep)
-    || !['device-attachments', 'mobile-images'].includes(folder)) {
+    || !['device-attachments', 'mobile-images', 'handoffs'].includes(folder)) {
     fail(404, 'Attachment not found');
   }
   const maximum = file.isImage === true ? MAX_IMAGE : MAX_FILE;

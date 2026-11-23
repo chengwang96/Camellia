@@ -201,22 +201,16 @@ async function main() {
       holdVerification = false;
       console.log('PASS cancellation during real native verification: drained, no binding admitted');
     }
-    console.log('Testing verification immediately after adding members:', profile.engine, profile.connection, profile.model);
+    console.log('Testing that adding members stays local and the first send performs any required verification:', profile.engine, profile.connection, profile.model);
     const group = (await service.call('create', { title: 'Production connection verification' })).group;
-    const verificationBeforeAdd = verificationSteps.size;
+    const verificationBeforeSend = verificationSteps.size;
     const added = await service.call('add-member', { id: group.id, name: 'First', bindingId: catalog[0].id });
-    assert.equal(added.group.participants[0].verifying, true);
+    assert.equal(added.group.participants[0].verifying, false);
     await service.call('add-member', { id: group.id, name: 'Second', bindingId: catalog[0].id });
-    const verificationStart = Date.now();
-    while (service.memberChecks.size) {
-      if (Date.now() - verificationStart > 180000) throw new Error('Automatic member verification did not finish');
-      await new Promise(resolve => setTimeout(resolve, 100));
-    }
-    const verified = (await service.call('load', { id: group.id })).group;
-    assert.ok(verified.participants.every(p => p.capability.available && !p.verifying && !p.verificationError), JSON.stringify(verified.participants));
-    assert.deepEqual(verified.messages, []);
-    if (!online && !onlineApi) assert.equal(verificationSteps.size - verificationBeforeAdd, 2, 'same-connection additions share a single two-turn verification');
-    console.log('PASS new members: real two-turn verification completes before any send, shared connection checked once, public history empty');
+    const pending = (await service.call('load', { id: group.id })).group;
+    assert.ok(pending.participants.every(p => !p.capability.available && !p.verifying && !p.verificationError), JSON.stringify(pending.participants));
+    assert.deepEqual(pending.messages, []); assert.equal(service.memberChecks.size, 0);
+    console.log('PASS new members: no model call or verification quota, public history empty');
     const members = service.manager.get(group.id).participants;
     // Older beta groups persisted no context metadata. They must still send
     // through the matching current model/account without being re-created.
@@ -285,9 +279,10 @@ async function main() {
       return;
     }
     const first = await send('Remember VISIBLE_A7 for this discussion. Reply only VISIBLE_A7.', members.map(p => p.id), 'serial');
+    if (!online && !onlineApi) assert.equal(verificationSteps.size - verificationBeforeSend, 2, 'the first send performs one shared two-turn verification for the selected connection');
     assert.equal((await service.call('catalog')).bindings[0].capability.available, true);
     assert.equal(first.participants[0].contextWindow, profile.contextWindow);
-    console.log('PASS first send: verified connection reused, old member metadata repaired, real answer saved');
+    console.log('PASS first send: one shared verification, old member metadata repaired, real answer saved');
     assert.notEqual(first.participants[0].session.nativeId, first.participants[1].session.nativeId);
     const ordinaryHistory = engine === 'codex' ? codex.history : engine === 'antigravity' ? antigravity.history : null;
     for (const member of first.participants) if (ordinaryHistory) assert.ok(!ordinaryHistory.find(member.session.nativeId), 'group transcripts must not enter ordinary history');

@@ -224,7 +224,7 @@ test('scope is rechecked after an asynchronous catalog lookup', async t => {
   assert.equal(h.remote.entries.find(e => e.requestId === command.payload.requestId).state, 'failed');
 });
 
-test('adding members starts host verification and reports its result without duplicating members', async t => {
+test('sending commits immediately while a new member is checked in the background', async t => {
   const h = fixture(t), id = (await h.execute('create')).groupId;
   let release, verified = false, checks = 0;
   const evidence = h.adapter.evidence; h.adapter.evidence = value => verified ? evidence(value) : null;
@@ -233,15 +233,25 @@ test('adding members starts host verification and reports its result without dup
   const { bindings } = await h.remote.catalog(h.device);
   const add = h.submit('add-member', id, { bindingId: bindings[0].id, name: 'Auto checked' });
   await h.finish(add.payload.requestId);
-  assert.equal(h.remote.snapshot(h.device, id).group.participants[0].verifying, true);
+  assert.equal(h.remote.snapshot(h.device, id).group.participants[0].verifying, false);
+  const participantId = h.service.manager.get(id).participants[0].id;
+  const send = h.submit('send', id, { text: 'Do not hold this message', participantIds: [participantId], mode: 'parallel' });
+  assert.equal((await h.finish(send.payload.requestId)).state, 'completed');
+  await tick();
+  const pending = h.remote.snapshot(h.device, id).group;
+  assert.equal(pending.messages.length, 1); assert.equal(pending.deliveries[0].status, 'queued');
+  assert.equal(pending.participants[0].verifying, true); assert.equal(h.calls.length, 0);
+  assert.equal(checks, 1);
   h.remote.submit(h.device, add.payload, h.gateway.instanceId);
   release(); await tick();
+  for (let i = 0; i < 20 && h.service.active; i++) await tick();
   assert.equal(checks, 1);
   assert.equal(h.remote.snapshot(h.device, id).group.participants[0].verifying, false);
+  assert.equal(h.calls.length, 1);
   h.service.production = null;
 });
 
-test('turn submission is cancelled when remote access stops during connection verification', async t => {
+test('stopping a queued first turn cancels its background connection check without calling the model', async t => {
   const h = fixture(t), id = (await h.execute('create')).groupId;
   const { bindings } = await h.remote.catalog(h.device);
   await h.execute('add-member', id, { bindingId: bindings[0].id, name: 'Checked' });
@@ -251,9 +261,14 @@ test('turn submission is cancelled when remote access stops during connection ve
   h.service.production = { refresh() {}, reason: () => 'Needs verification', canVerify: () => true, checks: new Map(),
     verify: () => new Promise(resolve => { release = resolve; }) };
   const send = h.submit('send', id, { text: 'Must not start later', participantIds: [participantId], mode: 'parallel' });
-  await tick(); h.remote.cancelPending(); release();
-  assert.match((await h.finish(send.payload.requestId)).error, /Remote access stopped/);
-  assert.equal(h.calls.length, 0); assert.equal(h.service.manager.get(id).messages.length, 0);
+  assert.equal((await h.finish(send.payload.requestId)).state, 'completed');
+  await tick(); assert.equal(h.remote.snapshot(h.device, id).group.verifying, true);
+  await h.execute('stop', id);
+  release();
+  for (let i = 0; i < 20 && h.service.active; i++) await tick();
+  assert.equal(h.calls.length, 0); assert.equal(h.service.manager.get(id).messages.length, 1);
+  assert.notEqual(h.service.manager.get(id).deliveries[0].status, 'completed');
+  assert.equal(h.remote.snapshot(h.device, id).group.verifying, false);
   h.service.production = null;
 });
 

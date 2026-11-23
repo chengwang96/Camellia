@@ -3,7 +3,10 @@ package app.camellia.mobile;
 import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.res.ColorStateList;
+import android.graphics.Color;
 import android.graphics.Typeface;
+import android.graphics.drawable.GradientDrawable;
+import android.graphics.drawable.RippleDrawable;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
@@ -973,22 +976,120 @@ public final class RemoteDiscussionsActivity extends Activity {
     }
     private void renderMembers() {
         if (memberPanel == null) return;
-        memberPanel.removeAllViews(); memberPanel.addView(text(tr("一个主题，最多四位成员。", "One topic, up to four members."), 13, style.muted));
-        for (JSONObject p : liveMembers()) {
-            String id = p.optString("id"); memberPanel.addView(speaker(id, p.optString("name")));
-            memberPanel.addView(text(RemoteEngines.label(p.optString("engine")) + " · " + p.optString("connection") + " · " + p.optString("model"), 13, style.muted));
-            JSONObject capability = p.optJSONObject("capability"); boolean available = capability != null && capability.optBoolean("available");
-            String state = p.optBoolean("verifying") ? tr("正在验证连接…", "Verifying connection…") : available ? tr("连接可用", "Connection ready")
-                : p.optString("verificationError", capability == null ? tr("连接待验证", "Connection unverified") : capability.optString("detail", tr("连接待验证", "Connection unverified")));
-            TextView status = text(state, 13, available ? style.muted : style.accent); status.setTag("discussionMemberStatus:" + id); memberPanel.addView(status);
-            if (!p.optString("identityPrompt").isEmpty()) memberPanel.addView(text(p.optString("identityPrompt"), 13, style.muted));
-            LinearLayout actions = new LinearLayout(this);
-            actions.addView(button(p.optBoolean("verifying") ? tr("取消验证", "Cancel check") : tr("验证连接", "Verify connection"), "discussionVerify:" + id,
-                () -> submit(p.optBoolean("verifying") ? "cancel-member-verification" : "verify-member", groupId, object("participantId", id))));
-            actions.addView(button(tr("移除", "Remove"), "discussionRemove:" + id, () -> submit("remove-member", groupId, object("participantId", id))));
-            memberPanel.addView(actions);
+        memberPanel.removeAllViews();
+        TextView note = text(tr("一个主题，最多四位成员。", "One topic, up to four members."), Palette.TEXT_NOTE, style.muted);
+        note.setLineSpacing(dp(3), 1);
+        LinearLayout.LayoutParams noteParams = new LinearLayout.LayoutParams(-1, -2); noteParams.bottomMargin = dp(12);
+        memberPanel.addView(note, noteParams);
+        for (JSONObject participant : liveMembers()) memberPanel.addView(memberCard(participant));
+        if (liveMembers().size() < 4) {
+            TextView add = new TextView(this);
+            add.setText("+  " + tr("添加成员", "Add member")); add.setTag("discussionAddMember");
+            add.setTextSize(Palette.TEXT_BODY); add.setTextColor(style.accent);
+            add.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL)); add.setGravity(Gravity.CENTER);
+            add.setMinHeight(dp(48)); add.setSingleLine(true); add.setFocusable(true); add.setPadding(dp(12), 0, dp(12), 0);
+            GradientDrawable fill = settingsStyle.round(Color.argb(18, Color.red(style.accent), Color.green(style.accent), Color.blue(style.accent)),
+                Palette.RADIUS_SETTINGS_CONTROL);
+            add.setBackground(new RippleDrawable(ColorStateList.valueOf(Palette.RIPPLE_ON_CARD), fill,
+                settingsStyle.round(Color.WHITE, Palette.RADIUS_SETTINGS_CONTROL)));
+            add.setAccessibilityDelegate(buttonAccessibility());
+            add.setOnClickListener(view -> { if (dialog != null) dialog.dismiss(); loadCatalog(); });
+            LinearLayout.LayoutParams addParams = new LinearLayout.LayoutParams(-1, dp(48)); addParams.topMargin = dp(2);
+            memberPanel.addView(add, addParams);
         }
-        if (liveMembers().size() < 4) memberPanel.addView(button(tr("添加成员", "Add member"), "discussionAddMember", () -> { if (dialog != null) dialog.dismiss(); loadCatalog(); }));
+    }
+    private LinearLayout memberCard(JSONObject participant) {
+        String id = participant.optString("id"), name = participant.optString("name");
+        LinearLayout card = column(); card.setTag("discussionMemberCard:" + id);
+        card.setPadding(dp(14), dp(12), dp(14), dp(12)); card.setBackground(settingsStyle.cardBackground());
+        card.setClipToOutline(true); SurfaceElevation.apply(card, 1);
+        LinearLayout.LayoutParams cardParams = new LinearLayout.LayoutParams(-1, -2); cardParams.bottomMargin = dp(10); card.setLayoutParams(cardParams);
+
+        LinearLayout header = new LinearLayout(this); header.setOrientation(LinearLayout.HORIZONTAL); header.setGravity(Gravity.CENTER_VERTICAL);
+        header.setMinimumHeight(dp(48)); header.setTag("discussionSpeaker:" + id); header.setFocusable(true);
+        header.setContentDescription(tr("编辑成员身份：", "Edit member identity: ") + name);
+        header.setBackground(new RippleDrawable(ColorStateList.valueOf(Palette.RIPPLE_ON_CARD), null,
+            settingsStyle.round(Color.WHITE, Palette.RADIUS_SETTINGS_CONTROL)));
+        header.setOnClickListener(view -> { JSONObject current = member(id); if (current != null && !current.optBoolean("removed")) editIdentity(current); });
+        header.addView(new AgentBadge(this, participant.optString("engine"), 36), new LinearLayout.LayoutParams(dp(36), dp(36)));
+        LinearLayout labels = column(); labels.setPadding(dp(10), 0, dp(8), 0);
+        TextView nameView = text(name, Palette.TEXT_ROW, style.ink); nameView.setTag("discussionMemberName:" + id);
+        nameView.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        nameView.setSingleLine(true); nameView.setEllipsize(TextUtils.TruncateAt.END); labels.addView(nameView);
+        TextView metadata = text(RemoteEngines.label(participant.optString("engine")) + " · " + participant.optString("connection")
+            + " · " + participant.optString("model"), Palette.TEXT_SMALL, style.muted);
+        metadata.setSingleLine(true); metadata.setEllipsize(TextUtils.TruncateAt.END); labels.addView(metadata);
+        header.addView(labels, new LinearLayout.LayoutParams(0, -2, 1));
+        ImageView edit = new ImageView(this); edit.setImageDrawable(new LineIcon("edit", style.faint));
+        edit.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+        header.addView(edit, new LinearLayout.LayoutParams(dp(18), dp(18)));
+        card.addView(header, new LinearLayout.LayoutParams(-1, -2));
+
+        JSONObject capability = participant.optJSONObject("capability");
+        boolean verifying = participant.optBoolean("verifying");
+        boolean available = capability != null && capability.optBoolean("available");
+        String state = verifying ? tr("正在验证连接…", "Verifying connection…") : available ? tr("连接可用", "Connection ready")
+            : participant.optString("verificationError", capability == null ? tr("连接待验证", "Connection unverified")
+            : capability.optString("detail", tr("连接待验证", "Connection unverified")));
+        LinearLayout statusRow = new LinearLayout(this); statusRow.setGravity(Gravity.CENTER_VERTICAL);
+        View dot = new View(this); GradientDrawable dotShape = new GradientDrawable(); dotShape.setShape(GradientDrawable.OVAL);
+        dotShape.setColor(available && !verifying ? settingsStyle.palette().success : style.accent); dot.setBackground(dotShape);
+        dot.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+        LinearLayout.LayoutParams dotParams = new LinearLayout.LayoutParams(dp(7), dp(7)); dotParams.setMarginEnd(dp(8));
+        statusRow.addView(dot, dotParams);
+        TextView status = text(state, Palette.TEXT_NOTE, available && !verifying ? style.muted : style.accent);
+        status.setTag("discussionMemberStatus:" + id); status.setMaxLines(3); status.setEllipsize(TextUtils.TruncateAt.END);
+        status.setLineSpacing(dp(2), 1); status.setContentDescription(state);
+        statusRow.addView(status, new LinearLayout.LayoutParams(0, -2, 1));
+        LinearLayout.LayoutParams statusParams = new LinearLayout.LayoutParams(-1, -2); statusParams.topMargin = dp(8);
+        card.addView(statusRow, statusParams);
+
+        String identity = participant.optString("identityPrompt").trim();
+        if (!identity.isEmpty()) {
+            TextView identityView = text(tr("身份 · ", "Identity · ") + identity, Palette.TEXT_SMALL, style.muted);
+            identityView.setMaxLines(2); identityView.setEllipsize(TextUtils.TruncateAt.END);
+            identityView.setLineSpacing(dp(2), 1); identityView.setContentDescription(tr("成员身份：", "Member identity: ") + identity);
+            LinearLayout.LayoutParams identityParams = new LinearLayout.LayoutParams(-1, -2); identityParams.topMargin = dp(8);
+            card.addView(identityView, identityParams);
+        }
+
+        LinearLayout actions = new LinearLayout(this); actions.setOrientation(LinearLayout.HORIZONTAL);
+        actions.setTag("discussionMemberActions:" + id); actions.setClipToOutline(true);
+        actions.setBackground(settingsStyle.round(settingsStyle.field, Palette.RADIUS_SETTINGS_CONTROL));
+        String verifyLabel = verifying ? tr("取消验证", "Cancel") : tr("验证连接", "Verify");
+        TextView verify = memberAction(verifyLabel, "discussionVerify:" + id, style.accent,
+            () -> submit(verifying ? "cancel-member-verification" : "verify-member", groupId, object("participantId", id)));
+        verify.setContentDescription((verifying ? tr("取消验证成员：", "Cancel verification for ") : tr("验证成员连接：", "Verify connection for ")) + name);
+        actions.addView(verify, new LinearLayout.LayoutParams(0, dp(48), 1));
+        View divider = new View(this); divider.setBackgroundColor(settingsStyle.divider);
+        LinearLayout.LayoutParams dividerParams = new LinearLayout.LayoutParams(dp(1), dp(24)); dividerParams.gravity = Gravity.CENTER_VERTICAL;
+        actions.addView(divider, dividerParams);
+        TextView remove = memberAction(tr("移除", "Remove"), "discussionRemove:" + id, settingsStyle.error,
+            () -> submit("remove-member", groupId, object("participantId", id)));
+        remove.setContentDescription(tr("移除成员：", "Remove member: ") + name);
+        actions.addView(remove, new LinearLayout.LayoutParams(0, dp(48), 1));
+        LinearLayout.LayoutParams actionParams = new LinearLayout.LayoutParams(-1, dp(48)); actionParams.topMargin = dp(12);
+        card.addView(actions, actionParams);
+        return card;
+    }
+    private TextView memberAction(String label, String tag, int activeColor, Runnable action) {
+        TextView button = new TextView(this); button.setText(label); button.setTag(tag);
+        button.setTextSize(Palette.TEXT_BODY); button.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        button.setTextColor(new ColorStateList(new int[][]{{-android.R.attr.state_enabled}, {}}, new int[]{style.faint, activeColor}));
+        button.setGravity(Gravity.CENTER); button.setSingleLine(true); button.setEllipsize(TextUtils.TruncateAt.END);
+        button.setMinHeight(dp(48)); button.setPadding(dp(8), 0, dp(8), 0); button.setFocusable(true);
+        button.setBackground(new RippleDrawable(ColorStateList.valueOf(Palette.RIPPLE_ON_CARD), null,
+            settingsStyle.round(Color.WHITE, 0)));
+        button.setAccessibilityDelegate(buttonAccessibility());
+        button.setOnClickListener(view -> action.run());
+        return button;
+    }
+    private View.AccessibilityDelegate buttonAccessibility() {
+        return new View.AccessibilityDelegate() {
+            @Override public void onInitializeAccessibilityNodeInfo(View host, android.view.accessibility.AccessibilityNodeInfo info) {
+                super.onInitializeAccessibilityNodeInfo(host, info); info.setClassName("android.widget.Button");
+            }
+        };
     }
     private void editIdentity(JSONObject participant) {
         if (memberBusy(participant.optString("id"))) { showError(tr("请等待该成员回复或验证完成，也可以先停止。", "Wait for this member to finish replying or verifying, or stop it first.")); return; }

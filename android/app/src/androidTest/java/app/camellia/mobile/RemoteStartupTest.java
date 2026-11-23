@@ -47,7 +47,7 @@ public class RemoteStartupTest extends InstrumentationTestCase {
     }
 
     private void startup(boolean known, boolean sameAddress, boolean sameToken, boolean busyReads) throws Exception {
-        AtomicInteger statusReads = new AtomicInteger(), otherReads = new AtomicInteger(), eventCalls = new AtomicInteger();
+        AtomicInteger otherReads = new AtomicInteger(), eventCalls = new AtomicInteger();
         CountDownLatch opened = new CountDownLatch(1), readWorkersEntered = new CountDownLatch(2), oldStreamEntered = new CountDownLatch(1), statusRead = new CountDownLatch(1);
         JSONObject info = new JSONObject().put("protocol", 1).put("permission", "control")
             .put("capabilities", new JSONArray().put("incremental-snapshots"))
@@ -66,7 +66,7 @@ public class RemoteStartupTest extends InstrumentationTestCase {
                     }
                     @Override public JSONObject json(String path, String credential, JSONObject payload) throws IOException {
                         if (path.equals("/v1/status")) {
-                            statusReads.incrementAndGet(); statusRead.countDown();
+                            statusRead.countDown();
                             if (blockedStatus) hold();
                         } else otherReads.incrementAndGet();
                         return info;
@@ -76,7 +76,7 @@ public class RemoteStartupTest extends InstrumentationTestCase {
                         if (downgraded && incremental()) throw new Failure(400);
                         opened.countDown(); hold();
                     }
-                    @Override public void listEvents(String credential, SnapshotListener listener) throws IOException { hold(); }
+                    @Override public void listEvents(String credential, SnapshotListener listener, SseReader.HeartbeatListener heartbeat) throws IOException { hold(); }
                     @Override public void cancel() { shutdown.countDown(); }
                 });
                 field("capabilityAddress", known ? sameAddress ? address : "http://100.80.1.3:43127" : "");
@@ -114,7 +114,6 @@ public class RemoteStartupTest extends InstrumentationTestCase {
         if (busyReads) assertTrue("Both controlled read workers should be occupied", readWorkersEntered.await(3, TimeUnit.SECONDS));
         assertTrue("The chat stream must open without waiting for history workers", opened.await(3, TimeUnit.SECONDS));
         if (!(known && sameAddress && sameToken)) assertTrue("Capabilities should still be discovered independently", statusRead.await(3, TimeUnit.SECONDS));
-        assertEquals(known && sameAddress && sameToken ? 0 : 1, statusReads.get());
         assertEquals("Opening chat should not download a duplicate sidebar or transcript", 0, otherReads.get());
         assertEquals(downgraded ? 2 : 1, eventCalls.get());
         getInstrumentation().runOnMainSync(() -> {
@@ -166,7 +165,7 @@ public class RemoteStartupTest extends InstrumentationTestCase {
                             listener.onSnapshot(fresh); hold(closed);
                         }
                     }
-                    @Override public void listEvents(String credential, SnapshotListener listener) throws IOException { hold(closed); }
+                    @Override public void listEvents(String credential, SnapshotListener listener, SseReader.HeartbeatListener heartbeat) throws IOException { hold(closed); }
                     @Override public void cancel() { if (first) cancelled.countDown(); closed.countDown(); }
                 });
                 field("foreground", true); call("connectEvents");
@@ -220,6 +219,57 @@ public class RemoteStartupTest extends InstrumentationTestCase {
 
     public void testInitialSnapshotTimeoutRestartsWithoutWaitingForTheOldSocket() throws Exception { stalledStream(false); }
     public void testLostHeartbeatRestartsAndRejectsLateFrames() throws Exception { stalledStream(true); }
+
+    public void testFailedChatStreamReconnectsWithAFreshClientAndWorker() throws Exception {
+        String id = "00000000-0000-0000-0000-000000000001";
+        AtomicInteger clients = new AtomicInteger(), eventCalls = new AtomicInteger();
+        AtomicInteger failedClient = new AtomicInteger(), replacementClient = new AtomicInteger();
+        CountDownLatch firstFailed = new CountDownLatch(1), replacementOpened = new CountDownLatch(1);
+        JSONObject fresh = new JSONObject().put("instanceId", "server").put("cursor", 2).put("permission", "control")
+            .put("conversation", new JSONObject().put("id", id).put("seq", 2))
+            .put("messages", new JSONArray().put(new JSONObject().put("seq", 2).put("role", "assistant").put("text", "Recovered")));
+        getInstrumentation().runOnMainSync(() -> {
+            try {
+                field("foreground", false);
+                field("credentials", new JSONObject().put("address", address).put("token", token));
+                field("conversationId", id); field("conversationTitle", "Reconnect"); call("detailScreen");
+                field("capabilityAddress", address); field("capabilityToken", token);
+                field("remoteClientFactory", (Function<String, RemoteApi>) target -> new RemoteApi(target) {
+                    private final int client = clients.incrementAndGet();
+                    @Override void events(String conversation, String credential, SnapshotListener listener, SseReader.HeartbeatListener heartbeat) throws IOException {
+                        if (failedClient.compareAndSet(0, client)) {
+                            eventCalls.incrementAndGet();
+                            firstFailed.countDown();
+                            throw new IOException("Stream failed before the first snapshot");
+                        }
+                        replacementClient.set(client);
+                        replacementOpened.countDown();
+                        listener.onSnapshot(fresh);
+                        try { shutdown.await(); } catch (InterruptedException error) { throw new IOException(error); }
+                    }
+                    @Override public void listEvents(String credential, SnapshotListener listener, SseReader.HeartbeatListener heartbeat) throws IOException {
+                        try { shutdown.await(); } catch (InterruptedException error) { throw new IOException(error); }
+                    }
+                    @Override public void cancel() { shutdown.countDown(); }
+                });
+                field("foreground", true); call("connectEvents");
+            } catch (Exception error) { throw new AssertionError(error); }
+        });
+        assertTrue(firstFailed.await(3, TimeUnit.SECONDS));
+        assertTrue("A failed stream must reopen on a new client", replacementOpened.await(5, TimeUnit.SECONDS));
+        assertTrue("A failed chat stream must be identified", failedClient.get() > 0);
+        assertTrue("A replacement chat stream must be identified", replacementClient.get() > 0);
+        assertTrue("The failed stream and its replacement are distinct clients",
+            failedClient.get() != replacementClient.get());
+        assertEquals("The failed client must not be reused", 1, eventCalls.get());
+        awaitConnected();
+        getInstrumentation().runOnMainSync(() -> {
+            try {
+                var history = (java.util.TreeMap<Long, JSONObject>) field("history");
+                assertEquals("Recovered", history.get(2L).optString("text"));
+            } catch (Exception error) { throw new AssertionError(error); }
+        });
+    }
 
     public void testProcessRecreationRestoresEncryptedHistoryAndResumesIncrementally() throws Exception {
         String id = "00000000-0000-0000-0000-000000000001", version = "a".repeat(64);

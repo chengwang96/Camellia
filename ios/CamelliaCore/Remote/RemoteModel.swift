@@ -46,6 +46,7 @@ public struct RemoteCapabilities: OptionSet, Sendable {
     public static let codexResetCredits = Self(rawValue: 1 << 14)
     public static let stopBackgroundWork = Self(rawValue: 1 << 15)
     public static let liveDeltas = Self(rawValue: 1 << 16)
+    public static let conversationAttachments = Self(rawValue: 1 << 17)
 
     /// These actions additionally require `permission == "control"`.
     /// The gateway further restricts reset credits to full-device control.
@@ -72,6 +73,7 @@ public struct RemoteCapabilities: OptionSet, Sendable {
             case "multi-image": value.insert(.multiImage)
             case "attachments": value.insert(.attachments)
             case "expanded-attachments": value.insert(.expandedAttachments)
+            case "conversation-attachments": value.insert(.conversationAttachments)
             default: break
             }
         }

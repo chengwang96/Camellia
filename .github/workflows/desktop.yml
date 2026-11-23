@@ -149,6 +149,18 @@ jobs:
         run: python tests/settings-page-smoke.py
       - name: Mobile access renderer regression
         run: python tests/remote-ui.py
+      - name: Goal hover hint regression
+        run: python tests/goal-tooltip-ui.py
+      - name: Web surface renderer regression
+        run: python tests/web-surface-ui.py
+      - name: Web layout DOM regression
+        run: python tests/web-layout-dom-ui.py
+      - name: Web layout consistency regression
+        run: python tests/web-layout-consistency-ui.py
+      - name: Web session actions regression
+        run: python tests/web-session-actions-ui.py
+      - name: Web view preload regression
+        run: node tests/web-view-preload-electron.cjs
       - name: Diagnostic pipe disconnection
         run: node tests/diagnostic-output-electron.cjs
       - name: Electron smoke test

@@ -213,7 +213,8 @@ public final class ArtifactDownloadService extends Service {
             state = new State(job.name, job.address, state.received, job.size, phase, detail, job.destination);
             synchronized (LOCK) { if (current == job) current = null; }
             if ("complete".equals(phase) && job.destination != null)
-                ArtifactDownloadHistory.complete(this, job.address, job.conversation, job.discussion, job.id, job.name, job.destination);
+                ArtifactDownloadHistory.complete(this, job.address, job.conversation, job.discussion, job.id,
+                    job.name, job.destination, job.size);
             stopForeground(STOP_FOREGROUND_REMOVE);
             getSystemService(NotificationManager.class).notify(NOTICE, notification(state));
             if (job.directory == null && job.destination != null) {

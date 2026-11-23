@@ -309,12 +309,12 @@ public class RemoteApi {
         eventsAt("/v1/conversations/events", token, listener);
     }
 
-    void workbenchEvents(String token, SnapshotListener listener, SseReader.HeartbeatListener heartbeat) throws IOException {
-        eventsAt("/v1/workbench/events", token, listener, heartbeat);
+    public void listEvents(String token, SnapshotListener listener, SseReader.HeartbeatListener heartbeat) throws IOException {
+        eventsAt("/v1/conversations/events", token, listener, heartbeat);
     }
 
-    void listEvents(String token, SnapshotListener listener, SseReader.HeartbeatListener heartbeat) throws IOException {
-        eventsAt("/v1/conversations/events", token, listener, heartbeat);
+    void workbenchEvents(String token, SnapshotListener listener, SseReader.HeartbeatListener heartbeat) throws IOException {
+        eventsAt("/v1/workbench/events", token, listener, heartbeat);
     }
 
     public void discussionEvents(String id, String token, SnapshotListener listener) throws IOException {

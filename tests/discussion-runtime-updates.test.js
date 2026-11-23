@@ -78,7 +78,7 @@ test('the member catalog offers installation only for a missing runtime and refr
   assert.equal(empty.runtimes.find(row => row.engine === 'claude').canInstall, false);
 });
 
-test('adding a member verifies a future harness; upgrades and path changes can be verified in the same app session', async t => {
+test('adding a member stays local; an explicit check verifies a future harness and runtime changes can be rechecked', async t => {
   const h = fixture(t);
   const { group } = await h.service.call('create', { title: 'Runtime updates' });
   const { bindings } = await h.service.call('catalog');
@@ -86,6 +86,8 @@ test('adding a member verifies a future harness; upgrades and path changes can b
   assert.equal(bindings[0].capability.available, false);
   const added = await h.service.call('add-member', { id: group.id, bindingId: bindings[0].id, name: 'Future harness' });
   const memberId = added.group.participants[0].id;
+  assert.equal(added.group.verifying, false); assert.equal(h.state.starts, 0);
+  await h.service.call('verify-member', { id: group.id, participantId: memberId });
   await h.service.memberChecks.get(memberId)?.promise;
   const adapter = h.registry.get('claude');
   assert.equal(h.state.starts, 2);

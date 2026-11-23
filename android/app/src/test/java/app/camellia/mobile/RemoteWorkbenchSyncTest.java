@@ -58,7 +58,7 @@ public class RemoteWorkbenchSyncTest {
         CountDownLatch shortDelivered = new CountDownLatch(1), expanded = new CountDownLatch(1);
         AtomicReference<JSONObject> result = new AtomicReference<>(); AtomicInteger listStarts = new AtomicInteger();
         try (RemoteWorkbenchSync sync = new RemoteWorkbenchSync(address -> new Api(initial) {
-            @Override void listEvents(String token, SnapshotListener listener, SseReader.HeartbeatListener heartbeat) throws IOException {
+            @Override public void listEvents(String token, SnapshotListener listener, SseReader.HeartbeatListener heartbeat) throws IOException {
                 listStarts.incrementAndGet();
                 try {
                     listener.onSnapshot(new JSONObject().put("conversationList", new JSONObject().put("conversations", allRows)));
@@ -189,7 +189,7 @@ public class RemoteWorkbenchSyncTest {
         AtomicReference<JSONObject> result = new AtomicReference<>(); AtomicInteger reads = new AtomicInteger();
         try (RemoteWorkbenchSync sync = new RemoteWorkbenchSync(address -> new Api(null) {
             @Override void workbenchEvents(String token, SnapshotListener listener, SseReader.HeartbeatListener heartbeat) throws IOException { throw new Failure(404); }
-            @Override void listEvents(String token, SnapshotListener listener, SseReader.HeartbeatListener heartbeat) throws IOException {
+            @Override public void listEvents(String token, SnapshotListener listener, SseReader.HeartbeatListener heartbeat) throws IOException {
                 try {
                     listener.onSnapshot(new JSONObject().put("conversationList", page("recent", "idle").put("nextOffset", 100)));
                     close.await();
@@ -224,7 +224,7 @@ public class RemoteWorkbenchSyncTest {
             @Override void workbenchEvents(String token, SnapshotListener listener, SseReader.HeartbeatListener heartbeat) throws IOException {
                 summaryStarts.incrementAndGet(); super.workbenchEvents(token, listener, heartbeat);
             }
-            @Override void listEvents(String token, SnapshotListener listener, SseReader.HeartbeatListener heartbeat) throws IOException {
+            @Override public void listEvents(String token, SnapshotListener listener, SseReader.HeartbeatListener heartbeat) throws IOException {
                 sessionStarts.incrementAndGet(); sessionListener.set(listener);
                 try { listener.onSnapshot(new JSONObject().put("conversationList", listed)); closed.await(); }
                 catch (InterruptedException error) { Thread.currentThread().interrupt(); }

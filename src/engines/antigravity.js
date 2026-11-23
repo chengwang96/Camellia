@@ -51,9 +51,12 @@ function subscriptionSpawnSpec({ runtime, home, env, proxyUrl, model = '', effor
 const sessionConnection = id => id.startsWith('agy-') ? 'subscription' : 'api';
 
 class AntigravitySession extends AcpSession {
-  async generateTitle() {
-    if (this.dead || this.settings.connection !== 'subscription' || !this.sessionId) return '';
-    const result = await this.request('session/camellia_generate_title', { sessionId: this.sessionId }, 60000);
+  async generateTitle(prompt = '') {
+    if (this.dead || this.settings.connection !== 'subscription') return '';
+    await this.ready;
+    if (this.dead || !this.sessionId) return '';
+    const result = await this.request('session/camellia_generate_title', { sessionId: this.sessionId, prompt },
+      60000 + (this.spec?.prepareTimeout || 0));
     return typeof result?.title === 'string' ? result.title : '';
   }
 }
@@ -232,9 +235,9 @@ function createAntigravity({ dataDir, cliSettingsFile, node, openLogin, loadConf
     'goal-complete': () => goal.setPhase('complete'), 'goal-clear': () => goal.clear({ interrupt: false }),
   };
   return { get session() { return sessions.legacy; }, home, goal, settings, saveSettings, handlers, ensureSession, forkNative, history, sessions, workspaces,
-    generateTitle: ({ conversation }) => {
+    generateTitle: ({ conversation, prompt }) => {
       const session = sessions.get({ conversationId: conversation.id });
-      return session && !session.dead ? session.generateTitle() : '';
+      return session && !session.dead ? session.generateTitle(prompt) : '';
     },
     nativeStorageDirectory(id) {
       if (sessionConnection(id) === 'api') return path.join(home, 'sessions', id, 'native');

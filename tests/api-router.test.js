@@ -1449,6 +1449,64 @@ test('Retry-After accepts seconds and dates; unsupported rich blocks fail visibl
   assert.throws(()=>convertRequest({messages:[{role:'user',content:[{type:'document',source:{}}]}]},'anthropic','openai'),/does not support document/);
 });
 
+test('single-key stream failures back off briefly and allow one recovery probe at a time', async t => {
+  let headers = {};
+  let recover = false;
+  let enterProbe, releaseProbe;
+  const probeStarted = new Promise(resolve => { enterProbe = resolve; });
+  const probeReleased = new Promise(resolve => { releaseProbe = resolve; });
+  const f = await fixture(t, async (request, res) => {
+    if (recover) {
+      enterProbe();
+      await probeReleased;
+      return reply(res, 200, completion(request.body.model));
+    }
+    res.writeHead(200, { 'content-type': 'text/event-stream', ...headers });
+    res.end(frame(openEvents()[0]));
+  }, url => [provider('only', url, ['one'], [mapping()], 'dual')]);
+  let time = Date.now();
+  t.mock.method(Date, 'now', () => time);
+  const modelState = () => f.router.getState().usage['only-key-0'].models['kimi-k3'];
+  const interrupt = async () => {
+    const response = await f.post({ stream: true });
+    assert.match(await response.text(), /upstream stream was interrupted/);
+  };
+
+  await interrupt();
+  assert.equal(modelState().until - time, 3000);
+  const cooling = await f.post({});
+  assert.equal(cooling.status, 503);
+  assert.equal(cooling.headers.get('retry-after'), '3');
+  assert.equal(f.requests.length, 1);
+
+  time = modelState().until;
+  await interrupt();
+  assert.equal(modelState().until - time, 6000);
+  assert.equal(normalizeConfig({ ...loadConfig(f.file), usage: f.router.getState().usage }).usage['only-key-0']
+    .models['kimi-k3'].transientFailures, 2);
+
+  time = modelState().until;
+  recover = true;
+  const probe = f.post({});
+  await probeStarted;
+  try {
+    const overlap = await f.post({});
+    assert.equal(overlap.status, 503);
+    assert.equal(overlap.headers.get('retry-after'), '1');
+    assert.equal(f.requests.length, 3);
+  } finally {
+    releaseProbe();
+  }
+  assert.equal((await probe).status, 200);
+  assert.equal(modelState(), undefined);
+
+  recover = false;
+  headers = { 'retry-after': '17' };
+  await interrupt();
+  assert.equal(modelState().until - time, 17000);
+  assert.equal(modelState().transientFailures, 1);
+});
+
 test('malformed successful JSON responses retry within the model instead of crashing or recording success', async t => {
   for (const body of [null, [], 'not-a-message', {}, { choices: [] }]) {
     await t.test(JSON.stringify(body), async t => {

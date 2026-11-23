@@ -64,6 +64,8 @@ function grokSpawnSpec({ runtime, home, model, connection = 'api', route, contex
 
 class GrokSession extends AcpSession {
   async generateTitle(_prompt, { attempts = 60, delay = ms => new Promise(resolve => setTimeout(resolve, ms)) } = {}) {
+    if (this.dead) return '';
+    await this.ready;
     if (this.dead || !this.sessionId) return '';
     // Native generation starts asynchronously after the first prompt. Read
     // only this account's session metadata, never a truncated user-message preview.
@@ -280,7 +282,7 @@ function createGrokChat({ dataDir, loadConfig, saveConfig, getRoute, getModels, 
       return { nativeId };
     } finally { if (!session.dead) await session.shutdown(); }
   }
-  return { home, history, settings, saveSettings, ensure, forkNative, sessions, nativeAutoCompaction: true,
+  return { home, history, settings, saveSettings, ensure, forkNative, sessions, nativeAutoCompaction: true, titleDuringTurn: true,
     generateTitle: ({ conversation, prompt }) => {
       const session = sessions.get({ conversationId: conversation.id });
       return session && !session.dead ? session.generateTitle(prompt) : '';

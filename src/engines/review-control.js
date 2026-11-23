@@ -18,8 +18,6 @@ const REVIEW_TIMEOUT_MS = 10 * 60 * 1000;
 const MIN_REVIEW_TIMEOUT_MS = 30 * 1000;
 const MAX_REVIEW_TIMEOUT_MS = 60 * 60 * 1000;
 const REVIEW_MAX_TOKENS = 50000;
-const MIN_REVIEW_TOKENS = 1000;
-const MAX_REVIEW_TOKENS = 1000000;
 const ACTIVE_STATUSES = new Set(['queued', 'running']);
 const TERMINAL_STATUSES = new Set(['completed', 'failed', 'cancelled', 'stale', 'invalid', 'interrupted']);
 
@@ -319,16 +317,13 @@ class ReviewController {
     return {
       allowAgentReviews: typeof saved.allowAgentReviews === 'boolean'
         ? saved.allowAgentReviews : global.allowAgentReviews === true,
-      gate: typeof saved.gate === 'boolean' ? saved.gate : global.gate === true,
       reviewerEngine: typeof saved.reviewerEngine === 'string' ? saved.reviewerEngine
         : typeof global.reviewerEngine === 'string' ? global.reviewerEngine : '',
       model: typeof saved.model === 'string' ? saved.model : '',
       mode: saved.mode === 'adversarial' || saved.mode === 'standard' ? saved.mode
         : global.mode === 'adversarial' ? 'adversarial' : 'standard',
-      maxTokens: this.maxTokens(saved.maxTokens === undefined ? global.maxTokens : saved.maxTokens),
       allowSameEngine: typeof saved.allowSameEngine === 'boolean'
         ? saved.allowSameEngine : global.allowSameEngine === true,
-      turnGate: typeof saved.turnGate === 'boolean' ? saved.turnGate : global.turnGate === true,
     };
   }
 
@@ -337,13 +332,10 @@ class ReviewController {
     const current = this.settings(parentId);
     const next = {
       allowAgentReviews: payload.allowAgentReviews === undefined ? current.allowAgentReviews : payload.allowAgentReviews === true,
-      gate: payload.gate === undefined ? current.gate : payload.gate === true,
       reviewerEngine: payload.reviewerEngine === undefined ? current.reviewerEngine : String(payload.reviewerEngine || '').slice(0, 32),
       model: payload.model === undefined ? current.model : String(payload.model || '').slice(0, 200),
       mode: payload.mode === undefined ? current.mode : payload.mode === 'adversarial' ? 'adversarial' : 'standard',
-      maxTokens: payload.maxTokens === undefined ? current.maxTokens : this.maxTokens(Number(payload.maxTokens)),
       allowSameEngine: payload.allowSameEngine === undefined ? current.allowSameEngine : payload.allowSameEngine === true,
-      turnGate: payload.turnGate === undefined ? current.turnGate : payload.turnGate === true,
     };
     if (next.reviewerEngine) {
       this.manager.validateEngine(next.reviewerEngine);
@@ -373,7 +365,6 @@ class ReviewController {
       focus: String(payload.focus || '').slice(0, 4000),
       base: String(payload.base || '').slice(0, 200),
       requestId: payload.requestId ? String(payload.requestId).slice(0, 128) : '',
-      maxTokens: this.maxTokens(payload.maxTokens),
     };
     parent.pendingReviewConsent = consent;
     this.manager.save(parent);
@@ -397,9 +388,7 @@ class ReviewController {
       focus: consent.focus,
       base: consent.base,
       requestId: consent.requestId,
-      maxTokens: consent.maxTokens,
       viaAgent: true,
-      allowWhileBusy: true,
     });
   }
 
@@ -465,18 +454,13 @@ class ReviewController {
     catch { return false; }
   }
 
-  reviewFingerprint({ reviewerEngine, model, thinking, mode, focus, base, includeUntracked, maxTokens }) {
+  reviewFingerprint({ reviewerEngine, model, thinking, mode, focus, base, includeUntracked, maxTokens = REVIEW_MAX_TOKENS }) {
     return hash(JSON.stringify({ reviewerEngine, model, thinking, mode, focus, base, includeUntracked, maxTokens }));
   }
 
   timeoutMs(value) {
     if (!Number.isSafeInteger(value)) return REVIEW_TIMEOUT_MS;
     return Math.max(MIN_REVIEW_TIMEOUT_MS, Math.min(MAX_REVIEW_TIMEOUT_MS, value));
-  }
-
-  maxTokens(value) {
-    if (!Number.isSafeInteger(value)) return REVIEW_MAX_TOKENS;
-    return Math.max(MIN_REVIEW_TOKENS, Math.min(MAX_REVIEW_TOKENS, value));
   }
 
   clearTimer(reviewId) {
@@ -506,7 +490,7 @@ class ReviewController {
 
   async start(parentId, payload = {}, { target: capturedTarget, signal = null } = {}) {
     const parent = this.manager.get(parentId);
-    if (this.manager.busy(parent.id) && payload.viaAgent !== true && payload.allowWhileBusy !== true)
+    if (this.manager.busy(parent.id) && payload.viaAgent !== true)
       throw new Error('Wait for the author turn to finish before starting a manual review');
     const reviewerEngine = String(payload.reviewerEngine || '');
     if (!reviewerEngine) throw new Error('Choose a reviewer engine');
@@ -519,14 +503,13 @@ class ReviewController {
     const base = String(payload.base || '').slice(0, 200);
     const includeUntracked = payload.includeUntracked !== false;
     const requestId = payload.requestId ? String(payload.requestId).slice(0, 128) : '';
-    const requestFingerprint = this.reviewFingerprint({ reviewerEngine, model: payload.model || '',
-      thinking: payload.thinking ?? '', mode, focus, base, includeUntracked,
-      maxTokens: this.maxTokens(payload.maxTokens) });
+    const request = { reviewerEngine, model: payload.model || '',
+      thinking: payload.thinking ?? '', mode, focus, base, includeUntracked };
     if (requestId) {
       const previous = [...this.items.values()].find(item => item.parentConversationId === parent.id
         && item.requestId === requestId);
       if (previous) {
-        if (previous.requestFingerprint !== requestFingerprint)
+        if (previous.requestFingerprint !== this.reviewFingerprint({ ...request, maxTokens: previous.maxTokens }))
           throw new Error('request_id was already used with a different review request');
         if (payload.wait) await this.wait(previous.id);
         const current = this.get(previous.id);
@@ -580,10 +563,10 @@ class ReviewController {
       version: 1, id, parentConversationId: parent.id, parentSeq: parent.seq,
       authorEngine: parent.currentEngine, reviewerEngine, mode, skill: skill.name,
       target, focus, status: 'running', timeoutMs: this.timeoutMs(payload.timeoutMs),
-      maxTokens: this.maxTokens(payload.maxTokens),
+      maxTokens: REVIEW_MAX_TOKENS,
       snapshotDir: snapshot.directory, snapshotFiles: snapshot.files,
       snapshotBytes: snapshot.bytes, snapshotSkippedSymlinks: snapshot.skippedSymlinks,
-      ...(requestId ? { requestId, requestFingerprint } : {}),
+      ...(requestId ? { requestId, requestFingerprint: this.reviewFingerprint(request) } : {}),
       createdAt: Date.now(), updatedAt: Date.now(), childConversationId: child.id,
     };
     try { this.persist(review); }
@@ -616,7 +599,6 @@ class ReviewController {
         this.persist(current);
         this.manager.onEvent({ type: 'conversation:review', session_id: parent.id, review: this.publicReview(current) });
         this.recordEvent(current, 'review-settle', { text: current.error });
-        this.manager.completeTurnReview?.(current);
         void Promise.resolve(this.manager.cancel({ sessionId: child.id }))
           .catch(error => this.log('Could not stop timed-out review: ' + error.message));
       }, review.timeoutMs);
@@ -681,7 +663,6 @@ class ReviewController {
       text: review.error || review.report?.summary || 'Review finished',
       verdict: review.report?.verdict || '', usedTokens,
     });
-    this.manager.completeTurnReview?.(review);
   }
 
   fail(id, error) {
@@ -693,7 +674,6 @@ class ReviewController {
     this.clearTimer(review.id);
     this.manager.onEvent({ type: 'conversation:review', session_id: review.parentConversationId, review: this.publicReview(review) });
     this.recordEvent(review, 'review-settle', { text: review.error || 'Review failed' });
-    this.manager.completeTurnReview?.(review);
   }
 
   report(childId, args) {
@@ -725,128 +705,9 @@ class ReviewController {
     this.persist(review);
     this.manager.onEvent({ type: 'conversation:review', session_id: review.parentConversationId, review: this.publicReview(review) });
     this.recordEvent(review, 'review-settle', { text: review.error, usedTokens: used });
-    this.manager.completeTurnReview?.(review);
     void Promise.resolve(this.manager.cancel({ sessionId: childId }))
       .catch(error => this.log('Could not stop over-budget review: ' + error.message));
     return true;
-  }
-
-  gateFailure(review, error = '') {
-    const report = review?.report;
-    const verdict = report?.verdict === 'changes_requested' ? 'changes requested'
-      : report?.verdict === 'blocked' ? 'blocked' : review?.status || 'not passed';
-    const lines = ['Review gate did not pass: ' + verdict + '.'];
-    if (report?.summary) lines.push(report.summary);
-    if (error && error !== report?.summary) lines.push(error);
-    for (const finding of (report?.findings || []).slice(0, 6)) {
-      lines.push(`[${finding.severity}] ${finding.file || 'workspace'}${finding.line ? ':' + finding.line : ''}: ${finding.evidence}`);
-    }
-    if (review?.id) lines.push('Review: ' + review.id);
-    return {
-      ok: false,
-      passed: false,
-      error: lines.join('\n'),
-      ...(review ? { review: this.publicReview(review) } : {}),
-    };
-  }
-
-  recordGateEvent(parent, goalId, status, text, review = null) {
-    try {
-      this.manager.recordContextEvent(parent, { kind: 'review-gate', source: 'review',
-        engine: review?.reviewerEngine || '', goalId, reviewId: review?.id || '', status, text });
-      this.manager.save(parent);
-    } catch (error) { this.log('Review gate event failed: ' + error.message); }
-  }
-
-  async gate(parentId, options = {}) {
-    const policy = this.settings(parentId);
-    if (!policy.gate) return Promise.resolve({ ok: true, passed: true, skipped: true });
-    const parent = this.manager.get(parentId);
-    const goalId = String(options.goalId || 'active-goal');
-    if (parent.reviewGateOverride?.goalId === goalId) {
-      delete parent.reviewGateOverride;
-      this.manager.save(parent);
-      this.recordGateEvent(parent, goalId, 'overridden', 'Review gate overridden by the user');
-      return Promise.resolve({ ok: true, passed: true, overridden: true });
-    }
-    if (!parent.reviewGateState || parent.reviewGateState.goalId !== goalId) {
-      if (parent.reviewGateOverride?.goalId !== goalId) delete parent.reviewGateOverride;
-      parent.reviewGateState = { goalId, attempts: 0, targetHashes: [], reviewIds: [], updatedAt: Date.now() };
-      this.manager.save(parent);
-    }
-    const gateState = parent.reviewGateState;
-    let target;
-    try { target = await runReviewJob('capture', { cwd: parent.cwd, options: { includeUntracked: true } }); }
-    catch (error) { return Promise.resolve(this.gateFailure(null, error.message)); }
-    const related = [...this.items.values()]
-      .filter(item => item.parentConversationId === parentId && item.target.targetHash === target.targetHash)
-      .sort((first, second) => second.createdAt - first.createdAt);
-    const active = related.find(item => ACTIVE_STATUSES.has(item.status));
-    if (active) return this.wait(active.id).then(() => this.gate(parentId, options));
-    const latest = related.find(item => TERMINAL_STATUSES.has(item.status));
-    if (latest) {
-      if (latest.status === 'completed' && latest.report?.verdict === 'pass') {
-        this.recordGateEvent(parent, goalId, 'passed', latest.report.summary || 'Review gate passed', latest);
-        return Promise.resolve({ ok: true, passed: true, review: this.publicReview(latest) });
-      }
-      const failure = this.gateFailure(latest, latest.error);
-      this.recordGateEvent(parent, goalId, 'blocked', failure.error, latest);
-      return Promise.resolve(failure);
-    }
-    if (gateState.attempts >= 2) {
-      const failure = this.gateFailure(null,
-        'The review gate allows one initial review and one re-review for this goal. Ask the user to override the gate.');
-      this.recordGateEvent(parent, goalId, 'limit', failure.error);
-      return Promise.resolve(failure);
-    }
-    const available = this.options(parentId).engines.filter(engine => engine.available
-      && engine.engine !== parent.currentEngine);
-    const requested = String(options.reviewerEngine || policy.reviewerEngine || '');
-    const reviewerEngine = requested || available[0]?.engine || '';
-    if (!reviewerEngine) return Promise.resolve(this.gateFailure(null, 'No reviewer engine is available'));
-    if (reviewerEngine === parent.currentEngine)
-      return Promise.resolve(this.gateFailure(null, 'Choose a different engine for the review gate'));
-    const mode = options.mode === 'adversarial' || options.mode === 'standard' ? options.mode : policy.mode;
-    const requestId = 'gate-' + hash(parentId + ':' + goalId + ':' + target.targetHash).slice(0, 64);
-    gateState.attempts++;
-    if (!gateState.targetHashes.includes(target.targetHash)) gateState.targetHashes.push(target.targetHash);
-    gateState.updatedAt = Date.now();
-    this.manager.save(parent);
-    return this.start(parentId, {
-      reviewerEngine,
-      model: policy.model,
-      mode,
-      focus: String(options.focus || 'Review this change before the active goal is marked complete.').slice(0, 4000),
-      requestId,
-      wait: true,
-      allowWhileBusy: true,
-      timeoutMs: options.timeoutMs,
-      maxTokens: options.maxTokens || policy.maxTokens,
-    }, { target }).then(started => {
-      const review = started.review;
-      gateState.reviewIds.push(review.id);
-      gateState.updatedAt = Date.now();
-      this.manager.save(parent);
-      if (review.status === 'completed' && review.report?.verdict === 'pass') {
-        this.recordGateEvent(parent, goalId, 'passed', review.report.summary || 'Review gate passed', review);
-        return { ok: true, passed: true, review };
-      }
-      const failure = this.gateFailure(review, review.error);
-      this.recordGateEvent(parent, goalId, 'blocked', failure.error, review);
-      return failure;
-    }).catch(error => {
-      const failure = this.gateFailure(null, error.message);
-      this.recordGateEvent(parent, goalId, 'failed', failure.error);
-      return failure;
-    });
-  }
-
-  overrideGate(parentId, { goalId = 'active-goal', reason = '' } = {}) {
-    const parent = this.manager.get(parentId);
-    parent.reviewGateOverride = { goalId: String(goalId), at: Date.now(), reason: String(reason).slice(0, 1000) };
-    this.manager.save(parent);
-    this.recordGateEvent(parent, String(goalId), 'override', reason || 'Review gate override granted');
-    return { ok: true, override: parent.reviewGateOverride };
   }
 
   status(reviewId) {
@@ -869,7 +730,6 @@ class ReviewController {
       this.clearTimer(review.id);
       this.manager.onEvent({ type: 'conversation:review', session_id: review.parentConversationId, review: this.publicReview(review) });
       this.recordEvent(review, 'review-settle', { text: 'Review cancelled' });
-      this.manager.completeTurnReview?.(review);
     }
     return { ok: true, review: this.publicReview(review) };
   }

@@ -66,7 +66,9 @@ function createClaudeSidebar({ $, context, contextBusy, canChangeContext, canRea
     const session = sessionHistory.find(entry => entry.id === id);
     if (session) session.unread = false;
     $('sessionList').querySelectorAll('[data-sid]').forEach(item => {
-      if (item.dataset.sid === id) item.classList.remove('unread');
+      if (item.dataset.sid !== id) return;
+      item.classList.remove('unread');
+      if (session) updateDraftStatus(item, session);
     });
   }
   // ---------- Workspaces and session history ----------
@@ -103,17 +105,23 @@ function createClaudeSidebar({ $, context, contextBusy, canChangeContext, canRea
     const activity = session?.activity;
     const background = !activity && Boolean(session?.backgroundWork?.tasks?.length);
     const uncertain = background && session.backgroundWork.tasks.some(task => task.status === 'unknown');
-    let status = '';
+    const unread = Boolean(session?.unread);
+    const draft = sessionHasDraft(session);
+    const parts = [];
     let tone = '';
-    if (activity === 'permission') { status = t('Needs approval'); tone = 'attention'; }
-    else if (activity === 'question') { status = t('Needs input'); tone = 'attention'; }
-    else if (activity) { status = t('Working'); tone = 'busy'; }
-    else if (uncertain) { status = t('Background status unknown'); tone = 'muted'; }
-    else if (background) { status = t('Background tasks'); tone = 'busy'; }
-    else if (session?.unread) { status = t('Unread reply'); tone = 'unread'; }
-    else if (sessionHasDraft(session)) { status = t('Draft'); tone = 'muted'; }
-    else if (active) { status = t('Current'); tone = 'current'; }
-    else if (session?.pinned) { status = t('Pinned'); tone = 'muted'; }
+    if (activity === 'permission') { parts.push(t('Needs approval')); tone = 'attention'; }
+    else if (activity === 'question') { parts.push(t('Needs input')); tone = 'attention'; }
+    else if (activity) { parts.push(t('Running')); tone = 'busy'; }
+    else if (uncertain) { parts.push(t('Background status unknown')); tone = 'attention'; }
+    else if (background) { parts.push(t('Background tasks')); tone = 'busy'; }
+    else if (unread) { parts.push(t('Unread reply')); tone = 'unread'; }
+    else if (draft) { parts.push(t('Draft')); tone = 'draft'; }
+    if (unread && parts[0] !== t('Unread reply')) parts.push(t('Unread reply'));
+    if (session?.pinned) {
+      parts.push(t('Pinned'));
+      if (!tone) tone = 'muted';
+    }
+    const status = parts.join(' · ');
 
     const card = document.createElement('div');
     card.className = 'session-hint';
@@ -364,13 +372,27 @@ function createClaudeSidebar({ $, context, contextBusy, canChangeContext, canRea
     container.appendChild(button);
   }
   function updateDraftStatus(item, session) {
+    const t = value => window.CamelliaI18n?.t?.(value) || value;
     const activity = session?.activity;
     const background = !activity && Boolean(session?.backgroundWork?.tasks?.length);
     const uncertain = background && session.backgroundWork.tasks.some(task => task.status === 'unknown');
+    const unread = Boolean(session?.unread);
     const draft = sessionHasDraft(session);
+    const parts = [];
+    let tone = '';
+    if (activity === 'permission') { parts.push(t('Needs approval')); tone = 'attention'; }
+    else if (activity === 'question') { parts.push(t('Needs input')); tone = 'attention'; }
+    else if (activity) { parts.push(t('Running')); tone = 'busy'; }
+    else if (uncertain) { parts.push(t('Background status unknown')); tone = 'attention'; }
+    else if (background) { parts.push(t('Background tasks')); tone = 'busy'; }
+    else if (unread) { parts.push(t('Unread reply')); tone = 'unread'; }
+    else if (draft) { parts.push(t('Draft')); tone = 'draft'; }
+    if (unread && parts[0] !== t('Unread reply')) parts.push(t('Unread reply'));
+    if (session?.pinned) parts.push(t('Pinned'));
     const status = item.querySelector('.session-item-time');
-    status.textContent = activity === 'permission' ? 'Needs approval' : activity === 'question' ? 'Needs input' : activity ? 'Working' : uncertain ? 'Background status unknown' : background ? 'Background tasks' : draft ? 'Draft' : session ? relTime(session.mtimeMs) : 'Now';
-    status.classList.toggle('is-draft', Boolean(draft && !activity && !background));
+    status.textContent = parts.join(' · ') || (session ? t(relTime(session.mtimeMs)) : t('Now'));
+    status.classList.toggle('is-unread', tone === 'unread');
+    status.classList.toggle('is-draft', tone === 'draft');
   }
   function draftChanged(key) {
     const id = String(key || '').replace(/^draft:/, ''), newDraft = id.startsWith('new:');

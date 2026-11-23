@@ -72,6 +72,49 @@ final class ChatAttachments {
         return files;
     }
 
+    static JSONArray conversations(List<JSONObject> conversations) throws Exception {
+        JSONArray ids = new JSONArray();
+        for (JSONObject conversation : conversations) ids.put(conversation.getString("id"));
+        return ids;
+    }
+
+    static JSONArray conversationDetails(List<JSONObject> conversations) throws Exception {
+        JSONArray items = new JSONArray();
+        for (JSONObject conversation : conversations) {
+            JSONObject item = new JSONObject();
+            for (String key : new String[]{"id", "title", "engine", "workspaceName"}) {
+                if (conversation.has(key) && !conversation.isNull(key)) item.put(key, conversation.opt(key));
+            }
+            items.put(item);
+        }
+        return items;
+    }
+
+    static void restoreConversations(JSONObject payload, List<JSONObject> conversations) throws Exception {
+        conversations.clear();
+        JSONArray details = payload.optJSONArray("conversationDetails");
+        if (details != null) {
+            for (int index = 0; index < details.length(); index++) {
+                JSONObject item = details.optJSONObject(index);
+                if (item != null && !item.optString("id").isEmpty()) conversations.add(new JSONObject(item.toString()));
+            }
+        }
+        if (!conversations.isEmpty()) return;
+        Object raw = payload.opt("conversations");
+        if (!(raw instanceof JSONArray)) return;
+        JSONArray items = (JSONArray) raw;
+        for (int index = 0; index < items.length(); index++) {
+            Object value = items.opt(index);
+            if (value instanceof JSONObject) {
+                JSONObject item = (JSONObject) value;
+                if (!item.optString("id").isEmpty()) conversations.add(new JSONObject(item.toString()));
+            } else if (value instanceof String) {
+                String id = (String) value;
+                if (!id.isEmpty()) conversations.add(new JSONObject().put("id", id));
+            }
+        }
+    }
+
     static void discard(Context context, List<String> images, List<JSONObject> documents) {
         AttachmentMaintenance.release(context, images, documents);
     }
