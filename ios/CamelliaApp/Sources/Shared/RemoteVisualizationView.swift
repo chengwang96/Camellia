@@ -72,28 +72,51 @@ private struct RemoteVisualizationScreen: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.colorScheme) private var colorScheme
     @StateObject private var document = RemoteVisualizationDocument()
+    /// Presentation hides the toolbar and lets the card draw under the status bar.
+    @State private var presenting = false
+    /// The viewer owns a landscape lock only while its rotate control is active.
+    @State private var landscape = false
+    /// Follow the device's gravity once the user enables sensor rotation.
+    @State private var followGravity = false
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 12) {
-                Text(card.title.isEmpty ? (chinese ? "交互卡片" : "Interactive card") : card.title)
-                    .font(.system(size: Palette.textCard, weight: .medium))
-                    .foregroundColor(Palette.ink)
-                    .lineLimit(1)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                Button(chinese ? "关闭" : "Close", action: close)
-                    .font(.system(size: Palette.textRow))
-                    .foregroundColor(Palette.accent)
-                    .frame(minWidth: 64, minHeight: 48)
-                    .overlay(RoundedRectangle(cornerRadius: Palette.dialogActionRadius)
-                        .stroke(Palette.cardBorder, lineWidth: 1))
-                    .accessibilityIdentifier("visualization-close")
+            if !presenting {
+                HStack(spacing: 10) {
+                    Text(card.title.isEmpty ? (chinese ? "交互卡片" : "Interactive card") : card.title)
+                        .font(.system(size: Palette.textCard, weight: .medium))
+                        .foregroundColor(Palette.ink)
+                        .lineLimit(1)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    Button(chinese ? "演示" : "Present") { presenting = true }
+                        .font(.system(size: Palette.textSmall, weight: .medium))
+                        .foregroundColor(Palette.accent)
+                        .frame(minWidth: 56, minHeight: 48)
+                        .overlay(RoundedRectangle(cornerRadius: Palette.dialogActionRadius)
+                            .stroke(Palette.cardBorder, lineWidth: 1))
+                        .accessibilityIdentifier("visualization-present")
+                    Button(rotateLabel) { rotate() }
+                        .font(.system(size: Palette.textSmall, weight: .medium))
+                        .foregroundColor(Palette.accent)
+                        .frame(minWidth: 56, minHeight: 48)
+                        .overlay(RoundedRectangle(cornerRadius: Palette.dialogActionRadius)
+                            .stroke(Palette.cardBorder, lineWidth: 1))
+                        .accessibilityIdentifier("visualization-orientation")
+                    Button(chinese ? "关闭" : "Close", action: close)
+                        .font(.system(size: Palette.textRow))
+                        .foregroundColor(Palette.accent)
+                        .frame(minWidth: 56, minHeight: 48)
+                        .overlay(RoundedRectangle(cornerRadius: Palette.dialogActionRadius)
+                            .stroke(Palette.cardBorder, lineWidth: 1))
+                        .accessibilityIdentifier("visualization-close")
+                }
+                .padding(.leading, 16)
+                .padding(.trailing, 8)
+                .padding(.vertical, 8)
             }
-            .padding(.leading, 16)
-            .padding(.trailing, 8)
-            .padding(.vertical, 8)
             if let html = document.html {
-                VisualizationWebView(html: html) { document.renderingFailed(chinese: chinese) }
+                VisualizationWebView(html: html, presenting: presenting,
+                                     onFailure: { document.renderingFailed(chinese: chinese) })
             } else if let error = document.error {
                 VStack(spacing: 16) {
                     Text(error)
@@ -112,8 +135,26 @@ private struct RemoteVisualizationScreen: View {
         }
         .background(Palette.background.ignoresSafeArea())
         .onAppear(perform: load)
-        .onDisappear { document.close() }
+        .statusBarHidden(presenting)
+        .onDisappear {
+            document.close()
+            CardOrientation.request(.portrait)
+        }
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.didEnterBackgroundNotification)) { _ in close() }
+        .overlay(alignment: .topTrailing) {
+            // Presentation has no toolbar, so an always-reachable exit stays on top.
+            if presenting {
+                Button(chinese ? "退出演示" : "Exit") { presenting = false }
+                    .font(.system(size: Palette.textSmall, weight: .medium))
+                    .foregroundColor(.white)
+                    .padding(.horizontal, 14)
+                    .frame(minHeight: 44)
+                    .background(Capsule().fill(Color.black.opacity(0.55)))
+                    .padding(.top, 10)
+                    .padding(.trailing, 12)
+                    .accessibilityIdentifier("visualization-exit-present")
+            }
+        }
     }
 
     private func load() {
@@ -123,7 +164,54 @@ private struct RemoteVisualizationScreen: View {
 
     private func close() {
         document.close()
+        CardOrientation.request(.portrait)
         dismiss()
+    }
+
+    private var rotateLabel: String {
+        if followGravity { return chinese ? "重力" : "Sensor" }
+        return landscape ? (chinese ? "竖屏" : "Portrait") : (chinese ? "横屏" : "Landscape")
+    }
+
+    /// Landscape, portrait, then sensor: the third state follows gravity so a
+    /// phone with auto-rotate enabled can turn the card by turning the device.
+    private func rotate() {
+        if !landscape && !followGravity {
+            landscape = true
+            followGravity = false
+            CardOrientation.request(.landscape)
+        } else if landscape && !followGravity {
+            landscape = false
+            followGravity = false
+            CardOrientation.request(.portrait)
+        } else {
+            landscape = false
+            followGravity = true
+            CardOrientation.request(.allButUpsideDown)
+        }
+    }
+}
+
+/// The app is portrait-only outside a card. Landscape is declared in Info.plist
+/// because iOS ignores a geometry request the plist does not allow; AppDelegate
+/// limits every other screen back to this mask.
+@MainActor
+enum CardOrientation {
+    static private(set) var mask: UIInterfaceOrientationMask = .portrait
+
+    static func request(_ next: UIInterfaceOrientationMask) {
+        mask = next
+        guard let scene = UIApplication.shared.connectedScenes
+            .compactMap({ $0 as? UIWindowScene })
+            .first(where: { $0.activationState == .foregroundActive })
+            ?? UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }).first
+        else { return }
+        if #available(iOS 16.0, *) {
+            scene.windows.first?.rootViewController?.setNeedsUpdateOfSupportedInterfaceOrientations()
+            scene.requestGeometryUpdate(.iOS(interfaceOrientations: next))
+        } else {
+            UIViewController.attemptRotationToDeviceOrientation()
+        }
     }
 }
 
@@ -188,6 +276,7 @@ private final class RemoteVisualizationDocument: ObservableObject {
 
 private struct VisualizationWebView: UIViewRepresentable {
     let html: String
+    let presenting: Bool
     let onFailure: () -> Void
 
     func makeCoordinator() -> Coordinator { Coordinator(onFailure: onFailure) }
@@ -203,12 +292,26 @@ private struct VisualizationWebView: UIViewRepresentable {
         view.allowsBackForwardNavigationGestures = false
         view.isOpaque = false
         view.backgroundColor = UIColor(Palette.background)
+        let left = UISwipeGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.swipe(_:)))
+        left.direction = .left
+        let right = UISwipeGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.swipe(_:)))
+        right.direction = .right
+        view.addGestureRecognizer(left)
+        view.addGestureRecognizer(right)
+        context.coordinator.presentation = presenting
         // The document carries the same restrictive CSP as Android. No token or host bridge enters WebKit.
         view.loadHTMLString(html, baseURL: nil)
         return view
     }
 
-    func updateUIView(_ view: WKWebView, context: Context) {}
+    func updateUIView(_ view: WKWebView, context: Context) {
+        let coordinator = context.coordinator
+        coordinator.presentation = presenting
+        guard coordinator.appliedPresentation != presenting, coordinator.ready else { return }
+        coordinator.appliedPresentation = presenting
+        coordinator.command("(window.__camelliaSetPresenting&&window.__camelliaSetPresenting("
+            + (presenting ? "true" : "false") + "))")
+    }
 
     static func dismantleUIView(_ view: WKWebView, coordinator: Coordinator) {
         coordinator.onFailure = nil
@@ -224,7 +327,34 @@ private struct VisualizationWebView: UIViewRepresentable {
 
     final class Coordinator: NSObject, WKNavigationDelegate {
         var onFailure: (() -> Void)?
-        init(onFailure: @escaping () -> Void) { self.onFailure = onFailure }
+        var presentation = false
+        var appliedPresentation = false
+        var ready = false
+        weak var activeView: WKWebView?
+        init(onFailure: @escaping () -> Void) {
+            self.onFailure = onFailure
+        }
+
+        func command(_ source: String) {
+            activeView?.evaluateJavaScript(source, completionHandler: nil)
+        }
+
+        @objc func swipe(_ gesture: UISwipeGestureRecognizer) {
+            guard presentation, let view = gesture.view as? WKWebView else { return }
+            view.evaluateJavaScript(
+                "window.dispatchEvent(new CustomEvent('camellia:presentation-command',"
+                + "{detail:{command:'" + (gesture.direction == .left ? "next" : "previous") + "'}}))",
+                completionHandler: nil)
+        }
+
+        func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+            activeView = webView
+            ready = true
+            appliedPresentation = presentation
+            if presentation {
+                command("(window.__camelliaSetPresenting&&window.__camelliaSetPresenting(true))")
+            }
+        }
 
         func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,
                      decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {

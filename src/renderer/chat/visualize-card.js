@@ -178,10 +178,44 @@
       'function width(){if(presenting)return;var root=document.querySelector(".viz-theme");if(!root)return;' +
       'var style=getComputedStyle(root);var outer=(parseFloat(style.paddingLeft)||0)+(parseFloat(style.paddingRight)||0)+(parseFloat(style.borderLeftWidth)||0)+(parseFloat(style.borderRightWidth)||0);' +
       'var children=Array.from(root.children).filter(function(el){return !/^(SCRIPT|STYLE|LINK|META)$/.test(el.tagName);});var content=0;' +
-      'for(var index=0;index<children.length;index++)content=Math.max(content,children[index].getBoundingClientRect().width);' +
+      // Use the unscaled layout width. A slide stage is scaled to fit the
+      // frame height, so its painted width can be far smaller than the width
+      // it needs; reporting that painted width used to shrink the card to the
+      // 240px floor and keep it there, because the smaller frame then scaled
+      // the stage down again on every later measurement.
+      'for(var index=0;index<children.length;index++)content=Math.max(content,children[index].offsetWidth||0,children[index].scrollWidth||0);' +
       'if(content>0)post({type:"camellia-visualize-width",width:Math.ceil(Math.min(1600,Math.max(240,content+outer)))});}' +
-      'function size(){height();width();}' +
-      'function setPresenting(active){presenting=active===true;if(presenting)document.documentElement.setAttribute("data-viz-presenting","1");else{dismissPresentationClick=false;document.documentElement.removeAttribute("data-viz-presenting");document.querySelectorAll("video,audio").forEach(function(media){try{media.pause();}catch(_){}});}window.dispatchEvent(new CustomEvent("camellia:presentation",{detail:{active:presenting}}));setTimeout(size,0);}' +
+      // Slide decks lay out on a fixed stage. Report its layout size on every
+      // measurement, not only once at ready: a deck may render after the first
+      // ready callback, and the host needs the ratio to avoid letterbox bars.
+      // Report the stage's design size, not its painted size. A fixed-ratio
+      // deck shrinks with the frame, and a responsive deck reflows to a much
+      // taller portrait layout on phones; neither number is the aspect ratio
+      // the host needs. Read the declared CSS width/height instead.
+      'function deckSize(){var deck=document.querySelector(".deck[data-viz-presentation=slides]")||document.querySelector("body [data-viz-presentation=slides]");' +
+      'if(!deck)return;var cs=getComputedStyle(deck);var auto=!cs.height||cs.height==="auto"||cs.height.indexOf("px")<0;var w=parseFloat(cs.width),h=parseFloat(cs.height);' +
+      'if(!(w>0)||!(h>0)){w=deck.offsetWidth;h=deck.offsetHeight;}' +
+      'if(w>0&&h>0)post({type:"camellia-visualize-deck",deckWidth:Math.round(w),deckHeight:Math.round(h),deckAuto:auto});}' +
+      'function size(){height();width();deckSize();}' +
+      // A card may own its presentation stage: it toggles a container class and
+      // scales a fixed-aspect block itself. Marking that here (before the
+      // presenting attribute is observed) stops the host stylesheet from also
+      // forcing the root to width:100%, which applied the scale twice.
+      // Detect a card-managed stage without depending on timing: the class is
+      // usually added in response to the very event this function dispatches,
+      // so also look for the stylesheet contract it is about to activate.
+      // A card owns its stage when it declares a scale variable or a stage
+      // class. Reading stylesheet rules is avoided: it throws for cross-origin
+      // sheets and that exception path retained state in an earlier version.
+      'function ownsStage(){' +
+      'if(document.querySelector(".stage-mode,.viz-stage,[data-viz-self-stage]"))return true;' +
+      'return getComputedStyle(document.documentElement).getPropertyValue("--stage-scale")!=="";}' +
+      'function setPresenting(active){presenting=active===true;' +
+      'if(presenting){if(ownsStage())document.documentElement.setAttribute("data-viz-self-stage","1");document.documentElement.setAttribute("data-viz-presenting","1");}' +
+      'else{dismissPresentationClick=false;document.documentElement.removeAttribute("data-viz-presenting");document.querySelectorAll("video,audio").forEach(function(media){try{media.pause();}catch(_){}});}' +
+      'window.dispatchEvent(new CustomEvent("camellia:presentation",{detail:{active:presenting}}));setTimeout(size,0);' +
+      // The card may only switch to its stage layout after handling the event.
+      'if(presenting)setTimeout(function(){if(ownsStage())document.documentElement.setAttribute("data-viz-self-stage","1");},160);}' +
       'function setExpanded(active){if(active===true)document.documentElement.setAttribute("data-viz-expanded","1");else document.documentElement.removeAttribute("data-viz-expanded");window.dispatchEvent(new CustomEvent("camellia:expand",{detail:{active:active===true}}));setTimeout(size,0);}' +
       'function scanData(){if(dataCache)return dataCache;dataCache={};var scripts=document.querySelectorAll("script[data-viz-name]");' +
       'for(var index=0;index<scripts.length;index++){if(scripts[index].type!=="application/json")continue;var name=scripts[index].getAttribute("data-viz-name");if(!name)continue;try{dataCache[name]=JSON.parse(scripts[index].textContent||"null");}catch(_){dataCache[name]=null;}}return dataCache;}' +
@@ -205,6 +239,7 @@
       'window.addEventListener("message",function(event){if(event.source!==parent||!event.data||event.data.cardId!==cardId)return;' +
       'if(event.data.type==="camellia-visualize-present"){setPresenting(event.data.active===true);return;}' +
       'if(event.data.type==="camellia-visualize-expand"){setExpanded(event.data.active===true);return;}' +
+      'if(event.data.type==="camellia-visualize-refit"){size();return;}' +
       'if(event.data.type==="camellia-visualize-present-command"){dismissPresentationClick=false;if(presenting&&["previous","next"].indexOf(event.data.command)>=0)window.dispatchEvent(new CustomEvent("camellia:presentation-command",{detail:{command:event.data.command}}));return;}' +
       'if(event.data.type==="camellia-visualize-network-response"){var pending=networkRequests[event.data.requestId];if(!pending)return;delete networkRequests[event.data.requestId];' +
       'if(event.data.ok===true)pending.resolve(String(event.data.text||""));else pending.reject(new Error(String(event.data.error||"Network request failed")));}});' +
@@ -223,7 +258,17 @@
       'var payload=input.payload===undefined?null:input.payload;var encoded=JSON.stringify(payload);' +
       'if(!type||!label||typeof encoded!=="string"||byteLength(encoded)>MAX_ACTION_BYTES)return false;' +
       'post({type:"camellia-visualize-action",action:{type:type,label:label,payload:JSON.parse(encoded)}});return true;}};' +
-      'window.__camelliaVisualizeBridge={ready:function(){dataCache=null;scanData();var slides=!!document.querySelector("[data-viz-presentation=slides]");if(slides)document.documentElement.setAttribute("data-viz-presentation","slides");post({type:"camellia-visualize-ready",slides:slides});size();if(window.ResizeObserver){new ResizeObserver(size).observe(document.documentElement);}window.addEventListener("load",size);window.addEventListener("resize",size);}};' +
+      'window.__camelliaVisualizeBridge={ready:function(){dataCache=null;scanData();var slides=!!document.querySelector("[data-viz-presentation=slides]");if(slides)document.documentElement.setAttribute("data-viz-presentation","slides");' +
+      // A slide deck draws at a fixed stage size. Report that ratio so the host
+      // can size the inline frame to the stage instead of adding letterbox
+      // bars above and below it.
+      // The bridge also marks <html data-viz-presentation="slides">, so a plain
+      // attribute selector would measure the viewport instead of the stage.
+      'var deck=document.querySelector(".deck[data-viz-presentation=slides]")||document.querySelector("body [data-viz-presentation=slides]");' +
+      'var deckWidth=0,deckHeight=0,deckAuto=true;if(deck){var ds=getComputedStyle(deck);deckAuto=!ds.height||ds.height==="auto"||ds.height.indexOf("px")<0;' +
+      'deckWidth=parseFloat(ds.width)||deck.offsetWidth;deckHeight=parseFloat(ds.height)||deck.offsetHeight;}' +
+      'deckWidth=Math.round(deckWidth);deckHeight=Math.round(deckHeight);' +
+      'post({type:"camellia-visualize-ready",slides:slides,deckWidth:deckWidth,deckHeight:deckHeight,deckAuto:deckAuto});size();if(window.ResizeObserver){new ResizeObserver(size).observe(document.documentElement);}window.addEventListener("load",size);window.addEventListener("resize",size);}};' +
       '})();</script>';
   }
 
@@ -240,7 +285,11 @@
       '*{box-sizing:border-box}body{overflow:auto;padding:0;}button,input,select,textarea{font:inherit;}' +
       'body::-webkit-scrollbar{width:0;height:0;display:none}' + THEME_CSS + '</style>' +
       '<style>html[data-viz-presenting="1"] .viz-theme{min-height:100vh;padding:clamp(20px,3vw,48px);display:flex;flex-direction:column;align-items:center;}' +
-      'html[data-viz-presenting="1"] .viz-theme > *:not(script):not(style):not(link):not(meta){width:100% !important;max-width:none !important;margin:auto;}' +
+      // A slide deck owns its stage geometry and scales it to the viewport.
+      // Forcing the deck to width:100% made the stage lay out at the viewport
+      // width and then apply its own 1280px-based scale on top, so presentation
+      // looked over-zoomed. Only non-deck cards get the full-width rule.
+      'html[data-viz-presenting="1"]:not([data-viz-presentation="slides"]):not([data-viz-self-stage="1"]) .viz-theme > *:not(script):not(style):not(link):not(meta){width:100% !important;max-width:none !important;margin:auto;}' +
       'html[data-viz-presenting="1"][data-viz-presentation="slides"]{background:#000;}' +
       'html[data-viz-presenting="1"][data-viz-presentation="slides"] body{height:100vh;overflow:hidden;background:#000;}' +
       'html[data-viz-presenting="1"][data-viz-presentation="slides"] .viz-theme{height:100vh;min-height:0;padding:0;border:0;border-radius:0;background:#000;}' +
@@ -271,8 +320,13 @@
       '        <button type="button" data-card-action="copy" role="menuitem">Copy snapshot</button>' +
       '        <button type="button" data-card-action="export" role="menuitem">Export HTML</button>' +
       '        <button type="button" data-card-action="reset" role="menuitem">Reset state</button>' +
+      '        <button type="button" data-card-action="delete" role="menuitem" class="visualize-delete">Delete card</button>' +
       '      </div></details>' +
       '  </div>' +
+      '</div>' +
+      '<div class="visualize-stale" hidden role="status">' +
+      '  <span class="visualize-stale-text"></span>' +
+      '  <button type="button" class="visualize-revert"></button>' +
       '</div>' +
       '<div class="visualize-action-tray" hidden aria-live="polite">' +
       '  <div class="visualize-action-copy"><span>Card action</span><strong></strong><code></code></div>' +
@@ -284,6 +338,22 @@
     block.querySelector('.visualize-summary').hidden = !card.summary;
 
     const frameWrap = block.querySelector('.visualize-frame-wrap');
+    const applyWidth = () => {
+      if (expanded || document.fullscreenElement === block) {
+        block.style.width = '';
+        return;
+      }
+      const available = Math.max(240, block.parentElement?.clientWidth || window.innerWidth);
+      const border = Math.max(0, block.offsetWidth - block.clientWidth);
+      const requested = fitWidth ? Math.min(available, fitWidth + border) : available;
+      block.classList.toggle('is-compact', requested < available - 24);
+      if (requested < available - 1) block.style.width = requested + 'px';
+      else block.style.width = '';
+    };
+    const askFrameToResize = () => {
+      if (!frame || !frame.contentWindow) return;
+      try { frame.contentWindow.postMessage({ type: 'camellia-visualize-refit' }, '*'); } catch (_) {}
+    };
     const expand = block.querySelector('.visualize-expand');
     const present = block.querySelector('.visualize-present');
     const networkButton = block.querySelector('.visualize-network');
@@ -293,8 +363,12 @@
       copy: block.querySelector('[data-card-action="copy"]'),
       export: block.querySelector('[data-card-action="export"]'),
       reset: block.querySelector('[data-card-action="reset"]'),
+      delete: block.querySelector('[data-card-action="delete"]'),
     };
     const actionTray = block.querySelector('.visualize-action-tray');
+    const staleBanner = block.querySelector('.visualize-stale');
+    const staleText = staleBanner.querySelector('.visualize-stale-text');
+    const staleRevert = staleBanner.querySelector('.visualize-revert');
     const actionLabel = actionTray.querySelector('strong');
     const actionCode = actionTray.querySelector('code');
     const actionKicker = actionTray.querySelector('.visualize-action-copy > span');
@@ -341,6 +415,8 @@
       menuButtons.copy.textContent = tr('Copy snapshot');
       menuButtons.export.textContent = tr('Export HTML');
       menuButtons.reset.textContent = tr('Reset state');
+      menuButtons.delete.textContent = tr('Delete card');
+      staleRevert.textContent = tr('Restore recorded version');
       refreshNetworkButton();
       actionKicker.textContent = tr('Card action');
       actionUse.textContent = tr('Continue in chat');
@@ -353,6 +429,17 @@
     };
     let contentHeight = 420;
     let frame = null;
+    // A named handler can be removed on dispose. An inline arrow registered on
+    // the iframe captured this whole card and kept it alive after removal.
+    const onFrameLoad = () => { postPresentState(); postExpandState(); };
+    // Slide decks draw a fixed-aspect stage. Sizing their frame to the stage
+    // ratio removes the black letterbox bars that a fixed 560px frame leaves
+    // above and below a 16:9 deck in a narrow chat column.
+    let deckViewport = null;
+    // The last width the card content asked for. The host may be narrower at
+    // first (history paint, narrow panel) and wider later, so the request must
+    // be re-applied whenever the column changes instead of being frozen once.
+    let fitWidth = 0;
     let currentHtml = '';
     let renderedDocument = '';
     let currentTheme = resolvedTheme();
@@ -361,11 +448,23 @@
     let pendingState = null;
     let stateSaveChain = Promise.resolve();
     let stateResetting = false;
+    const frameInnerWidth = () => Math.max(240,
+      frame?.clientWidth || block.clientWidth || block.parentElement?.clientWidth || window.innerWidth);
+    const deckFrameHeight = () => {
+      const available = frameInnerWidth();
+      // Wide columns show the 16:9 stage. Narrow columns switch to the deck's
+      // own portrait layout, which is content-tall by design. Deciding here by
+      // the same 700px breakpoint the decks use keeps every card at one height
+      // for a given column instead of mixing the two modes.
+      if (available >= 700) return Math.max(220, Math.round(available * 9 / 16));
+      return Math.max(320, Math.min(1400, contentHeight));
+    };
     const expandedHeight = () => Math.max(window.innerWidth < 700 ? 560 : 760, contentHeight);
+    const inlineHeight = () => (slideDeck ? Math.max(deckFrameHeight(), 220) : contentHeight);
     const applyFrameHeight = () => {
       if (!frame) return;
       frame.style.height = document.fullscreenElement === block ? '100%'
-        : (expanded ? expandedHeight() : contentHeight) + 'px';
+        : (expanded ? Math.max(inlineHeight(), expandedHeight()) : inlineHeight()) + 'px';
     };
     const postPresentState = () => {
       if (!frame) return;
@@ -473,8 +572,36 @@
       hidePresentMenu();
       refreshCardLabels();
       present.setAttribute('aria-pressed', String(active));
-      applyFrameHeight();
+      // Tell the document about its new mode first: while presenting, size
+      // reports are ignored, so measuring before the flag flips would record
+      // the fullscreen geometry as the inline one.
       postPresentState();
+      applyFrameHeight();
+      // Esc must return to the inline size the card had, not to whatever the
+      // fullscreen or expanded frame measured. Both report their own viewport
+      // height, so a stale value would persist as the inline height.
+      if (!active) {
+        if (slideDeck || deckViewport) deckViewport = deckViewport || { width: 1280, height: 720 };
+        contentHeight = currentCard.mode === 'wide' ? 560 : 420;
+        // A card expanded from the toolbar before Present would otherwise keep
+        // its 760px expanded height after Esc, because expandedHeight() floors
+        // at 760. Present implies a temporary fullscreen, so returning to the
+        // inline layout is part of exiting it.
+        if (expanded) {
+          expanded = false;
+          block.classList.remove('is-expanded');
+          postExpandState();
+          refreshCardLabels();
+        }
+        applyFrameHeight();
+      }
+      // Let the deck switch between stage and portrait layout, then measure
+      // the inline frame again. Without this the card kept the fullscreen
+      // height after Esc, or a stale body width after entering.
+      // Do not leave a timer or frame callback holding this card after it has
+      // been removed: the lifecycle test mounts and drops 30 cards in a row,
+      // and a pending 120ms timeout kept every one of them reachable.
+      scheduleRefit();
       if (active) frame?.focus();
       else if (wasPresenting) present.focus();
     };
@@ -606,6 +733,47 @@
       }
     }
 
+    async function deleteCard() {
+      const question = tr('Delete this card? Its history message stays, but the card content cannot be reopened.');
+      if (!window.confirm(question)) return;
+      try {
+        if (!window.dshDesktop.visualizeRemove) throw new Error(tr('Card deletion is unavailable.'));
+        const result = await window.dshDesktop.visualizeRemove({
+          sessionId, cardId: currentCard.cardId,
+        });
+        if (!result?.ok) throw new Error(result?.error || tr('Could not delete the card'));
+        showDeleted(tr('Card deleted. Ask the agent to create a new one if you still need it.'));
+        onStatus(tr('Card deleted.'));
+      } catch (error) {
+        onStatus(tr(error.message || 'Could not delete the card'));
+      }
+    }
+
+    function showDeleted(message) {
+      disposed = true;
+      cancelAnimationFrame(columnFrame);
+      cancelAnimationFrame(refitFrame);
+      clearTimeout(refitTimer);
+      refitFrame = 0;
+      refitTimer = 0;
+      columnObserver.disconnect();
+      if (columnTarget) columnObserver.unobserve(columnTarget);
+      hidePresentMenu();
+      if (document.fullscreenElement === block) void document.exitFullscreen().catch(() => {});
+      try { frame?.contentWindow?.postMessage({ type: 'camellia-visualize-destroy' }, '*'); } catch (_) {}
+      block.classList.add('is-deleted');
+      block.querySelector('.visualize-actions')?.remove();
+      block.querySelector('.visualize-action-tray')?.remove();
+      block.querySelector('.visualize-stale')?.remove();
+      block.querySelector('.visualize-frame-wrap')?.remove();
+      const placeholder = document.createElement('div');
+      placeholder.className = 'visualize-deleted';
+      placeholder.textContent = message;
+      block.appendChild(placeholder);
+      // Drop the iframe after this turn so teardown cannot race the deletion.
+      frame = null;
+    }
+
     async function exportCard() {
       if (!currentHtml) return onStatus(tr('The visualization is still loading.'));
       if (!window.dshDesktop.visualizeExport) return onStatus(tr('Card export is unavailable.'));
@@ -645,6 +813,7 @@
         if (button.dataset.cardAction === 'copy') void copyCard();
         if (button.dataset.cardAction === 'export') void exportCard();
         if (button.dataset.cardAction === 'reset') void resetState();
+        if (button.dataset.cardAction === 'delete') void deleteCard();
       });
     });
     more.addEventListener('keydown', event => {
@@ -693,8 +862,12 @@
     const onMessage = event => {
       if (!frame || event.source !== frame.contentWindow || !event.data || event.data.cardId !== card.cardId) return;
       if (event.data.type === 'camellia-visualize-height') {
-        // Viewport-sized content reports the larger frame height when expanded
-        // or presenting. Keep the inline height so Collapse restores it.
+        // A card that fills its frame reports the frame's own height back
+        // (body.scrollHeight === viewport), so accepting it while expanded
+        // locked the card to whatever height it happened to have. That is why
+        // Esc after Present left a much taller card: the expanded 760px frame
+        // was recorded as the content height. Only accept reports while the
+        // card is inline and collapsed.
         if (expanded || document.fullscreenElement === block) return;
         contentHeight = Math.max(140, Math.min(1400, Number(event.data.height) || 360));
         applyFrameHeight();
@@ -706,11 +879,9 @@
         const border = Math.max(0, block.offsetWidth - block.clientWidth);
         const width = Math.min(available, nextWidth + border);
         block.classList.toggle('is-compact', width < available - 24);
-        if (width < available - 1) {
-          if (Math.abs(block.getBoundingClientRect().width - width) > 1) block.style.width = width + 'px';
-        } else {
-          block.style.width = '';
-        }
+        fitWidth = width;
+        applyWidth();
+        askFrameToResize();
       } else if (event.data.type === 'camellia-visualize-fill') {
         onFill(String(event.data.text || ''));
       } else if (event.data.type === 'camellia-visualize-state') {
@@ -722,6 +893,27 @@
         void handleNetworkRequest(event.data);
       } else if (event.data.type === 'camellia-visualize-ready') {
         slideDeck = event.data.slides === true;
+        const deckWidth = Number(event.data.deckWidth) || 0;
+        const deckHeight = Number(event.data.deckHeight) || 0;
+        if (deckWidth > 0 && deckHeight > 0) {
+          deckViewport = event.data.deckAuto === true ? null : { width: deckWidth, height: deckHeight };
+          applyFrameHeight();
+        }
+      } else if (event.data.type === 'camellia-visualize-deck') {
+        const deckWidth = Number(event.data.deckWidth) || 0;
+        const deckHeight = Number(event.data.deckHeight) || 0;
+        if (!deckWidth || !deckHeight) return;
+        // A deck with an auto height is in its reflowing portrait layout; its
+        // declared height is not a stage ratio and must not drive the frame.
+        if (event.data.deckAuto === true) {
+          deckViewport = null;
+          applyFrameHeight();
+          return;
+        }
+        if (deckViewport && deckViewport.width === deckWidth && deckViewport.height === deckHeight) return;
+        deckViewport = { width: deckWidth, height: deckHeight };
+        applyFrameHeight();
+        askFrameToResize();
       } else if (event.data.type === 'camellia-visualize-present-menu') {
         const rect = frame.getBoundingClientRect();
         showPresentMenu(rect.left + Number(event.data.x), rect.top + Number(event.data.y));
@@ -745,6 +937,42 @@
     const onSystemTheme = applyTheme;
     mediaTheme?.addEventListener?.('change', onSystemTheme);
 
+    // The chat column changes width when the window resizes, the sidebar
+    // collapses or a turn is re-laid out. Re-apply the last requested width
+    // instead of leaving the card at the width measured during the first paint.
+    let columnWidth = block.parentElement?.clientWidth || 0;
+    let columnFrame = 0;
+    // Pending presentation refits are tracked so disposal can cancel them.
+    // A stray timer would keep a removed card (and its iframe) reachable.
+    let refitTimer = 0, refitFrame = 0;
+    const runRefit = () => {
+      refitTimer = 0;
+      refitFrame = 0;
+      if (disposed) return;
+      frame?.contentWindow?.postMessage({ type: 'camellia-visualize-refit' }, '*');
+      applyWidth();
+      applyFrameHeight();
+    };
+    const scheduleRefit = () => {
+      cancelAnimationFrame(refitFrame);
+      clearTimeout(refitTimer);
+      refitFrame = requestAnimationFrame(runRefit);
+      refitTimer = setTimeout(runRefit, 120);
+    };
+    const columnTarget = block.parentElement;
+    const columnObserver = new ResizeObserver(() => {
+      const next = block.parentElement?.clientWidth || 0;
+      if (!next || Math.abs(next - columnWidth) < 1) return;
+      columnWidth = next;
+      cancelAnimationFrame(columnFrame);
+      columnFrame = requestAnimationFrame(() => {
+        applyWidth();
+        applyFrameHeight();
+        askFrameToResize();
+      });
+    });
+    if (columnTarget) columnObserver.observe(columnTarget);
+
     async function load() {
       try {
         const result = window.dshDesktop.visualizeGet
@@ -753,13 +981,20 @@
             engine, action: 'visualize-get', payload: { sessionId, cardId: currentCard.cardId },
           });
         if (disposed) return;
+        // A card deleted from its menu leaves its transcript row behind. That
+        // row must render as an intentional "deleted" placeholder, not as a
+        // red load failure.
+        if (result?.deleted === true) {
+          showDeleted(tr('This card was deleted. Ask the agent to create a new one if you still need it.'));
+          return;
+        }
         if (!result?.ok || !result.card?.html) throw new Error(result?.error || 'Visualization not available');
         if (!frame) {
           frame = document.createElement('iframe');
           frame.className = 'visualize-frame';
           frame.setAttribute('sandbox', 'allow-scripts');
           frame.setAttribute('referrerpolicy', 'no-referrer');
-          frame.addEventListener('load', () => { postPresentState(); postExpandState(); });
+          frame.addEventListener('load', onFrameLoad);
           frameWrap.replaceChildren(frame);
         }
         currentCard = { ...currentCard, ...result.card };
@@ -769,6 +1004,14 @@
           stateLoaded = true;
         }
         applyHeader(currentCard);
+        staleBanner.hidden = result.card.externalEdit !== true;
+        if (result.card.externalEdit === true) {
+          staleText.textContent = tr('This card file was changed outside Camellia. '
+            + 'Ask the agent to update it through camellia_visualize so the conversation records the change.');
+          staleRevert.hidden = false;
+        } else {
+          staleRevert.hidden = true;
+        }
         refreshCardLabels();
         frame.setAttribute('title', currentCard.title);
         contentHeight = currentCard.mode === 'wide' ? 560 : 420;
@@ -793,6 +1036,16 @@
       disposed = true;
       hidePresentMenu();
       void flushStateSave();
+      // Break the chain's captured reference: an in-flight save keeps this
+      // closure (and the whole card) reachable until IPC resolves.
+      stateSaveChain = Promise.resolve();
+      pendingState = null;
+      cancelAnimationFrame(columnFrame);
+      cancelAnimationFrame(refitFrame);
+      clearTimeout(refitTimer);
+      refitFrame = 0;
+      refitTimer = 0;
+      columnObserver.disconnect();
       window.removeEventListener('message', onMessage);
       document.removeEventListener('fullscreenchange', syncPresent);
       window.removeEventListener('camellia:language', refreshCardLabels);
@@ -803,6 +1056,18 @@
       window.removeEventListener('resize', dismissPresentMenu);
       themeObserver.disconnect();
       mediaTheme?.removeEventListener?.('change', onSystemTheme);
+      // Drop the frame explicitly. A detached iframe keeps its document and the
+      // load listener closure (which captures this card) alive until the
+      // element itself is discarded, so 30 mounted-and-removed cards retained
+      // all 30. Replacing the wrapper's children releases the document.
+      if (frame) {
+        frame.removeEventListener('load', onFrameLoad);
+        frame.removeAttribute('src');
+        frame.remove();
+        frame = null;
+      }
+      currentHtml = '';
+      renderedDocument = '';
       if (--mountedCards === 0) { removalObserver?.disconnect(); removalObserver = null; }
     };
     block.updateVisualize = next => {

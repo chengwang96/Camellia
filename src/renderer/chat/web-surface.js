@@ -52,6 +52,7 @@
   let providerMenuEl = null;
   let providerMenuBackdrop = null;
   let providerMenuOpen = false;
+  let providerMenuGeneration = 0;
   let boundsFrame = 0;
   let sentContentWidth = null;
   let occluded = false;
@@ -150,9 +151,9 @@
     webProviderLabel.textContent = t(info.label, info.label);
     $('webBack').disabled = !webState?.canGoBack;
     $('webForward').disabled = !webState?.canGoForward;
-    // The native view is held back until the provider layout has settled, so
-    // the Camellia placeholder owns the wait instead of the provider's own
-    // loading skeleton or a sidebar that is about to be removed.
+    // The placeholder only covers the provider's first appearance. Once the
+    // view is ready, navigations keep the native page visible while loading,
+    // matching normal browser behavior.
     placeholder.textContent = webState?.error
       || (webState?.ready === false ? t('Loading web page…', 'Loading web page…') : '');
     stage.setAttribute('aria-busy', String(webState?.ready === false && !webState?.error));
@@ -357,7 +358,7 @@
       selectedWebSessionIds.add(session.id);
       renderWebSessions();
     });
-    add(t('Delete', 'Delete'), () => deleteWebSession(session), true);
+    add(t('Delete conversation', 'Delete conversation'), () => deleteWebSession(session), true);
     sessionMenu.addEventListener('keydown', event => {
       const rows = [...sessionMenu.querySelectorAll('button:not(:disabled)')];
       if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
@@ -616,7 +617,9 @@
     next?.focus();
   });
 
-  webProviderButton.addEventListener('click', () => {
+  webProviderButton.addEventListener('click', event => {
+    event.preventDefault();
+    event.stopPropagation();
     if (surface !== 'web') return;
     if (providerMenuOpen && providerMenuEl) closeProviderMenu(true);
     else if (!providerMenuOpen) void openProviderMenu();
@@ -636,7 +639,7 @@
   $('webMore').addEventListener('click', event => {
     event.stopPropagation();
     if (menu) {
-      closeMenu();
+      closeMenu(true);
       return;
     }
     openMenu($('webMore'));
@@ -654,8 +657,11 @@
   function menuButton(label, run, options = {}) {
     const button = document.createElement('button');
     button.type = 'button';
-    button.textContent = label;
-    if (options.danger) button.classList.add('danger');
+    button.className = 'pop-row' + (options.danger ? ' danger' : '');
+    button.setAttribute('role', 'menuitem');
+    const text = document.createElement('span');
+    text.textContent = label;
+    button.appendChild(text);
     button.addEventListener('click', () => {
       closeMenu();
       void run();
@@ -667,7 +673,10 @@
     closeMenu();
     closeSessionMenu();
     menu = document.createElement('div');
-    menu.className = 'web-surface-menu';
+    menu.id = 'webMoreMenu';
+    menu.className = 'dsh-pop action-menu';
+    menu.setAttribute('role', 'menu');
+    menu.setAttribute('aria-labelledby', 'webMore');
     menu.append(
       menuButton(t('Refresh web conversations', 'Refresh web conversations'), () => command('refresh-sessions')),
       menuButton(t('Repair web layout', 'Repair web layout'), () => openLayoutDialog()),
@@ -681,50 +690,116 @@
         if (!result.ok) window.alert(result.error);
       }, { danger: true }),
     );
+    menu.style.visibility = 'hidden';
     document.body.appendChild(menu);
     const rect = anchor.getBoundingClientRect();
-    menu.style.top = Math.round(rect.bottom + 6) + 'px';
-    menu.style.right = Math.max(8, Math.round(innerWidth - rect.right)) + 'px';
+    const menuRect = menu.getBoundingClientRect();
+    const left = Math.max(8, Math.min(innerWidth - menuRect.width - 8, rect.right - menuRect.width));
+    let top = rect.bottom + 4;
+    if (top + menuRect.height > innerHeight - 8) top = Math.max(8, rect.top - menuRect.height - 4);
+    menu.style.left = Math.round(left) + 'px';
+    menu.style.top = Math.round(top) + 'px';
+    menu.style.visibility = '';
+    menu.addEventListener('keydown', event => {
+      const rows = [...menu.querySelectorAll('button:not(:disabled)')];
+      if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+        event.preventDefault();
+        const index = rows.indexOf(document.activeElement);
+        const delta = event.key === 'ArrowDown' ? 1 : -1;
+        rows[(index + delta + rows.length) % rows.length]?.focus();
+      } else if (event.key === 'Home' || event.key === 'End') {
+        event.preventDefault();
+        rows[event.key === 'Home' ? 0 : rows.length - 1]?.focus();
+      } else if (event.key === 'Escape') {
+        event.preventDefault();
+        closeMenu(true);
+      }
+    });
     anchor.setAttribute('aria-expanded', 'true');
+    anchor.setAttribute('aria-controls', 'webMoreMenu');
+    menu.querySelector('button:not(:disabled)')?.focus();
   }
 
-  function closeMenu() {
+  function closeMenu(restoreFocus = false) {
     menu?.remove();
     menu = null;
     $('webMore')?.setAttribute('aria-expanded', 'false');
+    if (restoreFocus) $('webMore')?.focus();
+  }
+
+  function clearProviderMenuFrame() {
+    stage.classList.remove('provider-menu-frozen');
+    stage.style.removeProperty('background-image');
+  }
+
+  function nextPaint() {
+    return new Promise(resolve => {
+      let timer = 0, done = false;
+      const finish = () => {
+        if (done) return;
+        done = true;
+        clearTimeout(timer);
+        resolve();
+      };
+      requestAnimationFrame(() => requestAnimationFrame(finish));
+      timer = setTimeout(finish, 80);
+    });
   }
 
   function closeProviderMenu(restore = true) {
     if (!providerMenuOpen && !providerMenuEl) return;
+    providerMenuGeneration++;
     const menu = providerMenuEl, backdrop = providerMenuBackdrop;
     providerMenuOpen = false;
     providerMenuEl = null;
     providerMenuBackdrop = null;
     menu?.remove();
     backdrop?.remove();
-    stage.classList.remove('provider-menu-frozen');
-    stage.style.removeProperty('background-image');
     webProviderButton.setAttribute('aria-expanded', 'false');
-    if (restore && surface === 'web' && !stage.hidden) void command('show', showPayload());
+    if (restore && surface === 'web' && !stage.hidden) {
+      void nextPaint().then(() => {
+        if (providerMenuOpen || providerMenuEl) return null;
+        return command('show', showPayload());
+      }).then(result => {
+        if (!result) return null;
+        if (!result.ok) throw new Error(result.error || t('The website action failed.', 'The website action failed.'));
+        return nextPaint();
+      }).then(() => {
+        if (!providerMenuOpen && !providerMenuEl && surface === 'web') clearProviderMenuFrame();
+      }).catch(error => {
+        clearProviderMenuFrame();
+        window.alert(error.message);
+      });
+    } else {
+      clearProviderMenuFrame();
+    }
     if (restore) webProviderButton.focus();
   }
 
   async function openProviderMenu() {
     if (providerMenuOpen || surface !== 'web') return;
+    const generation = ++providerMenuGeneration;
     providerMenuOpen = true;
     webProviderButton.setAttribute('aria-expanded', 'true');
     const frozen = await command('freeze-menu');
-    if (!providerMenuOpen || surface !== 'web') return;
+    if (generation !== providerMenuGeneration || !providerMenuOpen || surface !== 'web') return;
     if (frozen?.ok && frozen.image) {
       stage.classList.add('provider-menu-frozen');
       stage.style.backgroundImage = `url("${frozen.image}")`;
+      await nextPaint();
     }
+    if (generation !== providerMenuGeneration || !providerMenuOpen || surface !== 'web') return;
+    await command('hide');
+    if (generation !== providerMenuGeneration || !providerMenuOpen || surface !== 'web') return;
     providerMenuBackdrop = document.createElement('button');
     providerMenuBackdrop.type = 'button';
     providerMenuBackdrop.tabIndex = -1;
     providerMenuBackdrop.className = 'web-provider-menu-backdrop';
     providerMenuBackdrop.setAttribute('aria-label', t('Close provider menu', 'Close provider menu'));
-    providerMenuBackdrop.addEventListener('click', () => closeProviderMenu(true));
+    providerMenuBackdrop.addEventListener('click', event => {
+      event.preventDefault();
+      closeProviderMenu(true);
+    });
     providerMenuEl = document.createElement('div');
     providerMenuEl.className = 'web-provider-menu';
     providerMenuEl.setAttribute('role', 'listbox');
@@ -740,7 +815,9 @@
       option.setAttribute('aria-selected', String(item.id === provider));
       option.dataset.provider = item.id;
       option.textContent = t(item.label, item.label);
-      option.addEventListener('click', async () => {
+      option.addEventListener('click', async event => {
+        event.preventDefault();
+        event.stopPropagation();
         if (item.id !== provider) {
           const result = await command('provider', { provider: item.id });
           if (!result.ok) {

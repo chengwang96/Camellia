@@ -55,7 +55,6 @@ with sync_playwright() as playwright:
     """
     page.add_init_script(bridge)
     page.goto((root / "src/renderer/settings/api-settings.html").as_uri() + "?page=models")
-    page.wait_for_load_state("networkidle")
     expect(page.locator('#pageTitle')).to_have_text('Model Settings')
     page.evaluate("config = null")
     page.locator('[data-view=models]').click()

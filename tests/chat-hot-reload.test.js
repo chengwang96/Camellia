@@ -75,7 +75,10 @@ test('closing the window before a pending reload is safe', () => {
 
 test('standard launch scripts do not opt into hot reload', () => {
   const { scripts } = require('../package.json');
-  assert.equal(scripts.start, 'electron .');
-  assert.equal(scripts.dev, 'electron .');
-  assert.equal(scripts['dev:hot'], 'electron . --hot-reload');
+  // dev may wrap Electron to filter terminal noise, but it must not start the
+  // hot-reload watcher; only dev:hot passes --hot-reload.
+  for (const name of ['start', 'dev']) {
+    assert.doesNotMatch(scripts[name], /--hot-reload/, `${name} must not enable hot reload`);
+  }
+  assert.match(scripts['dev:hot'], /--hot-reload/);
 });

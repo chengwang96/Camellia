@@ -23,8 +23,8 @@ function findResult(result) {
 }
 
 class RemoteCommands {
-  constructor({ file, reader, access, publish = () => {}, queue = null }) {
-    Object.assign(this, { file, reader, access, publish });
+  constructor({ file, reader, access, publish = () => {}, queue = null, managedRoot = null }) {
+    Object.assign(this, { file, reader, access, publish, managedRoot });
     this.entries = readJson(file, []);
     this.pending = new Map();
     this.pendingAttachments = new Map();
@@ -523,7 +523,8 @@ class RemoteCommands {
     const file = (Array.isArray(row?.attachments) ? row.attachments : [])
       .filter(item => typeof item?.name === 'string').slice(0, MAX_COUNT)[index];
     if (!file) fail(404, 'Attachment not found');
-    return openStoredAttachment({ root: file.kind === 'conversation' ? this.reader.manager.dir : path.dirname(this.file), file });
+    return openStoredAttachment({ root: file.kind === 'conversation' ? this.reader.manager.dir : path.dirname(this.file),
+      managedRoot: this.managedRoot, file });
   }
   cancelPending(deviceId) {
     for (const entry of this.reservations.values()) if (!deviceId || entry.deviceId === deviceId) entry.reservation.cancelled = true;

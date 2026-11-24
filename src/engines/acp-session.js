@@ -208,7 +208,7 @@ class AcpSession extends StreamingSession {
   forgetChild(id, aliases = []) {
     for (const key of new Set([id, ...aliases])) this.childHistory?.forget(key);
   }
-  sendUserMessage(prompt, attachments = []) {
+  sendUserMessage(prompt, attachments = [], nativeHistoryCheckpoint) {
     if (this.running || this.dead) return false;
     this.subagents.begin();
     this.running = true;
@@ -221,11 +221,11 @@ class AcpSession extends StreamingSession {
     this.blockIndex = 0;
     this.activeBlock = null;
     this.startedAt = Date.now();
-    void this.run(prompt, attachments);
+    void this.run(prompt, attachments, nativeHistoryCheckpoint);
     return true;
   }
 
-  async run(prompt, attachments) {
+  async run(prompt, attachments, nativeHistoryCheckpoint) {
     try {
       await (this.ready ||= this.open());
       if (this.childHistory) await this.childHistory.begin().catch(error => this.log('Kimi subtasks: ' + error.message));
@@ -252,7 +252,7 @@ class AcpSession extends StreamingSession {
         this.promptOutput = { chars: 0, tool: false };
         response = await this.request('session/prompt', { sessionId: this.sessionId, prompt: continuation
           ? [{ type: 'text', text: 'The previous response reached the output token limit. Continue the same task from the current native conversation and tool state. Resume at the interruption point without restarting or duplicating completed work, and keep making progress toward the original request.' }]
-          : parts }, 0);
+          : parts, ...(!continuation && nativeHistoryCheckpoint ? { nativeHistoryCheckpoint } : {}) }, 0);
         const promptOutput = this.promptOutput;
         this.promptOutput = null;
         if (this.childHistory) await this.childHistory.poll().catch(error => this.log('Kimi subtasks: ' + error.message));
@@ -280,9 +280,11 @@ class AcpSession extends StreamingSession {
       this.finish({ subtype: stopped ? 'stopped' : outputLimitError ? 'error' : failed ? response.stopReason : empty ? 'empty_response' : 'success',
         is_error: failed || empty,
         ...(failed || empty ? { result: outputLimitError || stopReasonError(response.stopReason) || 'Kimi returned no reply or tool activity.' } : {}),
-        ...(response.usage ? { usage: response.usage } : {}) });
+        ...(response.usage ? { usage: response.usage } : {}),
+        ...(response.nativeHistoryCheckpoint ? { nativeHistoryCheckpoint: response.nativeHistoryCheckpoint } : {}) });
     } catch (error) {
-      this.finish({ subtype: this.cancelled ? 'stopped' : 'error', is_error: !this.cancelled, result: error.message });
+      this.finish({ subtype: this.cancelled ? 'stopped' : 'error', is_error: !this.cancelled, result: error.message,
+        ...(error.data?.nativeHistoryUnavailable === true ? { nativeHistoryUnavailable: true } : {}) });
       // A failed initialization cannot be reused. Prompt errors may be retried
       // by resuming the native session in a fresh process.
       this.kill();

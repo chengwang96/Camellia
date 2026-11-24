@@ -19,7 +19,8 @@ async function until(check, timeout = 2000) {
 
 function harness({
   layoutAssistant = null, cache = null, historyMode = 'normal', holdStopLoading = false,
-  pageReady = false, preservePageUrl = false, failFirstLoadPartitions = [],
+  holdDomReady = false, holdInsertCSS = false, holdExtraction = false,
+  preservePageUrl = false, failFirstLoadPartitions = [],
 } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'camellia-web-surface-'));
   if (cache) fs.writeFileSync(path.join(root, 'web-sessions.json'), JSON.stringify(cache));
@@ -33,11 +34,13 @@ function harness({
       super();
       this.partition = partition;
       this.holdStopLoading = holdStopLoading;
+      this.holdDomReady = holdDomReady;
+      this.holdInsertCSS = holdInsertCSS;
+      this.holdExtraction = holdExtraction;
       this.url = 'about:blank';
       this.title = '';
       this.destroyed = false;
       this.historyMode = historyMode;
-      this.pageReady = pageReady;
       this.preservePageUrl = preservePageUrl;
       this.failFirstLoad = failFirstLoadPartitions.includes(partition);
       this.loadAttempts = 0;
@@ -45,7 +48,18 @@ function harness({
       this.webRTCIPHandlingPolicy = null;
       this.executedScripts = [];
       this.userAgent = 'Mozilla/5.0 Electron/44.0.0 Camellia/1.1.0';
-      this.navigationHistory = { canGoBack: () => false, canGoForward: () => false, goBack() {}, goForward() {} };
+      this.canGoBack = false;
+      this.canGoForward = false;
+      this.backCalls = 0;
+      this.forwardCalls = 0;
+      this.reloadCalls = 0;
+      this.hardReloadCalls = 0;
+      this.navigationHistory = {
+        canGoBack: () => this.canGoBack,
+        canGoForward: () => this.canGoForward,
+        goBack: () => { this.backCalls++; },
+        goForward: () => { this.forwardCalls++; },
+      };
     }
     isDestroyed() { return this.destroyed; }
     getURL() { return this.url; }
@@ -65,7 +79,7 @@ function harness({
       this.url = url;
       this.emit('did-start-loading');
       this.emit('did-start-navigation', {}, url, false, true);
-      this.emit('dom-ready');
+      if (!this.holdDomReady) this.emit('dom-ready');
       if (this.failFirstLoad && this.loadAttempts === 1) {
         this.failFirstLoad = false;
         this.emit('did-fail-load', {}, -2, 'ERR_FAILED', url, true);
@@ -73,16 +87,22 @@ function harness({
       }
       if (!this.holdStopLoading) this.emit('did-stop-loading');
     }
-    async insertCSS() { return 'css-key'; }
+    async insertCSS() { return this.holdInsertCSS ? new Promise(() => {}) : 'css-key'; }
     reload() {
+      this.reloadCalls++;
       this.emit('did-start-loading');
       this.emit('did-start-navigation', {}, this.url, false, true);
-      this.emit('dom-ready');
+      if (!this.holdDomReady) this.emit('dom-ready');
       if (!this.holdStopLoading) this.emit('did-stop-loading');
+    }
+    reloadIgnoringCache() {
+      this.hardReloadCalls++;
+      this.reload();
     }
     close() { this.destroyed = true; }
     async executeJavaScript(source) {
       this.executedScripts.push(source);
+      if (this.holdExtraction && source.includes('const cfg =')) return new Promise(() => {});
       if (source.includes('cfg.moreSelector')) return { ok: true, action: 'session-action' };
       if (source.includes('candidates: [...candidates.values()]')) {
         return {
@@ -103,7 +123,7 @@ function harness({
           { url: 'https://chat.deepseek.com/a/chat/s/current?from=page', title: 'Current' },
           { url: 'https://chat.deepseek.com/a/chat/s/previous', title: 'Previous' },
         ],
-        layout: { historyCount: transient || fallback ? 0 : 2, sidebarMarked: !fallback, pageReady: this.pageReady },
+        layout: { historyCount: transient || fallback ? 0 : 2, sidebarMarked: !fallback, pageReady: false },
       };
     }
   }
@@ -121,11 +141,11 @@ function harness({
   const window = {
     destroyed: false,
     zoomFactor: 1,
-    webContents: {
+    webContents: Object.assign(new EventEmitter(), {
       mainFrame: {},
       getZoomFactor: () => window.zoomFactor,
       send: (channel, payload) => events.push({ channel, payload }),
-    },
+    }),
     contentView: {
       children: [],
       addChildView(view) { this.children.push(view); },
@@ -193,6 +213,7 @@ test('web surface creates a private view, extracts independent history and persi
     assert.equal(state.ok, true);
     assert.equal(state.state.sessions.length, 2);
     assert.equal(state.state.activeId, 'current');
+    assert.equal(state.state.title, 'Current');
     assert.equal(state.state.layout.sidebarMarked, true);
     assert.equal(state.state.layout.status, 'ok');
     assert.ok(fixture.ipcHandlers.has('dsh:web-surface-command'));
@@ -227,38 +248,26 @@ test('web surface creates a private view, extracts independent history and persi
   }
 });
 
-test('a provider view stays hidden until history and layout are ready', async () => {
-  const fixture = harness({
-    historyMode: 'transient',
-    cache: {
-      version: 1,
-      currentProvider: 'deepseek',
-      providers: {
-        deepseek: {
-          sessions: [{ id: 'previous', title: 'Previous conversation', url: 'https://chat.deepseek.com/a/chat/s/previous' }],
-        },
-      },
-    },
-  });
+test('a provider view reveals after layout without waiting for history', async () => {
+  const fixture = harness({ historyMode: 'transient' });
   try {
+    const started = Date.now();
     await fixture.manager.command('show', {
       provider: 'deepseek',
       bounds: { x: 260, y: 64, width: 900, height: 700 },
     });
     const view = fixture.window.contentView.children[0];
-    await new Promise(resolve => setTimeout(resolve, 300));
-    assert.equal(view.visible, false);
-    assert.equal(fixture.manager.publicState().ready, false);
-    view.webContents.historyMode = 'normal';
-    await until(() => view.visible === true);
+    await until(() => view.visible === true, 800);
+    assert.ok(Date.now() - started < 800);
     assert.equal(fixture.manager.publicState().ready, true);
+    assert.equal(fixture.manager.publicState().sessions.length, 0);
   } finally {
     fixture.manager.dispose();
     removeTree(fixture.root);
   }
 });
 
-test('a provider view waits for the document load to stop before revealing', async () => {
+test('a provider view reveals while the document is still loading', async () => {
   const fixture = harness({ holdStopLoading: true });
   try {
     await fixture.manager.command('show', {
@@ -266,11 +275,104 @@ test('a provider view waits for the document load to stop before revealing', asy
       bounds: { x: 260, y: 64, width: 900, height: 700 },
     });
     const view = fixture.window.contentView.children[0];
-    await new Promise(resolve => setTimeout(resolve, 800));
-    assert.equal(view.visible, false);
-    assert.equal(fixture.manager.publicState().ready, false);
-    view.webContents.emit('did-stop-loading');
-    await until(() => view.visible === true);
+    await until(() => view.visible === true, 800);
+    assert.equal(fixture.manager.publicState().ready, true);
+    assert.equal(fixture.manager.publicState().loading, true);
+  } finally {
+    fixture.manager.dispose();
+    removeTree(fixture.root);
+  }
+});
+
+test('navigating within a provider keeps the current page visible while it loads', async () => {
+  const fixture = harness({ holdStopLoading: true });
+  try {
+    await fixture.manager.command('show', {
+      provider: 'deepseek',
+      bounds: { x: 260, y: 64, width: 900, height: 700 },
+    });
+    const view = fixture.window.contentView.children[0];
+    await until(() => view.visible === true, 800);
+    const navigated = await fixture.manager.command('navigate', {
+      url: 'https://chat.deepseek.com/a/chat/s/second',
+    });
+    assert.equal(navigated.ok, true);
+    assert.equal(view.visible, true);
+    assert.equal(fixture.manager.publicState().ready, true);
+    assert.equal(fixture.manager.publicState().loading, true);
+  } finally {
+    fixture.manager.dispose();
+    removeTree(fixture.root);
+  }
+});
+
+test('a slow DOM reveals the real page without waiting for history', async () => {
+  const fixture = harness({ holdDomReady: true, holdStopLoading: true });
+  try {
+    const started = Date.now();
+    await fixture.manager.command('show', {
+      provider: 'deepseek',
+      bounds: { x: 260, y: 64, width: 900, height: 700 },
+    });
+    const view = fixture.window.contentView.children[0];
+    await until(() => view.visible === true, 800);
+    assert.ok(Date.now() - started < 800);
+    assert.equal(fixture.manager.publicState().ready, true);
+    assert.equal(fixture.manager.publicState().loading, true);
+  } finally {
+    fixture.manager.dispose();
+    removeTree(fixture.root);
+  }
+});
+
+test('a stalled layout CSS injection reveals the real page', async () => {
+  const fixture = harness({ holdInsertCSS: true, holdStopLoading: true });
+  try {
+    const started = Date.now();
+    await fixture.manager.command('show', {
+      provider: 'deepseek',
+      bounds: { x: 260, y: 64, width: 900, height: 700 },
+    });
+    const view = fixture.window.contentView.children[0];
+    await until(() => view.visible === true, 800);
+    assert.ok(Date.now() - started < 800);
+    assert.equal(fixture.manager.publicState().ready, true);
+    assert.equal(fixture.manager.publicState().loading, true);
+  } finally {
+    fixture.manager.dispose();
+    removeTree(fixture.root);
+  }
+});
+
+test('a stalled history extraction does not hold the first paint', async () => {
+  const fixture = harness({ holdExtraction: true, holdStopLoading: true });
+  try {
+    const started = Date.now();
+    await fixture.manager.command('show', {
+      provider: 'deepseek',
+      bounds: { x: 260, y: 64, width: 900, height: 700 },
+    });
+    const view = fixture.window.contentView.children[0];
+    await until(() => view.visible === true, 600);
+    assert.ok(Date.now() - started < 600);
+    assert.equal(fixture.manager.publicState().ready, true);
+    assert.equal(fixture.manager.publicState().loading, true);
+  } finally {
+    fixture.manager.dispose();
+    removeTree(fixture.root);
+  }
+});
+
+test('a failed document reveals the browser error page immediately', async () => {
+  const fixture = harness({ failFirstLoadPartitions: ['persist:camellia-web-deepseek'] });
+  try {
+    await fixture.manager.command('show', {
+      provider: 'deepseek',
+      bounds: { x: 260, y: 64, width: 900, height: 700 },
+    });
+    const view = fixture.window.contentView.children[0];
+    await until(() => view.visible === true, 800);
+    assert.match(fixture.manager.publicState().error, /ERR_FAILED/);
     assert.equal(fixture.manager.publicState().ready, true);
   } finally {
     fixture.manager.dispose();
@@ -278,41 +380,22 @@ test('a provider view waits for the document load to stop before revealing', asy
   }
 });
 
-test('a provider home page reveals from rendered content without waiting for cached history', async () => {
-  for (const provider of ['deepseek', 'kimi']) {
-    const startUrl = provider === 'kimi' ? 'https://www.kimi.com/' : 'https://chat.deepseek.com/';
-    const sessionUrl = provider === 'kimi'
-      ? 'https://www.kimi.com/chat/cached'
-      : 'https://chat.deepseek.com/a/chat/s/cached';
-    const fixture = harness({
-      holdStopLoading: true,
-      historyMode: 'transient',
-      pageReady: true,
-      preservePageUrl: true,
-      cache: {
-        version: 1,
-        currentProvider: provider,
-        providers: {
-          [provider]: {
-            sessions: [{ id: 'cached', title: 'Cached', url: sessionUrl }],
-          },
-        },
-      },
+test('switching to an already-preloaded provider is immediate', async () => {
+  const fixture = harness();
+  try {
+    fixture.manager.preload();
+    await until(() => fixture.window.contentView.children.length === 2);
+    await new Promise(resolve => setTimeout(resolve, 350));
+    const shown = await fixture.manager.command('show', {
+      provider: 'kimi',
+      bounds: { x: 260, y: 64, width: 900, height: 700 },
     });
-    try {
-      await fixture.manager.command('show', {
-        provider,
-        bounds: { x: 260, y: 64, width: 900, height: 700 },
-      });
-      const view = fixture.window.contentView.children[0];
-      await until(() => view.visible === true, 1500);
-      assert.equal(fixture.manager.publicState().currentUrl, startUrl);
-      assert.equal(fixture.manager.publicState().ready, true);
-      assert.equal(fixture.manager.publicState().loading, true);
-    } finally {
-      fixture.manager.dispose();
-      removeTree(fixture.root);
-    }
+    assert.equal(shown.ok, true);
+    assert.equal(fixture.window.contentView.children[1].visible, true);
+    assert.equal(fixture.manager.publicState().ready, true);
+  } finally {
+    fixture.manager.dispose();
+    removeTree(fixture.root);
   }
 });
 
@@ -330,6 +413,42 @@ test('web view bounds and zoom follow the workbench renderer scale', async () =>
     });
     assert.equal(view.webContents.zoomFactor, 1.25);
     assert.deepEqual(view.bounds, { x: 125, y: 63, width: 1125, height: 837 });
+  } finally {
+    fixture.manager.dispose();
+    removeTree(fixture.root);
+  }
+});
+
+test('web keyboard shortcuts navigate and reload the provider view', async () => {
+  const fixture = harness();
+  try {
+    await fixture.manager.command('show', {
+      provider: 'deepseek',
+      bounds: { x: 260, y: 64, width: 900, height: 700 },
+    });
+    const contents = fixture.window.contentView.children[0].webContents;
+    await until(() => contents.getURL() === 'https://chat.deepseek.com/');
+    contents.canGoBack = true;
+    contents.canGoForward = true;
+    fixture.manager.attachWindow(fixture.window);
+    let prevented = 0;
+    const send = (target, input) => target.emit('before-input-event',
+      { preventDefault: () => { prevented++; } }, { type: 'keyDown', ...input });
+    const primary = process.platform === 'darwin' ? { meta: true } : { control: true };
+
+    send(contents, { alt: true, key: 'Left' });
+    send(contents, { alt: true, key: 'Right' });
+    send(fixture.window.webContents, { alt: true, key: 'Right' });
+    send(fixture.window.webContents, { ...primary, key: 'r' });
+    send(contents, { ...primary, shift: true, key: 'R' });
+    send(contents, { key: 'F5' });
+    send(contents, { key: 'x' });
+
+    assert.equal(contents.backCalls, 1);
+    assert.equal(contents.forwardCalls, 2);
+    assert.equal(contents.reloadCalls, 3);
+    assert.equal(contents.hardReloadCalls, 1);
+    assert.equal(prevented, 6);
   } finally {
     fixture.manager.dispose();
     removeTree(fixture.root);
@@ -387,7 +506,7 @@ test('preload opens both provider home pages hidden without changing the active 
   }
 });
 
-test('provider menu snapshots the current page before hiding the native view', async () => {
+test('provider menu capture does not navigate the provider page', async () => {
   const fixture = harness();
   try {
     await fixture.manager.command('show', {
@@ -396,11 +515,22 @@ test('provider menu snapshots the current page before hiding the native view', a
     });
     const view = fixture.window.contentView.children[0];
     await until(() => view.visible === true);
+    const loadAttempts = view.webContents.loadAttempts;
     const frozen = await fixture.manager.command('freeze-menu');
     assert.equal(frozen.ok, true);
     assert.equal(frozen.image, 'data:image/png;base64,capture');
+    assert.equal(view.visible, true);
+    assert.equal(fixture.manager.publicState().visible, true);
+    await fixture.manager.command('hide');
     assert.equal(view.visible, false);
     assert.equal(fixture.manager.publicState().visible, false);
+    await fixture.manager.command('show', {
+      provider: 'deepseek',
+      bounds: { x: 260, y: 64, width: 900, height: 700 },
+    });
+    await until(() => view.visible === true);
+    assert.equal(view.webContents.loadAttempts, loadAttempts);
+    assert.equal(view.webContents.reloadCalls, 0);
   } finally {
     fixture.manager.dispose();
     removeTree(fixture.root);

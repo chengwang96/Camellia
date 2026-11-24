@@ -59,6 +59,20 @@ test('interactive model selection pins the requested model and available effort'
   assert.throws(() => selection(catalog, 'missing'), /invalid model selection/);
 });
 
+test('a shortened native trajectory is rejected before dispatching a user message', async () => {
+  const { bridge, calls } = fixture();
+  bridge.turn = null;
+  bridge.prepare = async () => {};
+  bridge.rpc = async (method, params) => {
+    calls.push(method);
+    assert.equal(method, 'GetCascadeTrajectory');
+    return { trajectory: { cascadeId: params.cascadeId }, numTotalSteps: 4 };
+  };
+  await assert.rejects(bridge.prompt([{ type: 'text', text: 'Continue the work' }],
+    { cascadeId: 'root', stepCount: 8 }), error => error.nativeHistoryUnavailable === true);
+  assert.ok(!calls.includes('SendUserCascadeMessage'));
+});
+
 test('Google subscription image prompts reach native media with text and bytes intact', async () => {
   const { bridge, calls } = fixture();
   bridge.turn = null;

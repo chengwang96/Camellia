@@ -9,14 +9,10 @@ const { extractionScript, sessionActionScript } = require('../shared/web-layout-
 const { readJson, writeJson } = require('../shared/json-store.js');
 
 const EXTRACT_INTERVAL_MS = 2500;
-// A provider page is only revealed after its layout CSS and column width are
-// applied and the first history extraction has settled. These budgets keep a
-// slow or signed-out page from leaving the Web pane blank forever.
-const REVEAL_PROBE_MS = 400;
-const REVEAL_HOME_SETTLE_MS = 150;
-const REVEAL_EMPTY_MS = 1500;
-const REVEAL_HISTORY_MS = 6000;
-const REVEAL_WATCHDOG_MS = 12000;
+// A provider is revealed as a browser page, not as a completed screenshot:
+// show it once the document is ready and the layout rules are installed, with
+// a short fallback so a slow document still paints while it is still loading.
+const REVEAL_FALLBACK_MS = 300;
 const PRELOAD_RETRY_MS = 8000;
 
 function finiteBounds(value) {
@@ -90,14 +86,7 @@ function createWebSurfaceManager({
       popup: null,
       loadGeneration: 0,
       revealToken: 0,
-      revealTimer: null,
       revealWatchdog: null,
-      revealStartedAt: 0,
-      revealExpectedSessions: false,
-      pageReady: false,
-      docReadyAt: 0,
-      loadStoppedAt: 0,
-      navigationStartedAt: 0,
       layoutReady: false,
     });
   }
@@ -132,14 +121,16 @@ function createWebSurfaceManager({
 
   function publicState() {
     const state = currentState();
+    const activeId = activeSessionId(state.provider, state.currentUrl);
+    const activeTitle = activeId ? state.sessions.find(session => session.id === activeId)?.title : '';
     return {
       ok: true,
       provider: currentProvider,
       providers: publicProviders(),
       sessions: state.sessions,
-      activeId: activeSessionId(state.provider, state.currentUrl),
+      activeId,
       currentUrl: state.currentUrl,
-      title: state.title,
+      title: activeTitle || state.title,
       loading: state.loading,
       ready: state.ready,
       error: state.error,
@@ -207,36 +198,25 @@ function createWebSurfaceManager({
   }
 
   function clearRevealTimers(state) {
-    clearTimeout(state.revealTimer);
-    state.revealTimer = null;
     clearTimeout(state.revealWatchdog);
     state.revealWatchdog = null;
   }
 
-  function providerHomePage(state) {
-    return activeSessionId(state.provider, state.currentUrl) === null;
-  }
-
-  // A full document load re-arms the reveal gate. The native view stays hidden
-  // while the provider paints its own skeleton and removes its sidebar, so the
-  // first visible frame is already the finished layout.
+  // A full document load re-arms the first-paint fallback. Navigation inside an
+  // already visible provider keeps the current view alive, like a browser tab
+  // that keeps painting while its next page is loading.
   function armReveal(state) {
     clearRevealTimers(state);
     const token = ++state.revealToken;
-    state.ready = false;
     state.layoutReady = false;
-    state.pageReady = false;
     state.error = null;
-    state.docReadyAt = 0;
-    state.loadStoppedAt = 0;
-    state.navigationStartedAt = Date.now();
-    state.revealStartedAt = 0;
-    state.revealExpectedSessions = !providerHomePage(state) && state.sessions.length > 0;
-    state.revealWatchdog = setTimeout(() => {
-      if (disposed || token !== state.revealToken || state.ready) return;
-      revealProvider(state);
-    }, REVEAL_WATCHDOG_MS);
-    state.revealWatchdog.unref?.();
+    if (!state.ready) {
+      state.revealWatchdog = setTimeout(() => {
+        if (disposed || token !== state.revealToken || state.ready) return;
+        revealProvider(state);
+      }, REVEAL_FALLBACK_MS);
+      state.revealWatchdog.unref?.();
+    }
     syncVisibility();
     emitSoon();
     return token;
@@ -248,38 +228,6 @@ function createWebSurfaceManager({
     state.ready = true;
     syncVisibility();
     emitSoon();
-  }
-
-  function scheduleRevealProbe(state, token, delay = REVEAL_PROBE_MS) {
-    if (disposed || state.ready || token !== state.revealToken) return;
-    clearTimeout(state.revealTimer);
-    state.revealTimer = setTimeout(() => { void probeReveal(state, token); }, delay);
-    state.revealTimer.unref?.();
-  }
-
-  async function probeReveal(state, token) {
-    state.revealTimer = null;
-    if (disposed || state.ready || token !== state.revealToken) return;
-    const homePage = providerHomePage(state);
-    const loaded = state.loadStoppedAt >= state.navigationStartedAt;
-    if (!state.docReadyAt || state.docReadyAt < state.navigationStartedAt
-      || (!homePage && !loaded) || !state.layoutReady) {
-      scheduleRevealProbe(state, token);
-      return;
-    }
-    if (!state.revealStartedAt) state.revealStartedAt = Date.now();
-    const result = await extractNow(state.provider.id, 'reveal');
-    if (disposed || state.ready || token !== state.revealToken) return;
-    const historyFound = result.ok && Number(result.state?.layout?.historyCount) > 0;
-    const signIn = /(?:^|[./_-])(?:sign[-_]?in|login|log[-_]?in)(?:[./?#_-]|$)/i.test(state.currentUrl || '');
-    const elapsed = Date.now() - state.revealStartedAt;
-    const budget = state.revealExpectedSessions ? REVEAL_HISTORY_MS : REVEAL_EMPTY_MS;
-    const homeReady = homePage && state.pageReady && elapsed >= REVEAL_HOME_SETTLE_MS;
-    if (historyFound || signIn || homeReady || (loaded && elapsed >= budget) || state.error) {
-      revealProvider(state);
-      return;
-    }
-    scheduleRevealProbe(state, token);
   }
 
   function hide() {
@@ -367,6 +315,38 @@ function createWebSurfaceManager({
     providerSession.setPermissionCheckHandler((_contents, permission) => permission === 'clipboard-sanitized-write');
   }
 
+  function handleProviderShortcut(event, input) {
+    if (disposed || input.type !== 'keyDown') return;
+    const key = String(input.key || '').toLowerCase();
+    const primary = process.platform === 'darwin' ? input.meta : input.control;
+    const back = (input.alt && !input.control && !input.meta && (key === 'left' || key === 'arrowleft'))
+      || (process.platform === 'darwin' && primary && !input.alt && key === '[');
+    const forward = (input.alt && !input.control && !input.meta && (key === 'right' || key === 'arrowright'))
+      || (process.platform === 'darwin' && primary && !input.alt && key === ']');
+    const activeView = currentState()?.view;
+    const navigation = activeView && !activeView.webContents.isDestroyed()
+      ? activeView.webContents.navigationHistory : null;
+    if (back && navigation?.canGoBack()) {
+      event.preventDefault();
+      goBack();
+      return;
+    }
+    if (forward && navigation?.canGoForward()) {
+      event.preventDefault();
+      goForward();
+      return;
+    }
+    if (primary && !input.alt && key === 'r') {
+      event.preventDefault();
+      reload(input.shift === true);
+      return;
+    }
+    if (!input.alt && !input.control && !input.meta && key === 'f5') {
+      event.preventDefault();
+      reload();
+    }
+  }
+
   function createView(state, window) {
     if (state.view && !state.view.webContents.isDestroyed()) return state.view;
     attachProviderSession(state);
@@ -403,6 +383,7 @@ function createWebSurfaceManager({
 
     contents.on('focus', () => window.setIgnoreMenuShortcuts?.(true));
     contents.on('blur', () => window.setIgnoreMenuShortcuts?.(false));
+    contents.on('before-input-event', handleProviderShortcut);
     contents.on('did-start-navigation', (_event, _url, isInPlace, isMainFrame) => {
       if (!isMainFrame || isInPlace) return;
       armReveal(state);
@@ -415,9 +396,8 @@ function createWebSurfaceManager({
     });
     contents.on('did-stop-loading', () => {
       state.loading = false;
-      state.loadStoppedAt = Date.now();
       state.currentUrl = contents.getURL() || state.currentUrl;
-      if (!state.ready) scheduleRevealProbe(state, state.revealToken, 0);
+      if (!state.ready) revealProvider(state);
       emitSoon();
     });
     contents.on('did-fail-load', (_event, code, description, validatedURL, isMainFrame) => {
@@ -439,12 +419,7 @@ function createWebSurfaceManager({
     });
     contents.on('dom-ready', () => {
       const token = state.revealToken;
-      state.docReadyAt = Date.now();
       state.layoutReady = false;
-      if (!state.revealStartedAt) state.revealStartedAt = Date.now();
-      if (!state.revealExpectedSessions && !providerHomePage(state)) {
-        state.revealExpectedSessions = state.sessions.length > 0;
-      }
       state.cssKeys = [];
       const profile = normalizeProfile(state.provider, profiles?.[state.provider.id]);
       const css = [state.provider.layout.css, profile?.css || ''].join('\n');
@@ -459,7 +434,7 @@ function createWebSurfaceManager({
       Promise.allSettled([cssReady, widthReady]).then(() => {
         if (disposed || contents.isDestroyed() || token !== state.revealToken) return;
         state.layoutReady = true;
-        scheduleRevealProbe(state, token, 0);
+        revealProvider(state);
       });
       if (state.sessions.length) {
         void contents.executeJavaScript(
@@ -651,12 +626,13 @@ function createWebSurfaceManager({
     return { ok: true };
   }
 
-  function reload() {
+  function reload(ignoreCache = false) {
     const state = currentState();
     const contents = state.view?.webContents;
     if (!contents || contents.isDestroyed()) return { ok: false, error: 'The web page is not ready.' };
     armReveal(state);
-    contents.reload();
+    if (ignoreCache) contents.reloadIgnoringCache();
+    else contents.reload();
     return { ok: true };
   }
 
@@ -741,14 +717,11 @@ function createWebSurfaceManager({
         checkedAt: Date.now(),
         reason,
       };
-      state.pageReady = result.layout?.pageReady === true;
       state.error = null;
       if (changed || reason !== 'poll') persistSoon();
       // History links with real boxes mean the provider application has
       // rendered its navigation and Camellia has already hidden it.
-      if (!state.ready && Number(result.layout?.historyCount) > 0
-        && state.layoutReady && state.docReadyAt >= state.navigationStartedAt
-        && state.loadStoppedAt >= state.navigationStartedAt) revealProvider(state);
+      if (!state.ready && state.layoutReady) revealProvider(state);
       emitSoon();
       return { ok: true, state: publicState() };
     } catch (error) {
@@ -765,8 +738,7 @@ function createWebSurfaceManager({
       log('Web sessions extraction: ' + error.message);
       // The provider page is a better fallback than a permanent placeholder,
       // but only once the current document is actually laid out.
-      if (!state.ready && state.layoutReady && state.docReadyAt >= state.navigationStartedAt
-        && state.loadStoppedAt >= state.navigationStartedAt) revealProvider(state);
+      if (!state.ready && state.layoutReady) revealProvider(state);
       emitSoon();
       return { ok: false, error: error.message };
     } finally {
@@ -1016,7 +988,6 @@ function createWebSurfaceManager({
         log('Web provider menu snapshot: ' + error.message);
       }
     }
-    hide();
     return { ok: true, image };
   }
 
@@ -1085,6 +1056,10 @@ function createWebSurfaceManager({
         inWorkbench = new URL(details.url).pathname.endsWith('/chat/workbench.html');
       } catch {}
       if (!inWorkbench) hide();
+    });
+    window.webContents.on('before-input-event', (event, input) => {
+      if (!visible) return;
+      handleProviderShortcut(event, input);
     });
     window.on('closed', clear);
   }

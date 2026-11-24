@@ -6022,16 +6022,27 @@ public final class MainActivity extends Activity {
         boolean dark = (getResources().getConfiguration().uiMode & android.content.res.Configuration.UI_MODE_NIGHT_MASK)
             == android.content.res.Configuration.UI_MODE_NIGHT_YES;
         closeVisualization();
+        // The card viewer manages its own sensor orientation while open.
+        setRequestedOrientation(android.content.pm.ActivityInfo.SCREEN_ORIENTATION_USER);
         VisualizationDialog dialog = new VisualizationDialog(this, title, chinese);
         RemoteApi client = remoteClientFactory.apply(address);
         dialog.setOnDismissListener(ignored -> {
             if (visualizationDialog == dialog) visualizationDialog = null;
+            MobileOrientation.lockPhonePortrait(this);
             client.cancel();
         });
         dialog.show();
         visualizationDialog = dialog;
         String path = "/v1/conversations/" + ownerConversation + "/visualizations/" + cardId
             + "?theme=" + (dark ? "dark" : "light");
+        String statePath = "/v1/conversations/" + ownerConversation + "/visualizations/" + cardId + "/state";
+        dialog.setStateSink(state -> networkWorker.submit(() -> {
+            try {
+                client.json(statePath, token, new org.json.JSONObject().put("state", state));
+            } catch (Exception ignored) {
+                // A card whose state cannot be saved still works for this visit.
+            }
+        }));
         networkWorker.submit(() -> {
             try {
                 JSONObject response = client.json(path, token, null, 24 * 1024 * 1024);

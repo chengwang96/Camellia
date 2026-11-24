@@ -44,13 +44,26 @@ function visualizationDocument(card, theme = 'light') {
     'function clone(value){try{return JSON.parse(JSON.stringify(value));}catch(_){return null;}}' +
     'function scanData(){if(dataCache)return dataCache;dataCache={};var scripts=document.querySelectorAll("script[data-viz-name]");' +
     'for(var index=0;index<scripts.length;index++){if(scripts[index].type!=="application/json")continue;var name=scripts[index].getAttribute("data-viz-name");if(!name)continue;try{dataCache[name]=JSON.parse(scripts[index].textContent||"null");}catch(_){dataCache[name]=null;}}return dataCache;}' +
-    'window.camelliaVisualize={version:2,state:{get:function(){return clone(stateValue);},' +
+    'window.camelliaVisualize={version:2,presentation:{clickToAdvance:true},state:{get:function(){return clone(stateValue);},' +
     'set:function(value){if(!value||typeof value!=="object"||Array.isArray(value))return false;try{stateValue=JSON.parse(JSON.stringify(value));return true;}catch(_){return false;}},' +
     'patch:function(value){if(!value||typeof value!=="object"||Array.isArray(value))return false;return window.camelliaVisualize.state.set(Object.assign({},stateValue,value));},' +
     'reset:function(){stateValue={};return true;}},' +
     'data:{get:function(name){var data=scanData();return Object.prototype.hasOwnProperty.call(data,name)?clone(data[name]):null;},' +
     'list:function(){return Object.keys(scanData());},has:function(name){return Object.prototype.hasOwnProperty.call(scanData(),name);}},' +
     'fill:function(){return false;},action:function(){return false;}};' +
+    // Mobile viewers have no host page, so the document owns its presentation
+    // flag and the tap-to-advance gesture. Both mirror the desktop bridge so a
+    // card written once behaves the same in every viewer.
+    'var presenting=false;' +
+    'window.__camelliaSetPresenting=function(active){presenting=active===true;' +
+    'if(presenting)document.documentElement.setAttribute("data-viz-presenting","1");' +
+    'else document.documentElement.removeAttribute("data-viz-presenting");' +
+    'window.dispatchEvent(new CustomEvent("camellia:presentation",{detail:{active:presenting}}));};' +
+    'document.addEventListener("click",function(event){' +
+    'if(!presenting||!window.camelliaVisualize.presentation.clickToAdvance)return;' +
+    'var target=event.target;if(!target||!target.closest)return;' +
+    'if(target.closest("button,a,input,select,textarea,label,summary,video,audio,[contenteditable=\"true\"],[contenteditable=\"\"],[data-viz-interactive],[role=button],[role=link],[role=checkbox],[role=radio],[role=switch],[role=slider],[role=tab],[role=menuitem]"))return;' +
+    'window.dispatchEvent(new CustomEvent("camellia:presentation-command",{detail:{command:"next"}}));},true);' +
     '})();</script>';
   return '<!doctype html><html data-theme="' + mode + '"><head><meta charset="utf-8">' +
     '<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">' +

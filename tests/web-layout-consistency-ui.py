@@ -27,6 +27,27 @@ with sync_playwright() as p:
     assert page.evaluate("getComputedStyle(document.querySelector('#dsComposer')).boxSizing") == 'border-box'
     assert page.evaluate("getComputedStyle(document.querySelector('#dsInput')).borderRadius") == '22px'
 
+    page.set_content("""
+      <style>html, body { margin: 0; }</style>
+      <div class="_765a5cd" style="height:600px">
+        <div class="_2be88ba"><div class="the-header" id="dsChatHeader">Conversation</div></div>
+        <div class="_2bd7b35">
+          <div class="_871cbca">
+            <div class="_77cefa5" id="dsChatInput"></div>
+          </div>
+        </div>
+      </div>
+    """)
+    page.add_style_tag(content=providers['deepseek'])
+    page.evaluate("document.documentElement.style.setProperty('--camellia-chat-content-width', '768px')")
+    expect(page.locator('#dsChatHeader')).to_be_hidden()
+    assert page.evaluate("getComputedStyle(document.querySelector('._2be88ba')).display") == 'none'
+    assert page.evaluate("getComputedStyle(document.querySelector('._871cbca')).width") == '816px'
+    assert page.evaluate("getComputedStyle(document.querySelector('._871cbca')).paddingInline") == '24px'
+    assert page.evaluate("getComputedStyle(document.querySelector('._871cbca')).boxSizing") == 'border-box'
+    assert page.evaluate("document.querySelector('#dsChatInput').getBoundingClientRect().width") == 768
+    assert page.evaluate("getComputedStyle(document.querySelector('#dsChatInput')).borderRadius") == '22px'
+
     for empty_header in (True, False):
         page.set_content(f"""
           <style>html, body {{ margin: 0; }}</style>
@@ -49,11 +70,9 @@ with sync_playwright() as p:
         expect(page.locator('#kimiToggle')).to_be_hidden()
         assert page.evaluate("getComputedStyle(document.querySelector('.main')).margin") == '0px'
         assert page.evaluate("getComputedStyle(document.querySelector('.layout-container')).scrollbarWidth") == 'none'
-        if empty_header:
-            expect(page.locator('.layout-header')).to_be_hidden()
-            assert page.evaluate("getComputedStyle(document.querySelector('.layout-content-main')).height") == '600px'
-        else:
-            expect(page.locator('.layout-header')).to_be_visible()
+        expect(page.locator('.layout-header')).to_be_hidden()
+        assert page.evaluate("getComputedStyle(document.querySelector('.layout-content-main')).height") == '600px'
+        assert page.evaluate("document.querySelector('.layout-content-main').getBoundingClientRect().y") == 0
         assert page.evaluate("getComputedStyle(document.querySelector('#kimiContent')).maxWidth") == '948px'
         assert page.evaluate("getComputedStyle(document.querySelector('#kimiContent')).paddingLeft") == '24px'
         assert page.evaluate("getComputedStyle(document.querySelector('#kimiContent')).paddingTop") == '24px'
@@ -61,8 +80,7 @@ with sync_playwright() as p:
         assert page.evaluate("document.querySelector('#kimiContent').getBoundingClientRect().width") == 948
         assert page.evaluate("getComputedStyle(document.querySelector('.chat-editor-wrap')).maxWidth") == '900px'
         assert page.evaluate("document.querySelector('.chat-editor-wrap').getBoundingClientRect().width") == 900
-        assert page.evaluate("getComputedStyle(document.querySelector('#kimiHero')).paddingTop") \
-            == ('123px' if empty_header else '0px')
+        assert page.evaluate("getComputedStyle(document.querySelector('#kimiHero')).paddingTop") == '123px'
         assert page.evaluate("getComputedStyle(document.querySelector('#kimiInput')).minHeight") == '126px'
         assert page.evaluate("getComputedStyle(document.querySelector('#kimiInput')).borderRadius") == '22px'
 

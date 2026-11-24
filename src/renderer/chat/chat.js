@@ -3061,6 +3061,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       sessionId: context.sessionId, engine: harnessId,
       onFill: applyVisualizeFill, onAction: applyVisualizeAction, onStatus: setStatus,
     });
+    noteCardAvailability(card);
     if (live) {
       appendTurnBlock(block);
       layoutTurnProcess();
@@ -5273,6 +5274,54 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
   });
   reviewPanel = window.createReviewPanel({ context, getEngine: () => loadedEngine || harnessId, setStatus,
     onOpen: () => { workPanel.setOpen(false); contextPanel?.setOpen(false); } });
+  // A card created during the turn makes the finder relevant without a reload.
+  function noteCardAvailability(card) {
+    if (!card || !card.cardId) return;
+    cardFinder?.setAvailable(true);
+  }
+  // Scrolls to a card and draws attention to it. A card may sit inside a
+  // collapsed process disclosure, so opening that disclosure is part of the
+  // reveal rather than an instruction to the user.
+  function revealCard(cardId) {
+    const id = String(cardId || '');
+    if (!id) return;
+    const block = chat.querySelector('.visualize-block[data-visualize-card-id="' + CSS.escape(id) + '"]');
+    if (!block) {
+      setStatus('That card is not in the loaded history. Load earlier messages and try again.');
+      return;
+    }
+    const process = block.closest('.execution-process');
+    if (process && !process.open) process.open = true;
+    followRunOutput = false;
+    block.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    block.classList.add('is-revealed');
+    setTimeout(() => block.classList.remove('is-revealed'), 1600);
+  }
+  // Cards outnumber turns, so finding one by title must not mean scrolling the
+  // transcript. The finder reads the stored index and scrolls to the card.
+  const cardFinder = window.CamelliaCardFinder?.mount({
+    button: $('cardSearchToggle'), panel: $('cardFinder'), input: $('cardFinderInput'),
+    status: $('cardFinderStatus'), list: $('cardFinderList'),
+    getSessionId: () => context.sessionId,
+    onStatus: setStatus,
+    onOpen: card => { cardFinder?.setAvailable(true); revealCard(card.cardId); },
+  });
+  // The button only appears when the conversation actually has cards, so a
+  // plain chat keeps its original header.
+  async function refreshCardFinderAvailability() {
+    const sessionId = context.sessionId;
+    if (!cardFinder || !sessionId || !window.dshDesktop.visualizeList) {
+      cardFinder?.setAvailable(false);
+      return;
+    }
+    try {
+      const result = await window.dshDesktop.visualizeList({ sessionId });
+      if (context.sessionId !== sessionId) return;
+      cardFinder.setAvailable(Boolean(result?.ok && result.cards?.length));
+    } catch {
+      cardFinder.setAvailable(false);
+    }
+  }
   $('ctxRing').addEventListener('click', () => contextPanel?.setOpen(!contextPanel.isOpen()));
   // A side panel reserves room beside the chat only while the remaining
   // column still fits inline media at its fixed size. When the window narrows
@@ -5531,6 +5580,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       if (!await applyLiveRun(res.live, historyOptions)) return false;
       workPanel.update(res.subagents);
       void reviewPanel?.refreshContext();
+      void refreshCardFinderAvailability();
       renderBackgroundWork();
       if (seq !== sessionOpenSeq) return false;
       const lastSeq = res.live?.eventSeq || 0;
@@ -5754,16 +5804,20 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
             // Parsing a multi-megabyte tool result is exactly the work this
             // disclosure defers. Look for the marker only; parse and mount it
             // when the process opens.
-            const deferredVisual = deferred && !unfinished && typeof output === 'string'
-              && output.includes('"visualize"');
-            const visual = deferred ? false : addVisualizeResult(output, body);
+            // Visualization cards are part of the visible answer, not of the
+            // collapsed tool log. Parsing one only when the output carries the
+            // marker keeps large terminal payloads deferred, while no longer
+            // making the card depend on the process disclosure being opened.
+            // A finished turn keeps that disclosure closed, so the old order
+            // silently lost every card after switching away and back even
+            // though both history and card files were intact.
+            // Stored Codex tool results wrap the payload as an escaped JSON
+            // string, so the marker arrives as \"visualize\" rather than
+            // "visualize". Match the key itself instead of one serialization.
+            const visualHint = !unfinished && typeof output === 'string' && /\\?"visualize\\?"/.test(output);
+            const visual = deferred && !visualHint ? false : addVisualizeResult(output, body);
             const failed = unfinished || block.status === 'failed' || block.status === 'cancelled';
-            if (deferredVisual) {
-              card.setDeferredLabel('Interactive visualization will render when you open this process.');
-              card.pendingOutput = { text: output, isErr: failed };
-            } else {
-              card.setOutput(visualizeOutputLabel(visual, output), failed);
-            }
+            card.setOutput(visualizeOutputLabel(visual, output), failed);
             if (deferred) deferredCards.push(card);
             body.processBlocks.push(card.el);
             body.appendChild(card.el);
@@ -5812,14 +5866,6 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
               await new Promise(resolve => setTimeout(resolve, 0));
               if (openSeq !== sessionOpenSeq || !body.isConnected) return;
               batchStarted = performance.now();
-            }
-            let mountedVisual = false;
-            if (card.pendingOutput && !card.pendingOutput.isErr
-                && typeof card.pendingOutput.text === 'string' && card.pendingOutput.text.includes('"visualize"')) {
-              mountedVisual = Boolean(addVisualizeResult(card.pendingOutput.text, body));
-            }
-            if (mountedVisual) {
-              card.pendingOutput = { text: 'Interactive visualization rendered in the conversation.', isErr: false };
             }
             card.fill();
           }

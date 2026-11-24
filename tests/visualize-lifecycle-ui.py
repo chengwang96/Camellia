@@ -59,6 +59,12 @@ with sync_playwright() as p:
             page.wait_for_function(f'disposals==={iteration + 2}')
         cdp.send('HeapProfiler.collectGarbage')
         cdp.send('HeapProfiler.collectGarbage')
+        # Removed cards release their iframe on a later task; collecting in the
+        # same tick as the last removal leaves those documents unvisited. Give
+        # the task queue one turn before the final collection so this measures
+        # a real leak instead of GC scheduling.
+        page.wait_for_timeout(500)
+        cdp.send('HeapProfiler.collectGarbage')
         assert page.evaluate('refs.filter(ref=>!!ref.deref()).length') == 0
         after = cdp.send('Memory.getDOMCounters')
         assert after['jsEventListeners'] <= baseline['jsEventListeners'] + 2, (baseline, after)

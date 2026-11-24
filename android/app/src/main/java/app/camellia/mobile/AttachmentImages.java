@@ -20,6 +20,10 @@ import java.util.function.Function;
 /** Sent-image previews and larger gallery images share bounded, credential-scoped resources. */
 final class AttachmentImages {
     private static final int MIB = 1024 * 1024;
+    // A pasted desktop image may be larger than a phone-selected one. The
+    // gateway serves it through the same attachment route, and the thumbnail
+    // is decoded after download, so the transfer needs the desktop's ceiling.
+    static final int REMOTE_MAX_BYTES = 25 * MIB;
     private static final int FULL_BUDGET = (int) Math.max(4L * MIB, Math.min(32L * MIB, Runtime.getRuntime().maxMemory() / 8));
     private static final int FULL_SIDE = Math.min(2048, (int) Math.sqrt(FULL_BUDGET / 4));
     private static final Handler MAIN = new Handler(Looper.getMainLooper());
@@ -49,7 +53,7 @@ final class AttachmentImages {
                     byte[] bytes = BYTES.get(key);
                     if (bytes == null) {
                         bytes = reader.read();
-                        if (bytes.length > ChatAttachments.IMAGE_MAX_BYTES) throw new IOException("Image exceeds attachment limit");
+                        if (bytes.length > REMOTE_MAX_BYTES) throw new IOException("Image exceeds attachment limit");
                         BYTES.put(key, bytes);
                     }
                     return bytes;
@@ -93,13 +97,13 @@ final class AttachmentImages {
 
     static Source remote(String address, String token, String conversation, long seq, int index, long size, Function<String, RemoteApi> clients) {
         return new Source("remote\n" + address + "\n" + token + "\n" + conversation + "\n" + seq + "\n" + index + "\n" + size, () -> {
-            if (seq < 1 || index < 0 || index >= ChatAttachments.MAX_COUNT || size > ChatAttachments.IMAGE_MAX_BYTES
+            if (seq < 1 || index < 0 || index >= ChatAttachments.MAX_COUNT || size > REMOTE_MAX_BYTES
                     || address == null || address.isEmpty() || token == null || conversation == null)
                 throw new IOException("Invalid image attachment");
             RemoteApi request = clients.apply(address);
             try {
                 String path = "/v1/conversations/" + conversation + "/attachments/" + seq + "/" + index;
-                if (size <= 0) return request.bytes(path, token, ChatAttachments.IMAGE_MAX_BYTES);
+                if (size <= 0) return request.bytes(path, token, REMOTE_MAX_BYTES);
                 ByteArrayOutputStream output = new ByteArrayOutputStream((int) Math.min(size, 512 * 1024));
                 request.download(path, token, output, size, (received, total) -> { });
                 return output.toByteArray();
@@ -108,7 +112,7 @@ final class AttachmentImages {
     }
 
     private static Bitmap decode(byte[] bytes, int side) {
-        if (bytes == null || bytes.length == 0 || bytes.length > ChatAttachments.IMAGE_MAX_BYTES) return null;
+        if (bytes == null || bytes.length == 0 || bytes.length > REMOTE_MAX_BYTES) return null;
         BitmapFactory.Options options = new BitmapFactory.Options(); options.inJustDecodeBounds = true;
         BitmapFactory.decodeByteArray(bytes, 0, bytes.length, options);
         if (options.outWidth <= 0 || options.outHeight <= 0) return null;

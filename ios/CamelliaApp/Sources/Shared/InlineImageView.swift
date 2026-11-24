@@ -87,14 +87,14 @@ struct InlineImageLoader {
         let expected = size ?? -1
         let key = "\(session.computer.address):\(conversationId):attachment:\(seq):\(index):\(expected)"
         if let cached = cache.image(key) { completion(cached); return request }
-        guard seq > 0, index >= 0, expected <= 4 * 1024 * 1024 else {
+        guard seq > 0, index >= 0, expected <= Int64(AttachmentLimits.downloadMaxBytes) else {
             completion(nil)
             return request
         }
         request.transfer = session.messageAttachment(conversationId: conversationId, seq: seq,
                                                      index: index, expectedSize: expected) { result in
             guard !request.cancelled, case .success(let data) = result,
-                  Int64(data.count) <= 4 * 1024 * 1024 else {
+                  Int64(data.count) <= Int64(AttachmentLimits.downloadMaxBytes) else {
                 completion(nil)
                 return
             }

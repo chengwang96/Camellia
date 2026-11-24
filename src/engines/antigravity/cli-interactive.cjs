@@ -17,6 +17,9 @@ const { cliAuthenticationError, describeCliFailure } = require('./cli-auth.cjs')
 const localAgent = new http.Agent({ proxyEnv: {} });
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+function nativeHistoryUnavailable(message) {
+  return Object.assign(new Error(message), { nativeHistoryUnavailable: true });
+}
 const DONE = new Set(['CORTEX_STEP_STATUS_DONE', 'CORTEX_STEP_STATUS_ERROR', 'CORTEX_STEP_STATUS_CANCELED']);
 const OPTIONS = [{ optionId: 'allow', name: 'Allow once', kind: 'allow_once' }, { optionId: 'deny', name: 'Deny', kind: 'reject_once' }];
 const idle = status => ['CASCADE_RUN_STATUS_IDLE', 'CASCADE_RUN_STATUS_DONE', 'CASCADE_RUN_STATUS_CANCELED'].includes(status);
@@ -128,7 +131,8 @@ class InteractiveCli {
           response.once('end', () => {
             try {
               const data = JSON.parse(text);
-              if (response.statusCode < 200 || response.statusCode >= 300) reject(new Error(data.message || String(response.statusCode)));
+              if (response.statusCode < 200 || response.statusCode >= 300)
+                reject(Object.assign(new Error(data.message || String(response.statusCode)), { connectCode: data.code }));
               else resolve(data);
             } catch (error) { reject(error); }
           });
@@ -217,8 +221,9 @@ class InteractiveCli {
     }
     this.selected = selection(catalog.clientModelConfigs, this.model, this.config.effort);
     if (this.session.conversationId) {
-      const saved = await this.rpc('GetCascadeTrajectory', { cascadeId: this.session.conversationId, trajectoryVerbosity: 'CLIENT_TRAJECTORY_VERBOSITY_PROD_UI' });
-      if (saved.trajectory?.cascadeId !== this.session.conversationId) throw new Error('Antigravity native identity changed');
+      const saved = await this.trajectory();
+      if (saved.trajectory?.cascadeId !== this.session.conversationId)
+        throw nativeHistoryUnavailable('Antigravity native identity changed');
     }
     else {
       const created = await this.rpc('StartCascade', { source: 'CORTEX_TRAJECTORY_SOURCE_CLI',
@@ -228,6 +233,18 @@ class InteractiveCli {
       this.session.conversationId = created.cascadeId; this.save();
     }
     return { sessionId: this.session.id, conversationId: this.session.conversationId };
+  }
+  async trajectory(signal) {
+    const cascadeId = this.session.conversationId;
+    let saved;
+    try {
+      saved = await this.rpc('GetCascadeTrajectory', { cascadeId, trajectoryVerbosity: 'CLIENT_TRAJECTORY_VERBOSITY_PROD_UI' }, signal);
+    } catch (error) {
+      if (error.cause?.connectCode === 'not_found')
+        throw nativeHistoryUnavailable('Antigravity native conversation is missing');
+      throw error;
+    }
+    return saved;
   }
   async expandSkill(parts, signal) {
     // Discussion/context messages are literal input, never user invocations.
@@ -248,12 +265,15 @@ class InteractiveCli {
     return parts.map((part, at) => at !== index ? part : { ...part,
       text: part.text + '\n\n<skill_instructions>\nSource: ' + skill.path + '\n' + skill.content + '\n</skill_instructions>' });
   }
-  async prompt(parts) {
+  async prompt(parts, checkpoint) {
     await this.cancelling;
     if (this.turn) throw new Error('A response is already running');
     const turn = this.turn = { controller: new AbortController(), sent: new Map(), thoughts: new Map(), tools: new Map(), permissions: new Set(), usage: {}, canceled: false,
       childResults: new Map(), childErrors: new Map() };
     try {
+      if (checkpoint && (!this.session.conversationId ||
+          checkpoint.cascadeId && checkpoint.cascadeId !== this.session.conversationId))
+        throw nativeHistoryUnavailable('Antigravity native conversation identity is missing or changed');
       await this.prepare();
       if (turn.canceled || this.closed) return { stopReason: 'cancelled' };
       parts = await this.expandSkill(parts, turn.controller.signal);
@@ -267,8 +287,11 @@ class InteractiveCli {
         } else throw new Error('Unsupported Antigravity input: ' + part.type);
       }
       const cascadeId = this.session.conversationId;
-      const before = await this.rpc('GetCascadeTrajectory', { cascadeId, trajectoryVerbosity: 'CLIENT_TRAJECTORY_VERBOSITY_PROD_UI' });
+      const before = await this.trajectory(turn.controller.signal);
       const offset = before.numTotalSteps || 0;
+      if (checkpoint && (before.trajectory?.cascadeId !== cascadeId || offset < (checkpoint.stepCount || 0)))
+        throw nativeHistoryUnavailable('Antigravity native history is behind its saved checkpoint (expected ' +
+          (checkpoint.stepCount || 0) + ' steps, found ' + offset + ')');
       const baseline = new Map(ownedTrajectories((await this.rpc('GetAllCascadeTrajectories')).trajectorySummaries, cascadeId)
         .map(([id, value]) => [id, value.stepCount || 0]));
       this.firstTitleInput ||= titlePreview(items.map(item => item.text).join('\n'));
@@ -300,7 +323,9 @@ class InteractiveCli {
         }
         if (sawInput && idle(result.status) && children.every(([, summary]) => idle(summary.status))) {
           if (turn.error) throw new Error(turn.error);
-          return { stopReason: result.status.endsWith('CANCELED') ? 'cancelled' : 'end_turn', usage: turn.usage };
+          return { stopReason: result.status.endsWith('CANCELED') ? 'cancelled' : 'end_turn', usage: turn.usage,
+            ...(Number.isSafeInteger(result.stepCount) && UUID.test(cascadeId)
+              ? { nativeHistoryCheckpoint: { cascadeId, stepCount: result.stepCount } } : {}) };
         }
         await delay(150, null, { signal: turn.controller.signal });
       }
@@ -448,7 +473,12 @@ class InteractiveCli {
       const id = method === 'session/new' ? 'agy-' + randomUUID() : params.sessionId;
       if (typeof id !== 'string' || !id.startsWith('agy-') || !UUID.test(id.slice(4))) throw new Error('Invalid Google subscription session');
       this.file = path.join(this.config.home, 'cli-sessions', id + '.json');
-      this.session = method === 'session/new' ? { id, cwd: params.cwd } : JSON.parse(fs.readFileSync(this.file, 'utf8'));
+      try {
+        this.session = method === 'session/new' ? { id, cwd: params.cwd } : JSON.parse(fs.readFileSync(this.file, 'utf8'));
+      } catch (error) {
+        if (error.code === 'ENOENT') throw nativeHistoryUnavailable('Antigravity native session mapping is missing');
+        throw error;
+      }
       if (this.session.id !== id || this.session.conversationId && !UUID.test(this.session.conversationId)) throw new Error('Invalid saved Antigravity identity');
       if (typeof this.session.cwd !== 'string' || !path.isAbsolute(this.session.cwd) || this.session.cwd !== params.cwd)
         throw new Error('Antigravity working directory changed');
@@ -470,7 +500,7 @@ class InteractiveCli {
     }
     if (method === 'session/camellia_prepare') return this.prepare();
     if (method === 'session/camellia_generate_title') return this.generateTitle({ prompt: params.prompt });
-    if (method === 'session/prompt') return this.prompt(params.prompt);
+    if (method === 'session/prompt') return this.prompt(params.prompt, params.nativeHistoryCheckpoint);
     if (method === 'session/camellia_subagent_cancel') {
       const task = this.children.get(params.taskId);
       if (!task?.canStop || task.turnId !== params.turnId || params.taskId === this.session.conversationId)
@@ -496,7 +526,8 @@ function run(config) {
       const result = await bridge.handle(message.method, message.params || {});
       if (message.id !== undefined) write({ id: message.id, result });
     } catch (error) {
-      if (message?.method && message.id !== undefined) write({ id: message.id, error: { code: -32603, message: error.message } });
+      if (message?.method && message.id !== undefined) write({ id: message.id, error: { code: -32603, message: error.message,
+        ...(error.nativeHistoryUnavailable ? { data: { nativeHistoryUnavailable: true } } : {}) } });
       else { process.stderr.write(error.message + '\n'); await bridge.stop(); }
     }
   });

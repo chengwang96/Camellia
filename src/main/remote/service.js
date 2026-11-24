@@ -202,6 +202,7 @@ function createRemoteService({ dataDir, manager, networkFactory, apiRoutes = nul
     lanIdentity = new LanIdentity({ file: path.join(dataDir, 'remote', 'lan-identity.json'), log, computerId: lanAccess.computerId() });
     lanDiscovery = new LanDiscovery({ log });
     const commands = new RemoteCommands({ file: path.join(dataDir, 'remote', 'commands.json'), reader, access, queue: messageQueue,
+      managedRoot: dataDir,
       publish: () => { publishAll(); attachmentMaintenance?.markDirty(); } });
     const discussions = getDiscussions ? new (require('./discussions').RemoteDiscussions)({
       file: path.join(dataDir, 'remote', 'discussion-commands.json'), getService: getDiscussions, access,

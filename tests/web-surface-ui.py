@@ -224,7 +224,7 @@ with sync_playwright() as p:
     more.click()
     expect(page.locator('.web-session-menu')).to_be_visible()
     assert page.locator('.web-session-menu button').all_text_contents() == [
-        'Rename', 'Pin / Unpin', 'Share', 'Multi-select', 'Delete']
+        'Rename', 'Pin / Unpin', 'Share', 'Multi-select', 'Delete conversation']
     page.screenshot(path=str(preview / 'web-session-menu.png'), animations='disabled')
     page.locator('.web-session-menu button', has_text='Rename').click()
     rename_input = page.locator('[data-web-session-id="ds-other"] .web-session-rename')
@@ -257,13 +257,28 @@ with sync_playwright() as p:
     expect(page.locator('#engineSwitch')).to_be_hidden()
     expect(page.locator('#webProviderButton')).to_be_visible()
     expect(page.locator('#webProviderLabel')).to_have_text('DeepSeek Web')
+    provider_shows = page.evaluate("window.webCalls.filter(call => call.action === 'show').length")
     page.locator('#webProviderButton').click()
     expect(page.locator('.web-provider-menu')).to_be_visible()
+    page.wait_for_function("window.webCalls.some(call => call.action === 'hide')")
     expect(page.locator('#webSurfaceStage')).to_have_class('web-surface-stage provider-menu-frozen')
     expect(page.locator('#webProviderButton')).to_have_attribute('aria-expanded', 'true')
     expect(page.locator('.web-provider-menu-option[aria-selected="true"]')).to_have_text('DeepSeek Web')
     assert page.evaluate("getComputedStyle(document.querySelector('.web-provider-menu-option')).minHeight") == '40px'
     page.screenshot(path=str(preview / 'web-provider-menu.png'), animations='disabled')
+    page.locator('.web-provider-menu-option', has_text='DeepSeek Web').click()
+    expect(page.locator('.web-provider-menu')).to_have_count(0)
+    page.wait_for_function(f"window.webCalls.filter(call => call.action === 'show').length > {provider_shows}")
+    assert page.evaluate("window.webCalls.filter(call => call.action === 'provider').length") == 0
+    provider_shows = page.evaluate("window.webCalls.filter(call => call.action === 'show').length")
+    page.locator('#webProviderButton').click()
+    expect(page.locator('.web-provider-menu')).to_be_visible()
+    page.keyboard.press('Escape')
+    expect(page.locator('.web-provider-menu')).to_have_count(0)
+    page.wait_for_function(f"window.webCalls.filter(call => call.action === 'show').length > {provider_shows}")
+    assert page.evaluate("window.webCalls.filter(call => call.action === 'provider').length") == 0
+    page.locator('#webProviderButton').click()
+    expect(page.locator('.web-provider-menu')).to_be_visible()
     page.locator('.web-provider-menu-option', has_text='Kimi Web').click()
     page.wait_for_function("window.webCalls.some(call => call.action === 'provider' && call.payload.provider === 'kimi')")
     expect(page.locator('#webProviderButton')).to_have_attribute('aria-expanded', 'false')
@@ -274,6 +289,10 @@ with sync_playwright() as p:
     expect(page.locator('[data-web-session-id="kimi-active"]')).to_contain_text('Kimi active conversation')
     expect(page.locator('#logoBadge')).to_have_text('WEB')
     assert abs(page.locator('#webProviderButton').bounding_box()['width'] - provider_width) <= 1
+    page.evaluate("window.emitWebState({loading:true,ready:true,title:'Loading conversation'})")
+    expect(page.locator('#webSurfacePlaceholder')).to_have_text('')
+    expect(page.locator('#webSurfaceStage')).to_have_attribute('aria-busy', 'false')
+    page.evaluate("window.emitWebState({loading:false,ready:true,title:'Kimi active conversation'})")
 
     page.evaluate("window.emitWebState({activeId:null,title:'Kimi AI 官网：K3.1 Pro 上线，编程与智能体任务全面升级'})")
     expect(page.locator('#headerTitle')).to_have_text('New web conversation')
@@ -284,6 +303,22 @@ with sync_playwright() as p:
     page.locator('#webReload').click()
     for action in ('back', 'forward', 'reload'):
         page.wait_for_function(f"window.webCalls.some(call => call.action === '{action}')")
+
+    page.locator('#webMore').click()
+    more_menu = page.locator('#webMoreMenu')
+    expect(more_menu).to_be_visible()
+    expect(more_menu).to_have_class('dsh-pop action-menu')
+    assert more_menu.locator('.pop-row').all_text_contents() == [
+        'Refresh web conversations', 'Repair web layout',
+        'Reset built-in layout', 'Clear web sign-in']
+    expect(more_menu.locator('.pop-row').first).to_be_focused()
+    assert page.evaluate("getComputedStyle(document.querySelector('#webMoreMenu .pop-row')).minHeight") == '36px'
+    page.keyboard.press('ArrowDown')
+    expect(more_menu.locator('.pop-row').nth(1)).to_be_focused()
+    page.screenshot(path=str(preview / 'web-more-menu.png'), animations='disabled')
+    page.keyboard.press('Escape')
+    expect(more_menu).to_have_count(0)
+    expect(page.locator('#webMore')).to_be_focused()
 
     page.locator('.web-layout-button').click()
     expect(page.locator('dialog.web-layout-dialog')).to_be_visible()

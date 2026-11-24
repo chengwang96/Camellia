@@ -168,9 +168,10 @@ public final class RemoteApi {
     public func messageAttachment(conversationId: String, seq: Int64, index: Int,
                                   expectedSize: Int64) throws -> Data {
         guard seq > 0, index >= 0, index < 20, expectedSize >= -1,
-              expectedSize <= 4 * 1024 * 1024 else { throw RemoteApiError.sizeChanged }
+              expectedSize <= Int64(AttachmentLimits.downloadMaxBytes) else { throw RemoteApiError.sizeChanged }
         let path = "/v1/conversations/\(conversationId)/attachments/\(seq)/\(index)"
-        let data = try read(path, expectedContentType: "application/octet-stream")
+        let data = try read(path, expectedContentType: "application/octet-stream",
+                            maximumBytes: AttachmentLimits.downloadMaxBytes)
         guard expectedSize < 0 || Int64(data.count) == expectedSize else { throw RemoteApiError.sizeChanged }
         return data
     }

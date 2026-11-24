@@ -1,7 +1,6 @@
 package app.camellia.mobile;
 
 import android.content.Intent;
-import android.graphics.Rect;
 import android.test.InstrumentationTestCase;
 import android.view.MotionEvent;
 import android.view.View;
@@ -138,10 +137,13 @@ public class CardViewerTest extends InstrumentationTestCase {
         ui(() -> {
             View header = control("cardViewerToolbar"); float density = activity.getResources().getDisplayMetrics().density;
             assertTrue(header.getHeight() <= Math.ceil(56 * density));
-            for (String tag : new String[]{"cardViewMode","cardZoomOut","cardZoomReset","cardZoomIn"}) {
-                View button = control(tag); Rect visible = new Rect(); assertTrue(tag, button.getGlobalVisibleRect(visible));
-                assertTrue(tag + " width", visible.width() >= Math.floor(44 * density));
-                assertTrue(tag + " height", visible.height() >= Math.floor(44 * density));
+            for (String tag : new String[]{"cardViewMode","cardZoomOut","cardZoomReset","cardZoomIn","cardPresent","cardRotate"}) {
+                View button = control(tag);
+                // The toolbar scrolls horizontally on narrow phones. Every
+                // target keeps its full 44dp hit area, while only the controls
+                // currently in view are painted.
+                assertTrue(tag + " width", button.getWidth() >= Math.floor(44 * density));
+                assertTrue(tag + " height", button.getHeight() >= Math.floor(44 * density));
                 TextView label = (TextView) button;
                 assertTrue(tag + " text must fit", label.getPaint().measureText(label.getText().toString()) <= label.getWidth() - label.getCompoundPaddingLeft() - label.getCompoundPaddingRight() + 1);
             }
@@ -153,6 +155,54 @@ public class CardViewerTest extends InstrumentationTestCase {
         await(() -> metrics().getDouble("scale") < previous * .6, "Whole-card mode must refit changing content"); assertFits();
         ui(() -> { control("cardViewMode").performClick(); assertNotNull(field(dialog, "viewMenu")); dialog.dismiss(); assertNull(field(dialog, "webView")); assertNull(field(dialog, "viewMenu")); });
         assertFalse(dialog.isShowing());
+    }
+
+    public void testPresentingHidesToolbarAndRestoresIt() throws Exception {
+        ui(() -> control("cardPresent").performClick());
+        await(() -> control("cardViewerToolbar").getVisibility() == View.GONE, "Presenting must hide the toolbar");
+        await(() -> "true".equals(evaluate("document.documentElement.hasAttribute('data-viz-presenting')")),
+            "Presenting must reach the card document");
+        assertTrue(dialog.isShowing());
+        // Immersive presentation hides the system bars as well.
+        if (android.os.Build.VERSION.SDK_INT >= 30) {
+            await(() -> !dialog.getWindow().getDecorView().getRootWindowInsets()
+                .isVisible(android.view.WindowInsets.Type.statusBars()), "Presenting must hide the status bar");
+        }
+        ui(() -> control("cardPresent").performClick());
+        await(() -> control("cardViewerToolbar").getVisibility() == View.VISIBLE, "Exiting must restore the toolbar");
+        await(() -> "false".equals(evaluate("document.documentElement.hasAttribute('data-viz-presenting')")),
+            "Exiting must clear the card presentation flag");
+        if (android.os.Build.VERSION.SDK_INT >= 30) {
+            await(() -> dialog.getWindow().getDecorView().getRootWindowInsets()
+                .isVisible(android.view.WindowInsets.Type.statusBars()), "Exiting must restore the status bar");
+        }
+        assertEquals("false", evaluate("document.documentElement.hasAttribute('data-viz-presenting')"));
+    }
+
+    public void testLandscapeButtonRotatesAndClosingRestoresPortrait() throws Exception {
+        int original = activity.getResources().getConfiguration().orientation;
+        ui(() -> control("cardRotate").performClick());
+        int target = original == android.content.res.Configuration.ORIENTATION_LANDSCAPE
+            ? android.content.res.Configuration.ORIENTATION_PORTRAIT
+            : android.content.res.Configuration.ORIENTATION_LANDSCAPE;
+        await(() -> activity.getResources().getConfiguration().orientation == target, "The rotate button must change orientation");
+        ui(() -> control("cardRotate").performClick());
+        await(() -> activity.getResources().getConfiguration().orientation == original, "A second tap must restore the first orientation");
+        ui(() -> dialog.dismiss());
+        boolean tablet = getInstrumentation().getTargetContext().getResources().getConfiguration().smallestScreenWidthDp >= 600;
+        if (!tablet) {
+            await(() -> activity.getResources().getConfiguration().orientation
+                == android.content.res.Configuration.ORIENTATION_PORTRAIT, "Closing must return phones to portrait");
+        }
+    }
+
+    public void testRotateControlReportsItsState() throws Exception {
+        TextView rotate = (TextView) control("cardRotate");
+        String initial = rotate.getText().toString();
+        ui(rotate::performClick);
+        await(() -> !((TextView) control("cardRotate")).getText().toString().equals(initial), "Rotate must toggle");
+        ui(() -> control("cardRotate").performClick());
+        await(() -> ((TextView) control("cardRotate")).getText().toString().equals(initial), "The control must return to its original label");
     }
     public void testTypingContinuesAfterViewerZoomAndReset() throws Exception {
         ui(() -> browser.requestFocus());

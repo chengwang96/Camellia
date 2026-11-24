@@ -51,6 +51,7 @@ const PROVIDERS = Object.freeze({
         [data-camellia-web-hidden] { display: none !important; }
         html[data-camellia-web-hide-site-sidebar] .dc04ec1d,
         html[data-camellia-web-hide-site-sidebar] ._4cbcd96 { display: none !important; }
+        div:has(> .the-header) { display: none !important; }
         :root {
           --message-list-max-width: var(--camellia-web-column-width) !important;
           --message-list-padding-horizontal: 24px !important;
@@ -62,7 +63,22 @@ const PROVIDERS = Object.freeze({
           padding-right: 24px !important;
           padding-bottom: 32px !important;
         }
-        ._77cefa5 { border-radius: 22px !important; }
+        ._871cbca {
+          box-sizing: border-box !important;
+          width: min(100%, var(--camellia-web-column-width)) !important;
+          margin-left: auto !important;
+          margin-right: auto !important;
+          padding-left: 24px !important;
+          padding-right: 24px !important;
+        }
+        ._77cefa5 {
+          width: 100% !important;
+          border-radius: 22px !important;
+          background-color: light-dark(#fff, #2c2c2e) !important;
+          border-color: light-dark(#0000001a, #ffffff1f) !important;
+          box-shadow: 0 4px 12px 0 #00000005, 0 2px 8px 0 #0000000a !important;
+        }
+        ._77cefa5:focus-within { border-color: #d3e2ff !important; }
         html, body {
           background-color: light-dark(#fff, #151517) !important;
           overscroll-behavior: none;
@@ -118,17 +134,14 @@ const PROVIDERS = Object.freeze({
         [data-camellia-web-site-sidebar] { display: none !important; }
         [data-camellia-web-hidden] { display: none !important; }
         html[data-camellia-web-hide-site-sidebar] .sidebar-slot { display: none !important; }
-        .layout-header .header-left { display: none !important; }
-        .layout-header:has(.home-header-center:empty) { display: none !important; }
-        .layout-container:has(.home-header-center:empty) .layout-content-main { height: 100% !important; }
+        .layout-header { display: none !important; }
+        .layout-content-main { height: 100% !important; }
         html, body, .app, .main, .layout-container, .layout-content, .home-page, .chat-box {
           background-color: light-dark(#fff, #151517) !important;
         }
         .home-page { scrollbar-width: none; }
         .home-page::-webkit-scrollbar { width: 0; height: 0; }
-        .layout-container:has(.home-header-center:empty) .home-top {
-          padding-top: var(--camellia-web-home-offset) !important;
-        }
+        .home-top { padding-top: var(--camellia-web-home-offset) !important; }
         .chat-content-list {
           box-sizing: border-box !important;
           width: 100% !important;

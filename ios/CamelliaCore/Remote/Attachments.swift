@@ -9,6 +9,10 @@ import Foundation
 public enum AttachmentLimits {
     public static let maxCount = 20
     public static let imageMaxBytes = 4 * 1024 * 1024
+    /// A sent image from the desktop may be a 25 MiB clipboard paste. This
+    /// bounds the download route, not the image a phone may attach. Keep it
+    /// equal to `MAX_IMAGE_DOWNLOAD` in `src/main/remote/attachments.js`.
+    public static let downloadMaxBytes = 25 * 1024 * 1024
     /// Longest side after compression. Images are scaled down to this before
     /// the JPEG quality is walked, so a photo is never refused for being large.
     public static let imageMaxSide = 3072

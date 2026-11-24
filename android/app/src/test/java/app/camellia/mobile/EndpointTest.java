@@ -120,6 +120,8 @@ public class EndpointTest {
 
     @Test public void acceptsModernConversationPagingAndEncodedSearch() throws Exception {
         Endpoint endpoint = new Endpoint("http://100.64.0.1:43127");
+        assertEquals(endpoint.origin() + "/v1/conversations?offset=0&limit=100&query=recent+task",
+            endpoint.uri("/v1/conversations?offset=0&limit=100&query=recent+task").toString());
         for (String query : new String[]{"", "recent task", "中文 查询 & /?#=%+*._-", "中".repeat(200)}) {
             String encoded = java.net.URLEncoder.encode(query, "UTF-8");
             for (int limit : new int[]{1, 100, 1000}) {
@@ -128,7 +130,7 @@ public class EndpointTest {
             }
         }
         assertEquals("offset=999999999999&limit=100&query=", endpoint.uri("/v1/conversations?offset=999999999999&limit=100&query=").getRawQuery());
-        for (String query : new String[]{"offset=-1&limit=100&query=", "offset=1000000000000&limit=100&query=", "offset=0&limit=0&query=", "offset=0&limit=1001&query=",
+        for (String query : new String[]{"limit=100&query=", "offset=-1&limit=100&query=", "offset=1000000000000&limit=100&query=", "offset=0&limit=0&query=", "offset=0&limit=1001&query=",
             "offset=0&limit=100&query=hello&token=secret", "offset=0&limit=100&query=%", "offset=0&limit=100&query=%GG", "offset=0&limit=100&query=hello#fragment", "offset=0&limit=100&query=hello world"}) {
             assertThrows(query, IllegalArgumentException.class, () -> endpoint.uri("/v1/conversations?" + query));
         }

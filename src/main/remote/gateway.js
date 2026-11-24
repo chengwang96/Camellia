@@ -233,6 +233,30 @@ class RemoteGateway {
       this.json(response, 200, { ...this.apiRoutes(), ...this.stamp() });
       return;
     }
+    // A phone may persist the card's own interaction state. It is a narrow
+    // write: one card, one conversation, the same 64KB object the desktop
+    // stores, and no card content, revision or network approval. It sits ahead
+    // of the read-only guard so the guard keeps rejecting every other write.
+    const cardState = /^\/v1\/conversations\/([a-f0-9-]{36})\/visualizations\/([a-f0-9-]{36})\/state$/
+      .exec(url.pathname);
+    if (cardState && request.method === 'POST') {
+      if (url.search) fail(400, 'Unsupported visualization query');
+      if (device.permission !== 'control') fail(403, 'Control permission required');
+      this.reader.conversation(device, cardState[1]);
+      let card;
+      try { card = this.reader.manager.visualize?.get(cardState[1], cardState[2]); }
+      catch { fail(404, 'Visualization not found'); }
+      if (!card) fail(404, 'Visualization not found');
+      const payload = await body(request, 64 * 1024);
+      const clear = payload?.clear === true;
+      const state = payload?.state;
+      if (!clear && (!state || typeof state !== 'object' || Array.isArray(state))) fail(400, 'Invalid state');
+      try {
+        this.json(response, 200, { ok: true,
+          ...this.reader.manager.visualize.setState(cardState[1], cardState[2], clear ? null : state, { clear }) });
+      } catch (error) { fail(400, error.message); }
+      return;
+    }
     if (request.method !== 'GET') fail(405, 'Remote access is read-only');
     const artifact = /^\/v1\/conversations\/([a-f0-9-]{36})\/artifacts(?:\/([a-f0-9]{64}))?$/.exec(url.pathname);
     if (artifact) {

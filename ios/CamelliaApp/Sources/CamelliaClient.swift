@@ -81,6 +81,13 @@ final class ClientDelegate: NSObject, UIApplicationDelegate {
         for scene in application.connectedScenes.compactMap({ $0 as? UIWindowScene }) { cover(scene) }
     }
 
+    /// The plist advertises landscape so a card can rotate. Outside the card
+    /// viewer the app stays upright, matching the phone-only portrait design.
+    func application(_ application: UIApplication,
+                     supportedInterfaceOrientationsFor window: UIWindow?) -> UIInterfaceOrientationMask {
+        CardOrientation.mask
+    }
+
     func applicationDidBecomeActive(_ application: UIApplication) {
         for scene in application.connectedScenes.compactMap({ $0 as? UIWindowScene }) { uncover(scene) }
     }

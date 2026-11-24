@@ -32,17 +32,32 @@ import org.json.JSONObject;
 final class VisualizationDialog extends Dialog {
     private final Palette palette;
     private WebView webView;
+    /** Writes the card's interaction state back to the computer. */
+    private java.util.function.Consumer<org.json.JSONObject> stateSink;
     private final ProgressBar loading;
     private final boolean chinese;
     private final String selectionKey = "__camelliaSelection" + java.util.UUID.randomUUID().toString().replace("-", "");
     private final String viewportKey = "__camelliaViewport" + java.util.UUID.randomUUID().toString().replace("-", "");
     private final Handler viewerHandler = new Handler(Looper.getMainLooper());
     private final TextView modeButton, zoomLabel, zoomOut, zoomIn, overflowHint;
+    private final TextView presentButton, rotateButton;
     private ChoiceDropdown viewMenu;
     private String viewMode = "width";
+    /** Toolbar + status/navigation bars stay hidden while a presentation runs. */
+    private boolean presenting;
+    /** The card viewer owns a sensor orientation only while it is open. */
+    private int savedOrientation = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED;
+    private boolean ownsOrientation;
+    /** True while the rotate control pins the card to landscape. */
+    private boolean landscapeLock;
+    private LinearLayout header;
     private double manualScale = 1, displayedScale = 1;
     private boolean documentReady;
     private boolean hardwareEditorPending;
+    private long lastStateSignature = Long.MIN_VALUE;
+    private org.json.JSONObject pendingState;
+    private final Runnable flushState = this::flushPendingState;
+    private static final String STATE_KEY = "__camelliaCardState";
     private final Runnable pollViewer = new Runnable() {
         @Override public void run() {
             WebView browser = webView;
@@ -50,6 +65,7 @@ final class VisualizationDialog extends Dialog {
             browser.evaluateJavascript("(function(){var v=window[" + JSONObject.quote(viewportKey) + "];return v?v.state():null})()", value -> {
                 if (browser == webView && isShowing()) readViewportState(value);
             });
+            captureState();
             viewerHandler.postDelayed(this, 750);
         }
     };
@@ -66,9 +82,17 @@ final class VisualizationDialog extends Dialog {
         root.setBackgroundColor(palette.background);
 
         LinearLayout header = new LinearLayout(context);
+        this.header = header;
         header.setGravity(Gravity.CENTER_VERTICAL);
         header.setTag("cardViewerToolbar");
         header.setPadding(dp(12), dp(4), dp(4), dp(4));
+        // Six 44dp controls do not fit a narrow phone. Keep every touch target
+        // and let the row scroll horizontally instead of shrinking the labels.
+        android.widget.HorizontalScrollView toolbar = new android.widget.HorizontalScrollView(context);
+        toolbar.setTag("cardViewerToolbarScroll");
+        toolbar.setHorizontalScrollBarEnabled(false);
+        toolbar.setFillViewport(true);
+        toolbar.addView(header, new android.widget.FrameLayout.LayoutParams(-2, -2));
         TextView heading = new TextView(context);
         heading.setText(title);
         heading.setTextSize(14);
@@ -88,6 +112,14 @@ final class VisualizationDialog extends Dialog {
         header.addView(zoomLabel, new LinearLayout.LayoutParams(dp(48), dp(44)));
         zoomIn = viewerButton("+", "cardZoomIn", chinese ? "放大卡片" : "Zoom card in", () -> changeZoom(1.25));
         header.addView(zoomIn, new LinearLayout.LayoutParams(dp(44), dp(44)));
+        presentButton = viewerButton(chinese ? "演示" : "Present", "cardPresent",
+            chinese ? "全屏演示卡片" : "Present the card full screen", this::togglePresenting);
+        presentButton.setTextSize(12);
+        header.addView(presentButton, new LinearLayout.LayoutParams(-2, dp(44)));
+        rotateButton = viewerButton(chinese ? "横屏" : "Rotate", "cardRotate",
+            chinese ? "切换卡片方向" : "Change card orientation", this::toggleOrientation);
+        rotateButton.setTextSize(12);
+        header.addView(rotateButton, new LinearLayout.LayoutParams(-2, dp(44)));
         TextView close = new TextView(context);
         close.setText(chinese ? "关闭" : "Close");
         close.setTextSize(13);
@@ -103,7 +135,7 @@ final class VisualizationDialog extends Dialog {
         SurfaceElevation.apply(close, 1);
         close.setOnClickListener(view -> dismiss());
         header.addView(close, new LinearLayout.LayoutParams(-2, -2));
-        root.addView(header, new LinearLayout.LayoutParams(-1, -2));
+        root.addView(toolbar, new LinearLayout.LayoutParams(-1, -2));
 
         FrameLayout shell = new FrameLayout(context);
         shell.setBackgroundColor(palette.background);
@@ -179,11 +211,23 @@ final class VisualizationDialog extends Dialog {
                     loading.setVisibility(View.GONE); documentReady = true;
                     view.evaluateJavascript("(" + CardViewportScript.read(getContext()) + ")(" + JSONObject.quote(viewportKey) + ")", ignored -> {
                         if (view != webView || !isShowing()) return;
+                        notifyDocumentPresentation(presenting);
                         applyViewport(); viewerHandler.removeCallbacks(pollViewer); viewerHandler.post(pollViewer);
                     });
                 }
             }
         });
+        android.view.GestureDetector gestures = new android.view.GestureDetector(context,
+            new android.view.GestureDetector.SimpleOnGestureListener() {
+                @Override public boolean onFling(android.view.MotionEvent down, android.view.MotionEvent move,
+                                                 float velocityX, float velocityY) {
+                    float dx = move.getX() - down.getX(), dy = move.getY() - down.getY();
+                    if (Math.abs(dx) < dp(56) || Math.abs(dx) <= Math.abs(dy) * 1.5f) return false;
+                    sendPresentationCommand(dx < 0 ? "next" : "previous");
+                    return true;
+                }
+            });
+        bindPresentationGestures(gestures);
         shell.addView(webView, new FrameLayout.LayoutParams(-1, -1));
 
         loading = new ProgressBar(context);
@@ -211,6 +255,7 @@ final class VisualizationDialog extends Dialog {
                 window.getInsetsController().setSystemBarsAppearance(0, 0);
             }
         }
+        applyPresenting(false);
         setViewerEnabled(false);
     }
 
@@ -221,6 +266,45 @@ final class VisualizationDialog extends Dialog {
         loading.setVisibility(View.VISIBLE);
         webView.stopLoading();
         webView.loadDataWithBaseURL(null, html, "text/html", "utf-8", null);
+    }
+
+    /**
+     * Cards keep their interaction state in window.camelliaVisualize.state.
+     * Desktop persists it through IPC; the phone persists it through the
+     * conversation-scoped state endpoint. Only the state object is sent, never
+     * the token or the card document.
+     */
+    void setStateSink(java.util.function.Consumer<org.json.JSONObject> sink) { stateSink = sink; }
+
+    private void captureState() {
+        WebView browser = webView;
+        java.util.function.Consumer<org.json.JSONObject> sink = stateSink;
+        if (browser == null || !documentReady || sink == null) return;
+        browser.evaluateJavascript("(function(){var h=window.camelliaVisualize;"
+            + "if(!h||!h.state)return null;try{return JSON.stringify(h.state.get()||{});}catch(_){return null;}})()",
+            value -> {
+                if (browser != webView || value == null || "null".equals(value)) return;
+                try {
+                    String decoded = new org.json.JSONArray("[" + value + "]").getString(0);
+                    org.json.JSONObject state = new org.json.JSONObject(decoded);
+                    long signature = decoded.hashCode();
+                    if (signature == lastStateSignature) return;
+                    lastStateSignature = signature;
+                    // Coalesce bursts (a dragged slider emits state on every
+                    // tick) into one write a couple of seconds later.
+                    pendingState = state;
+                    viewerHandler.removeCallbacks(flushState);
+                    viewerHandler.postDelayed(flushState, 1800);
+                } catch (org.json.JSONException ignored) { /* A card may keep state internal. */ }
+            });
+    }
+
+    private void flushPendingState() {
+        org.json.JSONObject state = pendingState;
+        java.util.function.Consumer<org.json.JSONObject> sink = stateSink;
+        if (state == null || sink == null) return;
+        pendingState = null;
+        sink.accept(state);
     }
 
     @Override public void show() {
@@ -251,7 +335,8 @@ final class VisualizationDialog extends Dialog {
         button.setSingleLine(true);
         button.setTextSize(13); button.setGravity(Gravity.CENTER); button.setTextColor(palette.accent);
         button.setContentDescription(description); button.setTooltipText(description); button.setFocusable(true);
-        button.setMinHeight(dp(44)); button.setBackground(new RippleDrawable(ColorStateList.valueOf(Palette.RIPPLE_ON_PAGE), null, shape(Color.WHITE, 8)));
+        button.setMinWidth(dp(44)); button.setMinHeight(dp(44));
+        button.setBackground(new RippleDrawable(ColorStateList.valueOf(Palette.RIPPLE_ON_PAGE), null, shape(Color.WHITE, 8)));
         button.setOnClickListener(ignored -> action.run()); return button;
     }
 
@@ -306,9 +391,154 @@ final class VisualizationDialog extends Dialog {
     }
 
     private void setViewerEnabled(boolean enabled) {
-        for (TextView button : new TextView[]{modeButton, zoomOut, zoomLabel, zoomIn}) {
+        for (TextView button : new TextView[]{modeButton, zoomOut, zoomLabel, zoomIn, presentButton, rotateButton}) {
             button.setEnabled(enabled); button.setAlpha(enabled ? 1 : .35f);
         }
+    }
+
+    /**
+     * Immersive presentation: the toolbar disappears and the card draws edge to
+     * edge. Bars are only transiently revealed by a swipe, which is the same
+     * behaviour desktop fullscreen has; Android never lets an app suppress the
+     * notification shade itself.
+     */
+    private void togglePresenting() {
+        setPresenting(!presenting);
+    }
+
+    private void setPresenting(boolean active) {
+        if (presenting == active) return;
+        presenting = active;
+        presentButton.setText(active ? (chinese ? "退出" : "Exit") : (chinese ? "演示" : "Present"));
+        presentButton.setContentDescription(active
+            ? (chinese ? "退出全屏演示" : "Exit the full-screen presentation")
+            : (chinese ? "全屏演示卡片" : "Present the card full screen"));
+        if (header != null) header.setVisibility(active ? View.GONE : View.VISIBLE);
+        applyPresenting(active);
+        notifyDocumentPresentation(active);
+        updateViewport();
+    }
+
+    /**
+     * Cards key their fullscreen layout off data-viz-presenting. The mobile
+     * viewer has no host page, so it sets the same flag the desktop bridge
+     * would, letting a deck switch to its presentation stage.
+     */
+    private void notifyDocumentPresentation(boolean active) {
+        WebView browser = webView;
+        if (browser == null || !documentReady) return;
+        browser.evaluateJavascript("(function(){if(window.__camelliaSetPresenting)window.__camelliaSetPresenting("
+            + (active ? "true" : "false") + ");else{if(" + (active ? "true" : "false")
+            + ")document.documentElement.setAttribute('data-viz-presenting','1');"
+            + "else document.documentElement.removeAttribute('data-viz-presenting');"
+            + "window.dispatchEvent(new CustomEvent('camellia:presentation',"
+            + "{detail:{active:" + (active ? "true" : "false") + "}}));}})()", null);
+    }
+
+    /**
+     * Presentation has no toolbar, so a horizontal swipe is the page turn.
+     * Ordinary taps stay with the card: the document already handles them so
+     * native controls keep working.
+     */
+    private void bindPresentationGestures(android.view.GestureDetector detector) {
+        webView.setOnTouchListener((view, event) -> {
+            if (presenting) detector.onTouchEvent(event);
+            return false;
+        });
+    }
+
+    private void sendPresentationCommand(String command) {
+        WebView browser = webView;
+        if (browser == null || !documentReady || !presenting) return;
+        browser.evaluateJavascript("(function(){window.dispatchEvent(new CustomEvent('camellia:presentation-command',"
+            + "{detail:{command:" + JSONObject.quote(command) + "}}));})()", null);
+    }
+
+    private void applyPresenting(boolean active) {
+        Window window = getWindow();
+        if (window == null) return;
+        View decor = window.getDecorView();
+        if (Build.VERSION.SDK_INT >= 30) {
+            window.setDecorFitsSystemWindows(!active);
+            android.view.WindowInsetsController controller = window.getInsetsController();
+            if (controller != null) {
+                if (active) {
+                    controller.hide(android.view.WindowInsets.Type.systemBars());
+                    controller.setSystemBarsBehavior(
+                        android.view.WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
+                } else {
+                    controller.show(android.view.WindowInsets.Type.systemBars());
+                    controller.setSystemBarsBehavior(
+                        android.view.WindowInsetsController.BEHAVIOR_DEFAULT);
+                }
+            }
+        } else {
+            decor.setSystemUiVisibility(active
+                ? View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+                    | View.SYSTEM_UI_FLAG_FULLSCREEN
+                    | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                    | View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+                    | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+                    | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+                : View.SYSTEM_UI_FLAG_LAYOUT_STABLE);
+        }
+        decor.requestApplyInsets();
+    }
+
+    /** Locks the viewer to landscape (or releases it back to sensor portrait). */
+    private void setOrientation(boolean landscape) {
+        android.app.Activity activity = owningActivity();
+        if (activity == null) return;
+        if (!ownsOrientation) {
+            savedOrientation = activity.getRequestedOrientation();
+            ownsOrientation = true;
+        }
+        landscapeLock = landscape;
+        activity.setRequestedOrientation(landscape
+            ? android.content.pm.ActivityInfo.SCREEN_ORIENTATION_USER_LANDSCAPE
+            : savedOrientation);
+        if (rotateButton != null) {
+            rotateButton.setText(landscape ? (chinese ? "竖屏" : "Portrait") : (chinese ? "横屏" : "Landscape"));
+            rotateButton.setContentDescription(landscape
+                ? (chinese ? "恢复跟随手机方向" : "Follow the device orientation again")
+                : (chinese ? "锁定横屏" : "Lock the card to landscape"));
+        }
+    }
+
+    private void toggleOrientation() {
+        if (landscapeLock) releaseOrientation();
+        else setOrientation(true);
+    }
+
+    private boolean isLandscape() {
+        android.app.Activity activity = owningActivity();
+        return activity != null
+            && activity.getResources().getConfiguration().orientation
+                == android.content.res.Configuration.ORIENTATION_LANDSCAPE;
+    }
+
+    private void releaseOrientation() {
+        android.app.Activity activity = owningActivity();
+        if (activity == null) return;
+        landscapeLock = false;
+        activity.setRequestedOrientation(ownsOrientation ? savedOrientation
+            : android.content.pm.ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED);
+        ownsOrientation = false;
+        if (rotateButton != null) {
+            rotateButton.setText(chinese ? "横屏" : "Landscape");
+            rotateButton.setContentDescription(chinese ? "锁定横屏" : "Lock the card to landscape");
+        }
+    }
+
+    private android.app.Activity owningActivity() {
+        Context context = getContext();
+        while (context instanceof android.content.ContextWrapper
+            && !(context instanceof android.app.Activity)) {
+            Context base = ((android.content.ContextWrapper) context).getBaseContext();
+            if (base == context) return null;
+            context = base;
+        }
+        return context instanceof android.app.Activity ? (android.app.Activity) context : null;
     }
 
     private void updateOverflowHint() {
@@ -355,6 +585,8 @@ final class VisualizationDialog extends Dialog {
             new Handler(Looper.getMainLooper()).post(this::dismiss);
             return;
         }
+        releaseOrientation();
+        if (presenting) setPresenting(false);
         releaseWebView();
         super.dismiss();
     }
@@ -371,7 +603,11 @@ final class VisualizationDialog extends Dialog {
         // Clear ownership first: cancellation and late loads must not revive a closed card.
         webView = null;
         hardwareEditorPending = false;
-        documentReady = false; viewerHandler.removeCallbacksAndMessages(null);
+        documentReady = false;
+        // Flush the last held state before the timer that would have sent it
+        // is cancelled, so closing the viewer never drops the final change.
+        flushPendingState();
+        viewerHandler.removeCallbacksAndMessages(null);
         if (viewMenu != null) { viewMenu.dismiss(); viewMenu = null; }
         preservingEditor = false;
         view.stopLoading();

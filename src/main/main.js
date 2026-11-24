@@ -2818,7 +2818,13 @@ if (!gotSingleInstanceLock) {
   ipcMain.handle('dsh:visualize-get', (_event, payload) => {
     try {
       sharedConversations.get(payload?.sessionId);
-      return { ok: true, card: sharedConversations.visualize.get(payload.sessionId, payload?.cardId) };
+      try {
+        return { ok: true, card: sharedConversations.visualize.get(payload.sessionId, payload?.cardId) };
+      } catch (error) {
+        const tombstone = sharedConversations.visualize.deleted?.(payload?.sessionId, payload?.cardId);
+        if (tombstone) return { ok: false, deleted: true, ...tombstone };
+        throw error;
+      }
     } catch (error) { return { ok: false, error: error.message }; }
   });
   ipcMain.handle('dsh:visualize-state', (_event, payload) => {
@@ -2826,6 +2832,29 @@ if (!gotSingleInstanceLock) {
       sharedConversations.get(payload?.sessionId);
       return { ok: true, ...sharedConversations.visualize.setState(payload?.sessionId, payload?.cardId,
         payload?.state, { clear: payload?.clear === true }) };
+    } catch (error) { return { ok: false, error: error.message }; }
+  });
+  // Deleting a card is a user action from the card menu, not an agent tool:
+  // the 60-card cap would otherwise leave a conversation unable to create any
+  // more cards with no way to make room.
+  ipcMain.handle('dsh:visualize-remove', (_event, payload) => {
+    try {
+      sharedConversations.get(payload?.sessionId);
+      return { ok: true, ...sharedConversations.visualize.removeCard(payload?.sessionId, payload?.cardId) };
+    } catch (error) { return { ok: false, error: error.message }; }
+  });
+  ipcMain.handle('dsh:visualize-revert', (_event, payload) => {
+    try {
+      sharedConversations.get(payload?.sessionId);
+      return { ok: true, card: sharedConversations.visualize.revert(payload?.sessionId, payload?.cardId) };
+    } catch (error) { return { ok: false, error: error.message }; }
+  });
+  // A card list drives the in-conversation card browser. It reads the stored
+  // index, so the cost grows with the card count, not with transcript length.
+  ipcMain.handle('dsh:visualize-list', (_event, payload) => {
+    try {
+      sharedConversations.get(payload?.sessionId);
+      return { ok: true, cards: sharedConversations.visualize.cards(payload?.sessionId) };
     } catch (error) { return { ok: false, error: error.message }; }
   });
   ipcMain.handle('dsh:visualize-export', async (_event, payload) => {

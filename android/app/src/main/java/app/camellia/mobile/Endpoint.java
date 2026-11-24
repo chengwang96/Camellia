@@ -74,7 +74,7 @@ public final class Endpoint {
         if (path.equals("/v1/workbench") || path.equals("/v1/workbench/events")) return URI.create(origin + path);
         if (path.matches("/v1/commands/[a-f0-9-]{36}")
                 || path.matches("/v1/conversations/[a-f0-9-]{36}/events\\?incremental=1(?:&delta=live-v1)?(?:&historyVersion=[a-f0-9]{64})?")
-                || path.matches("/v1/conversations\\?offset=\\d{1,12}&limit=(?:[1-9]\\d{0,2}|1000)&query=(?:[A-Za-z0-9._*+-]|%[a-fA-F0-9]{2})*")) {
+                || path.matches("/v1/conversations\\?offset=\\d{1,12}(?:&limit=(?:[1-9]\\d{0,2}|1000))?(?:&query=(?:[A-Za-z0-9._*+-]|%[a-fA-F0-9]{2})*)?")) {
             return URI.create(origin + path);
         }
         if (path.matches("/v1/conversations/[a-f0-9-]{36}/read")) return URI.create(origin + path);

@@ -9,15 +9,26 @@ into Camellia history.
 - The header switch selects `Agent` or `Web` without changing the active native
   conversation.
 - The selector changes to `DeepSeek Web` or `Kimi Web` while `Web` is active.
+- Web history shortcuts follow browser semantics without leaving the Web
+  surface: `Alt+Left`/`Alt+Right` navigate the embedded provider, and
+  `Ctrl+R`/`Cmd+R`, `Ctrl+Shift+R`/`Cmd+Shift+R` and `F5` reload it. The same
+  handling applies when focus is inside the provider page or on the Camellia
+  Web chrome.
 - Web provider selection uses a DOM listbox with the same panel, option height,
   selected-row treatment and trailing check as the harness select. Opening it
   captures the current page and hides the native view, so the frozen page
   remains visible behind the menu while the DOM options can paint above it.
+  The captured frame is installed before the native view is hidden and is kept
+  until the restored view has produced its next frame, avoiding blank or
+  reload-looking flashes when the menu opens or closes.
   The trigger uses the same pill height, padding, border, typography and
   trailing chevron as the harness selector, with a stable minimum width so
   switching providers does not move the Agent/Web switch.
 - New-conversation pages use the fixed header title `New web conversation`
   instead of the provider's marketing page title.
+- Conversation pages show the cached conversation title in the Camellia header,
+  keeping it aligned with the selected row in the Web sidebar instead of using
+  the provider's generic document title.
 - Model Settings → Web pages can preload DeepSeek Web and Kimi Web in hidden
   views at launch. This is opt-in because it uses additional memory and
   network; when the user opens Web, the already-laid-out provider page can be
@@ -32,15 +43,14 @@ into Camellia history.
   provider's new-conversation page. A previous conversation URL is not restored
   automatically; the user enters one from the independent Web list. Switching
   between Agent and Web during the same app session preserves the live page.
-- The embedded view is held hidden during a full document load. It is revealed
-  only after the layout CSS and Agent column width are applied and the first
-  history extraction has settled, and the document has stopped loading. The
-  first visible frame is therefore the finished layout; the provider's own
-  loading skeleton and sidebar removal are never painted. A slow or signed-out
-  page still reveals after a bounded wait, and browser error pages reveal
-  immediately. Home pages use provider-specific rendered-composer selectors
-  instead of the cached-history budget, so cached conversations do not make a
-  new-conversation page wait several seconds before appearing.
+- The embedded view behaves like a browser during navigation. On its first
+  appearance it is revealed as soon as the layout CSS and Agent column width
+  are installed, with a 300 ms fallback for a slow document. History extraction
+  no longer blocks the first paint. Navigation inside an already visible
+  provider keeps the current page visible while the next conversation loads;
+  Camellia does not replace it with a full-pane loading placeholder. The
+  boot-time preload CSS still suppresses the provider sidebar from its first
+  frame, and browser error pages reveal immediately.
 - Extraction temporarily lays out the provider sidebar without painting it,
   then keeps only links with real visible boxes. Deleted conversations that the
   provider leaves behind as hidden DOM nodes are not retained in the Camellia
@@ -54,6 +64,9 @@ into Camellia history.
   delete. Rename, pin and delete are executed through the provider's own row
   menu and confirmation controls, so Camellia does not maintain a competing
   conversation database. Share opens the provider's share flow.
+- The Web options menu uses the same action-menu surface, row size, danger
+  styling, keyboard traversal and focus restoration as Agent menu actions.
+  Destructive session actions use the same `Delete conversation` wording.
 - The menu uses the same `dsh-pop action-menu` surface, row height, focus ring,
   glass treatment, danger color and keyboard navigation as Agent conversation
   menus, with positioning constrained to the visible sidebar.
@@ -123,12 +136,15 @@ into Camellia history.
   Kimi's composer matches the Agent input card's 126px minimum height. Its home
   hero is offset by 123px at the real Web stage size so the provider composer
   and brand region share the Agent empty-state vertical rhythm while retaining
-  Kimi's tool tray and footer. Kimi's redundant sidebar-toggle header is
-  removed, and an empty landing header collapses to zero height. The light and
-  dark page bases, dark composer surface, border and focus treatment follow the
-  desktop workbench; the native view background switches with the app theme so
-  loading never flashes the previous theme. Scrollbar and selection styling
-  also follow the desktop workbench rather than each site theme.
+  Kimi's tool tray and footer. Both providers' redundant site headers are
+  removed so there is only the Camellia workbench header; Kimi's main content
+  expands into the reclaimed height. DeepSeek's chat composer rail is centered
+  on the same 816px outer and 768px inner column as the Agent conversation
+  column. The light and dark page bases, dark composer surface, border and
+  focus treatment follow the desktop workbench; the native view background
+  switches with the app theme so loading never flashes the previous theme.
+  Scrollbar and selection styling also follow the desktop workbench rather than
+  each site theme.
 - Closing a settings or layout overlay always re-show the Web view with the
   current Agent column width, including when the width preference changed
   while the embedded page was hidden.

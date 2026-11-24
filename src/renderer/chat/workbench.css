@@ -487,18 +487,6 @@
   .web-refresh svg { width: 14px; height: 14px; }
   .web-header-actions[hidden] { display: none; }
 
-  .web-surface-menu {
-    position: fixed; z-index: 100; width: 220px; padding: 6px;
-    border: 1px solid var(--dsw-alias-border-l2); border-radius: 12px;
-    background: var(--dsw-alias-bg-layer-1); box-shadow: var(--dsw-shadow-lv3);
-  }
-  .web-surface-menu button {
-    display: block; width: 100%; padding: 9px 10px; border: 0; border-radius: 7px;
-    background: transparent; color: var(--dsw-alias-label-primary); font: var(--f-xxs-12); text-align: left; cursor: pointer;
-  }
-  .web-surface-menu button:hover { background: var(--dsw-alias-interactive-bg-hover); }
-  .web-surface-menu button.danger { color: light-dark(#b42318, #ff8a80); }
-
   .web-provider-menu-backdrop {
     position: fixed; z-index: 98; inset: 0; padding: 0; border: 0;
     background: transparent; cursor: default;
@@ -2099,3 +2087,63 @@
 .md .chat-inline-image:focus-visible { outline: 2px solid var(--dsw-static-deepseek-500); outline-offset: 3px; }
 .md .chat-inline-video { background: #000; }
 .md .chat-image-fallback { display: inline-block; margin: 8px 0; overflow-wrap: anywhere; }
+.card-finder {
+  position: absolute;
+  z-index: 20;
+  top: 56px;
+  right: 18px;
+  left: 18px;
+  max-width: 520px;
+  margin-left: auto;
+  padding: 10px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 12px;
+  background: var(--dsw-alias-bg-layer-1);
+  box-shadow: 0 14px 40px rgba(0, 0, 0, .18);
+}
+.card-finder[hidden] { display: none; }
+.card-finder-bar { display: flex; align-items: center; gap: 8px; }
+.card-finder-bar input {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 8px;
+  background: var(--dsw-alias-bg-base);
+  color: var(--dsw-alias-label-primary);
+  font: var(--f-xxs-12);
+}
+.card-finder-bar button {
+  flex: none;
+  width: 32px;
+  height: 32px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 16px;
+  cursor: pointer;
+}
+.card-finder-status { padding: 6px 2px 0; color: var(--dsw-alias-label-tertiary); font: var(--f-xxxs-11); }
+.card-finder-list { max-height: 46vh; overflow-y: auto; margin-top: 6px; }
+.card-finder-row {
+  display: block;
+  width: 100%;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.card-finder-row:hover, .card-finder-row:focus-visible {
+  background: var(--dsw-alias-interactive-bg-hover);
+  outline: none;
+}
+.card-finder-row strong { display: block; color: var(--dsw-alias-label-primary); font: var(--f-xxs-12); }
+.card-finder-row span { display: block; margin-top: 2px; color: var(--dsw-alias-label-tertiary); font: var(--f-xxxs-11); }
+@media (max-width: 700px) {
+  .card-finder { top: 8px; right: 8px; left: 8px; margin: 0; max-width: none; }
+  .card-finder-list { max-height: 52vh; }
+}

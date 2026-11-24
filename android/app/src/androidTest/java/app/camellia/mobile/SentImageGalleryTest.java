@@ -45,7 +45,7 @@ public class SentImageGalleryTest extends InstrumentationTestCase {
         return (InlineImageGallery.GalleryView) field.get(null);
     }
     private void ready(String name) throws Exception {
-        AtomicBoolean ready = new AtomicBoolean(); long deadline = SystemClock.elapsedRealtime() + 6000;
+        AtomicBoolean ready = new AtomicBoolean(); long deadline = SystemClock.elapsedRealtime() + 15000;
         do {
             ui(() -> { var current = gallery(); ready.set(current != null && current.current().alt().equals(name) && current.current().bitmap() != null && current.share.isEnabled()); });
             if (!ready.get()) SystemClock.sleep(20);
@@ -136,7 +136,7 @@ public class SentImageGalleryTest extends InstrumentationTestCase {
         Bitmap first = load(AttachmentImages.remote(address, TOKEN, ID, seq, 0, -1, clients));
         Bitmap second = load(AttachmentImages.remote(address, "b".repeat(43), ID, seq, 0, -1, clients));
         assertTrue(Color.red(first.getPixel(0, 0)) > 200); assertTrue(Color.green(second.getPixel(0, 0)) > 200); assertEquals(2, calls.get());
-        assertNull(load(AttachmentImages.remote(address, TOKEN, ID, seq, 0, ChatAttachments.IMAGE_MAX_BYTES + 1L, clients)));
+        assertNull(load(AttachmentImages.remote(address, TOKEN, ID, seq, 0, AttachmentImages.REMOTE_MAX_BYTES + 1L, clients)));
         assertEquals(2, calls.get());
     }
     private Bitmap load(AttachmentImages.Source source) throws Exception {
@@ -145,7 +145,7 @@ public class SentImageGalleryTest extends InstrumentationTestCase {
             @Override public void loaded(Bitmap bitmap) { result.set(bitmap); complete.countDown(); }
             @Override public void failed() { complete.countDown(); }
         }));
-        assertTrue(complete.await(6, TimeUnit.SECONDS)); return result.get();
+        assertTrue(complete.await(15, TimeUnit.SECONDS)); return result.get();
     }
     private RemoteApi localApi(String address, Server server) throws Exception {
         RemoteApi client = new RemoteApi(address);

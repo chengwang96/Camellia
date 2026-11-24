@@ -7,7 +7,8 @@ const os = require('node:os');
 const path = require('node:path');
 const vm = require('node:vm');
 const { removeTree } = require('./test-fs.cjs');
-const { createVisualizeStore, MAX_STORED_BYTES, MAX_STATE_BYTES } = require('../src/engines/visualize-store');
+const { createVisualizeStore, MAX_STORED_BYTES, MAX_STATE_BYTES,
+  MAX_CARDS_PER_CONVERSATION } = require('../src/engines/visualize-store');
 const { embedWorkspaceImages, embedWorkspaceVideos, embedWorkspaceData } = require('../src/engines/visualize-assets');
 
 test('visualize store persists cards and rejects unsafe document shapes', async t => {
@@ -188,6 +189,59 @@ test('visualize result detection accepts only successful cards', () => {
   const mcp = { content: [{ type: 'text', text: JSON.stringify(result) }] };
   assert.deepEqual(parse(JSON.stringify(mcp)), result.visualize);
   assert.deepEqual(parse({ type: 'gui:tool', output: JSON.stringify(mcp) }), result.visualize);
+});
+
+test('a conversation stops accepting cards at the per-conversation cap', async t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'camellia-visualize-cap-'));
+  t.after(() => removeTree(root));
+  const store = createVisualizeStore({ dir: root });
+  for (let index = 0; index < MAX_CARDS_PER_CONVERSATION; index++)
+    store.create('conversation-1', { title: 'Card ' + index, fragment: '<div>' + index + '</div>' });
+  assert.equal(store.cards('conversation-1').length, MAX_CARDS_PER_CONVERSATION);
+  assert.throws(() => store.create('conversation-1', {
+    title: 'One too many', fragment: '<div>overflow</div>',
+  }), /already has/);
+});
+
+test('the card index tracks revisions and drops deleted entries', async t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'camellia-visualize-index-'));
+  t.after(() => removeTree(root));
+  const store = createVisualizeStore({ dir: root });
+  const first = store.create('conversation-1', { title: 'Indexed', fragment: '<div>one</div>' });
+  assert.deepEqual(store.cards('conversation-1').map(card => card.cardId), [first.cardId]);
+  store.update('conversation-1', first.cardId, { oldStr: 'one', newStr: 'two' });
+  assert.equal(store.cards('conversation-1')[0].revision, 2);
+  store.removeCard('conversation-1', first.cardId);
+  assert.deepEqual(store.cards('conversation-1'), []);
+  assert.equal(fs.existsSync(path.join(root, 'conversation-1', first.cardId + '.html')), false);
+});
+
+test('an external edit to a card file is reported instead of hidden', async t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'camellia-visualize-external-'));
+  t.after(() => removeTree(root));
+  const store = createVisualizeStore({ dir: root });
+  const card = store.create('conversation-1', { title: 'Guarded', fragment: '<div>original</div>' });
+  assert.equal(store.get('conversation-1', card.cardId).externalEdit, false);
+  fs.writeFileSync(path.join(root, 'conversation-1', card.cardId + '.html'), '<div>edited outside</div>');
+  assert.equal(store.get('conversation-1', card.cardId).externalEdit, true);
+  store.update('conversation-1', card.cardId, { oldStr: 'edited outside', newStr: 'restored' });
+  assert.equal(store.get('conversation-1', card.cardId).externalEdit, false);
+});
+
+test('deleting one card frees its slot and leaves the others intact', async t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'camellia-visualize-delete-'));
+  t.after(() => removeTree(root));
+  const store = createVisualizeStore({ dir: root });
+  const kept = store.create('conversation-1', { title: 'Keep', fragment: '<div>keep</div>' });
+  const removed = store.create('conversation-1', { title: 'Remove', fragment: '<div>remove</div>' });
+  store.setState('conversation-1', removed.cardId, { page: 4 });
+  const result = store.removeCard('conversation-1', removed.cardId);
+  assert.deepEqual(result, { ok: true, cardId: removed.cardId });
+  assert.deepEqual(store.cards('conversation-1').map(card => card.cardId), [kept.cardId]);
+  for (const suffix of ['.html', '.json', '.state.json'])
+    assert.equal(fs.existsSync(path.join(root, 'conversation-1', removed.cardId + suffix)), false, suffix);
+  assert.equal(store.get('conversation-1', kept.cardId).title, 'Keep');
+  assert.throws(() => store.get('conversation-1', removed.cardId), /not found/);
 });
 
 test('visualize document exposes persistent state and structured actions', () => {

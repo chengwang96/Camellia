@@ -7014,6 +7014,43 @@ test('an edit whose Codex native session is gone is revised from the stored hist
   harness.finish('codex'); await revised.done;
 });
 
+test('Antigravity checks its persisted history checkpoint and replays a rejected turn once', async t => {
+  const h = fixture(t);
+  const driver = h.drivers.antigravity;
+  driver.settings = () => ({ model: 'fixture', connection: 'subscription' });
+  const first = await h.manager.send('antigravity', { prompt: 'Recent decision' });
+  const original = h.sent.at(-1).session;
+  const checkpoint = { cascadeId: '42da5702-5a42-40c1-af62-9578a2312fb0', stepCount: 30 };
+  h.manager.capture('antigravity', { type: 'result', subtype: 'success', result: 'Decision confirmed',
+    session_id: original.sessionId, runId: original.gen, nativeHistoryCheckpoint: checkpoint });
+  await first.done;
+  const manager = h.restart();
+  const conversation = manager.get(first.sessionId);
+  assert.deepEqual(conversation.segments.antigravity.nativeHistoryCheckpoint, checkpoint);
+  const ensure = driver.ensure;
+  driver.ensure = options => {
+    const session = ensure(options);
+    if (options.sessionId) session.sendUserMessage = (prompt, attachments, expected) => {
+      assert.deepEqual(expected, checkpoint);
+      assert.equal(prompt, 'Continue the decision');
+      manager.capture('antigravity', { type: 'result', subtype: 'error', is_error: true,
+        nativeHistoryUnavailable: true, session_id: session.sessionId, runId: session.gen, result: 'Shortened native history' });
+      return true;
+    };
+    return session;
+  };
+  const next = await manager.send('antigravity', { sessionId: conversation.id, prompt: 'Continue the decision' });
+  await h.flush();
+  const retried = h.sent.at(-1);
+  assert.equal(retried.opts.sessionId, undefined);
+  assert.match(retried.prompt, /Recent decision.*Decision confirmed/s);
+  assert.equal(retried.prompt.match(/Continue the decision/g).length, 1);
+  assert.equal(manager.rows(conversation).filter(row => row.text === 'Continue the decision').length, 1);
+  assert.equal(conversation.retiredSegments.at(-1).nativeId, original.sessionId);
+  h.finish('antigravity');
+  assert.equal((await next.done).subtype, 'success');
+});
+
 test('a continuation whose Codex native session is gone retries from the stored history', async context => {
   const harness = fixture(context), manager = harness.manager;
   const first = await manager.send('codex', { prompt: 'FIRST_TASK' });

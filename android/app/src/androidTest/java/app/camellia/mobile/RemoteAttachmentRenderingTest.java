@@ -9,6 +9,11 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 
 public class RemoteAttachmentRenderingTest extends InstrumentationTestCase {
+    public void testSentImageDownloadsAllowDesktopPasteSizes() {
+        assertEquals(25 * 1024 * 1024, AttachmentImages.REMOTE_MAX_BYTES);
+        assertTrue(AttachmentImages.REMOTE_MAX_BYTES > ChatAttachments.IMAGE_MAX_BYTES);
+    }
+
     public void testAttachmentPreviewPathIsAllowlistedWithoutOpeningOtherRoutes() {
         Endpoint endpoint = new Endpoint("http://100.64.0.1:43127");
         String base = "/v1/conversations/12345678-1234-1234-1234-123456789abc/attachments/";

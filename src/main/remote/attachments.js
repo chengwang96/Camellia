@@ -9,8 +9,14 @@ const MAX_COUNT = 20;
 const MAX_IMAGE = 4 * 1024 * 1024;
 const MAX_FILE = 10 * 1024 * 1024;
 const MAX_TOTAL = 32 * 1024 * 1024;
+const MAX_IMAGE_DOWNLOAD = 25 * 1024 * 1024;
+// Desktop pastes accept images up to 25 MiB. A phone can display them as
+// thumbnails, but their bytes must still be served through the same bounded
+// attachment route as files uploaded from the phone.
+const MAX_DESKTOP_IMAGE = MAX_IMAGE_DOWNLOAD;
 // Base64 plus JSON metadata for a full 32 MiB mobile selection.
 const MAX_REQUEST = 48 * 1024 * 1024;
+const MANAGED_ROOT_FOLDERS = ['device-attachments', 'mobile-images', 'handoffs', 'clipboard-attachments'];
 function attachmentName(value) {
   if (typeof value !== 'string' || !value.trim() || value.length > 180 || /[\\/\x00-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]/.test(value) || value === '.' || value === '..') fail(400, 'Invalid attachment name');
   return value;
@@ -113,12 +119,26 @@ async function storeImagesAsync({ directory, deviceId, requestId, images }) {
   return storeDecodedAttachments({ directory, deviceId, requestId, decoded });
 }
 
-async function openStoredAttachment({ root, file }) {
+function storedAttachmentRoot({ root, source, managedRoot } = {}) {
+  if (typeof source !== 'string' || !path.isAbsolute(source)) return null;
+  const inside = (base, folders) => {
+    const relative = path.relative(path.resolve(base), path.resolve(source));
+    return Boolean(relative) && !path.isAbsolute(relative) && relative !== '..' && !relative.startsWith('..' + path.sep)
+      && folders.includes(relative.split(path.sep)[0]);
+  };
+  if (inside(root, ['device-attachments', 'mobile-images', 'handoffs'])) return path.resolve(root);
+  if (managedRoot && inside(managedRoot, ['clipboard-attachments'])) return path.resolve(managedRoot);
+  return null;
+}
+
+async function openStoredAttachment({ root, managedRoot, file }) {
   const source = typeof file?.path === 'string' ? file.path : file?.fullPath;
   if (typeof source !== 'string' || typeof file?.name !== 'string') fail(404, 'Attachment not found');
+  const selected = storedAttachmentRoot({ root, source, managedRoot });
+  if (!selected) fail(404, 'Attachment not found');
   let canonicalRoot, canonical;
   try {
-    canonicalRoot = await fs.promises.realpath(root);
+    canonicalRoot = await fs.promises.realpath(selected);
     canonical = await fs.promises.realpath(source);
   } catch {
     fail(404, 'Attachment unavailable; refresh the conversation');
@@ -126,14 +146,21 @@ async function openStoredAttachment({ root, file }) {
   const relative = path.relative(canonicalRoot, canonical);
   const folder = relative.split(path.sep)[0];
   if (!relative || path.isAbsolute(relative) || relative === '..' || relative.startsWith('..' + path.sep)
-    || !['device-attachments', 'mobile-images', 'handoffs'].includes(folder)) {
+    || !MANAGED_ROOT_FOLDERS.includes(folder)) {
     fail(404, 'Attachment not found');
   }
-  const maximum = file.isImage === true ? MAX_IMAGE : MAX_FILE;
+  const maximum = folder === 'clipboard-attachments'
+    ? file.isImage === true ? MAX_DESKTOP_IMAGE : MAX_FILE
+    : file.isImage === true ? MAX_IMAGE : MAX_FILE;
   let handle;
   try {
+    // The handle must name the file that was validated, not a symlink that was
+    // swapped in after realpath(). O_NOFOLLOW is not available everywhere, so
+    // compare the opened inode with the one that was resolved as well.
     handle = await fs.promises.open(canonical, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0));
     const stat = await handle.stat();
+    const resolved = await fs.promises.stat(canonical);
+    if (!stat.isFile() || stat.dev !== resolved.dev || stat.ino !== resolved.ino) fail(404, 'Attachment not found');
     if (!stat.isFile() || stat.size > maximum) fail(404, 'Attachment unavailable; refresh the conversation');
     return { handle, size: stat.size, name: file.name, isImage: file.isImage === true };
   } catch (error) {
@@ -143,5 +170,5 @@ async function openStoredAttachment({ root, file }) {
   }
 }
 
-module.exports = { MAX_COUNT, MAX_IMAGE, MAX_FILE, MAX_TOTAL, MAX_REQUEST, attachmentName, decodeAttachments, storeAttachments, storeAttachmentsAsync, storeImagesAsync,
-  openStoredAttachment };
+module.exports = { MAX_COUNT, MAX_IMAGE, MAX_IMAGE_DOWNLOAD, MAX_FILE, MAX_TOTAL, MAX_REQUEST, attachmentName, decodeAttachments, storeAttachments, storeAttachmentsAsync, storeImagesAsync,
+  storedAttachmentRoot, openStoredAttachment };

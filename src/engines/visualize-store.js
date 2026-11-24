@@ -2,18 +2,31 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
-const { randomUUID } = require('node:crypto');
+const { createHash, randomUUID } = require('node:crypto');
 const { readJson, writeJson, writeText } = require('../shared/json-store');
 
 const MAX_FRAGMENT_BYTES = 200000;
 const MAX_STORED_BYTES = 20 * 1024 * 1024;
 const MAX_STATE_BYTES = 64 * 1024;
+// A conversation with hundreds of cards is not a working set any more: the
+// history repaint and the phone's card list both degrade. Cap it explicitly
+// instead of growing without bound.
+const MAX_CARDS_PER_CONVERSATION = 60;
 const MAX_NETWORK_ORIGINS = 4;
 const MAX_TITLE_CHARS = 120;
 const MAX_SUMMARY_CHARS = 500;
 const STYLES = new Set(['whale', 'editorial', 'paper', 'sketch', 'terminal']);
 const CARD_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const CONVERSATION_ID = /^[A-Za-z0-9_-]{1,128}$/;
+const INDEX_FILE = 'index.json';
+// Deleted card ids are remembered so a history row that still references the
+// card renders as "deleted" instead of a load error.
+const DELETED_FILE = 'deleted.json';
+const MAX_TOMBSTONES = 500;
+
+function sha256(text) {
+  return createHash('sha256').update(text, 'utf8').digest('hex');
+}
 
 function cleanTitle(value) {
   const title = String(value || '').trim();
@@ -92,6 +105,77 @@ function createVisualizeStore({ dir, log = () => {} }) {
     if (!CARD_ID.test(String(cardId || ''))) throw new Error('Invalid visualization card');
     return path.join(conversationDir(id), cardId + '.state.json');
   };
+  const htmlFile = (id, cardId) => {
+    if (!CARD_ID.test(String(cardId || ''))) throw new Error('Invalid visualization card');
+    return path.join(conversationDir(id), cardId + '.html');
+  };
+  const indexPath = id => path.join(conversationDir(id), INDEX_FILE);
+  const backupFile = (id, cardId) => {
+    if (!CARD_ID.test(String(cardId || ''))) throw new Error('Invalid visualization card');
+    return path.join(conversationDir(id), cardId + '.previous.html');
+  };
+  const deletedPath = id => path.join(conversationDir(id), DELETED_FILE);
+  const readDeleted = conversationId => {
+    const saved = readJson(deletedPath(conversationId), null);
+    if (!saved || saved.version !== 1 || !Array.isArray(saved.cards)) return [];
+    return saved.cards.filter(entry => entry && CARD_ID.test(String(entry.cardId || '')));
+  };
+  const writeDeleted = (conversationId, entries) => {
+    writeJson(deletedPath(conversationId), {
+      version: 1,
+      cards: entries.slice(-MAX_TOMBSTONES),
+    });
+  };
+
+  // The index is a derived cache: every entry is rebuilt from the card's own
+  // metadata, so a lost or stale index only costs one directory scan.
+  const readIndex = conversationId => {
+    const saved = readJson(indexPath(conversationId), null);
+    if (!saved || saved.version !== 1 || !Array.isArray(saved.cards)) return null;
+    const cards = saved.cards.filter(card => card && CARD_ID.test(String(card.cardId || '')));
+    return { version: 1, cards };
+  };
+  const writeIndex = (conversationId, cards) => {
+    writeJson(indexPath(conversationId), {
+      version: 1,
+      updatedAt: Date.now(),
+      cards: cards
+        .map(({ cardId, title, summary, revision, updatedAt, contentHash }) =>
+          ({ cardId, title, summary, revision, updatedAt, contentHash }))
+        .sort((first, second) => (second.updatedAt || 0) - (first.updatedAt || 0)),
+    });
+  };
+  const scanCards = conversationId => {
+    const directory = conversationDir(conversationId);
+    if (!fs.existsSync(directory)) return [];
+    const cards = [];
+    for (const name of fs.readdirSync(directory)) {
+      if (!name.endsWith('.json') || name === INDEX_FILE || name === DELETED_FILE
+          || name.endsWith('.state.json')) continue;
+      const cardId = name.slice(0, -'.json'.length);
+      if (!CARD_ID.test(cardId)) continue;
+      const metadata = readJson(cardFile(conversationId, cardId), null);
+      if (!metadata || metadata.version !== 1 || metadata.conversationId !== conversationId
+          || metadata.cardId !== cardId) continue;
+      cards.push(metadata);
+    }
+    return cards.sort((first, second) => (second.updatedAt || 0) - (first.updatedAt || 0));
+  };
+  const list = conversationId => {
+    const indexed = readIndex(conversationId);
+    if (indexed) return indexed.cards;
+    const cards = scanCards(conversationId);
+    if (cards.length) {
+      try { writeIndex(conversationId, cards); }
+      catch (error) { log('visualize: could not rebuild the card index: ' + error.message); }
+    }
+    return cards;
+  };
+  const touchIndex = (conversationId, card) => {
+    const cards = scanCards(conversationId);
+    writeIndex(conversationId, cards);
+    return card;
+  };
   const readState = (conversationId, cardId) => {
     try {
       const saved = readJson(stateFile(conversationId, cardId), null);
@@ -124,9 +208,16 @@ function createVisualizeStore({ dir, log = () => {} }) {
       };
       const directory = conversationDir(conversationId);
       fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
-      writeText(path.join(directory, cardId + '.html'), cleanFragment(fragment, MAX_STORED_BYTES));
-      writeJson(cardFile(conversationId, cardId), clean);
-      return clean;
+      const existing = scanCards(conversationId);
+      if (existing.length >= MAX_CARDS_PER_CONVERSATION)
+        throw new Error('This conversation already has ' + MAX_CARDS_PER_CONVERSATION
+          + ' cards; delete an older card before creating another');
+      const html = cleanFragment(fragment, MAX_STORED_BYTES);
+      const stored = { ...clean, contentHash: sha256(html) };
+      writeText(htmlFile(conversationId, cardId), html);
+      writeJson(cardFile(conversationId, cardId), stored);
+      touchIndex(conversationId, stored);
+      return stored;
     },
     update(conversationId, cardId, { title, mode, summary, style, fragment, oldStr, newStr, networkOrigins, updatedAt = Date.now() } = {}) {
       const current = readJson(cardFile(conversationId, cardId), null);
@@ -146,6 +237,10 @@ function createVisualizeStore({ dir, log = () => {} }) {
           && networkOrigins === undefined) {
         throw new Error('Visualization update requires fragment, old_str/new_str or metadata');
       }
+      // Keep the document this revision replaces. When someone edits the file
+      // directly, this is the copy the conversation actually approved, so the
+      // user can roll back to it instead of accepting an unrecorded change.
+      writeText(backupFile(conversationId, cardId), previous);
       next = cleanFragment(next, MAX_STORED_BYTES);
       const nextOrigins = networkOrigins === undefined ? (current.networkOrigins || []) : cleanNetworkOrigins(networkOrigins);
       const originsChanged = JSON.stringify(nextOrigins) !== JSON.stringify(current.networkOrigins || []);
@@ -160,17 +255,73 @@ function createVisualizeStore({ dir, log = () => {} }) {
         networkApprovedAt: originsChanged ? null : current.networkApprovedAt || null,
         revision: Number.isSafeInteger(current.revision) ? current.revision + 1 : 2,
         updatedAt,
+        contentHash: sha256(next),
       };
       writeText(htmlFile, next);
       writeJson(cardFile(conversationId, cardId), clean);
+      touchIndex(conversationId, clean);
       return clean;
     },
     get(conversationId, cardId) {
       const metadata = readJson(cardFile(conversationId, cardId), null);
       if (!metadata || metadata.version !== 1 || metadata.conversationId !== conversationId || metadata.cardId !== cardId)
         throw new Error('Visualization card not found');
-      const html = fs.readFileSync(path.join(conversationDir(conversationId), cardId + '.html'), 'utf8');
-      return { ...metadata, html, state: readState(conversationId, cardId) };
+      const html = fs.readFileSync(htmlFile(conversationId, cardId), 'utf8');
+      // A card edited around the tool (the file written directly instead of
+      // through camellia_visualize) has no matching history record, so it
+      // silently disappears from the conversation. Report it instead of
+      // pretending the revision matches.
+      const externalEdit = Boolean(metadata.contentHash) && sha256(html) !== metadata.contentHash;
+      return { ...metadata, html, state: readState(conversationId, cardId), externalEdit };
+    },
+    cards(conversationId) {
+      conversationDir(conversationId);
+      return list(conversationId);
+    },
+    removeCard(conversationId, cardId) {
+      const metadata = readJson(cardFile(conversationId, cardId), null);
+      if (!metadata || metadata.version !== 1 || metadata.conversationId !== conversationId
+          || metadata.cardId !== cardId) throw new Error('Visualization card not found');
+      fs.rmSync(htmlFile(conversationId, cardId), { force: true });
+      fs.rmSync(backupFile(conversationId, cardId), { force: true });
+      fs.rmSync(cardFile(conversationId, cardId), { force: true });
+      fs.rmSync(stateFile(conversationId, cardId), { force: true });
+      writeIndex(conversationId, scanCards(conversationId));
+      // Keep a tombstone: the conversation row still names this card, and a
+      // reload must show "deleted" rather than a load failure.
+      writeDeleted(conversationId, [...readDeleted(conversationId).filter(entry => entry.cardId !== cardId),
+        { cardId, title: metadata.title, deletedAt: Date.now() }]);
+      return { ok: true, cardId };
+    },
+    deleted(conversationId, cardId) {
+      const entry = readDeleted(conversationId).find(card => card.cardId === cardId);
+      return entry ? { deleted: true, title: entry.title, deletedAt: entry.deletedAt } : null;
+    },
+    /**
+     * Restore the document this conversation last recorded. Only meaningful
+     * when the file was edited outside Camellia; a normal revision has nothing
+     * to roll back to beyond the previous revision the user asked for.
+     */
+    revert(conversationId, cardId, { updatedAt = Date.now() } = {}) {
+      const metadata = readJson(cardFile(conversationId, cardId), null);
+      if (!metadata || metadata.version !== 1 || metadata.conversationId !== conversationId
+          || metadata.cardId !== cardId) throw new Error('Visualization card not found');
+      const file = backupFile(conversationId, cardId);
+      if (!fs.existsSync(file)) throw new Error('No recorded version is available for this card');
+      const recorded = fs.readFileSync(file, 'utf8');
+      const current = fs.readFileSync(htmlFile(conversationId, cardId), 'utf8');
+      // Keep the rejected text so the rollback itself can be undone.
+      writeText(backupFile(conversationId, cardId), current);
+      const clean = {
+        ...metadata,
+        revision: Number.isSafeInteger(metadata.revision) ? metadata.revision + 1 : 2,
+        updatedAt,
+        contentHash: sha256(recorded),
+      };
+      writeText(htmlFile(conversationId, cardId), recorded);
+      writeJson(cardFile(conversationId, cardId), clean);
+      touchIndex(conversationId, clean);
+      return clean;
     },
     network(conversationId, cardId) {
       const metadata = readJson(cardFile(conversationId, cardId), null);
@@ -220,4 +371,5 @@ function createVisualizeStore({ dir, log = () => {} }) {
   };
 }
 
-module.exports = { createVisualizeStore, MAX_FRAGMENT_BYTES, MAX_STORED_BYTES, MAX_STATE_BYTES, MAX_NETWORK_ORIGINS };
+module.exports = { createVisualizeStore, MAX_FRAGMENT_BYTES, MAX_STORED_BYTES, MAX_STATE_BYTES,
+  MAX_NETWORK_ORIGINS, MAX_CARDS_PER_CONVERSATION };

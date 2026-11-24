@@ -2900,6 +2900,40 @@ test('desktop attachments are scoped, bounded and deduplicated without accepting
     { token: credential.token })).status, 404);
 });
 
+test('pasted desktop images download from their managed folder without exposing other local files', async context => {
+  const { gateway, manager, commands, visible, pair, root } = fixture(context);
+  commands.managedRoot = root;
+  const credential = pair(); await gateway.start('127.0.0.1', 0);
+  const bytes = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 0]);
+  const folder = path.join(root, 'clipboard-attachments');
+  fs.mkdirSync(folder, { recursive: true });
+  const file = path.join(folder, 'pasted-image-1-2.png');
+  fs.writeFileSync(file, bytes);
+  const outside = path.join(root, 'private.png');
+  fs.writeFileSync(outside, bytes);
+  manager.append(visible, { role: 'user', text: 'See image', attachments: [{ path: file, name: path.basename(file), isImage: true, size: bytes.length }] });
+  const snapshot = await request(gateway, `/v1/conversations/${visible.id}`, { token: credential.token });
+  const row = snapshot.body.messages.at(-1);
+  assert.deepEqual(row.attachedFiles, [{ name: path.basename(file), isImage: true, size: bytes.length }]);
+  assert.equal(JSON.stringify(row).includes(folder), false, 'the transcript never exposes a local path');
+  const download = await fetch(gateway.url + `/v1/conversations/${visible.id}/attachments/${row.seq}/0`,
+    { headers: { Authorization: `Bearer ${credential.token}` } });
+  assert.equal(download.status, 200);
+  assert.deepEqual(Buffer.from(await download.arrayBuffer()), bytes);
+
+  manager.append(visible, { role: 'user', text: 'Outside', attachments: [{ path: outside, name: 'private.png', isImage: true }] });
+  const next = (await request(gateway, `/v1/conversations/${visible.id}`, { token: credential.token })).body.messages.at(-1);
+  assert.equal((await request(gateway, `/v1/conversations/${visible.id}/attachments/${next.seq}/0`,
+    { token: credential.token })).status, 404);
+
+  const largeSize = 5 * 1024 * 1024;
+  fs.writeFileSync(file, Buffer.alloc(largeSize, 7));
+  manager.append(visible, { role: 'user', text: 'Large paste', attachments: [{ path: file, name: 'large.png', isImage: true, size: largeSize }] });
+  const large = (await request(gateway, `/v1/conversations/${visible.id}`, { token: credential.token })).body.messages.at(-1);
+  assert.equal((await fetch(gateway.url + `/v1/conversations/${visible.id}/attachments/${large.seq}/0`,
+    { headers: { Authorization: `Bearer ${credential.token}` } })).status, 200);
+});
+
 test('mobile conversation snapshots are generated on the desktop, attached once and downloadable', async context => {
   const { gateway, manager, visible, pair, root } = fixture(context);
   const credential = pair();
@@ -3445,10 +3479,37 @@ test('mobile snapshots expose visualization metadata and serve an isolated card 
   assert.match(result.body.card.html, /id="mobile-card"/);
   assert.match(result.body.card.html, /"selected":"mobile"/);
   assert.match(result.body.card.html, /window\.camelliaVisualize/);
+  // Mobile viewers have no host bridge, so the document carries the same
+  // presentation flag and tap-to-advance contract the desktop card uses.
+  assert.match(result.body.card.html, /presentation:\{clickToAdvance:true\}/);
+  assert.match(result.body.card.html, /__camelliaSetPresenting/);
+  assert.match(result.body.card.html, /data-viz-presenting/);
+  assert.match(result.body.card.html, /camellia:presentation-command/);
   assert.equal((await request(gateway,
     '/v1/conversations/' + hidden.id + '/visualizations/' + card.cardId,
     { token: phone.token })).status, 404);
   assert.equal((await request(gateway,
     '/v1/conversations/' + visible.id + '/visualizations/' + card.cardId + '?theme=sepia',
     { token: phone.token })).status, 400);
+
+  // A phone may persist a card's interaction state; reading it back must show
+  // the same object, and the stored card document must embed it.
+  const savedState = await request(gateway,
+    '/v1/conversations/' + visible.id + '/visualizations/' + card.cardId + '/state',
+    { token: phone.token, method: 'POST', payload: { state: { page: 3, choice: 'pulse' } } });
+  assert.equal(savedState.status, 200, savedState.body);
+  assert.deepEqual(savedState.body.state, { page: 3, choice: 'pulse' });
+  assert.deepEqual(manager.visualize.get(visible.id, card.cardId).state, { page: 3, choice: 'pulse' });
+  const reread = await request(gateway,
+    '/v1/conversations/' + visible.id + '/visualizations/' + card.cardId,
+    { token: phone.token });
+  assert.match(reread.body.card.html, /"page":3/);
+
+  // Read-only devices and out-of-scope conversations stay refused.
+  assert.equal((await request(gateway,
+    '/v1/conversations/' + visible.id + '/visualizations/' + card.cardId + '/state',
+    { token: phone.token, method: 'POST', payload: { state: [] } })).status, 400);
+  assert.equal((await request(gateway,
+    '/v1/conversations/' + hidden.id + '/visualizations/' + card.cardId + '/state',
+    { token: phone.token, method: 'POST', payload: { state: { page: 1 } } })).status, 404);
 });

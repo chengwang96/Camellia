@@ -2308,7 +2308,10 @@ class SharedConversations {
       // this user turn if it finishes after another message or with no run open.
       if (Number.isSafeInteger(a.userSeq)) a.session.subagentUserSeq = a.userSeq;
       a.diagnosticStage = 'stream';
-      if (!a.session.sendUserMessage(prompt, payload.attachments || [])) throw new Error('Engine did not accept the message');
+      const segment = c.segments[engine];
+      const nativeHistoryCheckpoint = engine === 'antigravity' && settings.connection === 'subscription'
+        && !fresh && segment?.nativeId && segment.cursor > 0 ? segment.nativeHistoryCheckpoint || {} : undefined;
+      if (!a.session.sendUserMessage(prompt, payload.attachments || [], nativeHistoryCheckpoint)) throw new Error('Engine did not accept the message');
       if (a.titleDeferred && this.drivers[engine]?.titleDuringTurn)
         void this.titleFromFirstMessage(c, { engine, settings: a.contextSettings, duringTurn: true });
       return { ok: true, runId: a.facade.gen, sessionId: c.id, userSeq: a.userSeq, done: a.done };
@@ -2575,12 +2578,21 @@ class SharedConversations {
       this.reduceContextBudget(c, engine, this.runSettings(a, engine, c), event.result);
       if (a.overflowRetried && a.overflowRescueTried) event = { ...event, result: event.result + '\n' + recoveryAdvice };
     }
-    if (event.type === 'result' && event.is_error && !a.internal && !a.cancelled && !a.nativeSessionRetried && a.session?.opts?.sessionId
-        && !a.nativeSessionProgress && !a.text && !a.assistant.length && !a.tools.size && !a.permissions.size && this.nativeSessionLost(engine, event.result)) {
+    const nativeHistoryUnavailable = engine === 'antigravity' && a.settings?.connection === 'subscription'
+      && event.nativeHistoryUnavailable === true && c.segments[engine]?.nativeId;
+    if (event.type === 'result' && event.is_error && !a.internal && !a.cancelled && !a.nativeSessionRetried
+        && !a.nativeSessionProgress && !a.text && !a.assistant.length && !a.tools.size && !a.permissions.size
+        && (nativeHistoryUnavailable || a.session?.opts?.sessionId && this.nativeSessionLost(engine, event.result))) {
       // The engine could not open the native session this conversation was
       // bound to, and nothing was produced yet: continue the same turn in a
       // fresh native session that carries the stored history.
       a.nativeSessionRetried = true;
+      a.nativeHistoryRecovery = Boolean(nativeHistoryUnavailable);
+      if (a.nativeHistoryRecovery) this.log('Antigravity history recovery: ' + JSON.stringify({
+        sessionId: c.id, engine, nativeId: c.segments[engine].nativeId,
+        previousCursor: c.segments[engine].cursor,
+        checkpoint: c.segments[engine].nativeHistoryCheckpoint, replayBefore: a.userSeq,
+      }));
       const lost = this.forgetNativeSession(c, engine);
       this.log(`${engine}: native session ${lost || ''} is unavailable; continuing from the stored history: ${event.result}`);
       this.onStatus({ sessionId: c.id, text: 'The engine session behind this conversation is gone. Continuing from the stored history in a new session.' });
@@ -2617,6 +2629,7 @@ class SharedConversations {
       const changed = segment.nativeId !== event.session_id || segment.bindingKey !== bindingKey || !segment.isolated;
       if (segment.nativeId !== event.session_id) {
         delete segment.contextUsage; delete segment.nativeContextWindow; delete segment.nativeCompactionSelection;
+        delete segment.nativeHistoryCheckpoint;
       }
       Object.assign(segment, { nativeId: event.session_id, isolated: true,
         contextSettings: a.contextSettings, bindingKey, lastUsedAt: Date.now() });
@@ -2735,6 +2748,13 @@ class SharedConversations {
         && !event.is_error && event.session_id === c.segments[engine]?.nativeId;
       if (c.segments[engine] && (!c.interrupted || retained) && !a.ephemeral) {
         c.segments[engine].cursor = c.seq; c.segments[engine].lastUsedAt = Date.now();
+        if (engine === 'antigravity' && a.contextSettings?.connection === 'subscription'
+            && event.subtype === 'success' && event.nativeHistoryCheckpoint) {
+          c.segments[engine].nativeHistoryCheckpoint = event.nativeHistoryCheckpoint;
+          if (a.nativeHistoryRecovery) this.log('Antigravity history recovered: ' + JSON.stringify({
+            sessionId: c.id, adapterId: event.session_id, cursor: c.seq, checkpoint: event.nativeHistoryCheckpoint,
+          }));
+        }
         // The native thread now holds the bridged turns itself.
         if (c.segments[engine].bridgeFile && fs.existsSync(c.segments[engine].bridgeFile)) fs.unlinkSync(c.segments[engine].bridgeFile);
         delete c.segments[engine].bridgeFile; delete c.segments[engine].bridgeToSeq;
@@ -2828,8 +2848,22 @@ class SharedConversations {
           session_id: c.id, engine, runId: a.facade.gen, eventSeq: ++a.eventSeq };
         a.events.push(event); this.onEvent(event);
       }
-      const prompt = typeof a.nativeFallbackPrompt === 'function' ? a.nativeFallbackPrompt()
+      let prompt = typeof a.nativeFallbackPrompt === 'function' ? a.nativeFallbackPrompt()
         : this.context(c, engine) + String(a.promptSuffix ?? a.prompt ?? '');
+      if (a.nativeHistoryRecovery) {
+        const memory = memoryInstructions(this.loadConfig().memoryDirectory, c.hasGlobalMemory === true) + (a.memorySnapshot || '');
+        const cap = this.contextPressure(c, engine, a.settings).cap;
+        const images = imageInputTokens(a.attachments);
+        if (contextTokens(memory + prompt) + images > cap * 0.85) {
+          const current = String(a.promptSuffix ?? a.prompt ?? '');
+          const compacted = await this.compact(c.id, { automatic: true, recovery: a, allowGoal: true,
+            history: this.rows(c, { before: a.userSeq }), trigger: { reason: 'native-history-recovery' },
+            destination: { engine, settings: a.settings, pendingTokens: contextTokens(memory + current) + images } });
+          prompt = compacted.summary + '\n\n' + current;
+          if (contextTokens(memory + prompt) + images > cap * 0.85)
+            throw new Error('The recovered Antigravity context is too large to send. ' + recoveryAdvice);
+        }
+      }
       await this.send(engine, { sessionId: c.id, prompt: a.prompt, attachments: a.attachments },
         { facade: a.facade, continuation: a, promptOverride: prompt });
     } catch (error) {
@@ -3312,6 +3346,25 @@ class SharedConversations {
       if (this.active.get(key) === active) this.capture(engine, { type: 'result', subtype: 'stopped', result: '', conversationId: key, runId: active.session?.gen });
     }
   }
+  /**
+   * Cards live outside the message rows, so compacting the conversation used
+   * to remove them from the assistant's context entirely: it could no longer
+   * see which cards exist, and would create a duplicate instead of updating
+   * one. The catalogue is tiny compared to the transcript and keeps the
+   * cardId/revision needed for an update.
+   */
+  visualizationCatalogue(c) {
+    let cards = [];
+    try { cards = this.visualize?.cards?.(c.id) || []; }
+    catch (error) { this.log('visualize: could not read the card catalogue: ' + error.message); }
+    if (!cards.length) return '';
+    const lines = cards.slice(0, 60).map(card => '- `' + card.cardId + '` · v'
+      + (Number.isSafeInteger(card.revision) ? card.revision : 1) + ' · '
+      + String(card.title || '').replace(/[\r\n]+/g, ' ').slice(0, 120));
+    return '\n\n## Interactive cards in this conversation\n\n'
+      + 'Reuse a card here with `camellia_visualize` `action:"update"` and its `card_id`; '
+      + 'do not create a duplicate for the same topic.\n\n' + lines.join('\n') + '\n';
+  }
   manualFallbackContext(c, engine, sourceRows, settings, maxTokens = Infinity, pinnedFirstUser = '') {
     const cap = this.contextPressure(c, engine, settings).cap;
     const limit = Math.min(10000, Math.floor(cap * 0.25), maxTokens);
@@ -3763,7 +3816,8 @@ class SharedConversations {
       }
       if (manualFallback && diagnostics.inputChars > 2 && !String(summary).trim())
         throw new Error('The summarizer returned an empty context.');
-      const markdown = '# Compacted conversation context\n\nWorkspace: ' + c.cwd + '\n\n' + summary + pinnedFirstUser
+    const markdown = '# Compacted conversation context\n\nWorkspace: ' + c.cwd + '\n\n' + summary + pinnedFirstUser
+        + this.visualizationCatalogue(c)
         + (plan.recent.length ? '\n\n## Recent conversation (verbatim JSON data)\n\n' + this.formatContext(c, plan.recent) : '');
       if (destination && (contextTokens(markdown) > targetTokens + 256 || overInputChars(targetEngine, markdown)))
         throw new Error('The compacted context does not fit the target model. ' + recoveryAdvice);
