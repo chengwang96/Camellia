@@ -26,6 +26,11 @@ into Camellia history.
   switching providers does not move the Agent/Web switch.
 - New-conversation pages use the fixed header title `New web conversation`
   instead of the provider's marketing page title.
+- Starting a new Web conversation clears the previous active row immediately
+  and shows a provisional current row. Navigation, title changes and
+  load-completion trigger a debounced history refresh, and periodic extraction
+  continues while the page is still loading or streaming so a newly created
+  provider conversation appears without waiting for the full response.
 - Conversation pages show the cached conversation title in the Camellia header,
   keeping it aligned with the selected row in the Web sidebar instead of using
   the provider's generic document title.
@@ -64,6 +69,10 @@ into Camellia history.
   delete. Rename, pin and delete are executed through the provider's own row
   menu and confirmation controls, so Camellia does not maintain a competing
   conversation database. Share opens the provider's share flow.
+- A single deletion leaves the provider's own destructive confirmation as the
+  only prompt. Camellia waits for that dialog to close, then refreshes and
+  returns the updated sidebar immediately. Multi-select uses one Camellia
+  confirmation and dismisses each provider dialog automatically.
 - The Web options menu uses the same action-menu surface, row size, danger
   styling, keyboard traversal and focus restoration as Agent menu actions.
   Destructive session actions use the same `Delete conversation` wording.

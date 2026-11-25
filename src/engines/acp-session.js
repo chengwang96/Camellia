@@ -9,6 +9,7 @@ const { failedToolResult } = require('../api/tool-results');
 const { nativeMode } = require('./permission-levels');
 const { NativeSubagents, nativeStatus } = require('./native-subagents');
 const { BackgroundTaskMonitor } = require('./background-task-monitor');
+const { appVersion } = require('../shared/app-version');
 
 function outputLimitMismatch(response, output, maxOutputTokens) {
   if (response.stopReason !== 'max_tokens' || !(maxOutputTokens >= 1024) || output.tool) return false;
@@ -162,7 +163,7 @@ class AcpSession extends StreamingSession {
 
   async open() {
     await this.starting;
-    const initResult = await this.request('initialize', { protocolVersion: 1, clientCapabilities: {}, clientInfo: { name: 'Camellia', version: '0.3.0' } });
+    const initResult = await this.request('initialize', { protocolVersion: 1, clientCapabilities: {}, clientInfo: { name: 'Camellia', version: appVersion } });
     this.agentCapabilities = initResult?.agentCapabilities || {};
     this.promptCapabilities = initResult?.agentCapabilities?.promptCapabilities || {};
     const sourceId = this.opts.sessionId;
@@ -284,6 +285,7 @@ class AcpSession extends StreamingSession {
         ...(response.nativeHistoryCheckpoint ? { nativeHistoryCheckpoint: response.nativeHistoryCheckpoint } : {}) });
     } catch (error) {
       this.finish({ subtype: this.cancelled ? 'stopped' : 'error', is_error: !this.cancelled, result: error.message,
+        ...(['unknown', 'accepted'].includes(error.data?.submission) ? { submission: error.data.submission } : {}),
         ...(error.data?.nativeHistoryUnavailable === true ? { nativeHistoryUnavailable: true } : {}) });
       // A failed initialization cannot be reused. Prompt errors may be retried
       // by resuming the native session in a fresh process.

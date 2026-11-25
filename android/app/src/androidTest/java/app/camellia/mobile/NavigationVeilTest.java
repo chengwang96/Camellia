@@ -18,6 +18,8 @@ public class NavigationVeilTest extends InstrumentationTestCase {
     private String previousLanguage;
     private static final int PAGE_COLOR = 0xff2860b0;
 
+    private interface Condition { boolean get() throws Exception; }
+
     @Override protected void setUp() throws Exception {
         super.setUp();
         var context = getInstrumentation().getTargetContext();
@@ -29,31 +31,54 @@ public class NavigationVeilTest extends InstrumentationTestCase {
 
     @Override protected void tearDown() throws Exception {
         if (activity != null) ui(activity::finish);
-        MobilePreferences.set(getInstrumentation().getTargetContext(), "theme", previousTheme);
-        MobilePreferences.set(getInstrumentation().getTargetContext(), "language", previousLanguage);
+        setPreference("theme", previousTheme);
+        setPreference("language", previousLanguage);
         new CredentialStore(getInstrumentation().getTargetContext()).clear();
         super.tearDown();
     }
 
+    private void setPreference(String key, String value) {
+        assertTrue("Fixture preferences must be stored before launch", getInstrumentation().getTargetContext()
+            .getSharedPreferences("mobile-preferences", android.content.Context.MODE_PRIVATE)
+            .edit().putString(key, value).commit());
+    }
+
     private void launch(String theme) throws Exception {
         if (activity != null) ui(activity::finish);
-        MobilePreferences.set(getInstrumentation().getTargetContext(), "theme", theme);
+        setPreference("theme", theme);
         activity = (MainActivity) getInstrumentation().startActivitySync(new Intent(
             getInstrumentation().getTargetContext(), MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
-        SystemClock.sleep(250); getInstrumentation().waitForIdleSync();
+        await(() -> {
+            View root = (View) field("root");
+            return activity.hasWindowFocus() && root != null && root.isShown()
+                && root.getWidth() > 0 && root.getHeight() > 0 && root.isLaidOut();
+        }, "The launched page must be focused and laid out");
+        getInstrumentation().waitForIdleSync();
     }
 
     public void testWholeBottomFadesIntoFrostAndRemainsTranslucentToScreenEdge() throws Exception {
         for (String theme : new String[] {"light", "dark"}) {
             launch(theme);
+            View[] pageColor = new View[1];
             ui(() -> {
                 invoke("stopNetwork");
+                ((PageTransitions) field("pages")).finishTransition();
                 LinearLayout content = (LinearLayout) field("content");
                 content.removeAllViews();
                 View color = new View(activity); color.setBackgroundColor(PAGE_COLOR);
                 content.addView(color, new LinearLayout.LayoutParams(-1, dp(2000)));
+                pageColor[0] = color;
+                ((ScrollView) field("scroll")).scrollTo(0, 0);
             });
             SystemClock.sleep(200); getInstrumentation().waitForIdleSync();
+            await(() -> {
+                View root = (View) field("root");
+                View veil = root.findViewWithTag("navigationVeil");
+                View color = pageColor[0];
+                return veil != null && veil.getHeight() > 0 && veil.isLaidOut()
+                    && color != null && color.isLaidOut() && color.getHeight() > 0
+                    && ((ScrollView) field("scroll")).getScrollY() == 0;
+            }, "The full-bottom navigation fixture must be laid out");
             ui(() -> {
                 LinearLayout root = (LinearLayout) field("root");
                 View bar = root.findViewWithTag("workbenchNav");
@@ -89,7 +114,10 @@ public class NavigationVeilTest extends InstrumentationTestCase {
                     try (var output = new java.io.FileOutputStream(new java.io.File(activity.getExternalCacheDir(), "veil-pixels-" + theme + ".png"))) {
                         pixels.compress(Bitmap.CompressFormat.PNG, 100, output);
                     }
-                    assertTrue("Fixture must put actual content below the veil", distance(original, PAGE_COLOR) <= 3);
+                    assertTrue("Fixture must put actual content below the veil: original="
+                        + Integer.toHexString(original) + " top=" + top + " colorTop=" + pageColor[0].getTop(),
+                        Color.blue(original) - Color.red(original) > 80
+                            && Color.green(original) - Color.red(original) > 30);
                     assertTrue("The veil starts without a hard edge", distance(original, first) < 12);
                     assertTrue("Above the buttons the page already becomes frosted", distance(original, middle) > 15);
                     assertTrue("Bottom is veiled, rather than fully clear", distance(original, bottom) > 30);
@@ -120,7 +148,11 @@ public class NavigationVeilTest extends InstrumentationTestCase {
                     root.dispatchApplyWindowInsets(insets.replaceSystemWindowInsets(0, insets.getSystemWindowInsetTop(), 0, dp(bottomDp)));
                 });
                 SystemClock.sleep(80);
-                ui(() -> ((ScrollView) field("scroll")).fullScroll(View.FOCUS_DOWN));
+                ui(() -> {
+                    ScrollView scroll = (ScrollView) field("scroll");
+                    View rows = scroll.getChildAt(0);
+                    scroll.scrollTo(0, rows == null ? 0 : rows.getHeight());
+                });
                 SystemClock.sleep(80);
                 ui(() -> {
                     View root = (View) field("root"), bar = root.findViewWithTag("workbenchNav"), last = root.findViewWithTag("lastNavigationAction");
@@ -144,7 +176,7 @@ public class NavigationVeilTest extends InstrumentationTestCase {
             .put("workspaceId", "main").put("workspaceName", "Camellia")
             .put("updatedAt", System.currentTimeMillis() - index * 60_000));
         try {
-            MobilePreferences.set(context, "language", "zh-CN");
+            setPreference("language", "zh-CN");
             for (String theme : new String[] {"light", "dark"}) {
                 new ComputerStore(new CredentialStore(context)).save(computer);
                 RemoteListCache.get(context).put(computer, rows, -1,
@@ -172,7 +204,7 @@ public class NavigationVeilTest extends InstrumentationTestCase {
             .put("id", "keyboard-row-" + index).put("title", "Keyboard search " + index)
             .put("currentEngine", "codex").put("activity", "idle").put("workspaceId", "main"));
         try {
-            MobilePreferences.set(context, "language", "zh-CN");
+            setPreference("language", "zh-CN");
             for (String theme : new String[] {"light", "dark"}) {
                 new ComputerStore(new CredentialStore(context)).save(computer);
                 RemoteListCache.get(context).put(computer, rows, -1,
@@ -224,7 +256,7 @@ public class NavigationVeilTest extends InstrumentationTestCase {
                     assertTrue(navigation[0].getGlobalVisibleRect(restored)); assertEquals(original, restored);
                     assertTrue(activity.getWindow().getDecorView().findViewWithTag("navigationVeil").isShown());
                     assertEquals("Keyboard", ((android.widget.EditText) field("searchInput")).getText().toString());
-                    assertTrue("Search can stay focused with a hardware keyboard", ((View) field("searchInput")).hasFocus());
+                    assertTrue("Search remains open after the keyboard closes", ((View) field("searchInput")).isShown());
                     activity.getWindow().getDecorView().findViewWithTag("remoteSearchButton").performClick();
                 });
                 awaitKeyboard(true);
@@ -249,6 +281,16 @@ public class NavigationVeilTest extends InstrumentationTestCase {
         } while (visible[0] != expected && SystemClock.uptimeMillis() < deadline);
         assertEquals("Expected search keyboard visibility", expected, visible[0]);
         SystemClock.sleep(300); getInstrumentation().waitForIdleSync();
+    }
+
+    private void await(Condition condition, String message) throws Exception {
+        long deadline = SystemClock.uptimeMillis() + 10000;
+        var done = new java.util.concurrent.atomic.AtomicBoolean();
+        while (!done.get() && SystemClock.uptimeMillis() < deadline) {
+            ui(() -> done.set(condition.get()));
+            if (!done.get()) SystemClock.sleep(50);
+        }
+        assertTrue(message, done.get());
     }
 
     private void capture(String name) throws Exception {

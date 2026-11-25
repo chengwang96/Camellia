@@ -7,6 +7,7 @@ const { AcpSession } = require('./acp-session');
 const { kimiEnvironment, managedKimiConfig } = require('./kimi-session');
 const { readKimiQuota } = require('./kimi-quota');
 const { readJson, writeJson } = require('../shared/json-store');
+const { appVersion } = require('../shared/app-version');
 
 function parseLoginOutput(text) {
   const clean = text.replace(/\x1b\[[0-9;]*[A-Za-z]/g, '');
@@ -100,7 +101,7 @@ function createKimiAccount({ home, runtime, ensureRuntime, node, environment = (
     catch (error) { void client.shutdown(); throw error; }
   }
   async function initialize(client) {
-    await client.request('initialize', { protocolVersion: 1, clientCapabilities: {}, clientInfo: { name: 'Camellia', version: '0.3.0' } });
+    await client.request('initialize', { protocolVersion: 1, clientCapabilities: {}, clientInfo: { name: 'Camellia', version: appVersion } });
   }
   async function refreshUsage({ force = true } = {}) {
     if (closed || !saved.account || login || signingOut) return state();

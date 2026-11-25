@@ -486,6 +486,10 @@ test('General exposes the conversation width selector and the chat column reads 
   assert.ok(source.includes("$('chatContentWidth').value = preferences.chatContentWidth"));
   const css = fs.readFileSync(path.join(__dirname, '../src/renderer/chat/workbench.css'), 'utf8');
   assert.match(css, /\.column \{ width: 100%; max-width: var\(--content-width\); margin: 0 auto; \}/);
+  assert.match(css, /--composer-width: 1080px/);
+  assert.match(css, /\.input-zone > \.column \{ max-width: var\(--composer-width\); \}/);
+  const chatSource = fs.readFileSync(path.join(__dirname, '../src/renderer/chat/chat.js'), 'utf8');
+  assert.match(chatSource, /--composer-width', CHAT_CONTENT_WIDTHS\.wide/);
   assert.match(general, /<input id="advancedAnimations" type="checkbox"[^>]*>/);
   assert.ok(source.includes("advancedAnimations: $('advancedAnimations').checked"));
   assert.ok(source.includes("$('advancedAnimations').checked = preferences.advancedAnimations !== false"));

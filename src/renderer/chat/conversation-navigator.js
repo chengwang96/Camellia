@@ -33,6 +33,7 @@ window.CamelliaConversationNavigator = (() => {
     const RAIL_LEFT = 12;
     // Left offset, the widest hover marker, and breathing room before the text.
     const MIN_RAIL_GUTTER = RAIL_LEFT + 28;
+    main.style.setProperty('--conversation-rail-gutter', MIN_RAIL_GUTTER + 'px');
     const preview = document.createElement('div');
     preview.className = 'conversation-preview';
     preview.id = 'conversationPreview';
@@ -115,13 +116,16 @@ window.CamelliaConversationNavigator = (() => {
     }
 
     function updateVisibility() {
+      const fullWidth = document.documentElement.dataset.chatContentWidth === 'full';
       const gutter = chat.getBoundingClientRect().left - main.getBoundingClientRect().left;
       const available = turns().length > 1 && innerWidth > 760
         && !chat.querySelector('.empty-state')
-        && gutter >= MIN_RAIL_GUTTER
+        && (fullWidth || gutter >= MIN_RAIL_GUTTER)
         && scroll.scrollHeight > scroll.clientHeight + 24;
       rail.hidden = !isEnabled || !available;
       rail.setAttribute('aria-hidden', String(rail.hidden));
+      if (rail.hidden || fullWidth) chat.style.removeProperty('--selection-rail-inset');
+      else chat.style.setProperty('--selection-rail-inset', (MIN_RAIL_GUTTER - gutter) + 'px');
       if (rail.hidden) hidePreview();
       else updateLayout();
     }
@@ -280,6 +284,8 @@ window.CamelliaConversationNavigator = (() => {
         window.removeEventListener('camellia:panel-open', scheduleActive);
         rail.replaceChildren();
         rail.hidden = true;
+        main.style.removeProperty('--conversation-rail-gutter');
+        chat.style.removeProperty('--selection-rail-inset');
         preview.remove();
       },
     };

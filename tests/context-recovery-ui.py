@@ -200,6 +200,35 @@ with sync_playwright() as playwright:
         page.screenshot(path=str(scope['preview'] / f'context-recovery-{theme}.png'), full_page=True)
         assert not errors, errors
         page.close()
+
+    # A generic provider failure can arrive before its compaction status. The
+    # later failed-compaction card owns the full message; the earlier send row
+    # must become the short pointer instead of printing the same error twice.
+    page = browser.new_page(viewport={'width': 900, 'height': 760})
+    errors = []
+    page.on('pageerror', lambda error: errors.append(str(error)))
+    page.add_init_script(bridge)
+    page.goto((repo / 'src/renderer/chat/workbench.html').as_uri() + '?harness=kimi&conversation=shared-fixture', wait_until='networkidle')
+    page.wait_for_function('uiReady && !loadingSession')
+    page.evaluate("changeLanguage('en')")
+    provider_error = ('HTTP 502: Model "deepseek-flash-opencode" failed this auxiliary request. '
+                      'OpenCode Go: Connection failed or timed out (2 routes)')
+    page.evaluate('''error => {
+      const user = document.querySelector('.msg-user').messageData;
+      showFailedSend({text:user.text, at:user.at, error});
+      deliverStatus({sessionId:'shared-fixture', text:'', compaction:{state:'failed', error}});
+    }''', provider_error)
+    expect(page.locator('.failed-send > span')).to_have_text(
+        'Failed to start. Recover the context below, then send again.')
+    expect(page.locator('.context-compaction-error')).to_have_text(provider_error)
+    expect(page.get_by_text(provider_error, exact=True)).to_have_count(1)
+    expect(page.locator('.context-recovery')).to_have_count(1)
+    page.evaluate('''error => showFailedSend({text:'Late failed send', at:Date.now(), error})''', provider_error)
+    expect(page.locator('.failed-send').last.locator('span')).to_have_text(
+        'Failed to start. Recover the context below, then send again.')
+    expect(page.get_by_text(provider_error, exact=True)).to_have_count(1)
+    assert not errors, errors
+    page.close()
     browser.close()
 
 print('PASS context recovery: edits, attachments, drafts, retries, same-harness handoff, narrow UI and translations')

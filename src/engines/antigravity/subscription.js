@@ -112,6 +112,10 @@ function matchFamily(models, id) {
   return (models || []).find(entry => entry.id === id || entry.modelIds && Object.values(entry.modelIds).includes(id)) || null;
 }
 
+function lowestReasoningEffort(models, id) {
+  return matchFamily(models, id)?.supportedReasoningEfforts?.[0]?.reasoningEffort || '';
+}
+
 // Map a saved ID onto its base family, keeping any explicit level. A legacy
 // concrete ID (gemini-3.8-flash-high) implies its own level.
 function normalizeSelection(models, model, thinking) {
@@ -455,4 +459,4 @@ function createGoogleAccount({ home, cliSettingsFile, runtime, environment, sett
   return { state, refresh, refreshUsage, signIn, signOut };
 }
 
-module.exports = { createGoogleAccount, subscriptionEnvironment, systemProxy, parseModels, parseGoogleQuota, normalizeGoogleQuota, groupModels, normalizeSelection, effectiveSelection, runCli, runCliWithRetry, stopCli, requireGoogleProvider, loginScript, headlessEnvironment, cliAuthenticationError, describeCliFailure, isProfilePictureFailure };
+module.exports = { createGoogleAccount, subscriptionEnvironment, systemProxy, parseModels, parseGoogleQuota, normalizeGoogleQuota, groupModels, normalizeSelection, effectiveSelection, lowestReasoningEffort, runCli, runCliWithRetry, stopCli, requireGoogleProvider, loginScript, headlessEnvironment, cliAuthenticationError, describeCliFailure, isProfilePictureFailure };

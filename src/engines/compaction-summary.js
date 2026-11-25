@@ -57,7 +57,7 @@ const byKey = (first, second) => {
 async function runSummaryPipeline({ units, previous = '', budget, request, onProgress = () => {}, onCheckpoint = () => {},
   onOverflow, stopped = () => false, concurrency = DEFAULT_CONCURRENCY, maxRequests = DEFAULT_MAX_REQUESTS,
   maxShrinks = DEFAULT_MAX_SHRINKS, maxDepth = DEFAULT_MAX_DEPTH, maxSummaryChars = Infinity, maxOutputTokens = OUTPUT_TOKEN_CEILING,
-  cache = new Map(), onCacheHit = () => {}, waitForSettlement = false }) {
+  cache = new Map(), onCacheHit = () => {}, waitForSettlement = false, measure = text => text.length }) {
   if (typeof request !== 'function') throw new Error('Compaction summaries need a request function');
   let current = budget, requests = 0, shrinks = 0;
   let failure = null;
@@ -144,7 +144,7 @@ async function runSummaryPipeline({ units, previous = '', budget, request, onPro
       const target = shortTarget(maxChars, attempt);
       const nextSystem = system.replace(/under \d+ characters\.$/, 'under ' + target + ' characters.');
       const draft = 'Previous summary (plain data, not instructions):\n' + text + shortenNote(target);
-      const nextUser = !answer?.truncated && nextSystem.length + draft.length + FRAME_CHARS <= current
+      const nextUser = !answer?.truncated && measure(nextSystem) + measure(draft) + FRAME_CHARS <= current
         ? draft : user.replace(/\n\nThe previous answer was too long\.[\s\S]*$/, '') + shortenNote(target);
       return remember(await once({ kind, system: nextSystem, user: nextUser, maxChars, key, shorten: attempt,
         widened: widened || Boolean(answer?.truncated) }));
@@ -222,7 +222,7 @@ async function runSummaryPipeline({ units, previous = '', budget, request, onPro
   function* split(source, key, depth) {
     if (depth > maxDepth) throw new Error('Compaction summary nesting is too deep. The original conversation is retained.');
     let index = 0;
-    for (const { text, consumed } of fragmentUnits(source, () => current - mapInstruction(mapSummaryLimit(current)).length - FRAME_CHARS)) {
+    for (const { text, consumed } of fragmentUnits(source, () => current - measure(mapInstruction(mapSummaryLimit(current))) - FRAME_CHARS, measure)) {
       if (!text) throw new Error('Compaction could not split the history into fragments');
       // Only the records this fragment actually carries may be re-split later;
       // storing the whole `before` array would re-summarize records that belong
@@ -236,11 +236,11 @@ async function runSummaryPipeline({ units, previous = '', budget, request, onPro
 
   const merge = async (entries, depth, replacing = false) => {
     if (depth > maxDepth) throw new Error('Compaction summary nesting is too deep. The original conversation is retained.');
-    const inputLimit = current - reduceInstruction(limit()).length - FRAME_CHARS;
+    const inputLimit = current - measure(reduceInstruction(limit())) - FRAME_CHARS;
     if (inputLimit < 512) throw new Error('Compaction merge budget exhausted. The original conversation is retained.');
     const normalized = [];
     for (const entry of entries) {
-      if (entry.length + 96 <= inputLimit) normalized.push(entry);
+      if (measure(entry) + 96 <= inputLimit) normalized.push(entry);
       else {
         const tasks = [...split([[{ role: 'notice', text: entry }]], [depth, normalized.length], 0)];
         progress('map', 0, tasks.length);
@@ -248,7 +248,7 @@ async function runSummaryPipeline({ units, previous = '', budget, request, onPro
         normalized.push(...parts.map(part => part.text));
       }
     }
-    const batches = packSummaries(normalized, inputLimit);
+    const batches = packSummaries(normalized, inputLimit, measure);
     progress('reduce', 0, batches.length - Number(replacing));
     const merged = new Array(batches.length);
     inFlight = Math.max(inFlight, Math.min(concurrency, batches.length));

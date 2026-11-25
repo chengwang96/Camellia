@@ -14,6 +14,7 @@ import re
 import sys
 import uuid
 
+from app_version import app_version
 from session_storage import copy_session
 
 from google.antigravity import Agent, LocalOpenAIAgentConfig, types
@@ -297,7 +298,7 @@ class Bridge:
         try:
             if method == "initialize":
                 result = {"protocolVersion": 1, "agentCapabilities": {"loadSession": True, "promptCapabilities": {"image": True}},
-                          "agentInfo": {"name": "Camellia Antigravity", "version": "0.3.0"}}
+                          "agentInfo": {"name": "Camellia Antigravity", "version": app_version()}}
             elif method in ("session/new", "session/resume", "session/fork"):
                 if self.preparation:
                     raise ValueError("Prepared session identity is fixed")

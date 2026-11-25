@@ -225,6 +225,28 @@
       fragment.appendChild(bulk);
     }
 
+    const activeSession = sessions.find(session => session.id === webState.activeId);
+    if (!multiSelectMode && !activeSession) {
+      const item = document.createElement('div');
+      item.className = 'session-item web-session-item active web-session-provisional';
+      item.dataset.webSessionCurrent = '';
+      item.setAttribute('aria-current', 'page');
+      const icon = document.createElement('img');
+      icon.className = 'web-session-brand';
+      icon.src = '../../../assets/brands/' + (webState.provider || provider) + '.svg';
+      icon.alt = '';
+      const title = document.createElement('span');
+      title.className = 'session-item-text';
+      title.textContent = webState.activeId
+        ? webState.title || t('Current web conversation', 'Current web conversation')
+        : t('New web conversation', 'New web conversation');
+      const time = document.createElement('span');
+      time.className = 'session-item-time';
+      time.textContent = t('Now', 'Now');
+      item.append(icon, title, time);
+      fragment.appendChild(item);
+    }
+
     if (sessions.length) {
       for (const session of sessions) {
         const item = document.createElement('div');
@@ -392,11 +414,16 @@
     sessionMenu.querySelector('button:not(:disabled)')?.focus();
   }
 
-  async function runWebSessionAction(session, action) {
-    const result = await command('session-action', { sessionId: session.id, action });
+  async function runWebSessionAction(session, action, options = {}) {
+    const result = await command('session-action', { sessionId: session.id, action, ...options });
     if (!result.ok) {
       window.alert(result.error || t('The website action failed.', 'The website action failed.'));
       return false;
+    }
+    if (result.state) {
+      webState = result.state;
+      updateWebChrome();
+      renderWebSessions();
     }
     return true;
   }
@@ -439,9 +466,7 @@
   }
 
   async function deleteWebSession(session) {
-    if (!window.confirm(t('Delete this web conversation from the official website?',
-      'Delete this web conversation from the official website?'))) return;
-    await runWebSessionAction(session, 'delete');
+    await runWebSessionAction(session, 'delete', { autoConfirm: false });
   }
 
   async function deleteSelectedWebSessions() {
@@ -452,7 +477,7 @@
     if (!window.confirm(message)) return;
     const failures = [];
     for (const id of ids) {
-      const result = await command('session-action', { sessionId: id, action: 'delete' });
+      const result = await command('session-action', { sessionId: id, action: 'delete', autoConfirm: true });
       if (!result.ok) failures.push(result.error || id);
     }
     multiSelectMode = false;
@@ -629,7 +654,16 @@
     if (surface !== 'web') return;
     event.preventDefault();
     event.stopImmediatePropagation();
-    void command('new');
+    void command('new').then(result => {
+      if (result.state) {
+        webState = result.state;
+        provider = result.state.provider || provider;
+        updateWebChrome();
+        renderWebSessions();
+      } else if (!result.ok) {
+        window.alert(result.error || t('The website action failed.', 'The website action failed.'));
+      }
+    });
   }, true);
 
   $('webBack').addEventListener('click', () => void command('back'));

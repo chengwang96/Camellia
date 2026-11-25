@@ -9,6 +9,7 @@ const { fetchCatalog } = require('../src/api/subscription-price-catalog');
 const OFFICIAL_PRICES = {
   'kimi-k3.1-pro': { input: 2, output: 10, cacheRead: 0.2, cacheWrite: null },
   'kimi-k3.1-pro-highspeed': { input: 4, output: 20, cacheRead: 0.2, cacheWrite: null },
+  'claude-opus-5-5': { input: 4, output: 20, cacheRead: 0.2, cacheWrite: 5 },
 };
 
 async function main() {

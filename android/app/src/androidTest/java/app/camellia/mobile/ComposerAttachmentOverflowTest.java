@@ -5,6 +5,7 @@ import android.content.Intent;
 import android.graphics.Bitmap;
 import android.graphics.Color;
 import android.graphics.Rect;
+import android.graphics.drawable.GradientDrawable;
 import android.test.InstrumentationTestCase;
 import android.test.InstrumentationTestRunner;
 import android.util.Base64;
@@ -20,6 +21,7 @@ import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicReference;
 
 /** Exercise hardware-rendered clipping: child geometry alone misses escaped pixels. */
 public final class ComposerAttachmentOverflowTest extends InstrumentationTestCase {
@@ -79,6 +81,34 @@ public final class ComposerAttachmentOverflowTest extends InstrumentationTestCas
             set("connected", true); set("controlAllowed", true);
         });
         exercise("remote");
+    }
+
+    public void testRemoteAttachmentSheetCoversTheConversation() throws Exception {
+        activity = LocalChatFixture.start(getInstrumentation(), new Intent(getInstrumentation().getTargetContext(), MainActivity.class)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+        ui(() -> {
+            set("credentials", new JSONObject());
+            set("conversationId", "12345678-1234-1234-1234-123456789abc");
+            invoke("detailScreen");
+            set("connected", true); set("controlAllowed", true);
+            set("canAttachments", true); set("canConversationAttachments", true);
+            invoke("pickImage");
+        });
+        settle();
+        ui(() -> {
+            android.app.Dialog dialog = (android.app.Dialog) field("computerDialog");
+            try {
+                View sheet = dialog.getWindow().getDecorView().findViewWithTag("attachContentScroll");
+                assertNotNull(sheet);
+                assertTrue("The scrolling viewport must have an opaque sheet surface",
+                    sheet.getBackground() instanceof GradientDrawable);
+                GradientDrawable surface = (GradientDrawable) sheet.getBackground();
+                assertEquals(255, Color.alpha(surface.getColor().getDefaultColor()));
+                assertNotNull(sheet.findViewWithTag("imageGallery"));
+                assertNotNull(sheet.findViewWithTag("attachConversation"));
+                assertNotNull(sheet.findViewWithTag("attachArtifacts"));
+            } finally { dialog.dismiss(); }
+        });
     }
 
     @SuppressWarnings("unchecked")
@@ -234,7 +264,11 @@ public final class ComposerAttachmentOverflowTest extends InstrumentationTestCas
 
     private void ui(Runnable action) {
         idle();
-        getInstrumentation().runOnMainSync(action);
+        AtomicReference<Throwable> failure = new AtomicReference<>();
+        getInstrumentation().runOnMainSync(() -> {
+            try { action.run(); } catch (Throwable error) { failure.set(error); }
+        });
+        if (failure.get() != null) throw new AssertionError(failure.get());
         idle();
     }
 

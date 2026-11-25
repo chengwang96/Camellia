@@ -215,9 +215,10 @@ try:
         google_chat.locator('#modelPill').click()
         google_chat.locator('.pop-row').filter(has_text='Model').first.click()
         expect(google_chat.locator('.dsh-pop').last).to_contain_text('Model · Google account')
-        expect(google_chat.locator('.dsh-pop').last).not_to_contain_text('Model · Shared API routes')
+        # A new Antigravity draft on Google can still choose shared API routes.
+        expect(google_chat.locator('.dsh-pop').last).to_contain_text('Model · Shared API routes')
         expect(google_chat.locator('.pop-opt').filter(has_text='Gemini Fixture')).to_have_count(1)
-        expect(google_chat.locator('.pop-opt').filter(has_text='test-model')).to_have_count(0)
+        expect(google_chat.locator('.pop-opt[data-connection=api]').filter(has_text='test-model')).to_have_count(1)
         google_chat.keyboard.press('Escape')
         google_chat.close()
         no_overflow(agy_settings)

@@ -69,6 +69,11 @@ function apiError(res, status, message, protocol, code = 'api_router_error', hea
     ? { type: 'error', error: { type: code, message, ...(kind ? { failure_kind: kind } : {}) } }
     : { error: { type: code, code, message, ...(kind ? { failure_kind: kind } : {}) } }, headers);
 }
+function summarizeAttempts(attempts) {
+  const counts = new Map();
+  for (const attempt of attempts) counts.set(attempt, (counts.get(attempt) || 0) + 1);
+  return [...counts].map(([attempt, count]) => count > 1 ? `${attempt} (${count} routes)` : attempt).join('; ');
+}
 
 function startApiRouter({ configPath, log = () => {}, onState = () => {}, onContextEvidence = () => {}, timeoutMs = 120000, quotaCheck = {}, modelDiscovery = {} } = {}) {
   let cfg = loadConfig(configPath);
@@ -703,7 +708,7 @@ function startApiRouter({ configPath, log = () => {}, onState = () => {}, onCont
     }
     if (auxiliary && auxiliaryFailure) {
       const status = Number.isInteger(auxiliaryFailure.status) && auxiliaryFailure.status >= 400 && auxiliaryFailure.status < 600 ? auxiliaryFailure.status : 503;
-      return apiError(res, status, `Model "${model}" failed this auxiliary request. ${attempts.join('; ') || reasonText[auxiliaryFailure.kind]}`, protocol, 'model_routes_exhausted', {}, auxiliaryFailure.kind);
+      return apiError(res, status, `Model "${model}" failed this auxiliary request. ${summarizeAttempts(attempts) || reasonText[auxiliaryFailure.kind]}`, protocol, 'model_routes_exhausted', {}, auxiliaryFailure.kind);
     }
     const waits = routes.map(r => cfg.usage[r.key.id]?.models[model]?.until - Date.now()).filter(ms => ms > 0);
     const outOfQuota = routes.filter(r => quotaExhausted(r.key.id));
@@ -714,7 +719,7 @@ function startApiRouter({ configPath, log = () => {}, onState = () => {}, onCont
       : outOfQuota.length ? { 'retry-after': String(Math.ceil(quotaIntervalMs / 1000)) }
         : probing ? { 'retry-after': '1' } : {};
     apiError(res, attempts.length && attempts.every(a => a.endsWith(reasonText.protocol)) ? 400 : 503,
-      `Model "${model}" has no available routes. The model was not changed. ${attempts.join('; ') || "Wait for quota to recover, or check the key and reset its cooldown in settings."}${cfg.routing.multiKeyFailover ? '' : ' Automatic key failover is disabled. Switch the route or reset the key in settings.'}`, protocol, 'model_routes_exhausted', headers);
+      `Model "${model}" has no available routes. The model was not changed. ${summarizeAttempts(attempts) || "Wait for quota to recover, or check the key and reset its cooldown in settings."}${cfg.routing.multiKeyFailover ? '' : ' Automatic key failover is disabled. Switch the route or reset the key in settings.'}`, protocol, 'model_routes_exhausted', headers);
   }
   const server = http.createServer((req, res) => { handle(req, res).catch(() => { if (!res.headersSent) apiError(res, 500, "Router configuration or request processing failed. Check API route settings.", req.url.includes('messages') ? 'anthropic' : 'openai'); else res.destroy(); }); });
   server.on('connection', socket => { sockets.add(socket); socket.on('close', () => sockets.delete(socket)); });

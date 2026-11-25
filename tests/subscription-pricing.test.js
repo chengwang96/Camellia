@@ -75,6 +75,47 @@ test('Antigravity Opus thinking uses the canonical catalog price for new usage, 
   }
 });
 
+test('catalog refresh includes Gemini 4 and Claude 5 standard text API prices', () => {
+  const filler = Object.fromEntries(Array.from({ length: 8 }, (_, i) => ['gpt-5-fixture-' + i, {
+    litellm_provider: 'openai', input_cost_per_token: 0.000002, output_cost_per_token: 0.00001,
+  }]));
+  const upstream = {
+    ...filler,
+    'gemini/gemini-4-argon': { litellm_provider: 'gemini', input_cost_per_token: 0.000002,
+      output_cost_per_token: 0.00001, cache_read_input_token_cost: 0.0000001 },
+    'gemini/gemini-4-neon': { litellm_provider: 'gemini', input_cost_per_token: 0.000003,
+      output_cost_per_token: 0.000015, cache_read_input_token_cost: 0.00000015 },
+    'claude-opus-5-5': { litellm_provider: 'anthropic', input_cost_per_token: 0.000004,
+      output_cost_per_token: 0.00002, cache_read_input_token_cost: 0.0000002,
+      cache_creation_input_token_cost: 0.000005 },
+    'gemini/gemini-4-neon-image': { litellm_provider: 'gemini', input_cost_per_token: 0.000003,
+      output_cost_per_token: 0.000015 },
+  };
+  const catalog = transformCatalog(upstream);
+  assert.deepEqual(catalog.models['gemini-4-argon'], { input: 2, output: 10, cacheRead: 0.1, cacheWrite: null });
+  assert.deepEqual(catalog.models['gemini-4-neon'], { input: 3, output: 15, cacheRead: 0.15, cacheWrite: null });
+  assert.deepEqual(catalog.models['claude-opus-5-5'], { input: 4, output: 20, cacheRead: 0.2, cacheWrite: 5 });
+  assert.deepEqual(bundled.models['gemini-4-argon'], catalog.models['gemini-4-argon']);
+  assert.deepEqual(bundled.models['gemini-4-neon'], catalog.models['gemini-4-neon']);
+  assert.deepEqual(bundled.models['claude-opus-5-5'], catalog.models['claude-opus-5-5']);
+  assert.equal(catalog.models['gemini-4-neon-image'], undefined);
+});
+
+test('bundled snapshot prices Antigravity Gemini 4 and Claude Opus 5.5 usage', () => {
+  const cases = [
+    { model: 'gemini-4-argon', sample: { input: 4413303, output: 30114, cacheRead: 4050142 },
+      cost: 1.4324762 },
+    { model: 'gemini-4-neon', sample: { input: 2638024, output: 38708, cacheRead: 2124871 },
+      cost: 2.43880965 },
+    { model: 'claude-opus-5-5', sample: { input: 2057556, output: 19439, cacheRead: 1859277 },
+      cost: 1.5537514 },
+  ];
+  for (const value of cases) {
+    assert.ok(pricing.priceFor(value.model), value.model);
+    assert.equal(pricing.estimateAggregateTokens(value.model, value.sample), value.cost);
+  }
+});
+
 test('Kimi K3.1 Code aliases use official standard and Highspeed prices', t => {
   const f = fixture(t);
   const cases = [

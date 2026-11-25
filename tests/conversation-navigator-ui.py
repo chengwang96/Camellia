@@ -25,6 +25,7 @@ bridge = bridge.replace('window.switches = [];', 'window.switches = []; window.f
 bridge = bridge.replace(
     'workbenchSettings:async()=>({ok:true,conversations:window.fixturePreferences}),',
     'workbenchSettings:async()=>({ok:true,conversations:window.fixturePreferences,showConversationNavigator:window.fixtureNavigator !== false}),'
+    'onChatContentWidthChanged:fn=>{window.setFixtureContentWidth=fn;return()=>{};},'
     'onConversationNavigatorChanged:fn=>{window.setFixtureNavigator=value=>{window.fixtureNavigator=value;fn(value);};return()=>{};},')
 
 with sync_playwright() as p:
@@ -35,6 +36,15 @@ with sync_playwright() as p:
     page.add_init_script(bridge)
     page.goto((repo / 'src/renderer/chat/workbench.html').as_uri() + '?harness=claude', wait_until='networkidle')
     page.wait_for_function('uiReady')
+    page.set_viewport_size({'width': 1680, 'height': 900})
+    empty_composer_widths = {}
+    for mode in ('standard', 'wide', 'full'):
+        page.evaluate('setFixtureContentWidth', mode)
+        expect(page.locator('#conversationRail')).to_be_hidden()
+        empty_composer_widths[mode] = page.locator('#inputCard').bounding_box()['width']
+    assert all(abs(width - 1080) < 1 for width in empty_composer_widths.values()), empty_composer_widths
+    page.set_viewport_size({'width': 1440, 'height': 900})
+    page.evaluate('setFixtureContentWidth', 'standard')
     page.locator('[data-sid="shared-fixture"]').click()
     expect(page.locator('#chat')).to_contain_text('Answer 24')
     expect(page.locator('#conversationRail')).to_be_visible()
@@ -162,6 +172,43 @@ with sync_playwright() as p:
     expect(page.locator('#conversationRail')).to_be_hidden()
     page.set_viewport_size({'width': 1440, 'height': 900})
     expect(page.locator('#conversationRail')).to_be_visible()
+
+    page.locator('.turn[data-seq="48"] .turn-body').click(button='right')
+    page.locator('.message-context-menu [data-selection-action="select"]').click()
+    expect(page.locator('.composer-selection-toolbar')).to_be_visible()
+    for viewport_width, mode in [(1680, 'standard'), (1680, 'wide'), (1680, 'full'), (1120, 'full'), (1120, 'standard')]:
+        page.set_viewport_size({'width': viewport_width, 'height': 900})
+        page.evaluate('setFixtureContentWidth', mode)
+        expect(page.locator('html')).to_have_attribute('data-chat-content-width', mode)
+        expect(page.locator('#conversationRail')).to_be_visible()
+        marker = page.locator('.conversation-marker:visible').last
+        marker.hover()
+        geometry = marker.evaluate('''marker => {
+          const line = marker.firstElementChild.getBoundingClientRect();
+          const target = marker.getBoundingClientRect();
+          const selected = document.querySelector('.message-selected');
+          const row = selected.getBoundingClientRect();
+          const paint = getComputedStyle(selected, '::before');
+          const chat = document.querySelector('#chat').getBoundingClientRect();
+          return {
+            lineRight: line.right,
+            fillLeft: row.left + parseFloat(paint.left),
+            fillRight: row.right - parseFloat(paint.right),
+            checkLeft: selected.querySelector('.message-select-check').getBoundingClientRect().left,
+            chatLeft: chat.left,
+            chatRight: chat.right,
+            markerHit: marker.contains(document.elementFromPoint(target.x + target.width / 2, target.y + target.height / 2)),
+          };
+        }''')
+        assert geometry['markerHit'], (mode, geometry)
+        expected_left = max(geometry['chatLeft'] - 12, geometry['lineRight'] + 4)
+        assert abs(geometry['fillLeft'] - expected_left) < 1, (mode, geometry)
+        assert abs(geometry['fillRight'] - geometry['chatRight'] - 12) < 1, (mode, geometry)
+        assert abs(geometry['checkLeft'] - geometry['chatLeft']) < 1, (mode, geometry)
+    page.evaluate("setFixtureContentWidth('full')")
+    page.evaluate('setFixtureNavigator(false)')
+    expect(page.locator('#conversationRail')).to_be_hidden()
+    assert page.locator('#chat').bounding_box()['x'] - page.locator('.main').bounding_box()['x'] == 24
     assert not errors, errors
 
     hidden_page = browser.new_page(viewport={'width': 1440, 'height': 900}, reduced_motion='reduce')

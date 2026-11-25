@@ -57,3 +57,15 @@ test('Chinese public history and prior native turns use token estimates instead 
   assert.throws(() => prepareTextInput(state, delivery), error => error.code === 'DISCUSSION_CONTEXT_FULL',
     'Genuinely over-budget history is still rejected');
 });
+
+test('only a Google subscription discussion member gets the Antigravity single-message byte cap', () => {
+  const { state, delivery } = fixture();
+  delivery.profile = { engine: 'antigravity', connection: 'subscription', contextWindow: 250000 };
+  state.messages[1].text = '讨论'.repeat(30000);
+  assert.throws(() => prepareTextInput(state, delivery), { code: 'DISCUSSION_CONTEXT_FULL', message: /172,800-byte UTF-8 limit/ });
+  delivery.profile.connection = 'api';
+  assert.ok(prepareTextInput(state, delivery).prompt.includes(state.messages[1].text));
+  delivery.profile.engine = 'codex';
+  delivery.profile.connection = 'subscription';
+  assert.ok(prepareTextInput(state, delivery).prompt.includes(state.messages[1].text));
+});

@@ -86,7 +86,9 @@ public class VisualizationDialogTest extends InstrumentationTestCase {
         clickLoadedChoice();
         ui(() -> {
             WebView browser = (WebView) field(dialog, "webView");
-            findText(dialog.getWindow().getDecorView(), "Close").performClick();
+            View close = dialog.getWindow().getDecorView().findViewWithTag("cardClose");
+            assertNotNull("The card must expose its close control", close);
+            close.performClick();
             assertReleased(browser);
             dialog.load("<script>throw new Error('late load')</script>");
             dialog.dismiss();
@@ -254,12 +256,4 @@ public class VisualizationDialogTest extends InstrumentationTestCase {
         return false;
     }
 
-    private static View findText(View view, String text) {
-        if (view instanceof TextView && text.contentEquals(((TextView) view).getText())) return view;
-        if (view instanceof ViewGroup) for (int index = 0; index < ((ViewGroup) view).getChildCount(); index++) {
-            View found = findText(((ViewGroup) view).getChildAt(index), text);
-            if (found != null) return found;
-        }
-        return null;
-    }
 }

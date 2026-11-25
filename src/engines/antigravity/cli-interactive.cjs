@@ -12,6 +12,7 @@ const { jsonLines } = require('../../shared/json-lines');
 const { setTimeout: delay } = require('node:timers/promises');
 const http = require('node:http');
 const { cliAuthenticationError, describeCliFailure } = require('./cli-auth.cjs');
+const { assertSubscriptionPromptFits } = require('./prompt-limit.cjs');
 // This agent is exclusively for authenticated loopback IPC. Model traffic
 // stays in the native CLI and continues to honor the user's proxy settings.
 const localAgent = new http.Agent({ proxyEnv: {} });
@@ -24,6 +25,8 @@ const DONE = new Set(['CORTEX_STEP_STATUS_DONE', 'CORTEX_STEP_STATUS_ERROR', 'CO
 const OPTIONS = [{ optionId: 'allow', name: 'Allow once', kind: 'allow_once' }, { optionId: 'deny', name: 'Deny', kind: 'reject_once' }];
 const idle = status => ['CASCADE_RUN_STATUS_IDLE', 'CASCADE_RUN_STATUS_DONE', 'CASCADE_RUN_STATUS_CANCELED'].includes(status);
 const titlePreview = value => String(value || '').trim().toLowerCase().replace(/\s+/gu, ' ').replace(/[.。…]+$/u, '').trimEnd();
+const connectionError = error => ['ECONNRESET', 'ECONNREFUSED', 'EPIPE', 'ETIMEDOUT', 'ERR_STREAM_PREMATURE_CLOSE'].includes(error.cause?.code || error.code)
+  || /^(?:TimeoutError|AbortError)$/.test(error.name);
 function interactiveLaunch(exe, args, platform = process.platform) {
   if (platform === 'win32') return { exe, args, stdin: 'ignore' };
   // On Unix the native interactive reader exits on /dev/null, while a plain
@@ -132,7 +135,8 @@ class InteractiveCli {
             try {
               const data = JSON.parse(text);
               if (response.statusCode < 200 || response.statusCode >= 300)
-                reject(Object.assign(new Error(data.message || String(response.statusCode)), { connectCode: data.code }));
+                reject(Object.assign(new Error('HTTP ' + response.statusCode + (data.message ? ' ' + data.message : '')),
+                  { connectCode: data.code, status: response.statusCode }));
               else resolve(data);
             } catch (error) { reject(error); }
           });
@@ -268,17 +272,32 @@ class InteractiveCli {
   async prompt(parts, checkpoint) {
     await this.cancelling;
     if (this.turn) throw new Error('A response is already running');
-    const turn = this.turn = { controller: new AbortController(), sent: new Map(), thoughts: new Map(), tools: new Map(), permissions: new Set(), usage: {}, canceled: false,
+    const textParts = input => input.filter(part => part.type === 'text').map(part => part.text).join('\n');
+    assertSubscriptionPromptFits(textParts(parts));
+    const turn = this.turn = { controller: new AbortController(), sent: new Map(), thoughts: new Map(),
+      tools: new Map(), permissions: new Set(), usage: {}, canceled: false,
       childResults: new Map(), childErrors: new Map() };
+    const signal = turn.controller.signal;
+    const bounded = () => AbortSignal.any([signal, AbortSignal.timeout(15000)]);
+    const read = async (method, params) => {
+      for (let attempt = 0;; attempt++) {
+        try { return await this.rpc(method, params, bounded()); }
+        catch (error) {
+          if (signal.aborted || !connectionError(error) || attempt === 2) throw error;
+          await delay(250 * (attempt + 1), null, { signal });
+        }
+      }
+    };
     try {
       if (checkpoint && (!this.session.conversationId ||
           checkpoint.cascadeId && checkpoint.cascadeId !== this.session.conversationId))
         throw nativeHistoryUnavailable('Antigravity native conversation identity is missing or changed');
       await this.prepare();
       if (turn.canceled || this.closed) return { stopReason: 'cancelled' };
-      parts = await this.expandSkill(parts, turn.controller.signal);
+      const expanded = await this.expandSkill(parts, turn.controller.signal);
+      if (expanded !== parts) assertSubscriptionPromptFits(textParts(expanded));
       const items = [], media = [];
-      for (const part of parts) {
+      for (const part of expanded) {
         if (part.type === 'text') items.push({ text: part.text });
         else if (part.type === 'image') {
           if (!this.selected.supportsImages) throw new Error('The selected Antigravity model does not support image input');
@@ -292,20 +311,53 @@ class InteractiveCli {
       if (checkpoint && (before.trajectory?.cascadeId !== cascadeId || offset < (checkpoint.stepCount || 0)))
         throw nativeHistoryUnavailable('Antigravity native history is behind its saved checkpoint (expected ' +
           (checkpoint.stepCount || 0) + ' steps, found ' + offset + ')');
-      const baseline = new Map(ownedTrajectories((await this.rpc('GetAllCascadeTrajectories')).trajectorySummaries, cascadeId)
+      const baseline = new Map(ownedTrajectories((await read('GetAllCascadeTrajectories', {})).trajectorySummaries, cascadeId)
         .map(([id, value]) => [id, value.stepCount || 0]));
       this.firstTitleInput ||= titlePreview(items.map(item => item.text).join('\n'));
-      await this.rpc('SendUserCascadeMessage', { cascadeId, items, media,
-        cascadeConfig: { plannerConfig: { planModel: this.selected.modelOrAlias.model } } }, turn.controller.signal);
+      let deliveryError;
+      const request = { cascadeId, items, media, cascadeConfig: { plannerConfig: { planModel: this.selected.modelOrAlias.model } } };
+      for (let attempt = 0;; attempt++) {
+        try { await this.rpc('SendUserCascadeMessage', request, bounded()); turn.delivery = 'accepted'; break; }
+        catch (error) {
+          const cause = error.cause || error;
+          if (signal.aborted || !(connectionError(error) || cause.status >= 500 || [408, 499].includes(cause.status)
+              || cause instanceof SyntaxError)) throw error;
+          // A refused TCP connect cannot have written this request.
+          if (cause.code === 'ECONNREFUSED' && cause.syscall === 'connect') {
+            if (attempt === 2) throw new Error('Could not connect to Antigravity after three attempts. Nothing was sent. Retry this message when the connection is available.', { cause: error });
+            await delay(250 * (attempt + 1), null, { signal });
+            continue;
+          }
+          deliveryError = error;
+          turn.delivery = 'unknown';
+          break;
+        }
+      }
+      const confirmBy = Date.now() + 10000;
       let sawInput = false;
+      turn.observing = true;
       while (!turn.canceled && !this.closed) {
-        const all = await this.rpc('GetAllCascadeTrajectories', {}, turn.controller.signal);
+        const all = await read('GetAllCascadeTrajectories', {});
         const result = all.trajectorySummaries?.[cascadeId];
         if (!result) throw new Error('Antigravity native conversation disappeared');
+        if (deliveryError && !sawInput) {
+          const { steps = [] } = await read('GetCascadeTrajectorySteps', { cascadeId, stepOffset: offset });
+          // This bridge is the sole writer of the cascade. The next user step
+          // after the saved offset establishes acceptance even if the ACK was lost.
+          const input = steps[0];
+          const echoedText = input?.userInput?.userResponse;
+          if (result.stepCount > offset && (input?.type === 'CORTEX_STEP_TYPE_USER_INPUT' || input?.userInput)
+              && (typeof echoedText !== 'string' || echoedText === textParts(expanded))) {
+            sawInput = true;
+            turn.delivery = 'accepted';
+          }
+          else if (Date.now() >= confirmBy) throw deliveryError;
+          else { await delay(250, null, { signal }); continue; }
+        }
         sawInput ||= result.stepCount > offset;
         // Retrieve only this turn, skipping its potentially large uploaded media.
         // PROD_UI verbosity strips completed tool arguments, so use full steps.
-        const { steps = [] } = await this.rpc('GetCascadeTrajectorySteps', { cascadeId, stepOffset: offset + 1 }, turn.controller.signal);
+        const { steps = [] } = await read('GetCascadeTrajectorySteps', { cascadeId, stepOffset: offset + 1 });
         for (let index = 0; index < steps.length; index++) this.step(turn, result, steps[index], offset + 1 + index, cascadeId);
         const children = ownedTrajectories(all.trajectorySummaries, cascadeId).filter(([id, summary]) => id !== cascadeId
           && (!idle(summary.status) || summary.stepCount > (baseline.get(id) || 0)));
@@ -315,13 +367,14 @@ class InteractiveCli {
           this.childUpdate(childId, { title: summary.summary || summary.title || this.children.get(childId)?.title || 'Subtask',
             turnId, ...(previous?.turnId !== turnId ? { status: 'running', canStop: true, result: '', history: [] } : {}) });
           const start = baseline.get(childId) || 0;
-          const child = await this.rpc('GetCascadeTrajectorySteps', { cascadeId: childId, stepOffset: start }, turn.controller.signal);
+          const child = await read('GetCascadeTrajectorySteps', { cascadeId: childId, stepOffset: start });
           for (const [index, step] of (child.steps || []).entries()) this.step(turn, summary, step, start + index, childId);
           if (idle(summary.status)) this.childUpdate(childId, { status: /CANCELED/.test(summary.status) || this.stoppingChildren.has(childId) ? 'stopped'
             : turn.childErrors.has(childId) ? 'failed' : 'completed', canStop: false,
             result: turn.childErrors.get(childId) || turn.childResults.get(childId) || '' });
         }
         if (sawInput && idle(result.status) && children.every(([, summary]) => idle(summary.status))) {
+          turn.observing = false;
           if (turn.error) throw new Error(turn.error);
           return { stopReason: result.status.endsWith('CANCELED') ? 'cancelled' : 'end_turn', usage: turn.usage,
             ...(Number.isSafeInteger(result.stepCount) && UUID.test(cascadeId)
@@ -333,6 +386,10 @@ class InteractiveCli {
     } catch (error) {
       if (turn.canceled) return { stopReason: 'cancelled', usage: turn.usage };
       await this.stop();
+      if (turn.delivery === 'unknown')
+        throw Object.assign(new Error('Antigravity could not confirm whether it received this message. Check the conversation and any file changes before resending.', { cause: error }), { submission: 'unknown' });
+      if (turn.delivery === 'accepted' && turn.observing)
+        throw Object.assign(new Error('Antigravity received this message, but the reply connection was lost. Check the conversation and any file changes before resending.', { cause: error }), { submission: 'accepted' });
       throw error;
     } finally {
       for (const [id, request] of this.requests) if (request.turn === turn) this.requests.delete(id);
@@ -362,8 +419,9 @@ class InteractiveCli {
       turn.thoughts ||= new Map();
       const previous = turn.thoughts.get(id) || '';
       if (thinking.startsWith(previous) && thinking.length > previous.length) {
+        const delta = thinking.slice(previous.length);
         turn.thoughts.set(id, thinking);
-        this.update({ sessionUpdate: 'camellia_progress', content: { type: 'text', text: thinking.slice(previous.length) } });
+        this.update({ sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text: delta } });
       }
     }
     if (cascadeId === this.session.conversationId && response.startsWith(old) && response.length > old.length) {
@@ -527,7 +585,9 @@ function run(config) {
       if (message.id !== undefined) write({ id: message.id, result });
     } catch (error) {
       if (message?.method && message.id !== undefined) write({ id: message.id, error: { code: -32603, message: error.message,
-        ...(error.nativeHistoryUnavailable ? { data: { nativeHistoryUnavailable: true } } : {}) } });
+        ...(error.nativeHistoryUnavailable || error.submission ? { data: {
+          ...(error.nativeHistoryUnavailable ? { nativeHistoryUnavailable: true } : {}),
+          ...(error.submission ? { submission: error.submission } : {}) } } : {}) } });
       else { process.stderr.write(error.message + '\n'); await bridge.stop(); }
     }
   });

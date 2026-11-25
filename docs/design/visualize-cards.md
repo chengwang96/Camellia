@@ -33,24 +33,25 @@ renderer mounts the latest card revision once the run reaches its `result` event
 so streaming updates and duplicate tool events do not repeatedly reload the
 iframe. Historical cards mount directly when a completed conversation is painted.
 
-After mounting, the iframe reports the intrinsic width of its top-level content.
-The desktop renderer shrinks the surrounding visualization card to that width
-when the content is compact, while content that fills the available width keeps
-the full-width layout. The width is capped by the current chat column.
+New cards report the size of their normal-flow content. The desktop renderer
+caps the width at the chat column, shrinks the shell around compact content,
+and measures height at the resulting width. Existing saved fragments retain
+their original layout behavior across reloads and revisions.
 
 ## Responsive authoring contract
 
 The tool description, fragment parameter and shared agent instructions require
 cards to support inline chat, desktop fullscreen and mobile portrait/landscape.
-Camellia supplies the viewport; the fragment owns content fitting and reflow.
-This is authoring guidance, not a runtime guarantee for existing fragments.
+Camellia supplies the viewport. The fragment owns content fitting and reflow.
 
 - Use fluid grids, `min-width:0` and readable, bounded font sizes. At narrow
   widths, stack controls and panels vertically. Keep touch targets at least
   44 CSS px and allow vertical scrolling for dense content instead of shrinking
   everything to fit or clipping controls.
-- Keep inline height content-driven. For desktop fullscreen, use
-  `html[data-viz-presenting="1"]` or the `camellia:presentation` event
+- Keep inline height content-driven. Give any fixed-ratio artwork an in-flow
+  wrapper with CSS `aspect-ratio`. Put absolute or transformed children inside
+  that wrapper. Set `--viz-padding: 0` on `:root` for a full-bleed layout.
+  In presentation, use `html[data-viz-presenting="1"]` or the `camellia:presentation` event
   (`detail.active`). Fit drawings to both available width and height after
   reserving space for controls, labels and padding. A small fixed drawing-size
   cap can leave most of a fullscreen viewport empty even if its canvas is wide.
@@ -59,9 +60,8 @@ This is authoring guidance, not a runtime guarantee for existing fragments.
   Stretching only the CSS box is insufficient. Give SVG a `viewBox` and preserve
   its aspect ratio. Respond to viewport/orientation changes without resetting
   the interaction state.
-- Mobile viewers do not set the desktop `data-viz-presenting` attribute. Base
-  portrait/landscape reflow on actual container or viewport dimensions so it
-  also works in mobile WebViews.
+- Base portrait/landscape reflow on actual container or viewport dimensions.
+  The presentation flag is available in both desktop and mobile viewers.
 - Reflow slide content for portrait unless the user requires a fixed aspect
   ratio. Fixed-aspect stages must fit both dimensions with letterboxing;
   stretching or shrinking a text-heavy landscape deck is not a portrait layout.
@@ -139,15 +139,16 @@ mode. Card chrome labels follow Camellia's language setting and update without
 reloading the card.
 
 Expand preserves the surrounding conversation and increases the iframe height.
+For new cards, exiting fullscreen restores the previous inline or expanded
+view along with the current interaction state.
 Inside the frame, `html[data-viz-expanded="1"]` and the `camellia:expand` event
 (`detail.active`) let scrollable tables use that extra height. Collapse restores
 the original inline height instead of retaining the expanded measurement.
 
-Slide decks can mark their root `data-viz-presentation="slides"`. In presentation,
-the host removes theme padding and supplies a black backdrop. A fixed 16:9 deck
-should fit its stage with `width:min(100vw,calc(100vh * 16 / 9))` and hide its
-normal header/footer. Aspect-ratio letterboxing is retained on other screen
-shapes; decks with a portrait layout should reflow their content instead.
+Slide decks opt into host navigation with `data-viz-presentation="slides"` on
+their root. The marker controls navigation. A fixed 16:9 deck can fit its
+artwork with `width:min(100vw,calc(100vh * 16 / 9))` during presentation. The
+fragment sets its own padding, backdrop, and responsive layout.
 For slide decks, the presentation menu also offers Previous
 slide and Next slide. Decks handle the `camellia:presentation-command` event
 (`detail.command` is `previous` or `next`) to change pages without replacing

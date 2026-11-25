@@ -37,7 +37,8 @@ web_bridge = r"""(() => {
   window.webListeners = [];
   window.contentWidthListeners = [];
   window.settingsListeners = [];
-  window.confirm = () => true;
+  window.confirmCalls = [];
+  window.confirm = message => { window.confirmCalls.push(message); return true; };
   window.emitWebState = patch => {
     state = {...state, ...patch};
     for (const listener of window.webListeners) listener(state);
@@ -69,6 +70,11 @@ web_bridge = r"""(() => {
     if (action === 'show') return {ok:true,state};
     if (action === 'hide') return {ok:true};
     if (action === 'bounds') return {ok:true};
+    if (action === 'new') {
+      state = {...state, activeId:null, title:'New web conversation',
+        currentUrl:'https://chat.deepseek.com/'};
+      return {ok:true,state};
+    }
     if (action === 'freeze-menu') return {ok:true,image:'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9Z3xQAAAAASUVORK5CYII='};
     if (action === 'provider-menu') return {ok:true,provider:state.provider};
     if (action === 'provider') {
@@ -219,6 +225,31 @@ with sync_playwright() as p:
 
     page.locator('#newSessionBtn').click()
     page.wait_for_function("window.webCalls.some(call => call.action === 'new')")
+    provisional = page.locator('.web-session-provisional')
+    expect(provisional).to_be_visible()
+    expect(provisional.locator('.session-item-text')).to_have_text('New web conversation')
+    assert 'active' not in (page.locator('[data-web-session-id="ds-other"]').get_attribute('class') or '').split()
+    page.evaluate("""window.emitWebState({
+      sessions:[
+        {id:'ds-new',title:'New conversation title',url:'https://chat.deepseek.com/a/chat/s/ds-new'},
+        {id:'ds-active',title:'DeepSeek active conversation',url:'https://chat.deepseek.com/a/chat/s/ds-active'},
+        {id:'ds-other',title:'DeepSeek older conversation',url:'https://chat.deepseek.com/a/chat/s/ds-other'}
+      ],
+      activeId:'ds-new',
+      title:'New conversation title'
+    })""")
+    expect(page.locator('.web-session-provisional')).to_have_count(0)
+    expect(page.locator('[data-web-session-id="ds-new"]')).to_have_class(
+        'session-item web-session-item active')
+    expect(page.locator('[data-web-session-id="ds-new"]')).to_contain_text('New conversation title')
+    page.evaluate("""window.emitWebState({
+      sessions:[
+        {id:'ds-active',title:'DeepSeek active conversation',url:'https://chat.deepseek.com/a/chat/s/ds-active'},
+        {id:'ds-other',title:'DeepSeek older conversation',url:'https://chat.deepseek.com/a/chat/s/ds-other'}
+      ],
+      activeId:'ds-active',
+      title:'DeepSeek active conversation'
+    })""")
 
     more = page.locator('[data-web-session-id="ds-other"] .web-session-more')
     more.click()
@@ -242,6 +273,17 @@ with sync_playwright() as p:
         page.wait_for_function("window.webCalls.some(call => call.action === 'session-action'"
                                f" && call.payload.action === '{'pin' if action == 'Pin / Unpin' else 'share'}')")
 
+    page.locator('[data-web-session-id="ds-other"] .web-session-more').click()
+    page.locator('.web-session-menu button', has_text='Delete conversation').click()
+    page.wait_for_function("window.webCalls.some(call => call.action === 'session-action'"
+                           " && call.payload.action === 'delete'"
+                           " && call.payload.sessionId === 'ds-other')")
+    assert page.evaluate("window.webCalls.some(call => call.action === 'session-action'"
+                         " && call.payload.action === 'delete'"
+                         " && call.payload.sessionId === 'ds-other'"
+                         " && call.payload.autoConfirm === false)")
+    assert page.evaluate('window.confirmCalls.length') == 0
+
     page.locator('[data-web-session-id="ds-active"] .web-session-more').click()
     page.locator('.web-session-menu button', has_text='Multi-select').click()
     expect(page.locator('.web-session-bulk')).to_be_visible()
@@ -251,6 +293,7 @@ with sync_playwright() as p:
     page.wait_for_function("window.webCalls.some(call => call.action === 'session-action'"
                            " && call.payload.action === 'delete'"
                            " && call.payload.sessionId === 'ds-active')")
+    assert page.evaluate('window.confirmCalls.length') == 1
     expect(page.locator('.web-session-bulk')).to_have_count(0)
     expect(page.locator('[data-web-session-id="ds-active"]')).to_have_count(0)
 

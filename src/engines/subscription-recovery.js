@@ -5,6 +5,7 @@ function subscriptionFailure(event, engine) {
   if (!event?.is_error || event.type && event.type !== 'result') return null;
   const text = String(event.result || '');
   if (/\b401\b|unauthorized|authentication (?:failed|required)|(?:access|refresh|authentication)[ _-]?token.{0,40}(?:expired|invalid|revoked)|(?:sign|log)[ -]?in again/i.test(text)) return 'auth';
+  if (engine === 'antigravity' && /sign in with Google|no valid auth/i.test(text)) return 'auth';
   if (/\b429\b|usage[_ ]limit[_ ]reached|rate[_ -]?limit|quota.{0,40}(?:exceed|exhaust|reach)|(?:exceed|exhaust).{0,40}quota|insufficient[_ ]quota|usage limit|额度.{0,12}(?:用尽|不足|超)/i.test(text)) return 'quota';
   if (engine === 'codex' && (event.codexErrorInfo === 'responseTooManyFailedAttempts'
       || event.codexErrorInfo && Object.hasOwn(event.codexErrorInfo, 'responseTooManyFailedAttempts')

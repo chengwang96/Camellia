@@ -3,6 +3,11 @@
 const { pairSafeParts, withPairIds } = require('./context-pairs');
 
 const encode = history => JSON.stringify({ history });
+const chars = text => text.length;
+// JSON escapes a lone surrogate. Keep a complete Unicode character at a split
+// boundary so encoded size increases monotonically during the search.
+const wholeCharPrefix = (text, length) => /[\uD800-\uDBFF]/.test(text[length - 1] || '')
+  && /[\uDC00-\uDFFF]/.test(text[length] || '') ? length - 1 : length;
 const summaryLimit = budget => Math.min(12000, Math.floor(budget / 3));
 // Partial summaries are merged afterwards, so each map answer stays small. The
 // bound scales with the request budget but never exceeds what a single merge
@@ -11,11 +16,11 @@ const mapSummaryLimit = budget => Math.min(4000, Math.max(1024, Math.floor(budge
 
 // Measure rows separately and stop as soon as they cannot fit. Testing a large
 // interaction must not first allocate its complete JSON representation.
-function historyLength(rows, limit = Infinity) {
+function historyLength(rows, limit = Infinity, measure = chars) {
   let length = encode([]).length, count = 0;
   for (const row of rows) {
     if ((row.text?.length || 0) > limit - length) return Infinity;
-    length += JSON.stringify(row).length + Number(count++ > 0);
+    length += measure(JSON.stringify(row)) + Number(count++ > 0);
     if (length > limit) return Infinity;
   }
   return length;
@@ -88,19 +93,19 @@ function planHistoryCompaction(readRows, budget) {
 // including the prefix of a split record, so a caller that has to shrink the
 // budget afterwards can put the original records back and split them again
 // instead of losing the text it already removed from `remaining`.
-function selectFragment(units, limit) {
+function selectFragment(units, limit, measure = chars) {
   const pending = units.map(group => [...group]);
   const selected = [];
   let splitRecords = 0;
   while (pending.length) {
     const group = pending[0];
-    const selectedChars = historyLength(selected, limit);
-    const groupChars = historyLength(group, limit);
-    if (selectedChars + groupChars - encode([]).length + Number(selected.length > 0 && group.length > 0) <= limit) {
+    const selectedSize = historyLength(selected, limit, measure);
+    const groupSize = historyLength(group, limit, measure);
+    if (selectedSize + groupSize - encode([]).length + Number(selected.length > 0 && group.length > 0) <= limit) {
       selected.push(...group); pending.shift(); continue;
     }
     if (selected.length) {
-      if (groupChars <= limit) break;
+      if (groupSize <= limit) break;
       // An atomic tool pair cannot be split across fragments. A normal
       // interaction or a single oversized record may still be split to fill
       // the current fragment.
@@ -120,7 +125,7 @@ function selectFragment(units, limit) {
       // A tool call/result pair is larger than one fragment. Keep the pair in
       // one fragment and trim each row only for the summary request; the
       // complete source remains available through context expansion.
-      const clipped = clipAtomicBlock(group, limit);
+      const clipped = clipAtomicBlock(group, limit, measure);
       selected.push(...clipped.rows);
       splitRecords += clipped.splitRecords;
       pending.shift();
@@ -130,13 +135,13 @@ function selectFragment(units, limit) {
     const offset = row.fragment?.offset || 0;
     const total = row.fragment?.total || row.text.length;
     const part = length => ({ ...row, text: row.text.slice(0, length), fragment: { offset, total } });
-    let lower = 0, upper = Math.min(row.text.length, Math.max(0, limit - selectedChars));
+    let lower = 0, upper = Math.min(row.text.length, Math.max(0, limit - selectedSize));
     while (lower < upper) {
       const middle = Math.ceil((lower + upper) / 2);
-      if (encode([...selected, part(middle)]).length <= limit) lower = middle;
+      if (measure(encode([...selected, part(wholeCharPrefix(row.text, middle))])) <= limit) lower = middle;
       else upper = middle - 1;
     }
-    if (lower < row.text.length && /[\uD800-\uDBFF]/.test(row.text[lower - 1] || '')) lower--;
+    lower = wholeCharPrefix(row.text, lower);
     if (!lower && selected.length) break;
     if (!lower) throw new Error('A history record has metadata too large for the compaction budget; original history is retained.');
     selected.push(part(lower)); splitRecords++;
@@ -147,22 +152,22 @@ function selectFragment(units, limit) {
   return { text: encode(selected), consumed: selected, remaining: pending, splitRecords };
 }
 
-function clipAtomicBlock(rows, limit) {
+function clipAtomicBlock(rows, limit, measure) {
   const base = rows.map(row => ({ ...row, text: '' }));
-  if (historyLength(base, limit) > limit)
+  if (historyLength(base, limit, measure) > limit)
     throw new Error('A tool interaction has metadata too large for the compaction budget; original history is retained.');
   let low = 0, high = Math.max(...rows.map(row => row.text.length)), best = base;
   while (low <= high) {
     const perRow = Math.floor((low + high) / 2);
     let clipped = 0;
     const candidate = rows.map(row => {
-      const length = Math.min(row.text.length, perRow);
+      const length = wholeCharPrefix(row.text, Math.min(row.text.length, perRow));
       if (length < row.text.length) clipped++;
       const fragment = row.fragment || length < row.text.length
         ? { offset: row.fragment?.offset || 0, total: row.fragment?.total || row.text.length } : null;
       return { ...row, text: row.text.slice(0, length), ...(fragment ? { fragment } : {}) };
     });
-    if (historyLength(candidate, limit) <= limit) {
+    if (historyLength(candidate, limit, measure) <= limit) {
       best = candidate;
       best.splitRecords = clipped;
       low = perRow + 1;
@@ -173,32 +178,32 @@ function clipAtomicBlock(rows, limit) {
 
 // Keep at most one look-ahead group and the current fragment in memory. The
 // limit is read for every fragment so later work uses a learned smaller budget.
-function* fragmentUnits(units, limit) {
+function* fragmentUnits(units, limit, measure = chars) {
   const source = units[Symbol.iterator]();
   let pending = [], done = false;
   try {
     while (pending.length || !done) {
       const cap = limit();
-      while (!done && historyLength(pending.flat(), cap) <= cap) {
+      while (!done && historyLength(pending.flat(), cap, measure) <= cap) {
         const next = source.next();
         done = next.done;
         if (!done && next.value.length) pending.push(next.value);
       }
       if (!pending.length) break;
-      const fragment = selectFragment(pending, cap);
+      const fragment = selectFragment(pending, cap, measure);
       pending = fragment.remaining;
       yield fragment;
     }
   } finally { source.return?.(); }
 }
 
-// Greedy packing keeps one merge request inside the character budget while
+// Greedy packing keeps one merge request inside the input budget while
 // retaining the order of the summaries it merges.
-function packSummaries(entries, limit) {
+function packSummaries(entries, limit, measure = chars) {
   const batches = [];
   let batch = [], size = 0;
   for (const text of entries) {
-    const cost = String(text).length + 96;
+    const cost = measure(String(text)) + 96;
     if (batch.length && size + cost > limit) { batches.push(batch); batch = []; size = 0; }
     batch.push(text); size += cost;
   }

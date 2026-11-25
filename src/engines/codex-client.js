@@ -8,6 +8,7 @@ const { spawn } = require('node:child_process');
 const TOML = require('smol-toml');
 const { configureApiModel, needsApiToolProfile } = require('./codex-models');
 const { toolModelId } = require('../shared/codex-tool-model');
+const { appVersion } = require('../shared/app-version');
 
 const QUESTION_INSTRUCTIONS = 'Camellia can show a choice dialog when you call request_user_input. For a choice dialog, use request_user_input rather than request_user_input_async, which does not open this dialog. If you need the user to choose among concrete options before continuing, use that tool instead of ending with a plain-text list of choices, and wait for the answer before making changes that depend on it. Do not ask when the existing request already authorizes a reasonable action; continue the work. If the tool is unavailable, ask in normal text.';
 const COMPLETION_INSTRUCTIONS = 'Do not end a turn with only a statement that you will do something next. If you intend to take an action, call the necessary tools in the same turn instead of ending after describing it. Send a final answer only after the work is done or when you actually need input from the user.';
@@ -63,7 +64,7 @@ class CodexClient {
       this.close(new Error(`Codex process exited (${code})`));
     });
     this.proc.stdin.on('error', error => this.close(error));
-    this.ready = this.request('initialize', { clientInfo: { name: 'camellia', title: 'Camellia', version: '0.3.0' },
+    this.ready = this.request('initialize', { clientInfo: { name: 'camellia', title: 'Camellia', version: appVersion },
       capabilities: { experimentalApi: true } }).then(() => this.write({ method: 'initialized' }));
     this.ready.catch(() => {}); // The caller awaits initialization.
   }

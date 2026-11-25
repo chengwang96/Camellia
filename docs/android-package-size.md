@@ -1,7 +1,7 @@
 # Android package size
 
 The signed Windows release script exports separate ARM64 and x86_64 APKs. The
-default `dist/Camellia-Android-1.0.1.apk` is identical to the ARM64 export. These
+default `dist/Camellia-Android-<version>.apk` is identical to the ARM64 export. These
 are standalone APKs; install the one matching the device. Debug builds remain
 universal so existing development and instrumentation commands keep working.
 Direct Gradle builds enable splitting with `-PcamelliaSplitApks=true`; the
@@ -55,7 +55,7 @@ upgrade fixture rather than the comparison baseline.
 .\scripts\build-android-release.ps1 -SkipTailnet -SizeBaseline `
   -OutputDirectory .\dist\test-results\android-apk-size-baseline
 
-.\scripts\measure-android-apk.ps1 -Path .\dist\Camellia-Android-1.0.1.apk
+.\scripts\measure-android-apk.ps1 -Path .\dist\Camellia-Android-<version>.apk
 ```
 
 `-SizeBaseline` disables R8, resource shrinking and icon resizing for measurement.

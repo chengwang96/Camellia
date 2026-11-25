@@ -78,6 +78,8 @@ with sync_playwright() as p:
         page.on('pageerror', lambda error: errors.append(str(error)))
         frame = mount(page, 1100)
         inline = stage(frame)
+        initial_frame = page.evaluate(
+            "Math.round(document.querySelector('iframe').getBoundingClientRect().height)")
         page.evaluate("document.querySelector('.visualize-present').click()")
         page.wait_for_timeout(1800)
         presented = stage(frame)
@@ -98,6 +100,14 @@ with sync_playwright() as p:
         assert restored['presenting'] is False, restored
         assert abs(restored['wrap'][0] - inline['wrap'][0]) <= 3, (inline, restored)
         assert abs(restored['wrap'][1] - inline['wrap'][1]) <= 3, (inline, restored)
+        # The inline frame must also return to its pre-presentation height; a
+        # plain-content default (560px) shrank a 16:9 stage to ~505px and left
+        # empty bands on both sides.
+        restored_frame = page.evaluate(
+            "Math.round(document.querySelector('iframe').getBoundingClientRect().height)")
+        assert abs(restored_frame - initial_frame) <= 3, (initial_frame, restored_frame)
+        # And the stage must fill the frame width, so no side bands remain.
+        assert abs(restored['wrap'][0] - restored_frame * 16 / 9) <= 6, (restored, restored_frame)
 
         # Presenting after Expand used to come back at the expanded 760px
         # height, because expandedHeight() floors there and the fullscreen

@@ -102,6 +102,12 @@ with sync_playwright() as p:
         compact = mount(page, '<div style="width:320px;border:1px solid #ccc">Small card</div>', 1000)
         assert 300 <= compact['width'] <= 380, compact
         assert compact['compact'] is True, compact
+
+        # A card whose only content is prose must also hug that content: the
+        # shell follows the measured width, so no empty side bands appear.
+        prose = mount(page, '<div style="max-width:320px;padding:12px">Only a little.</div>', 1000)
+        assert 300 <= prose['width'] <= 420, prose
+        assert prose['compact'] is True, prose
         assert not errors, errors
         print('PASS: slide stages report layout width; small cards still hug their content')
     finally:

@@ -64,6 +64,10 @@ struct RemoteVisualizationCards: View {
     }
 }
 
+private enum VisualizationViewMode: Equatable {
+    case width, whole, manual
+}
+
 private struct RemoteVisualizationScreen: View {
     let computer: PairedComputer
     let conversationId: String
@@ -74,6 +78,10 @@ private struct RemoteVisualizationScreen: View {
     @StateObject private var document = RemoteVisualizationDocument()
     /// Presentation hides the toolbar and lets the card draw under the status bar.
     @State private var presenting = false
+    @State private var toolsOpen = false
+    @State private var viewMode: VisualizationViewMode = .width
+    @State private var manualZoom = 1.0
+    @State private var shownZoom = 1.0
     /// The viewer owns a landscape lock only while its rotate control is active.
     @State private var landscape = false
     /// Follow the device's gravity once the user enables sensor rotation.
@@ -82,41 +90,53 @@ private struct RemoteVisualizationScreen: View {
     var body: some View {
         VStack(spacing: 0) {
             if !presenting {
-                HStack(spacing: 10) {
-                    Text(card.title.isEmpty ? (chinese ? "交互卡片" : "Interactive card") : card.title)
-                        .font(.system(size: Palette.textCard, weight: .medium))
+                ZStack {
+                    HStack {
+                        Button(action: close) {
+                            Image(systemName: "xmark")
+                                .frame(width: 44, height: 44)
+                        }
                         .foregroundColor(Palette.ink)
-                        .lineLimit(1)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    Button(chinese ? "演示" : "Present") { presenting = true }
-                        .font(.system(size: Palette.textSmall, weight: .medium))
-                        .foregroundColor(Palette.accent)
-                        .frame(minWidth: 56, minHeight: 48)
-                        .overlay(RoundedRectangle(cornerRadius: Palette.dialogActionRadius)
-                            .stroke(Palette.cardBorder, lineWidth: 1))
-                        .accessibilityIdentifier("visualization-present")
-                    Button(rotateLabel) { rotate() }
-                        .font(.system(size: Palette.textSmall, weight: .medium))
-                        .foregroundColor(Palette.accent)
-                        .frame(minWidth: 56, minHeight: 48)
-                        .overlay(RoundedRectangle(cornerRadius: Palette.dialogActionRadius)
-                            .stroke(Palette.cardBorder, lineWidth: 1))
-                        .accessibilityIdentifier("visualization-orientation")
-                    Button(chinese ? "关闭" : "Close", action: close)
-                        .font(.system(size: Palette.textRow))
-                        .foregroundColor(Palette.accent)
-                        .frame(minWidth: 56, minHeight: 48)
-                        .overlay(RoundedRectangle(cornerRadius: Palette.dialogActionRadius)
-                            .stroke(Palette.cardBorder, lineWidth: 1))
+                        .accessibilityLabel(chinese ? "关闭卡片" : "Close card")
                         .accessibilityIdentifier("visualization-close")
+                        Spacer()
+                        Button {
+                            toolsOpen = false
+                            presenting = true
+                        } label: {
+                            Label(chinese ? "演示" : "Present", systemImage: "play")
+                        }
+                        .font(.system(size: Palette.textSmall, weight: .semibold))
+                        .foregroundColor(colorScheme == .dark ? .black : .white)
+                        .padding(.horizontal, 10)
+                        .frame(minWidth: 44, minHeight: 44)
+                        .background(colorScheme == .dark ? Palette.accent : Color(red: 34/255.0, green: 92/255.0, blue: 189/255.0),
+                                    in: RoundedRectangle(cornerRadius: 9))
+                        .disabled(document.html == nil)
+                        .accessibilityIdentifier("visualization-present")
+                    }
+                    Button {
+                        toolsOpen.toggle()
+                    } label: {
+                        Label(viewLabel, systemImage: toolsOpen ? "chevron.up" : "chevron.down")
+                            .font(.system(size: Palette.textSmall, weight: .medium))
+                            .padding(.horizontal, 10)
+                            .frame(minHeight: 44)
+                            .background(Palette.card, in: RoundedRectangle(cornerRadius: 9))
+                    }
+                    .foregroundColor(Palette.ink)
+                    .disabled(document.html == nil)
+                    .accessibilityIdentifier("visualization-view-options")
                 }
-                .padding(.leading, 16)
-                .padding(.trailing, 8)
-                .padding(.vertical, 8)
+                .buttonStyle(.plain)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 4)
             }
             if let html = document.html {
-                VisualizationWebView(html: html, presenting: presenting,
+                VisualizationWebView(html: html, presenting: presenting, viewMode: viewMode, manualZoom: manualZoom,
+                                     onZoom: { shownZoom = $0 },
                                      onFailure: { document.renderingFailed(chinese: chinese) })
+                    .ignoresSafeArea(.container, edges: presenting ? .all : [])
             } else if let error = document.error {
                 VStack(spacing: 16) {
                     Text(error)
@@ -141,6 +161,21 @@ private struct RemoteVisualizationScreen: View {
             CardOrientation.request(.portrait)
         }
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.didEnterBackgroundNotification)) { _ in close() }
+        .overlay(alignment: .top) {
+            if toolsOpen {
+                Color.clear.contentShape(Rectangle())
+                    .padding(.top, 52)
+                    .onTapGesture { toolsOpen = false }
+                ScrollView {
+                    viewTools
+                }
+                .frame(maxWidth: 252, maxHeight: 194)
+                .background(Palette.card, in: RoundedRectangle(cornerRadius: 12))
+                .overlay(RoundedRectangle(cornerRadius: 12).stroke(Palette.cardBorder, lineWidth: 1))
+                .shadow(color: .black.opacity(0.18), radius: 10, y: 4)
+                .padding(.top, 56)
+            }
+        }
         .overlay(alignment: .topTrailing) {
             // Presentation has no toolbar, so an always-reachable exit stays on top.
             if presenting {
@@ -155,6 +190,68 @@ private struct RemoteVisualizationScreen: View {
                     .accessibilityIdentifier("visualization-exit-present")
             }
         }
+    }
+
+    private var zoomLabel: String { "\(Int((shownZoom * 100).rounded()))%" }
+
+    private var viewLabel: String {
+        let label: String
+        switch viewMode {
+        case .width: label = chinese ? "适宽" : "Fit"
+        case .whole: label = chinese ? "全卡" : "All"
+        case .manual: label = chinese ? "缩放" : "Zoom"
+        }
+        return label + " · " + zoomLabel
+    }
+
+    private var viewTools: some View {
+        VStack(spacing: 0) {
+            viewOption(chinese ? "适应宽度" : "Fit width", selected: viewMode == .width) { viewMode = .width }
+            viewOption(chinese ? "完整显示" : "Show whole card", selected: viewMode == .whole) { viewMode = .whole }
+            Divider()
+            HStack(spacing: 0) {
+                Button("−") { setZoom(shownZoom / 1.25) }.accessibilityLabel(chinese ? "缩小" : "Zoom out")
+                Text(zoomLabel).monospacedDigit().frame(maxWidth: .infinity, minHeight: 44)
+                Button("+") { setZoom(shownZoom * 1.25) }.accessibilityLabel(chinese ? "放大" : "Zoom in")
+            }
+            .buttonStyle(VisualizationZoomButtonStyle())
+            .background(Palette.surface, in: RoundedRectangle(cornerRadius: 8))
+            Button {
+                toolsOpen = false
+                rotate()
+            } label: {
+                Label(rotateLabel, systemImage: "rotate.right")
+                    .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                    .padding(.horizontal, 8)
+            }
+            .accessibilityIdentifier("visualization-orientation")
+        }
+        .buttonStyle(.plain)
+        .font(.system(size: Palette.textSmall))
+        .foregroundColor(Palette.ink)
+        .padding(6)
+    }
+
+    private func viewOption(_ title: String, selected: Bool, action: @escaping () -> Void) -> some View {
+        Button {
+            action()
+            toolsOpen = false
+        } label: {
+            HStack {
+                Text(title)
+                Spacer()
+                if selected { Image(systemName: "checkmark").foregroundColor(Palette.accent) }
+            }
+            .padding(.horizontal, 8)
+            .frame(minHeight: 44)
+            .contentShape(Rectangle())
+        }
+        .accessibilityAddTraits(selected ? .isSelected : [])
+    }
+
+    private func setZoom(_ scale: Double) {
+        manualZoom = max(0.05, min(3, scale))
+        viewMode = .manual
     }
 
     private func load() {
@@ -274,9 +371,33 @@ private final class RemoteVisualizationDocument: ObservableObject {
     }
 }
 
+private struct VisualizationZoomButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .frame(maxWidth: .infinity, minHeight: 44)
+            .contentShape(Rectangle())
+            .opacity(configuration.isPressed ? 0.5 : 1)
+    }
+}
+
+private final class VisualizationViewport: WKWebView {
+    var resized: (() -> Void)?
+    private var previousSize = CGSize.zero
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        guard bounds.size != previousSize else { return }
+        previousSize = bounds.size
+        resized?()
+    }
+}
+
 private struct VisualizationWebView: UIViewRepresentable {
     let html: String
     let presenting: Bool
+    let viewMode: VisualizationViewMode
+    let manualZoom: Double
+    let onZoom: (Double) -> Void
     let onFailure: () -> Void
 
     func makeCoordinator() -> Coordinator { Coordinator(onFailure: onFailure) }
@@ -287,18 +408,22 @@ private struct VisualizationWebView: UIViewRepresentable {
         configuration.preferences.javaScriptCanOpenWindowsAutomatically = false
         configuration.allowsInlineMediaPlayback = true
         configuration.mediaTypesRequiringUserActionForPlayback = .all
-        let view = WKWebView(frame: .zero, configuration: configuration)
+        let view = VisualizationViewport(frame: .zero, configuration: configuration)
         view.navigationDelegate = context.coordinator
         view.allowsBackForwardNavigationGestures = false
         view.isOpaque = false
         view.backgroundColor = UIColor(Palette.background)
         let left = UISwipeGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.swipe(_:)))
         left.direction = .left
+        left.cancelsTouchesInView = false
         let right = UISwipeGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.swipe(_:)))
         right.direction = .right
+        right.cancelsTouchesInView = false
         view.addGestureRecognizer(left)
         view.addGestureRecognizer(right)
-        context.coordinator.presentation = presenting
+        let coordinator = context.coordinator
+        coordinator.presentation = presenting
+        view.resized = { [weak coordinator] in coordinator?.applyZoom() }
         // The document carries the same restrictive CSP as Android. No token or host bridge enters WebKit.
         view.loadHTMLString(html, baseURL: nil)
         return view
@@ -306,7 +431,12 @@ private struct VisualizationWebView: UIViewRepresentable {
 
     func updateUIView(_ view: WKWebView, context: Context) {
         let coordinator = context.coordinator
+        let changed = coordinator.presentation != presenting || coordinator.viewMode != viewMode || coordinator.manualZoom != manualZoom
         coordinator.presentation = presenting
+        coordinator.viewMode = viewMode
+        coordinator.manualZoom = manualZoom
+        coordinator.onZoom = onZoom
+        if changed { coordinator.applyZoom() }
         guard coordinator.appliedPresentation != presenting, coordinator.ready else { return }
         coordinator.appliedPresentation = presenting
         coordinator.command("(window.__camelliaSetPresenting&&window.__camelliaSetPresenting("
@@ -315,6 +445,9 @@ private struct VisualizationWebView: UIViewRepresentable {
 
     static func dismantleUIView(_ view: WKWebView, coordinator: Coordinator) {
         coordinator.onFailure = nil
+        coordinator.ready = false
+        coordinator.activeView = nil
+        coordinator.onZoom = nil
         view.stopLoading()
         view.setAllMediaPlaybackSuspended(true, completionHandler: nil)
         view.navigationDelegate = nil
@@ -328,11 +461,43 @@ private struct VisualizationWebView: UIViewRepresentable {
     final class Coordinator: NSObject, WKNavigationDelegate {
         var onFailure: (() -> Void)?
         var presentation = false
+        var viewMode: VisualizationViewMode = .width
+        var manualZoom = 1.0
+        var onZoom: ((Double) -> Void)?
+        private var zoomRequest = 0
         var appliedPresentation = false
         var ready = false
         weak var activeView: WKWebView?
         init(onFailure: @escaping () -> Void) {
             self.onFailure = onFailure
+        }
+
+        func applyZoom() {
+            guard ready, let view = activeView else { return }
+            zoomRequest += 1
+            let request = zoomRequest
+            let mode = viewMode
+            let baseScale = !presentation && mode == .manual ? manualZoom : 1
+            view.pageZoom = CGFloat(baseScale)
+            if !presentation && mode != .manual {
+                view.evaluateJavaScript("""
+                    ({width: Math.max(document.body.scrollWidth, document.documentElement.clientWidth),
+                      height: Math.max(document.body.scrollHeight, document.documentElement.clientHeight)})
+                    """) { [weak self, weak view] result, _ in
+                    guard let self = self, let view = view, request == self.zoomRequest, self.ready,
+                          let size = result as? [String: Double],
+                          let width = size["width"], let height = size["height"], width > 0, height > 0 else { return }
+                    let widthScale = Double(view.bounds.width) / width
+                    let scale = max(0.05, min(1, widthScale, mode == .whole ? Double(view.bounds.height) / height : 1))
+                    view.pageZoom = CGFloat(scale)
+                    self.onZoom?(scale)
+                }
+            } else if !presentation {
+                DispatchQueue.main.async { [weak self] in
+                    guard let self = self, request == self.zoomRequest else { return }
+                    self.onZoom?(baseScale)
+                }
+            }
         }
 
         func command(_ source: String) {
@@ -341,9 +506,12 @@ private struct VisualizationWebView: UIViewRepresentable {
 
         @objc func swipe(_ gesture: UISwipeGestureRecognizer) {
             guard presentation, let view = gesture.view as? WKWebView else { return }
+            let command = gesture.direction == .left ? "next" : "previous"
             view.evaluateJavaScript(
-                "window.dispatchEvent(new CustomEvent('camellia:presentation-command',"
-                + "{detail:{command:'" + (gesture.direction == .left ? "next" : "previous") + "'}}))",
+                "(function(command){if(window.__camelliaPresentationCommand)"
+                + "window.__camelliaPresentationCommand(command);"
+                + "else window.dispatchEvent(new CustomEvent('camellia:presentation-command',{detail:{command:command}}));"
+                + "})('" + command + "')",
                 completionHandler: nil)
         }
 
@@ -351,6 +519,7 @@ private struct VisualizationWebView: UIViewRepresentable {
             activeView = webView
             ready = true
             appliedPresentation = presentation
+            applyZoom()
             if presentation {
                 command("(window.__camelliaSetPresenting&&window.__camelliaSetPresenting(true))")
             }

@@ -10,6 +10,7 @@ const { randomUUID } = require('node:crypto');
 const { spawn } = require('node:child_process');
 const { permissionNotice } = require('./permission-notice.cjs');
 const { headlessEnvironment, cliAuthenticationError, describeCliFailure } = require('./cli-auth.cjs');
+const { assertSubscriptionPromptFits } = require('./prompt-limit.cjs');
 
 const config = JSON.parse(process.env.CAMELLIA_ANTIGRAVITY_CLI);
 if (Object.hasOwn(config, 'literalInput') && typeof config.literalInput !== 'boolean') throw new Error('Invalid literal input setting');
@@ -209,6 +210,7 @@ async function handle(method, params) {
     if (preparation && (preparationFailed || !preparedId || !cli)) throw new Error('Native preparation has not succeeded');
     if (pending) throw new Error('A response is already running');
     if (params.prompt.some(part => part.type !== 'text')) throw new Error('Google subscription chat currently supports text and file paths, not image input.');
+    assertSubscriptionPromptFits(params.prompt.map(part => part.text).join('\n'));
     canceled = false; streamed = '';
     prompted = true;
     if (!cli) startCli();

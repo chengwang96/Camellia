@@ -20,11 +20,13 @@ async function until(check, timeout = 2000) {
 function harness({
   layoutAssistant = null, cache = null, historyMode = 'normal', holdStopLoading = false,
   holdDomReady = false, holdInsertCSS = false, holdExtraction = false,
-  preservePageUrl = false, failFirstLoadPartitions = [],
+  preservePageUrl = false, failFirstLoadPartitions = [], pollIntervalMs = 2500,
+  destroyContextAfterDelete = false,
 } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'camellia-web-surface-'));
   if (cache) fs.writeFileSync(path.join(root, 'web-sessions.json'), JSON.stringify(cache));
   const sessions = new Map();
+  const deletedSessions = new Set();
   const ipcHandlers = new Map();
   const events = [];
   const external = [];
@@ -37,6 +39,7 @@ function harness({
       this.holdDomReady = holdDomReady;
       this.holdInsertCSS = holdInsertCSS;
       this.holdExtraction = holdExtraction;
+      this.destroyContextAfterDelete = destroyContextAfterDelete;
       this.url = 'about:blank';
       this.title = '';
       this.destroyed = false;
@@ -44,6 +47,7 @@ function harness({
       this.preservePageUrl = preservePageUrl;
       this.failFirstLoad = failFirstLoadPartitions.includes(partition);
       this.loadAttempts = 0;
+      this.extractCalls = 0;
       this.zoomFactor = 1;
       this.webRTCIPHandlingPolicy = null;
       this.executedScripts = [];
@@ -102,8 +106,17 @@ function harness({
     close() { this.destroyed = true; }
     async executeJavaScript(source) {
       this.executedScripts.push(source);
+      if (source.includes('const cfg =')) this.extractCalls++;
       if (this.holdExtraction && source.includes('const cfg =')) return new Promise(() => {});
-      if (source.includes('cfg.moreSelector')) return { ok: true, action: 'session-action' };
+      if (source.includes('cfg.moreSelector')) {
+        const action = /"action":"([^"]+)"/.exec(source)?.[1] || '';
+        const sessionId = /"sessionId":"([^"]+)"/.exec(source)?.[1] || '';
+        if (action === 'delete' && sessionId) deletedSessions.add(sessionId);
+        if (action === 'delete' && this.destroyContextAfterDelete) {
+          throw new Error('Execution context was destroyed');
+        }
+        return { ok: true, action: 'session-action', ...(action === 'delete' ? { confirmed: true } : {}) };
+      }
       if (source.includes('candidates: [...candidates.values()]')) {
         return {
           url: 'https://chat.deepseek.com/a/chat/s/current',
@@ -114,15 +127,16 @@ function harness({
       }
       const transient = this.historyMode === 'transient';
       const fallback = this.historyMode === 'fallback';
+      const candidateSessions = transient || fallback ? [] : [
+        { url: 'https://chat.deepseek.com/a/chat/s/current?from=page', title: 'Current' },
+        { url: 'https://chat.deepseek.com/a/chat/s/previous', title: 'Previous' },
+      ];
       return {
         url: this.preservePageUrl ? this.url : (this.partition.includes('kimi')
           ? 'https://www.kimi.com/chat/kimi-current'
           : 'https://chat.deepseek.com/a/chat/s/current'),
         title: 'DeepSeek current',
-        sessions: transient || fallback ? [] : [
-          { url: 'https://chat.deepseek.com/a/chat/s/current?from=page', title: 'Current' },
-          { url: 'https://chat.deepseek.com/a/chat/s/previous', title: 'Previous' },
-        ],
+        sessions: candidateSessions.filter(row => !deletedSessions.has(row.url.split('/').pop().split('?')[0])),
         layout: { historyCount: transient || fallback ? 0 : 2, sidebarMarked: !fallback, pageReady: false },
       };
     }
@@ -185,6 +199,7 @@ function harness({
     nativeTheme,
     getWindow: () => window,
     layoutAssistant,
+    pollIntervalMs,
     log: () => {},
   });
   return { manager, window, sessions, ipcHandlers, events, external, menuTemplates, nativeTheme, root };
@@ -248,6 +263,55 @@ test('web surface creates a private view, extracts independent history and persi
   }
 });
 
+test('single deletion waits for the provider confirmation before refreshing', async () => {
+  const fixture = harness();
+  try {
+    await fixture.manager.command('show', {
+      provider: 'deepseek',
+      bounds: { x: 260, y: 64, width: 900, height: 700 },
+    });
+    const view = fixture.window.contentView.children[0];
+    await until(() => fixture.manager.publicState().ready === true, 800);
+    await until(() => fixture.manager.publicState().sessions.some(session => session.id === 'current'), 800);
+    const result = await fixture.manager.command('session-action', {
+      sessionId: 'current',
+      action: 'delete',
+      autoConfirm: false,
+    });
+    assert.equal(result.ok, true);
+    assert.ok(result.state);
+    assert.equal(result.state.sessions.some(session => session.id === 'current'), false);
+    const script = view.webContents.executedScripts.find(source => source.includes('cfg.moreSelector')
+      && source.includes('"action":"delete"'));
+    assert.ok(script);
+    assert.match(script, /"autoConfirm":false/);
+  } finally {
+    fixture.manager.dispose();
+    removeTree(fixture.root);
+  }
+});
+
+test('deletion still refreshes if the provider navigates before the script settles', async () => {
+  const fixture = harness({ destroyContextAfterDelete: true });
+  try {
+    await fixture.manager.command('show', {
+      provider: 'deepseek',
+      bounds: { x: 260, y: 64, width: 900, height: 700 },
+    });
+    await until(() => fixture.manager.publicState().sessions.some(session => session.id === 'current'), 800);
+    const result = await fixture.manager.command('session-action', {
+      sessionId: 'current',
+      action: 'delete',
+      autoConfirm: false,
+    });
+    assert.equal(result.ok, true);
+    assert.equal(result.state.sessions.some(session => session.id === 'current'), false);
+  } finally {
+    fixture.manager.dispose();
+    removeTree(fixture.root);
+  }
+});
+
 test('a provider view reveals after layout without waiting for history', async () => {
   const fixture = harness({ historyMode: 'transient' });
   try {
@@ -300,6 +364,93 @@ test('navigating within a provider keeps the current page visible while it loads
     assert.equal(view.visible, true);
     assert.equal(fixture.manager.publicState().ready, true);
     assert.equal(fixture.manager.publicState().loading, true);
+  } finally {
+    fixture.manager.dispose();
+    removeTree(fixture.root);
+  }
+});
+
+test('starting a new web conversation returns the new-page state immediately', async () => {
+  const fixture = harness();
+  try {
+    await fixture.manager.command('show', {
+      provider: 'deepseek',
+      bounds: { x: 260, y: 64, width: 900, height: 700 },
+    });
+    await until(() => fixture.manager.publicState().ready === true, 800);
+    const result = await fixture.manager.command('new');
+    assert.equal(result.ok, true);
+    assert.equal(result.state.activeId, null);
+    assert.equal(result.state.currentUrl, 'https://chat.deepseek.com/');
+  } finally {
+    fixture.manager.dispose();
+    removeTree(fixture.root);
+  }
+});
+
+test('page title changes refresh sessions while the document is loading', async () => {
+  const fixture = harness({ holdDomReady: true, holdStopLoading: true });
+  try {
+    await fixture.manager.command('show', {
+      provider: 'deepseek',
+      bounds: { x: 260, y: 64, width: 900, height: 700 },
+    });
+    const view = fixture.window.contentView.children[0];
+    await until(() => view.visible === true, 800);
+    const before = view.webContents.extractCalls;
+    view.webContents.emit('page-title-updated', {}, 'New conversation title');
+    await until(() => view.webContents.extractCalls > before, 1200);
+    assert.equal(fixture.manager.publicState().loading, true);
+  } finally {
+    fixture.manager.dispose();
+    removeTree(fixture.root);
+  }
+});
+
+test('session polling continues while the provider page is loading', async () => {
+  const fixture = harness({ holdDomReady: true, holdStopLoading: true, pollIntervalMs: 30 });
+  try {
+    await fixture.manager.command('show', {
+      provider: 'deepseek',
+      bounds: { x: 260, y: 64, width: 900, height: 700 },
+    });
+    const view = fixture.window.contentView.children[0];
+    await until(() => view.visible === true, 800);
+    const before = view.webContents.extractCalls;
+    await until(() => view.webContents.extractCalls > before, 400);
+    assert.equal(fixture.manager.publicState().loading, true);
+  } finally {
+    fixture.manager.dispose();
+    removeTree(fixture.root);
+  }
+});
+
+test('an empty transient sidebar keeps cached sessions during loading', async () => {
+  const fixture = harness({
+    cache: {
+      version: 1,
+      currentProvider: 'deepseek',
+      providers: {
+        deepseek: {
+          sessions: [{ id: 'previous', title: 'Previous conversation', url: 'https://chat.deepseek.com/a/chat/s/previous' }],
+        },
+      },
+    },
+    historyMode: 'fallback',
+    holdStopLoading: true,
+    pollIntervalMs: 30,
+  });
+  try {
+    await fixture.manager.command('show', {
+      provider: 'deepseek',
+      bounds: { x: 260, y: 64, width: 900, height: 700 },
+    });
+    const view = fixture.window.contentView.children[0];
+    await until(() => view.webContents.extractCalls >= 2, 800);
+    const state = fixture.manager.publicState();
+    assert.equal(state.loading, true);
+    assert.equal(state.sessions.length, 1);
+    assert.notEqual(state.layout.status, 'error');
   } finally {
     fixture.manager.dispose();
     removeTree(fixture.root);

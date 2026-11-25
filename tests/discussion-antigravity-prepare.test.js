@@ -92,6 +92,13 @@ test('CLI preparation rejects the wrong bridge identity without launching', asyn
   assert.equal(h.children.length, 0);
 });
 
+test('headless CLI rejects oversized combined text before launching or writing input', async t => {
+  const h = bridge(t), { sessionId } = await h.rpc('session/new', { cwd: process.cwd() });
+  await assert.rejects(h.rpc('session/prompt', { sessionId,
+    prompt: [{ type: 'text', text: '文'.repeat(30000) }, { type: 'text', text: '😀'.repeat(22000) }] }), /172,800 UTF-8 bytes/);
+  assert.equal(h.children.length, 0);
+});
+
 for (const resume of [false, true]) test(`CLI literal input disables expansion for ${resume ? 'resumed' : 'new'} native sessions`, async t => {
   const conversationId = randomUUID(), saved = resume ? { id: 'agy-' + randomUUID(), cwd: process.cwd(), conversationId } : null;
   const h = bridge(t, saved, { literalInput: true });

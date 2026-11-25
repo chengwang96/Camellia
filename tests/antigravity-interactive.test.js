@@ -3,7 +3,8 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
-const { InteractiveCli, selection, permissionReply, questionFields, ownedTrajectories, interactiveLaunch } = require('../src/engines/antigravity/cli-interactive.cjs');
+const { InteractiveCli, selection, permissionReply, questionFields, ownedTrajectories, interactiveLaunch,
+} = require('../src/engines/antigravity/cli-interactive.cjs');
 
 test('Unix interactive launch keeps a PTY open and passes native arguments literally', () => {
   const exe = "/Applications/Agent's CLI/agy", args = ['--model', "name'; $(touch injected); 'x"];
@@ -101,6 +102,36 @@ test('Google subscription image prompts reach native media with text and bytes i
   assert.equal(calls.filter(call => call.method === 'SendUserCascadeMessage').length, 1, 'Unsupported models must not receive a text-only substitute');
 });
 
+for (const failure of ['refused', 'lost-ack', 'unknown', 'lost-reply']) test('Google subscription dispatch recovery handles ' + failure, async () => {
+  const { bridge } = fixture();
+  bridge.turn = null;
+  bridge.prepare = async () => {};
+  bridge.selected = { modelOrAlias: { model: 'TEST' } };
+  let sends = 0, accepted = false;
+  bridge.rpc = async (method, params) => {
+    if (method === 'GetCascadeTrajectory') return { numTotalSteps: 4 };
+    if (method === 'SendUserCascadeMessage') {
+      sends++;
+      if (failure === 'refused' && sends === 1)
+        throw Object.assign(new Error('connect refused'), { code: 'ECONNREFUSED', syscall: 'connect' });
+      accepted = failure !== 'unknown';
+      if (failure === 'lost-ack' || failure === 'unknown') throw Object.assign(new Error('socket closed'), { code: 'ECONNRESET' });
+      return {};
+    }
+    if (method === 'GetAllCascadeTrajectories') return { trajectorySummaries: !sends || accepted && failure !== 'lost-reply' ? {
+      root: { status: 'CASCADE_RUN_STATUS_IDLE', stepCount: accepted ? 6 : 4 },
+    } : {} };
+    if (method === 'GetCascadeTrajectorySteps') return { steps: params.stepOffset === 4
+      ? [{ type: 'CORTEX_STEP_TYPE_USER_INPUT', userInput: { userResponse: 'Do the work' } }] : [] };
+    assert.fail('Unexpected native method: ' + method);
+  };
+  const result = bridge.prompt([{ type: 'text', text: 'Do the work' }]);
+  if (failure === 'unknown') await assert.rejects(result, { submission: 'unknown' });
+  else if (failure === 'lost-reply') await assert.rejects(result, { submission: 'accepted' });
+  else assert.equal((await result).stopReason, 'end_turn');
+  assert.equal(sends, failure === 'refused' ? 2 : 1);
+});
+
 test('interactive preparation stops on a split login prompt and reports sign-in instead of timing out', { timeout: 5000 }, async t => {
   const fs = require('node:fs'), os = require('node:os');
   const { EventEmitter } = require('node:events'), { PassThrough } = require('node:stream');
@@ -145,6 +176,20 @@ test('explicit skill commands use the native resolved catalog and preserve input
   assert.equal(expanded[1], parts[1]); assert.equal(parts[0].text, '/review selected file');
   const ordinary = [{ type: 'text', text: 'Mention /review in ordinary prose' }];
   assert.equal(await bridge.expandSkill(ordinary), ordinary); assert.equal(calls.length, 1);
+});
+
+test('interactive CLI refuses text that exceeds the byte budget only after native skill expansion', async () => {
+  const { bridge, calls } = fixture();
+  bridge.turn = null;
+  bridge.session.cwd = process.cwd();
+  bridge.prepare = async () => {};
+  bridge.rpc = async method => {
+    calls.push(method);
+    return { skills: [{ name: 'large-skill', path: '/skills/large-skill/SKILL.md', content: '文'.repeat(58000) }] };
+  };
+  await assert.rejects(bridge.prompt([{ type: 'text', text: '/large-skill' }]), /172,800 UTF-8 bytes/);
+  assert.deepEqual(calls, ['GetAllSkills']);
+  assert.equal(bridge.turn, null);
 });
 
 test('literal discussion inputs, disabled skills and unknown commands never expand', async () => {
@@ -322,14 +367,52 @@ test('streaming text and per-turn usage do not duplicate repeated native polls',
   assert.equal(turn.usage.input_tokens, 12); assert.equal(turn.usage.output_tokens, 7);
 });
 
-test('planner thinking streams as live progress without duplicate polls', () => {
+test('planner thinking streams complete reasoning without generating commentary', () => {
   const { bridge, turn, messages } = fixture();
-  for (const thinking of ['Reading files', 'Reading files and checking config', 'Reading files and checking config']) bridge.step(turn, {
+  const thinking = 'Reading files and checking configuration. '.repeat(20).trim();
+  for (const value of [thinking, thinking]) bridge.step(turn, {
     trajectoryId: 'trajectory',
-  }, { plannerResponse: { thinking }, status: 'CORTEX_STEP_STATUS_DONE' }, 1);
-  assert.equal(messages.filter(message => message.params.update?.sessionUpdate === 'camellia_progress')
-    .map(message => message.params.update.content.text).join(''), 'Reading files and checking config');
+  }, { plannerResponse: { thinking: value }, status: 'CORTEX_STEP_STATUS_DONE' }, 1);
+  const progress = messages.filter(message => message.params.update?.sessionUpdate === 'camellia_progress')
+    .map(message => message.params.update.content.text).join('');
+  assert.equal(progress, '');
+  const reasoning = messages.filter(message => message.params.update?.sessionUpdate === 'agent_thought_chunk')
+    .map(message => message.params.update.content.text).join('');
+  assert.equal(reasoning, thinking);
   assert.equal(messages.some(message => message.params.update?.sessionUpdate === 'agent_message_chunk'), false);
+});
+
+test('planner reasoning streams incrementally without repeating snapshots', () => {
+  const { bridge, turn, messages } = fixture();
+  const thinking = 'Reading files and checking configuration. '.repeat(20).trim();
+  for (const value of [thinking.slice(0, 20), thinking.slice(0, 160), thinking, thinking]) bridge.step(turn, {
+    trajectoryId: 'trajectory',
+  }, { plannerResponse: { thinking: value }, status: 'CORTEX_STEP_STATUS_DONE' }, 1);
+  const progress = messages.filter(message => message.params.update?.sessionUpdate === 'camellia_progress')
+    .map(message => message.params.update.content.text);
+  assert.deepEqual(progress, []);
+  const reasoning = messages.filter(message => message.params.update?.sessionUpdate === 'agent_thought_chunk')
+    .map(message => message.params.update.content.text).join('');
+  assert.equal(reasoning, thinking);
+});
+
+test('multiple planner steps retain their full reasoning and tool updates', () => {
+  const { bridge, turn, messages } = fixture();
+  const first = 'A'.repeat(400), second = 'B'.repeat(400);
+  bridge.step(turn, { trajectoryId: 'trajectory' }, {
+    plannerResponse: { thinking: first }, status: 'CORTEX_STEP_STATUS_DONE',
+  }, 1);
+  bridge.step(turn, { trajectoryId: 'trajectory' }, {
+    plannerResponse: { thinking: second }, metadata: { toolCall: { name: 'read_file', argumentsJson: '{}' } },
+    status: 'CORTEX_STEP_STATUS_DONE',
+  }, 2);
+  const progress = messages.filter(message => message.params.update?.sessionUpdate === 'camellia_progress')
+    .map(message => message.params.update.content.text);
+  assert.deepEqual(progress, []);
+  const reasoning = messages.filter(message => message.params.update?.sessionUpdate === 'agent_thought_chunk')
+    .map(message => message.params.update.content.text).join('');
+  assert.equal(reasoning, first + second);
+  assert.equal(messages.filter(message => message.params.update?.sessionUpdate === 'tool_call_update').length, 1);
 });
 
 test('discussion transport keeps planner thinking out of the streamed answer', () => {
@@ -339,6 +422,7 @@ test('discussion transport keeps planner thinking out of the streamed answer', (
     plannerResponse: { thinking: 'Private planning' }, status: 'CORTEX_STEP_STATUS_DONE',
   }, 1);
   assert.equal(messages.some(message => message.params.update?.sessionUpdate === 'camellia_progress'), false);
+  assert.equal(messages.some(message => message.params.update?.sessionUpdate === 'agent_thought_chunk'), false);
 });
 
 test('prepared interactive sessions reject a different identity before native work', async () => {

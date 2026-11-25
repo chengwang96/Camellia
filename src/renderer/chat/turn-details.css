@@ -18,7 +18,7 @@
 .message-actions button { color: var(--dsw-alias-label-tertiary); }
 .message-actions button:hover { color: var(--dsw-alias-label-primary); background: var(--dsw-alias-interactive-bg-hover); }
 .message-actions time { margin: 0; font-variant-numeric: tabular-nums; }
-.turn { padding-bottom: 0; margin-bottom: 24px; }
+.turn { --chat-message-gap: 24px; padding-bottom: 0; }
 .turn-actions { position: static; flex-wrap: wrap; gap: 8px; margin: 12px 0 0 -5px; }
 .turn-actions time { margin-left: 2px; }
 .turn-completion,

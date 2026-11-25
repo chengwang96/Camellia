@@ -115,6 +115,9 @@ final class LineIcon extends Drawable {
             canvas.drawRoundRect(7, 13, 21, 20, 3, 3, paint);
             canvas.drawLine(7, 8, 16, 8, paint); canvas.drawLine(11, 16.5f, 18, 16.5f, paint); break;
             case "close": canvas.drawLine(6, 6, 18, 18, paint); canvas.drawLine(18, 6, 6, 18, paint); break;
+            case "play":
+                path.moveTo(8, 5); path.lineTo(19, 12); path.lineTo(8, 19); path.close();
+                canvas.drawPath(path, paint); break;
             case "back": path.moveTo(15, 4); path.lineTo(7, 12); path.lineTo(15, 20); canvas.drawPath(path, paint); break;
             case "search": canvas.drawCircle(10.5f, 10.5f, 6.5f, paint); canvas.drawLine(16, 16, 21, 21, paint); break;
             case "folder":

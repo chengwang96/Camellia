@@ -18,6 +18,7 @@ const MAX_SUMMARY_CHARS = 500;
 const STYLES = new Set(['whale', 'editorial', 'paper', 'sketch', 'terminal']);
 const CARD_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const CONVERSATION_ID = /^[A-Za-z0-9_-]{1,128}$/;
+const CONTENT_HASH = /^[0-9a-f]{64}$/;
 const INDEX_FILE = 'index.json';
 // Deleted card ids are remembered so a history row that still references the
 // card renders as "deleted" instead of a load error.
@@ -114,6 +115,43 @@ function createVisualizeStore({ dir, log = () => {} }) {
     if (!CARD_ID.test(String(cardId || ''))) throw new Error('Invalid visualization card');
     return path.join(conversationDir(id), cardId + '.previous.html');
   };
+  const revisionDir = (id, cardId) => cardFile(id, cardId).replace(/\.json$/, '.revisions');
+  const readRevision = (id, cardId, revision) => {
+    if (!Number.isSafeInteger(revision) || revision < 1) return null;
+    const directory = revisionDir(id, cardId);
+    try {
+      const saved = readJson(path.join(directory, revision + '.json'), null);
+      if (saved?.version !== 1 || saved.conversationId !== id || saved.cardId !== cardId
+          || saved.revision !== revision || !CONTENT_HASH.test(saved.contentHash)) return null;
+      return fs.existsSync(path.join(directory, saved.contentHash + '.html')) ? saved : null;
+    } catch (error) {
+      log('visualize: could not read card revision: ' + error.message);
+      return null;
+    }
+  };
+  const listRevisions = (id, card) => {
+    const directory = revisionDir(id, card.cardId);
+    if (!fs.existsSync(directory)) return [];
+    return fs.readdirSync(directory)
+      .filter(name => /^[1-9]\d*\.json$/.test(name))
+      .map(name => Number(name.slice(0, -5)))
+      .filter(revision => revision < card.revision)
+      .sort((first, second) => second - first)
+      .map(revision => readRevision(id, card.cardId, revision))
+      .filter(Boolean)
+      .map(({ cardId, title, summary, revision, updatedAt }) =>
+        ({ cardId, title, summary, revision, updatedAt }));
+  };
+  const saveRevision = (card, html) => {
+    const contentHash = sha256(html);
+    // An out-of-band edit is not the document recorded at this revision.
+    if (card.contentHash && card.contentHash !== contentHash) return;
+    const revision = Number.isSafeInteger(card.revision) ? card.revision : 1;
+    const directory = revisionDir(card.conversationId, card.cardId);
+    const document = path.join(directory, contentHash + '.html');
+    if (!fs.existsSync(document)) writeText(document, html);
+    writeJson(path.join(directory, revision + '.json'), { ...card, revision, contentHash });
+  };
   const deletedPath = id => path.join(conversationDir(id), DELETED_FILE);
   const readDeleted = conversationId => {
     const saved = readJson(deletedPath(conversationId), null);
@@ -131,17 +169,16 @@ function createVisualizeStore({ dir, log = () => {} }) {
   // metadata, so a lost or stale index only costs one directory scan.
   const readIndex = conversationId => {
     const saved = readJson(indexPath(conversationId), null);
-    if (!saved || saved.version !== 1 || !Array.isArray(saved.cards)) return null;
-    const cards = saved.cards.filter(card => card && CARD_ID.test(String(card.cardId || '')));
-    return { version: 1, cards };
+    if (!saved || saved.version !== 2 || !Array.isArray(saved.cards)) return null;
+    return saved.cards.filter(card => card && CARD_ID.test(String(card.cardId || '')));
   };
   const writeIndex = (conversationId, cards) => {
     writeJson(indexPath(conversationId), {
-      version: 1,
+      version: 2,
       updatedAt: Date.now(),
       cards: cards
-        .map(({ cardId, title, summary, revision, updatedAt, contentHash }) =>
-          ({ cardId, title, summary, revision, updatedAt, contentHash }))
+        .map(({ cardId, title, summary, revision, createdAt, updatedAt, contentHash }) =>
+          ({ cardId, title, summary, revision, createdAt, updatedAt, contentHash }))
         .sort((first, second) => (second.updatedAt || 0) - (first.updatedAt || 0)),
     });
   };
@@ -163,7 +200,7 @@ function createVisualizeStore({ dir, log = () => {} }) {
   };
   const list = conversationId => {
     const indexed = readIndex(conversationId);
-    if (indexed) return indexed.cards;
+    if (indexed) return indexed;
     const cards = scanCards(conversationId);
     if (cards.length) {
       try { writeIndex(conversationId, cards); }
@@ -194,6 +231,7 @@ function createVisualizeStore({ dir, log = () => {} }) {
       const now = Date.now();
       const clean = {
         version: 1,
+        layoutVersion: 2,
         cardId,
         conversationId,
         title: cleanTitle(title),
@@ -237,10 +275,6 @@ function createVisualizeStore({ dir, log = () => {} }) {
           && networkOrigins === undefined) {
         throw new Error('Visualization update requires fragment, old_str/new_str or metadata');
       }
-      // Keep the document this revision replaces. When someone edits the file
-      // directly, this is the copy the conversation actually approved, so the
-      // user can roll back to it instead of accepting an unrecorded change.
-      writeText(backupFile(conversationId, cardId), previous);
       next = cleanFragment(next, MAX_STORED_BYTES);
       const nextOrigins = networkOrigins === undefined ? (current.networkOrigins || []) : cleanNetworkOrigins(networkOrigins);
       const originsChanged = JSON.stringify(nextOrigins) !== JSON.stringify(current.networkOrigins || []);
@@ -257,6 +291,8 @@ function createVisualizeStore({ dir, log = () => {} }) {
         updatedAt,
         contentHash: sha256(next),
       };
+      saveRevision(current, previous);
+      writeText(backupFile(conversationId, cardId), previous);
       writeText(htmlFile, next);
       writeJson(cardFile(conversationId, cardId), clean);
       touchIndex(conversationId, clean);
@@ -274,9 +310,20 @@ function createVisualizeStore({ dir, log = () => {} }) {
       const externalEdit = Boolean(metadata.contentHash) && sha256(html) !== metadata.contentHash;
       return { ...metadata, html, state: readState(conversationId, cardId), externalEdit };
     },
-    cards(conversationId) {
+    getRevision(conversationId, cardId, revision) {
+      const current = readJson(cardFile(conversationId, cardId), null);
+      if (!current || current.version !== 1 || current.conversationId !== conversationId
+          || current.cardId !== cardId) throw new Error('Visualization card not found');
+      const saved = revision < current.revision && readRevision(conversationId, cardId, revision);
+      if (!saved) throw new Error('Card version is unavailable');
+      const html = fs.readFileSync(path.join(revisionDir(conversationId, cardId), saved.contentHash + '.html'), 'utf8');
+      if (sha256(html) !== saved.contentHash) throw new Error('Card version is unavailable');
+      return { ...saved, html, networkApproved: false };
+    },
+    cards(conversationId, { includeRevisions = false } = {}) {
       conversationDir(conversationId);
-      return list(conversationId);
+      const cards = list(conversationId);
+      return includeRevisions ? cards.map(card => ({ ...card, revisions: listRevisions(conversationId, card) })) : cards;
     },
     removeCard(conversationId, cardId) {
       const metadata = readJson(cardFile(conversationId, cardId), null);
@@ -284,6 +331,7 @@ function createVisualizeStore({ dir, log = () => {} }) {
           || metadata.cardId !== cardId) throw new Error('Visualization card not found');
       fs.rmSync(htmlFile(conversationId, cardId), { force: true });
       fs.rmSync(backupFile(conversationId, cardId), { force: true });
+      fs.rmSync(revisionDir(conversationId, cardId), { recursive: true, force: true });
       fs.rmSync(cardFile(conversationId, cardId), { force: true });
       fs.rmSync(stateFile(conversationId, cardId), { force: true });
       writeIndex(conversationId, scanCards(conversationId));
@@ -310,6 +358,7 @@ function createVisualizeStore({ dir, log = () => {} }) {
       if (!fs.existsSync(file)) throw new Error('No recorded version is available for this card');
       const recorded = fs.readFileSync(file, 'utf8');
       const current = fs.readFileSync(htmlFile(conversationId, cardId), 'utf8');
+      saveRevision(metadata, metadata.contentHash === sha256(recorded) ? recorded : current);
       // Keep the rejected text so the rollback itself can be undone.
       writeText(backupFile(conversationId, cardId), current);
       const clean = {

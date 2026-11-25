@@ -25,10 +25,11 @@ final class ChoiceDropdown {
     private final SettingsStyle style;
     private final View anchor;
     private final String[] labels;
-    private final int selected;
+    private int selected;
     private final boolean chinese;
     private final IntConsumer choose;
-    private final LinearLayout rows;
+    private final LinearLayout rows, options;
+    private final int alignment;
     private EditText search;
     private final ViewTreeObserver.OnGlobalLayoutListener layout = this::position;
     private ViewTreeObserver anchorObserver, panelObserver;
@@ -37,10 +38,19 @@ final class ChoiceDropdown {
         public void onViewDetachedFromWindow(View view) { dismiss(); }
     };
     private Runnable dismissed = () -> {};
-    private int width, left = -1, top = -1, height = -1;
+    private int width, lastXOffset, lastYOffset, lastHeight;
 
     ChoiceDropdown(View anchor, String title, String[] labels, int selected, boolean searchable, IntConsumer choose) {
+        this(anchor, title, labels, selected, searchable, Gravity.END, choose);
+    }
+
+    ChoiceDropdown(View anchor, String title, String[] labels, int selected, boolean searchable, int alignment, IntConsumer choose) {
+        this(anchor, title, labels, selected, searchable, alignment, null, choose);
+    }
+
+    ChoiceDropdown(View anchor, String title, String[] labels, int selected, boolean searchable, int alignment, View footer, IntConsumer choose) {
         this.anchor = anchor; this.labels = labels.clone(); this.selected = selected; this.choose = choose;
+        this.alignment = alignment;
         Context context = anchor.getContext(); style = new SettingsStyle(context);
         chinese = context.getResources().getConfiguration().getLocales().get(0).getLanguage().equals("zh");
         panel = new PopupSurface(context, style.card); panel.setTag("choiceDropdown"); panel.setContentDescription(title);
@@ -64,7 +74,10 @@ final class ChoiceDropdown {
             });
         }
         ScrollView scroll = ScrollViews.plain(context); scroll.setTag("dropdownScroll"); scroll.setVerticalScrollBarEnabled(false);
-        scroll.addView(rows); content.addView(scroll, new LinearLayout.LayoutParams(-1, -2, 1));
+        options = new LinearLayout(context); options.setOrientation(LinearLayout.VERTICAL);
+        options.addView(rows, new LinearLayout.LayoutParams(-1, -2));
+        if (footer != null) options.addView(footer, new LinearLayout.LayoutParams(-1, -2));
+        scroll.addView(options); content.addView(scroll, new LinearLayout.LayoutParams(-1, -2, 1));
         popup = new PopupWindow(panel, -2, -2, true); popup.setBackgroundDrawable(style.round(style.card, Palette.RADIUS_GROUP));
         popup.setElevation(dp(8)); popup.setOutsideTouchable(true);
         popup.setInputMethodMode(searchable ? PopupWindow.INPUT_METHOD_NEEDED : PopupWindow.INPUT_METHOD_NOT_NEEDED);
@@ -77,7 +90,7 @@ final class ChoiceDropdown {
             indicator(anchor, false); dismissed.run();
         });
         filter("");
-        int preferred = dp(180);
+        int preferred = dp(footer == null ? 180 : 232);
         for (int i = 0; i < rows.getChildCount(); i++) if (rows.getChildAt(i) instanceof ChatChoiceRow row)
             preferred = Math.max(preferred, row.preferredWidth() + dp(12));
         width = Math.min(preferred, PopupSurface.menuWidth(context, PopupSurface.visibleFrame(anchor), PopupSurface.MODEL_MENU_MAX_WIDTH_DP));
@@ -120,20 +133,29 @@ final class ChoiceDropdown {
         int limit = Math.max(1, Math.min(dp(420), below ? belowSpace : aboveSpace));
         // Glass backdrop layers fill their parent. Measure the options themselves
         // so a short menu, or a filtered result, never expands to the height cap.
-        rows.measure(View.MeasureSpec.makeMeasureSpec(Math.max(1, width - dp(12)), View.MeasureSpec.EXACTLY),
+        options.measure(View.MeasureSpec.makeMeasureSpec(Math.max(1, width - dp(12)), View.MeasureSpec.EXACTLY),
             View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED));
-        int nextHeight = Math.max(1, Math.min(limit, rows.getMeasuredHeight() + dp(search == null ? 12 : 62)));
+        int nextHeight = Math.max(1, Math.min(limit, options.getMeasuredHeight() + dp(search == null ? 12 : 62)));
         panel.measure(View.MeasureSpec.makeMeasureSpec(width, View.MeasureSpec.EXACTLY), View.MeasureSpec.makeMeasureSpec(nextHeight, View.MeasureSpec.EXACTLY));
-        int nextLeft = Math.max(visible.left + dp(12), Math.min(origin[0] + anchor.getWidth() - width, visible.right - width - dp(12)));
+        int edge = Gravity.getAbsoluteGravity(alignment, anchor.getLayoutDirection());
+        int alignedLeft = origin[0];
+        if (edge == Gravity.RIGHT) alignedLeft += anchor.getWidth() - width;
+        if (edge == Gravity.CENTER_HORIZONTAL) alignedLeft += (anchor.getWidth() - width) / 2;
+        int nextLeft = Math.max(visible.left + dp(12), Math.min(alignedLeft, visible.right - width - dp(12)));
         int nextTop = below ? belowTop : aboveBottom - nextHeight;
+        // The glass samples screen coordinates. The popup is attached to the
+        // anchor so Android can place it in the correct activity or dialog.
+        int xOffset = nextLeft - origin[0];
+        int yOffset = nextTop - origin[1] - anchor.getHeight();
         if (popup.isShowing()) {
-            if (left != nextLeft || top != nextTop || height != nextHeight) popup.update(nextLeft, nextTop, width, nextHeight);
+            if (lastXOffset != xOffset || lastYOffset != yOffset || lastHeight != nextHeight)
+                popup.update(anchor, xOffset, yOffset, width, nextHeight);
         } else {
             popup.setWidth(width); popup.setHeight(nextHeight);
             panel.capture(anchor.getRootView(), nextLeft, nextTop, width, nextHeight);
-            popup.showAtLocation(anchor, Gravity.TOP | Gravity.LEFT, nextLeft, nextTop);
+            popup.showAsDropDown(anchor, xOffset, yOffset, Gravity.LEFT);
         }
-        left = nextLeft; top = nextTop; height = nextHeight;
+        lastXOffset = xOffset; lastYOffset = yOffset; lastHeight = nextHeight;
     }
 
     /** Use one line chevron for a field or a preference/filter row. */
@@ -149,6 +171,13 @@ final class ChoiceDropdown {
     }
     void onDismiss(Runnable action) { dismissed = action; }
     boolean isShowing() { return popup.isShowing(); }
+    void setSelected(int value) {
+        if (selected == value) return;
+        selected = value;
+        filter(search == null ? "" : search.getText().toString());
+        position();
+    }
+
     void dismiss() { popup.dismiss(); }
     private int dp(int value) { return style.dp(value); }
 }

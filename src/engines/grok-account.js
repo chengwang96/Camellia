@@ -6,6 +6,7 @@ const { StringDecoder } = require('node:string_decoder');
 const { GrokSession, grokEnvironment, GROK_STARTUP_TIMEOUT_MS } = require('./grok-session');
 const { normalizeGrokBilling, normalizeGrokModels } = require('./grok-quota');
 const { readJson, writeJson } = require('../shared/json-store');
+const { appVersion } = require('../shared/app-version');
 
 function parseGrokLoginOutput(text) {
   const clean = text.replace(/\x1b\[[0-9;]*[A-Za-z]/g, '');
@@ -51,7 +52,7 @@ function createGrokAccount({ home, runtime, ensureRuntime, environment = () => p
     catch (error) { void client.shutdown(); throw error; }
   }
   async function authenticate(client) {
-    await client.request('initialize', { protocolVersion: 1, clientCapabilities: {}, clientInfo: { name: 'Camellia', version: '1.0.1' } }, GROK_STARTUP_TIMEOUT_MS);
+    await client.request('initialize', { protocolVersion: 1, clientCapabilities: {}, clientInfo: { name: 'Camellia', version: appVersion } }, GROK_STARTUP_TIMEOUT_MS);
     await client.request('authenticate', { methodId: 'cached_token', _meta: { headless: true } });
   }
   async function billing(client) {

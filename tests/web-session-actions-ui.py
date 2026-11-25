@@ -9,11 +9,12 @@ scripts = json.loads(subprocess.check_output([
     'node', '-e',
     "const providers=require('./src/shared/web-providers').PROVIDERS;"
     "const {sessionActionScript}=require('./src/shared/web-layout-runtime');"
-    "const build=(provider,action,value='')=>sessionActionScript(providers[provider],"
-    "{sessionId:'session-1',action,value});"
+    "const build=(provider,action,value='',autoConfirm=true)=>sessionActionScript(providers[provider],"
+    "{sessionId:'session-1',action,value,autoConfirm});"
     "process.stdout.write(JSON.stringify({"
     "deepseek:{rename:build('deepseek','rename','Renamed by Camellia'),"
-    "delete:build('deepseek','delete'),pin:build('deepseek','pin')},"
+    "delete:build('deepseek','delete'),"
+    "deleteNative:build('deepseek','delete','',false),pin:build('deepseek','pin')},"
     "kimi:{share:build('kimi','share'),pin:build('kimi','pin')}"
     "}));",
 ], cwd=repo, text=True, encoding='utf-8'))
@@ -37,7 +38,7 @@ deepseek_fixture = """
     <button id="saveRename">保存</button>
   </div>
   <div id="deleteDialog" role="dialog" hidden>
-    <button id="confirmDelete">删除</button>
+    <button id="confirmDelete">删除该对话</button>
   </div>
   <script>
     window.actions = [];
@@ -67,6 +68,7 @@ deepseek_fixture = """
     document.querySelector('#confirmDelete').addEventListener('click', () => {
       window.deleted = true;
       deleteDialog.hidden = true;
+      document.querySelector('#conversation').remove();
     });
   </script>
 </body></html>
@@ -113,8 +115,30 @@ with sync_playwright() as p:
     page = browser.new_page()
     page.set_content(deepseek_fixture)
     deleted = page.evaluate(scripts['deepseek']['delete'])
-    assert deleted == {'ok': True, 'action': 'delete'}, deleted
     assert page.evaluate('window.deleted') is True
+    assert page.locator('#history a').count() == 0
+    assert deleted == {'ok': True, 'action': 'delete', 'confirmed': True}, deleted
+
+    page.close()
+    page = browser.new_page()
+    page.set_content(deepseek_fixture)
+    page.evaluate("""() => setTimeout(() => {
+      document.querySelector('#confirmDelete').click();
+    }, 200)""")
+    native_delete = page.evaluate(scripts['deepseek']['deleteNative'])
+    assert native_delete == {'ok': True, 'action': 'delete', 'confirmed': True}, native_delete
+    assert page.evaluate('window.deleted') is True
+
+    page.close()
+    page = browser.new_page()
+    page.set_content(deepseek_fixture)
+    page.evaluate("""() => setTimeout(() => {
+      document.querySelector('#deleteDialog').hidden = true;
+    }, 200)""")
+    cancelled_delete = page.evaluate(scripts['deepseek']['deleteNative'])
+    assert cancelled_delete == {'ok': True, 'action': 'delete', 'confirmed': False}, cancelled_delete
+    assert page.evaluate('window.deleted') is None
+    expect(page.locator('#history a')).to_have_count(1)
 
     page.close()
     page = browser.new_page()

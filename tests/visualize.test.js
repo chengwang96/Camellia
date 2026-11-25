@@ -24,12 +24,14 @@ test('visualize store persists cards and rejects unsafe document shapes', async 
   assert.match(card.cardId, /^[0-9a-f-]{36}$/);
   assert.equal(card.mode, 'wide');
   const loaded = store.get('conversation-1', card.cardId);
+  assert.equal(loaded.layoutVersion, 2);
   assert.equal(loaded.title, 'Parameter explorer');
   assert.match(loaded.html, /Hello/);
   const updated = store.update('conversation-1', card.cardId, {
     oldStr: 'Hello', newStr: 'Updated', summary: 'Changed result', style: 'paper',
   });
   assert.equal(updated.revision, 2);
+  assert.equal(updated.layoutVersion, 2);
   assert.equal(updated.summary, 'Changed result');
   assert.equal(updated.style, 'paper');
   assert.match(store.get('conversation-1', card.cardId).html, /Updated/);
@@ -207,13 +209,36 @@ test('the card index tracks revisions and drops deleted entries', async t => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'camellia-visualize-index-'));
   t.after(() => removeTree(root));
   const store = createVisualizeStore({ dir: root });
-  const first = store.create('conversation-1', { title: 'Indexed', fragment: '<div>one</div>' });
+  const first = store.create('conversation-1', { title: 'Indexed', createdAt: 1000, fragment: '<div>one</div>' });
   assert.deepEqual(store.cards('conversation-1').map(card => card.cardId), [first.cardId]);
-  store.update('conversation-1', first.cardId, { oldStr: 'one', newStr: 'two' });
-  assert.equal(store.cards('conversation-1')[0].revision, 2);
+  const second = store.create('conversation-1', { title: 'Indexed', createdAt: 2000, fragment: '<div>other</div>' });
+  store.update('conversation-1', first.cardId, { oldStr: 'one', newStr: 'two', updatedAt: 3000 });
+  store.update('conversation-1', first.cardId, { title: 'Renamed', updatedAt: 4000 });
+  const indexPath = path.join(root, 'conversation-1', 'index.json');
+  const oldIndex = JSON.parse(fs.readFileSync(indexPath, 'utf8'));
+  oldIndex.version = 1;
+  for (const card of oldIndex.cards) delete card.createdAt;
+  fs.writeFileSync(indexPath, JSON.stringify(oldIndex));
+  const rebuilt = new Map(store.cards('conversation-1').map(card => [card.cardId, card]));
+  assert.equal(rebuilt.size, 2);
+  assert.equal(rebuilt.get(first.cardId).revision, 3);
+  assert.equal(rebuilt.get(first.cardId).createdAt, 1000);
+  assert.equal(rebuilt.get(second.cardId).createdAt, 2000);
+  assert.equal(JSON.parse(fs.readFileSync(indexPath, 'utf8')).version, 2);
+  const indexed = store.cards('conversation-1', { includeRevisions: true });
+  assert.deepEqual(indexed.find(card => card.cardId === first.cardId).revisions.map(card => card.revision), [2, 1]);
+  assert.deepEqual(indexed.find(card => card.cardId === second.cardId).revisions, []);
+  const older = store.getRevision('conversation-1', first.cardId, 2);
+  assert.equal(older.title, 'Indexed');
+  assert.equal(older.updatedAt, 3000);
+  assert.equal(older.html, '<div>two</div>');
+  assert.equal(store.getRevision('conversation-1', first.cardId, 1).html, '<div>one</div>');
+  assert.equal(store.get('conversation-1', first.cardId).title, 'Renamed');
+  assert.throws(() => store.getRevision('conversation-1', first.cardId, 77), /unavailable/);
   store.removeCard('conversation-1', first.cardId);
-  assert.deepEqual(store.cards('conversation-1'), []);
+  assert.deepEqual(store.cards('conversation-1').map(card => card.cardId), [second.cardId]);
   assert.equal(fs.existsSync(path.join(root, 'conversation-1', first.cardId + '.html')), false);
+  assert.equal(fs.existsSync(path.join(root, 'conversation-1', first.cardId + '.revisions')), false);
 });
 
 test('an external edit to a card file is reported instead of hidden', async t => {
@@ -226,6 +251,7 @@ test('an external edit to a card file is reported instead of hidden', async t =>
   assert.equal(store.get('conversation-1', card.cardId).externalEdit, true);
   store.update('conversation-1', card.cardId, { oldStr: 'edited outside', newStr: 'restored' });
   assert.equal(store.get('conversation-1', card.cardId).externalEdit, false);
+  assert.deepEqual(store.cards('conversation-1', { includeRevisions: true })[0].revisions, []);
 });
 
 test('deleting one card frees its slot and leaves the others intact', async t => {

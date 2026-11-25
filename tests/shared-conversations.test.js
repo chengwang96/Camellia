@@ -10,6 +10,7 @@ const { execFileSync } = require('node:child_process');
 const { planCompaction } = require('../src/engines/compaction-plan');
 const { captureTarget, createReviewController, normalizeReport } = require('../src/engines/review-control');
 const { SharedConversations, preferences, ENGINES } = require('../src/engines/shared-conversations');
+const { SessionPool } = require('../src/engines/session-pool');
 const { createCodex } = require('../src/engines/codex');
 const { callConversationTool } = require('../src/engines/conversation-control');
 const { windowsExecutionInstructions } = require('../src/engines/windows-execution');
@@ -2676,6 +2677,61 @@ test('engine summary timeout leaves a retryable checkpoint and the original nati
   }
   assert.match(fs.readFileSync((await retry).file, 'utf8'), /Recovered summary/);
   assert.equal(manager.busy(c.id), false);
+});
+
+test('Antigravity summaries use low effort and active streams extend the idle timeout', async context => {
+  const h = subscriptionFixture(context, 'antigravity'), manager = h.manager;
+  const c = manager.create('antigravity');
+  c.engineSettings.antigravity = { ...c.engineSettings.antigravity, thinkingBudget: 'high' };
+  manager.append(c, { role: 'user', text: 'Keep the original task' });
+  manager.append(c, { role: 'tool', text: 'WORK ' + 'x'.repeat(3000) });
+  context.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: Date.now() });
+  const pending = manager.compact(c.id, { portable: true });
+  await h.flush();
+  const summary = h.sent.findLast(item => item.session.running);
+  assert.ok(summary);
+  assert.equal(summary.opts.settings.thinkingBudget, 'low');
+  assert.equal(manager.settings('antigravity', c.id).thinkingBudget, 'high');
+  for (let index = 0; index < 3; index++) {
+    context.mock.timers.tick(110000);
+    assert.equal(summary.session.running, true);
+    manager.capture('antigravity', { type: 'stream_event', runId: summary.session.gen,
+      event: { type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking: 'Still summarizing' } } });
+  }
+  h.finish('antigravity', 'success', 'TIMELY_CONTEXT', summary.session);
+  const result = await pending;
+  assert.equal(c.lastCompaction.outcome, 'completed');
+  assert.match(fs.readFileSync(result.file, 'utf8'), /TIMELY_CONTEXT/);
+});
+
+test('an idle Antigravity summary closes only its native worker before a local handoff', async t => {
+  const h = fixture(t), manager = h.manager, c = manager.create('antigravity');
+  h.drivers.antigravity.settings = () => ({ connection: 'subscription', model: 'gemini-4-neon' });
+  manager.append(c, { role: 'user', text: 'Keep the full transcript' });
+  manager.append(c, { role: 'tool', text: '文'.repeat(100000) });
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: Date.now() });
+  const pending = manager.compact(c.id, { portable: true, automatic: true });
+  await h.flush();
+  const workers = h.sent.filter(item => item.session.running);
+  assert.ok(workers.length > 1);
+  const [stalled, ...healthy] = workers;
+  const closed = [];
+  stalled.session.shutdown = async () => { stalled.session.running = false; closed.push(stalled.opts.conversationId); };
+  stalled.session.kill = () => assert.fail('The CLI bridge must close the native child before it exits');
+  t.mock.timers.tick(110000);
+  for (const { session } of healthy) manager.capture('antigravity', { type: 'stream_event', runId: session.gen,
+    event: { delta: { type: 'thinking_delta', thinking: 'Still summarizing' } } });
+  t.mock.timers.tick(10001);
+  await h.flush();
+  assert.deepEqual(closed, [stalled.opts.conversationId]);
+  for (const { session } of healthy) {
+    assert.equal(session.running, true);
+    h.finish('antigravity', 'success', 'Complete fragment', session);
+  }
+  assert.equal((await pending).ok, true);
+  assert.equal(c.lastCompaction.route, 'markdown-handoff');
+  assert.match(c.lastCompaction.fallbackReason, /timed out after no progress/);
+  assert.match(fs.readFileSync(c.handoffs.at(-1).fullPath, 'utf8'), /Keep the full transcript/);
 });
 
 test('user /compact falls back to bounded recent context with the first request pinned', async context => {
@@ -6053,6 +6109,150 @@ test('failed local export keeps source selected and never starts the target', as
   await assert.rejects(f.manager.switchEngine(first.sessionId, 'dsh', 'markdown'), /Local export failed/);
   assert.equal(f.manager.get(first.sessionId).currentEngine, 'claude'); assert.equal(f.sent.some(s => s.engine === 'dsh'), false);
 });
+test('selected messages can be exported without creating a handoff attachment', async t => {
+  const f = fixture(t), c = f.manager.create('claude');
+  f.manager.append(c, { role: 'user', text: 'KEEP_ONE request' });
+  const firstReply = f.manager.append(c, { role: 'assistant', engine: 'claude', text: 'KEEP_ONE response' });
+  f.manager.append(c, { role: 'user', text: 'DROP_ME request' });
+  f.manager.append(c, { role: 'assistant', engine: 'claude', text: 'DROP_ME response' });
+  f.manager.save(c);
+  const result = f.manager.exportMessagesMarkdown(c.id, [1, firstReply.seq]);
+  assert.equal(result.ok, true);
+  assert.equal(result.count, 2);
+  assert.match(result.markdown, /KEEP_ONE request/);
+  assert.match(result.markdown, /KEEP_ONE response/);
+  assert.doesNotMatch(result.markdown, /DROP_ME/);
+  assert.match(result.markdown, /## User · seq 1/);
+  assert.match(result.markdown, /## Assistant · seq 2/);
+});
+
+test('message deletion rewrites history, retires native sessions and survives reopen', async t => {
+  const f = fixture(t), c = f.manager.create('claude');
+  f.manager.append(c, { role: 'user', text: 'KEEP first question' });
+  f.manager.append(c, { role: 'assistant', engine: 'claude', text: 'KEEP first answer' });
+  const second = f.manager.append(c, { role: 'user', text: 'REMOVE second question' });
+  f.manager.append(c, { role: 'assistant', engine: 'claude', text: 'REMOVE second answer' });
+  c.segments.claude = { nativeId: 'native-old', cursor: c.seq };
+  f.manager.save(c);
+  const pool = f.drivers.claude.sessions = new SessionPool();
+  const options = { conversationId: c.id };
+  let stopped = false;
+  pool.set(options, { running: false, shutdown: async () => { stopped = true; } });
+  const deletion = f.manager.deleteMessages(c.id, [second.seq, second.seq + 1]);
+  await assert.rejects(f.manager.send('claude', { sessionId: c.id, prompt: 'Do not race deletion' }), /being deleted/);
+  const result = await deletion;
+  assert.equal(result.ok, true);
+  assert.equal(result.deleted, 2);
+  assert.equal(stopped, true);
+  assert.equal(pool.get(options), null);
+  const open = f.manager.load('claude', c.id);
+  assert.equal(open.ok, true);
+  assert.deepEqual(open.messages.map(row => row.text), ['KEEP first question', 'KEEP first answer']);
+  assert.equal(f.manager.get(c.id).segments.claude, undefined);
+  assert.ok(f.manager.get(c.id).retiredSegments.some(segment => segment.nativeId === 'native-old'));
+  assert.ok(fs.existsSync(result.backup));
+  assert.match(fs.readFileSync(result.backup, 'utf8'), /REMOVE second question/);
+  const restarted = f.restart();
+  assert.deepEqual(restarted.messages(restarted.get(c.id)).map(row => row.text),
+    ['KEEP first question', 'KEEP first answer']);
+  assert.equal(restarted.get(c.id).segments.claude, undefined);
+});
+
+test('message deletion refuses a busy conversation and invalid selections', async t => {
+  const f = fixture(t);
+  const active = await f.manager.send('claude', { prompt: 'work in progress' });
+  await assert.rejects(f.manager.deleteMessages(active.sessionId, [1]), /Stop this conversation/);
+  f.finish('claude'); await active.done;
+  const c = f.manager.get(active.sessionId);
+  await assert.rejects(f.manager.deleteMessages(c.id, []), /at least one message/i);
+  await assert.rejects(f.manager.deleteMessages(c.id, [99999]), /no longer in this conversation/i);
+});
+
+for (const role of ['user', 'assistant', 'both']) test(`the next turn after message deletion rebuilds context (${role})`, async t => {
+  const f = fixture(t);
+  const first = await f.manager.send('claude', { prompt: 'KEEP_THIS_REQUEST' });
+  f.finish('claude', 'success', 'KEEP_THIS_REPLY'); await first.done;
+  const second = await f.manager.send('claude', { sessionId: first.sessionId, prompt: 'REMOVE_THIS_REQUEST' });
+  const c = f.manager.get(first.sessionId);
+  f.manager.append(c, { role: 'tool', engine: 'claude', userSeq: second.userSeq, text: 'STALE_TOOL_REPLAY' });
+  f.finish('claude', 'success', 'REMOVE_THIS_REPLY'); await second.done;
+  const staleSummary = path.join(f.root, 'old-summary.md');
+  fs.writeFileSync(staleSummary, 'STALE_SUMMARY with REMOVE_THIS_REQUEST and REMOVE_THIS_REPLY');
+  f.manager.append(c, { role: 'notice', engine: 'claude', text: 'Context compacted: summary saved', file: staleSummary });
+  const settings = f.manager.settings('claude', c.id), bindingKey = f.manager.bindingKey('claude', settings);
+  c.modelSessions = { [bindingKey]: { nativeId: 'parked-old', engine: 'claude', bindingKey, lastUsedAt: Date.now(),
+    isolated: true, cursor: c.seq, contextSettings: settings, bridgeFile: staleSummary } };
+  c.compactionRecovery = { summary: 'STALE_SUMMARY' };
+  c.contextBlockState = { b1: { retired: true } };
+  f.manager.save(c);
+  const remove = f.manager.messages(c).filter(row => /REMOVE_THIS/.test(row.text) && (role === 'both' || row.role === role));
+  await f.manager.deleteMessages(c.id, remove.map(row => row.seq));
+  const manager = f.restart(), reopened = manager.get(c.id);
+  assert.deepEqual(reopened.segments, {});
+  assert.equal(reopened.modelSessions, undefined);
+  assert.equal(reopened.compactionRecovery, undefined);
+  assert.equal(reopened.contextBlockState, undefined);
+  assert.ok(reopened.retiredSegments.some(segment => segment.nativeId === 'parked-old'));
+  assert.equal(manager.historyStore.summary(c.id), null);
+  assert.ok(fs.existsSync(staleSummary));
+  const next = await manager.send('claude', { sessionId: c.id, prompt: 'CONTINUE_AFTER_DELETE' });
+  const { prompt, opts } = f.sent.at(-1);
+  f.finish('claude'); await next.done;
+  assert.ok(!opts.sessionId, 'must not request a native resume');
+  assert.ok(next.userSeq > remove.at(-1).seq, 'deleted sequence numbers must not be reused');
+  assert.match(prompt, /KEEP_THIS_REQUEST/);
+  assert.match(prompt, /KEEP_THIS_REPLY/);
+  assert.equal(prompt.includes('REMOVE_THIS_REQUEST'), role === 'assistant');
+  assert.equal(prompt.includes('REMOVE_THIS_REPLY'), role === 'user');
+  assert.doesNotMatch(prompt, /STALE_SUMMARY|STALE_TOOL_REPLAY/);
+});
+
+test('message deletion never restores the original version of a revised request', async t => {
+  const f = fixture(t);
+  const first = await f.manager.send('claude', { prompt: 'KEEP_QUESTION' });
+  f.finish('claude', 'success', 'REMOVE_EARLIER_ANSWER'); await first.done;
+  const origin = await f.manager.send('claude', { sessionId: first.sessionId, prompt: 'SUPERSEDED_QUESTION' });
+  f.finish('claude', 'success', 'SUPERSEDED_ANSWER'); await origin.done;
+  const revision = await f.manager.send('claude', { sessionId: first.sessionId, editSeq: origin.userSeq, prompt: 'REVISED_QUESTION' });
+  f.finish('claude', 'success', 'KEEP_REVISED_ANSWER'); await revision.done;
+  const c = f.manager.get(first.sessionId);
+  await assert.rejects(f.manager.deleteMessages(c.id, [origin.userSeq]), /no longer in this conversation/);
+  await f.manager.deleteMessages(c.id, [first.userSeq + 1]);
+  assert.deepEqual(f.manager.rawRows(c).map(row => [row.role, row.text]),
+    [['user', 'KEEP_QUESTION'], ['user', 'REVISED_QUESTION'], ['assistant', 'KEEP_REVISED_ANSWER']]);
+  await f.manager.deleteMessages(c.id, [revision.userSeq]);
+  const next = await f.manager.send('claude', { sessionId: c.id, prompt: 'Continue' });
+  const { prompt } = f.sent.at(-1);
+  f.finish('claude'); await next.done;
+  assert.match(prompt, /KEEP_REVISED_ANSWER/);
+  assert.doesNotMatch(prompt, /SUPERSEDED_|REVISED_QUESTION|REMOVE_EARLIER_ANSWER/);
+});
+
+test('message deletion excludes old dialogue and summaries from the next Markdown handoff', async t => {
+  const f = fixture(t);
+  const c = f.manager.create('claude', null, 'REMOVE_REQUEST');
+  c.titleSource = 'model';
+  const removedUser = f.manager.append(c, { role: 'user', text: 'REMOVE_REQUEST' });
+  const removedReply = f.manager.append(c, { role: 'assistant', text: 'REMOVE_RESPONSE' });
+  f.manager.append(c, { role: 'user', text: 'KEEP_REQUEST' });
+  f.manager.append(c, { role: 'assistant', text: 'KEEP_RESPONSE' });
+  const oldSummary = path.join(f.root, 'old-summary.md');
+  fs.writeFileSync(oldSummary, 'Previous summary: REMOVE_REQUEST and REMOVE_RESPONSE');
+  f.manager.append(c, { role: 'notice', text: 'Context compacted: summary saved', file: oldSummary });
+  await f.manager.deleteMessages(c.id, [removedUser.seq, removedReply.seq]);
+  const switching = f.manager.switchEngine(c.id, 'kimi', 'markdown');
+  await new Promise(resolve => setImmediate(resolve));
+  const handoff = c.handoffs.at(-1), { prompt, opts } = f.sent.at(-1);
+  f.finish('kimi'); await switching;
+  assert.equal(opts.sessionId, null);
+  assert.ok(prompt.includes(handoff.file));
+  for (const file of [handoff.file, handoff.fullPath]) {
+    const text = fs.readFileSync(file, 'utf8');
+    assert.match(text, /KEEP_REQUEST/);
+    assert.match(text, /KEEP_RESPONSE/);
+    assert.doesNotMatch(text, /REMOVE_REQUEST|REMOVE_RESPONSE|Previous summary/);
+  }
+});
 test('long history is never silently truncated; restart does not replay an ambiguous request', async t => {
   const f = fixture(t); const first = await f.manager.send('claude', { prompt: 'x'.repeat(25000) }); f.finish('claude');
   await f.manager.send('kimi', { sessionId: first.sessionId, prompt: 'next' });
@@ -6456,6 +6656,24 @@ test('an expired parked session is retired instead of resumed', async t => {
   assert.notEqual(f.manager.get(first.sessionId).segments.codex.nativeId, nativeOne, 'a cold session must not be resumed');
   assert.ok((f.manager.get(first.sessionId).retiredSegments || []).some(segment => segment.retiredReason === 'expired'));
   assert.match(f.sent.at(-1).prompt, /Conversation context/);
+});
+
+test('an Antigravity subscription cascade survives the parked-session TTL', async t => {
+  const f = fixture(t);
+  let model = 'gemini-4-neon';
+  f.drivers.antigravity.settings = () => ({ model, connection: 'subscription' });
+  f.drivers.antigravity.saveSettings = patch => { if (patch.model) model = patch.model; return f.drivers.antigravity.settings(); };
+  const first = await f.manager.send('antigravity', { prompt: 'Start' }); f.finish('antigravity');
+  const conversation = f.manager.get(first.sessionId), nativeOne = conversation.segments.antigravity.nativeId;
+  f.manager.saveSettings('antigravity', { sessionId: first.sessionId, model: 'gemini-4-neon-high' });
+  await f.manager.send('antigravity', { sessionId: first.sessionId, prompt: 'Second' }); f.finish('antigravity');
+  Object.values(conversation.modelSessions)[0].lastUsedAt = Date.now() - 48 * 60 * 60 * 1000;
+  f.manager.save(conversation);
+  f.manager.saveSettings('antigravity', { sessionId: first.sessionId, model: 'gemini-4-neon' });
+  await f.manager.send('antigravity', { sessionId: first.sessionId, prompt: 'Back' }); f.finish('antigravity');
+  assert.equal(f.manager.get(first.sessionId).segments.antigravity.nativeId, nativeOne,
+    'the durable Antigravity cascade is resumed instead of replayed');
+  assert.equal((f.manager.get(first.sessionId).retiredSegments || []).some(segment => segment.retiredReason === 'expired'), false);
 });
 
 test('the configured TTL and session limit govern parking', async t => {
@@ -7048,6 +7266,55 @@ test('Antigravity checks its persisted history checkpoint and replays a rejected
   assert.equal(manager.rows(conversation).filter(row => row.text === 'Continue the decision').length, 1);
   assert.equal(conversation.retiredSegments.at(-1).nativeId, original.sessionId);
   h.finish('antigravity');
+  assert.equal((await next.done).subtype, 'success');
+});
+
+test('Antigravity subscription recovery compacts a replay over the CLI byte cap', async t => {
+  const h = fixture(t), manager = h.manager;
+  h.drivers.antigravity.settings = () => ({ connection: 'subscription', model: 'gemini-4-neon' });
+  const first = await manager.send('antigravity', { prompt: 'Start' });
+  h.finish('antigravity', 'success', 'Started');
+  await first.done;
+  const conversation = manager.get(first.sessionId);
+  manager.append(conversation, { role: 'tool', text: '大'.repeat(60000) });
+  conversation.segments.antigravity.cursor = conversation.seq;
+  manager.save(conversation);
+  const ensure = h.drivers.antigravity.ensure;
+  h.drivers.antigravity.ensure = options => {
+    const session = ensure(options);
+    if (options.sessionId) session.sendUserMessage = () => {
+      session.running = true;
+      manager.capture('antigravity', { type: 'result', subtype: 'error', is_error: true,
+        nativeHistoryUnavailable: true, session_id: session.sessionId, runId: session.gen,
+        result: 'Shortened native history' });
+      return true;
+    };
+    return session;
+  };
+  let compacted;
+  const compact = manager.compact.bind(manager);
+  manager.compact = async (id, options) => {
+    compacted = { id, options };
+    return compact(id, options);
+  };
+  const next = await manager.send('antigravity', { sessionId: conversation.id, prompt: 'Continue' });
+  let replay;
+  for (let i = 0; i < 10 && !replay; i++) {
+    await h.flush();
+    for (const sent of h.sent.filter(item => item.session.running)) {
+      if (sent.prompt.endsWith('\n\nContinue')) { replay = sent; break; }
+      assert.ok(Buffer.byteLength(sent.prompt) <= 172800, 'the real summary request fits the subscription transport');
+      h.finish('antigravity', 'success', 'BOUNDED_CONTEXT', sent.session);
+    }
+  }
+  assert.ok(compacted, 'the oversized recovery replay must be compacted');
+  assert.equal(compacted.options.trigger.reason, 'native-history-recovery');
+  assert.ok(replay, 'the original turn continues after compaction');
+  assert.equal(replay.opts.sessionId, undefined);
+  assert.match(replay.prompt, /BOUNDED_CONTEXT/);
+  assert.ok(Buffer.byteLength(replay.prompt, 'utf8') < 192000 * 0.9);
+  assert.equal(manager.rows(conversation).filter(row => row.text === 'Continue').length, 1);
+  h.finish('antigravity', 'success', 'Recovered', replay.session);
   assert.equal((await next.done).subtype, 'success');
 });
 
@@ -8433,6 +8700,191 @@ test('retrying a failed turn revises it without replaying the failed result', as
   assert.equal(manager.rows(manager.get(first.sessionId)).filter(row => row.role === 'user').length, 1);
   harness.finish('codex', 'success', 'Done');
   await retried.done;
+});
+
+test('an identical Antigravity retry keeps its native cascade instead of replaying the transcript', async t => {
+  const h = fixture(t);
+  h.drivers.antigravity.settings = () => ({ connection: 'subscription', model: 'gemini-4-neon' });
+  const attachments = [{ path: path.join(h.root, 'notes.txt'), name: 'notes.txt' }];
+  const prompt = 'Which papers mention this technique?\n\n[Attachment] ' + attachments[0].path;
+  const first = await h.manager.send('antigravity', { prompt, attachments });
+  h.finish('antigravity');
+  await first.done;
+  const conversation = h.manager.get(first.sessionId), nativeId = conversation.segments.antigravity.nativeId;
+  h.manager.append(conversation, { role: 'tool', text: 'OLD_SEARCH_RESULTS ' + 'x'.repeat(400000) });
+  h.manager.save(conversation);
+  const retried = await h.manager.send('antigravity', { sessionId: conversation.id, editSeq: first.userSeq,
+    prompt, attachments: structuredClone(attachments) });
+  h.finish('antigravity');
+  await retried.done;
+  const sent = h.sent.at(-1);
+  assert.equal(sent.opts.sessionId, nativeId, 'the same native cascade is resumed');
+  assert.equal(sent.prompt, prompt);
+  assert.doesNotMatch(sent.prompt, /Conversation context|OLD_SEARCH_RESULTS/);
+  assert.equal(conversation.retiredSegments, undefined, 'no native binding is retired');
+  assert.equal(h.manager.rows(conversation).filter(row => row.role === 'user').length, 1);
+});
+
+test('Antigravity subscription rejects oversized UTF-8 input before a Markdown switch or user turn', async t => {
+  const h = fixture(t), manager = h.manager;
+  h.setConfig({ conversations: { mode: 'markdown' } });
+  h.drivers.antigravity.settings = () => ({ connection: 'subscription', model: 'gemini-4-neon' });
+  const c = manager.create('codex');
+  const previous = manager.append(c, { role: 'user', text: 'Previous request' });
+  const prompt = '文'.repeat(57598) + '😀ab';
+  assert.equal(Buffer.byteLength(prompt), 172800);
+  await assert.rejects(manager.send('antigravity', { sessionId: c.id, prompt: prompt + 'a' }), /172,800 UTF-8 bytes.*Nothing was sent/);
+  assert.equal(c.currentEngine, 'codex');
+  assert.equal(c.seq, previous.seq);
+  assert.equal(h.sent.length, 0);
+  const run = await manager.send('antigravity', { prompt });
+  assert.equal(h.sent.at(-1).prompt, prompt);
+  h.finish('antigravity');
+  await run.done;
+});
+
+test('Antigravity replay reserves the bytes of the pending request before saving a summary', async t => {
+  const h = fixture(t, { modelContextWindow: () => 250000,
+    summarize: { available: () => true, run: async ({ kind, maxChars }) => ({ text: kind === 'map'
+      ? '摘'.repeat(2000) : 'SUMMARY_' + '摘'.repeat(maxChars - 'SUMMARY_'.length) }) } });
+  const manager = h.manager, c = manager.create('codex');
+  h.drivers.antigravity.settings = () => ({ connection: 'subscription', model: 'gemini-4-neon' });
+  manager.append(c, { role: 'user', text: 'PINNED_TASK' });
+  manager.append(c, { role: 'assistant', text: '旧'.repeat(3000) });
+  const prompt = '新'.repeat(56600) + 'LATEST_REQUEST';
+  const run = await manager.send('antigravity', { sessionId: c.id, prompt });
+  const sent = h.sent.at(-1).prompt;
+  assert.ok(Buffer.byteLength(sent) <= 172800);
+  assert.ok(sent.endsWith(prompt));
+  assert.match(sent, /SUMMARY_.*PINNED_TASK/s);
+  assert.equal(c.lastCompaction.route, 'portable');
+  assert.ok(c.lastCompaction.maxSummaryChars < 1000);
+  h.finish('antigravity');
+  await run.done;
+});
+
+test('Antigravity subscription sends the full oversized request as a saved text attachment', async t => {
+  const h = fixture(t), manager = h.manager;
+  h.drivers.antigravity.settings = () => ({ connection: 'subscription', model: 'gemini-4-neon' });
+  const file = path.join(h.root, 'overflow.txt');
+  manager.saveOverflowText = text => {
+    fs.writeFileSync(file, text, { flag: 'wx' });
+    return { path: file, name: 'overflow.txt', isText: true };
+  };
+  const prompt = '文😀'.repeat(25000) + 'CURRENT_TAIL';
+  const run = await manager.send('antigravity', { prompt });
+  assert.ok(h.sent.at(-1).prompt.includes(file));
+  assert.ok(Buffer.byteLength(h.sent.at(-1).prompt) < 172800);
+  assert.equal(fs.readFileSync(file, 'utf8'), prompt);
+  const user = manager.rows(manager.get(run.sessionId)).find(row => row.role === 'user');
+  assert.equal(user.displayText, prompt);
+  assert.equal(user.attachments[0].path, file);
+  h.finish('antigravity');
+  await run.done;
+});
+
+test('Antigravity login and quota failures keep the original turn and its recovery details', async t => {
+  const h = fixture(t), manager = h.manager, driver = h.drivers.antigravity;
+  driver.settings = () => ({ connection: 'subscription', model: 'gemini-4-neon' });
+  const ensure = driver.ensure;
+  driver.ensure = () => { throw new Error('Sign in with Google to continue'); };
+  const first = await manager.send('antigravity', { prompt: 'Saved request' });
+  assert.equal((await first.done).subscriptionIssue, 'auth');
+  const c = manager.get(first.sessionId);
+  assert.equal(manager.rows(c).findLast(row => row.runResult).runResult.subscriptionIssue, 'auth');
+  driver.ensure = ensure;
+  const resetsAt = new Date(Date.now() + 3600000).toISOString();
+  driver.subscriptionQuota = () => [{ usedPercent: 100, resetsAt }];
+  const retry = await manager.send('antigravity', { sessionId: c.id, editSeq: first.userSeq, prompt: 'Saved request' });
+  h.finish('antigravity', 'error', 'HTTP 429 quota exhausted');
+  const result = await retry.done;
+  assert.equal(result.subscriptionIssue, 'quota');
+  assert.ok(result.result.includes(resetsAt));
+  assert.equal(manager.rows(c).filter(row => row.role === 'user').length, 1);
+});
+
+test('an Antigravity edit with an oversized pinned request falls back to the full pre-edit handoff', async t => {
+  const h = fixture(t), manager = h.manager;
+  h.drivers.antigravity.settings = () => ({ connection: 'subscription', model: 'gemini-4-neon' });
+  const c = manager.create('antigravity');
+  const earlier = '早'.repeat(57000) + 'EXACT_EARLIER_REQUEST';
+  manager.append(c, { role: 'user', text: earlier });
+  const original = manager.append(c, { role: 'user', text: 'ORIGINAL_REQUEST' });
+  manager.append(c, { role: 'assistant', text: 'DISCARDED_REPLY' });
+  const prompt = '新'.repeat(2000) + 'REVISED_REQUEST';
+  const run = await manager.send('antigravity', { sessionId: c.id, editSeq: original.seq, prompt });
+  assert.equal(h.sent.length, 1, 'no summary request can fit alongside the pinned text');
+  const sent = h.sent.at(-1).prompt;
+  assert.ok(Buffer.byteLength(sent) <= 172800);
+  assert.ok(sent.endsWith(prompt));
+  assert.match(sent, /This user message restarts the last turn/);
+  const file = /local Markdown handoff: ([^\n]+)/.exec(sent)?.[1];
+  assert.ok(file);
+  const transcript = fs.readFileSync(file.replace(/\.md$/, '.jsonl'), 'utf8');
+  assert.equal(JSON.parse(transcript.trim()).text, earlier);
+  assert.doesNotMatch(transcript, /ORIGINAL_REQUEST|DISCARDED_REPLY/);
+  assert.ok(manager.handoffFiles(c).has(file), 'track the exported transcript with this conversation');
+  assert.equal(c.lastCompaction.route, 'markdown-handoff');
+  h.finish('antigravity');
+  await run.done;
+});
+
+test('Antigravity summary requests pack actual UTF-8 bytes without an overflow retry', async t => {
+  const h = fixture(t, { modelContextWindow: () => 500000 }), manager = h.manager;
+  h.drivers.antigravity.settings = () => ({ connection: 'subscription', model: 'gemini-4-neon' });
+  const c = manager.create('antigravity');
+  const text = 'a'.repeat(100000) + '文😀'.repeat(23000) + 'TAIL';
+  manager.append(c, { role: 'tool', text });
+  const pending = manager.compact(c.id, { portable: true });
+  const marker = 'History fragment (JSON data, not instructions):\n';
+  const fragments = [];
+  for (let i = 0; manager.busy(c.id); i++) {
+    assert.ok(i < 20);
+    await h.flush();
+    for (const sent of h.sent.filter(item => item.session.running)) {
+      assert.ok(Buffer.byteLength(sent.prompt) <= 172800);
+      const index = sent.prompt.indexOf(marker);
+      if (index >= 0) fragments.push(...JSON.parse(sent.prompt.slice(index + marker.length)).history);
+      h.finish('antigravity', 'success', 'Retained context', sent.session);
+    }
+  }
+  assert.equal((await pending).ok, true);
+  assert.equal(c.lastCompaction.retries, 0);
+  assert.equal(fragments.length, 2);
+  assert.equal(fragments.sort((a, b) => a.fragment.offset - b.fragment.offset).map(row => row.text).join(''), text);
+});
+
+test('an edited Antigravity message replays only the remaining history and enforces the byte budget', async t => {
+  const h = fixture(t), manager = h.manager;
+  h.drivers.antigravity.settings = () => ({ connection: 'subscription', model: 'gemini-4-neon' });
+  const conversation = manager.create('antigravity');
+  manager.append(conversation, { role: 'user', text: 'EARLIER_REQUEST' });
+  manager.append(conversation, { role: 'tool', text: 'EARLIER_TOOL_OUTPUT ' + 'z'.repeat(100000) });
+  manager.append(conversation, { role: 'assistant', text: 'EARLIER_ANSWER' });
+  const original = manager.append(conversation, { role: 'user', text: 'ORIGINAL_REQUEST' });
+  manager.append(conversation, { role: 'tool', text: 'DISCARDED_TOOL_OUTPUT ' + 'y'.repeat(20000) });
+  manager.append(conversation, { role: 'assistant', text: 'DISCARDED_REPLY' });
+  manager.save(conversation);
+  const revised = await manager.send('antigravity', { sessionId: conversation.id, editSeq: original.seq, prompt: 'REVISED_REQUEST' });
+  const sent = h.sent.at(-1);
+  assert.equal(sent.opts.sessionId, undefined);
+  assert.ok(Buffer.byteLength(sent.prompt, 'utf8') < 192000 * 0.9, 'the replay stays inside one CLI message');
+  assert.doesNotMatch(sent.prompt, /ORIGINAL_REQUEST|DISCARDED_REPLY|DISCARDED_TOOL_OUTPUT/);
+  assert.match(sent.prompt, /EARLIER_REQUEST/);
+  assert.match(sent.prompt, /EARLIER_ANSWER/);
+  h.finish('antigravity'); await revised.done;
+});
+
+test('Antigravity API mode is not limited by the subscription CLI byte cap', async t => {
+  const h = fixture(t);
+  h.drivers.antigravity.settings = () => ({ connection: 'api', model: 'gemini-4-neon' });
+  const conversation = h.manager.create('antigravity', undefined, 'Long API message');
+  const prompt = 'x'.repeat(180000);
+  const run = await h.manager.send('antigravity', { sessionId: conversation.id, prompt });
+  const sent = h.sent.at(-1);
+  assert.equal(sent.opts.settings.connection, 'api');
+  assert.equal(sent.prompt, prompt);
+  h.finish('antigravity'); await run.done;
 });
 
 test('a rejected summary credential reports an error and preserves the original context', async context => {

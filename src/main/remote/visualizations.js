@@ -55,15 +55,17 @@ function visualizationDocument(card, theme = 'light') {
     // flag and the tap-to-advance gesture. Both mirror the desktop bridge so a
     // card written once behaves the same in every viewer.
     'var presenting=false;' +
+    'function slides(){return !!document.querySelector("[data-viz-presentation=slides]");}' +
+    'window.__camelliaPresentationCommand=function(command){if(presenting&&slides()&&(command==="previous"||command==="next"))window.dispatchEvent(new CustomEvent("camellia:presentation-command",{detail:{command:command}}));};' +
     'window.__camelliaSetPresenting=function(active){presenting=active===true;' +
     'if(presenting)document.documentElement.setAttribute("data-viz-presenting","1");' +
     'else document.documentElement.removeAttribute("data-viz-presenting");' +
     'window.dispatchEvent(new CustomEvent("camellia:presentation",{detail:{active:presenting}}));};' +
     'document.addEventListener("click",function(event){' +
-    'if(!presenting||!window.camelliaVisualize.presentation.clickToAdvance)return;' +
+    'if(!presenting||!window.camelliaVisualize.presentation.clickToAdvance||event.defaultPrevented||event.button!==0||event.detail>1||event.ctrlKey||event.metaKey||event.altKey||event.shiftKey)return;' +
     'var target=event.target;if(!target||!target.closest)return;' +
-    'if(target.closest("button,a,input,select,textarea,label,summary,video,audio,[contenteditable=\"true\"],[contenteditable=\"\"],[data-viz-interactive],[role=button],[role=link],[role=checkbox],[role=radio],[role=switch],[role=slider],[role=tab],[role=menuitem]"))return;' +
-    'window.dispatchEvent(new CustomEvent("camellia:presentation-command",{detail:{command:"next"}}));},true);' +
+    'if(target.closest("button,a,area,input,select,textarea,label,summary,video,audio,iframe,object,embed,[contenteditable]:not([contenteditable=false]),[data-viz-interactive],[role=button],[role=link],[role=checkbox],[role=radio],[role=switch],[role=slider],[role=tab],[role=menuitem],[role=combobox],[role=textbox]"))return;' +
+    'var selection=window.getSelection();if(selection&&!selection.isCollapsed)return;window.__camelliaPresentationCommand("next");});' +
     '})();</script>';
   return '<!doctype html><html data-theme="' + mode + '"><head><meta charset="utf-8">' +
     '<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">' +
@@ -72,7 +74,9 @@ function visualizationDocument(card, theme = 'light') {
     '<style>html,body{margin:0;min-height:100%;background:var(--viz-bg);color:var(--viz-fg);' +
     'font:14px/1.5 "Segoe UI","Microsoft YaHei",sans-serif;-webkit-text-size-adjust:100%;}' +
     '*{box-sizing:border-box}body{overflow:auto;padding:0;}button,input,select,textarea{font:inherit;}' +
-    THEME_CSS + '</style>' + bridge + '</head><body><div class="viz-theme viz-' + style + '">'
+    THEME_CSS + (card.layoutVersion === 2
+      ? '.viz-theme{display:flow-root;min-height:0;padding:var(--viz-padding,16px)}html[data-viz-presenting="1"] .viz-theme{min-height:100vh}'
+      : '') + '</style>' + bridge + '</head><body><div class="viz-theme viz-' + style + '">'
     + card.html + '</div></body></html>';
 }
 

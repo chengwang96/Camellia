@@ -6,7 +6,7 @@ const path = require('node:path');
 const { createHash } = require('node:crypto');
 const { createHarness } = require('./main-process-harness.cjs');
 const { createAntigravity, subscriptionSpawnSpec } = require('../src/engines/antigravity');
-const { subscriptionEnvironment, parseModels, parseGoogleQuota, groupModels, normalizeSelection, effectiveSelection, loginScript, requireGoogleProvider, headlessEnvironment, cliAuthenticationError, describeCliFailure, runCliWithRetry } = require('../src/engines/antigravity/subscription');
+const { subscriptionEnvironment, parseModels, parseGoogleQuota, groupModels, normalizeSelection, effectiveSelection, lowestReasoningEffort, loginScript, requireGoogleProvider, headlessEnvironment, cliAuthenticationError, describeCliFailure, runCliWithRetry } = require('../src/engines/antigravity/subscription');
 const { createGoogleAccount } = require('../src/engines/antigravity/subscription');
 const { createRuntimeManager } = require('../src/main/runtime-manager');
 const { installAntigravityCli } = require('../src/main/antigravity-cli-runtime');
@@ -47,6 +47,14 @@ test('Background Google checks stay headless so a stalled credential read cannot
   assert.match(describeCliFailure('Headless auth: no valid auth (keyring unavailable); starting login', '', 3), /sign-in has expired or is invalid/);
   assert.equal(describeCliFailure('', '', 7), 'Antigravity CLI exited (7)');
   assert.equal(describeCliFailure('network down', '', 1), 'network down');
+});
+
+test('summary effort uses the lowest available level even if the catalog has no low variant', () => {
+  const models = groupModels(parseModels('gemini-high\tGemini (High)\ngemini-medium\tGemini (Medium)\nother\tOther'));
+  assert.equal(lowestReasoningEffort(models, 'gemini'), 'medium');
+  assert.equal(lowestReasoningEffort(models, 'gemini-high'), 'medium');
+  assert.equal(effectiveSelection(models, 'gemini', 'low').thinking, 'high');
+  assert.equal(lowestReasoningEffort(models, 'other'), '');
 });
 
 test('A transient background Google check is retried, but one that opened a login page never is', async () => {

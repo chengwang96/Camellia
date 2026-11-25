@@ -85,10 +85,15 @@ final class SettingsStyle {
         shape.setStroke(dp(1), border); return shape;
     }
 
-    void sheetPanel(LinearLayout panel) {
-        panel.setOrientation(LinearLayout.VERTICAL); panel.setPadding(dp(18), dp(14), dp(18), dp(18));
+    void sheetSurface(View panel) {
         GradientDrawable shape = new GradientDrawable(); shape.setColor(background); shape.setCornerRadius(dp(Palette.RADIUS_SHEET));
         shape.setStroke(dp(1), palette.cardBorder); panel.setBackground(shape);
+        panel.setPadding(dp(18), dp(14), dp(18), dp(18));
+    }
+
+    void sheetPanel(LinearLayout panel) {
+        panel.setOrientation(LinearLayout.VERTICAL);
+        sheetSurface(panel);
         View handle = new View(context); handle.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
         GradientDrawable gripShape = new GradientDrawable(); gripShape.setColor(divider); gripShape.setCornerRadius(dp(Palette.RADIUS_GRIP)); handle.setBackground(gripShape);
         LinearLayout.LayoutParams grip = new LinearLayout.LayoutParams(dp(36), dp(4));

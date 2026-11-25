@@ -4,7 +4,6 @@ import android.app.Dialog;
 import android.content.Context;
 import android.content.res.ColorStateList;
 import android.graphics.Color;
-import android.graphics.Typeface;
 import android.graphics.drawable.ColorDrawable;
 import android.graphics.drawable.GradientDrawable;
 import android.graphics.drawable.RippleDrawable;
@@ -41,6 +40,7 @@ final class VisualizationDialog extends Dialog {
     private final Handler viewerHandler = new Handler(Looper.getMainLooper());
     private final TextView modeButton, zoomLabel, zoomOut, zoomIn, overflowHint;
     private final TextView presentButton, rotateButton;
+    private final LinearLayout viewControls;
     private ChoiceDropdown viewMenu;
     private String viewMode = "width";
     /** Toolbar + status/navigation bars stay hidden while a presentation runs. */
@@ -76,6 +76,7 @@ final class VisualizationDialog extends Dialog {
         this.chinese = chinese;
         palette = Palette.of(context);
         requestWindowFeature(Window.FEATURE_NO_TITLE);
+        setTitle(title);
 
         LinearLayout root = new LinearLayout(context);
         root.setOrientation(LinearLayout.VERTICAL);
@@ -85,57 +86,62 @@ final class VisualizationDialog extends Dialog {
         this.header = header;
         header.setGravity(Gravity.CENTER_VERTICAL);
         header.setTag("cardViewerToolbar");
-        header.setPadding(dp(12), dp(4), dp(4), dp(4));
-        // Six 44dp controls do not fit a narrow phone. Keep every touch target
-        // and let the row scroll horizontally instead of shrinking the labels.
-        android.widget.HorizontalScrollView toolbar = new android.widget.HorizontalScrollView(context);
-        toolbar.setTag("cardViewerToolbarScroll");
-        toolbar.setHorizontalScrollBarEnabled(false);
-        toolbar.setFillViewport(true);
-        toolbar.addView(header, new android.widget.FrameLayout.LayoutParams(-2, -2));
-        TextView heading = new TextView(context);
-        heading.setText(title);
-        heading.setTextSize(14);
-        heading.setContentDescription(title);
-        heading.setTextColor(palette.ink);
-        heading.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
-        heading.setSingleLine(true);
-        heading.setEllipsize(android.text.TextUtils.TruncateAt.END);
-        header.addView(heading, new LinearLayout.LayoutParams(0, -2, 1));
-        modeButton = viewerButton(chinese ? "适宽" : "Fit", "cardViewMode", chinese ? "卡片查看方式" : "Card view mode", this::showViewMenu);
-        modeButton.setTextSize(12); compactModeIndicator(false);
-        header.addView(modeButton, new LinearLayout.LayoutParams(dp(52), dp(44)));
-        zoomOut = viewerButton("−", "cardZoomOut", chinese ? "缩小卡片" : "Zoom card out", () -> changeZoom(1 / 1.25));
-        header.addView(zoomOut, new LinearLayout.LayoutParams(dp(44), dp(44)));
-        zoomLabel = viewerButton("100%", "cardZoomReset", chinese ? "恢复卡片实际大小" : "Restore actual card size", () -> setViewMode("custom", 1));
-        zoomLabel.setTextSize(12);
-        header.addView(zoomLabel, new LinearLayout.LayoutParams(dp(48), dp(44)));
-        zoomIn = viewerButton("+", "cardZoomIn", chinese ? "放大卡片" : "Zoom card in", () -> changeZoom(1.25));
-        header.addView(zoomIn, new LinearLayout.LayoutParams(dp(44), dp(44)));
+        header.setPadding(dp(6), dp(4), dp(6), dp(4));
+        android.widget.ImageButton close = new android.widget.ImageButton(context);
+        close.setTag("cardClose");
+        close.setContentDescription(chinese ? "关闭卡片" : "Close card");
+        close.setTooltipText(close.getContentDescription());
+        LineIcon closeIcon = new LineIcon("close", palette.ink);
+        close.setImageDrawable(closeIcon);
+        close.setScaleType(android.widget.ImageView.ScaleType.FIT_XY);
+        close.setPadding(dp(12), dp(12), dp(12), dp(12));
+        close.setBackground(new RippleDrawable(ColorStateList.valueOf(Palette.RIPPLE_ON_PAGE), null, shape(Color.WHITE, 8)));
+        close.setOnClickListener(view -> dismiss());
+        header.addView(close, new LinearLayout.LayoutParams(dp(44), dp(44)));
+        header.addView(new View(context), new LinearLayout.LayoutParams(0, 0, 1));
+        modeButton = viewerButton("", "cardViewMode", chinese ? "卡片查看方式" : "Card view mode", this::showViewMenu);
+        modeButton.setTextSize(12);
+        modeButton.setPadding(dp(10), 0, dp(8), 0);
+        modeButton.setBackground(new RippleDrawable(ColorStateList.valueOf(Palette.RIPPLE_ON_PAGE),
+            rounded(palette.card, 9), null));
+        updateViewLabel();
+        compactModeIndicator(false);
+        header.addView(modeButton, new LinearLayout.LayoutParams(-2, dp(44)));
+        header.addView(new View(context), new LinearLayout.LayoutParams(0, 0, 1));
         presentButton = viewerButton(chinese ? "演示" : "Present", "cardPresent",
             chinese ? "全屏演示卡片" : "Present the card full screen", this::togglePresenting);
         presentButton.setTextSize(12);
+        presentButton.setPadding(dp(10), 0, dp(10), 0);
+        boolean dark = Color.luminance(palette.background) < .5f;
+        presentButton.setTextColor(dark ? Color.BLACK : Color.WHITE);
+        LineIcon play = new LineIcon("play", presentButton.getCurrentTextColor());
+        play.setBounds(0, 0, dp(15), dp(15));
+        presentButton.setCompoundDrawablePadding(dp(4));
+        presentButton.setCompoundDrawablesRelative(play, null, null, null);
+        presentButton.setBackground(new RippleDrawable(ColorStateList.valueOf(Palette.RIPPLE_ON_CARD),
+            rounded(dark ? palette.accent : 0xff225cbd, 9), null));
         header.addView(presentButton, new LinearLayout.LayoutParams(-2, dp(44)));
-        rotateButton = viewerButton(chinese ? "横屏" : "Rotate", "cardRotate",
-            chinese ? "切换卡片方向" : "Change card orientation", this::toggleOrientation);
-        rotateButton.setTextSize(12);
-        header.addView(rotateButton, new LinearLayout.LayoutParams(-2, dp(44)));
-        TextView close = new TextView(context);
-        close.setText(chinese ? "关闭" : "Close");
-        close.setTextSize(13);
-        close.setTextColor(palette.accent);
-        close.setGravity(Gravity.CENTER);
-        close.setMinWidth(dp(56));
-        close.setMinHeight(dp(44));
-        close.setPadding(dp(4), 0, dp(4), 0);
-        close.setFocusable(true);
-        GradientDrawable closeShape = rounded(palette.background, Palette.RADIUS_DIALOG_ACTION);
-        closeShape.setStroke(dp(1), palette.cardBorder);
-        close.setBackground(new RippleDrawable(ColorStateList.valueOf(Palette.RIPPLE_ON_PAGE), closeShape, shape(Color.WHITE, Palette.RADIUS_DIALOG_ACTION)));
-        SurfaceElevation.apply(close, 1);
-        close.setOnClickListener(view -> dismiss());
-        header.addView(close, new LinearLayout.LayoutParams(-2, -2));
-        root.addView(toolbar, new LinearLayout.LayoutParams(-1, -2));
+        root.addView(header, new LinearLayout.LayoutParams(-1, -2));
+
+        viewControls = new LinearLayout(context);
+        viewControls.setOrientation(LinearLayout.VERTICAL);
+        LinearLayout zoom = new LinearLayout(context);
+        zoom.setBackground(rounded(palette.background, 9));
+        zoomOut = viewerButton("−", "cardZoomOut", chinese ? "缩小卡片" : "Zoom card out", () -> changeZoom(1 / 1.25));
+        zoomLabel = new TextView(context);
+        zoomLabel.setText("100%");
+        zoomLabel.setTag("cardZoomLevel");
+        zoomLabel.setTextSize(13);
+        zoomLabel.setGravity(Gravity.CENTER);
+        zoomLabel.setTextColor(palette.ink);
+        zoomIn = viewerButton("+", "cardZoomIn", chinese ? "放大卡片" : "Zoom card in", () -> changeZoom(1.25));
+        for (TextView button : new TextView[]{zoomOut, zoomLabel, zoomIn}) {
+            zoom.addView(button, new LinearLayout.LayoutParams(0, dp(44), 1));
+        }
+        viewControls.addView(zoom, new LinearLayout.LayoutParams(-1, -2));
+        rotateButton = viewerButton(chinese ? "切换横屏" : "Rotate to landscape", "cardRotate",
+            chinese ? "锁定横屏" : "Lock the card to landscape", this::toggleOrientation);
+        viewControls.addView(rotateButton, new LinearLayout.LayoutParams(-1, dp(44)));
 
         FrameLayout shell = new FrameLayout(context);
         shell.setBackgroundColor(palette.background);
@@ -321,7 +327,8 @@ final class VisualizationDialog extends Dialog {
         Window window = getWindow();
         if (window != null) {
             window.setLayout(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT);
-            window.getDecorView().requestApplyInsets();
+            if (presenting) applyPresenting(true);
+            else window.getDecorView().requestApplyInsets();
         }
         // Native viewport changes notify CSS media queries and ResizeObserver
         // without reloading the browser document or its interaction state.
@@ -342,13 +349,17 @@ final class VisualizationDialog extends Dialog {
 
     private void showViewMenu() {
         if (!documentReady || webView == null) return;
-        if (viewMenu != null) viewMenu.dismiss();
-        String[] labels = chinese ? new String[]{"适应宽度", "完整显示", "实际大小（100%）"} : new String[]{"Fit width", "Show whole card", "Actual size (100%)"};
-        int selected = viewMode.equals("width") ? 0 : viewMode.equals("page") ? 1 : Math.abs(manualScale - 1) < .001 ? 2 : -1;
-        viewMenu = new ChoiceDropdown(modeButton, chinese ? "卡片查看方式" : "Card view mode", labels, selected, false,
-            index -> setViewMode(index == 0 ? "width" : index == 1 ? "page" : "custom", 1));
+        if (viewMenu != null && viewMenu.isShowing()) { viewMenu.dismiss(); return; }
+        String[] labels = chinese ? new String[]{"适应宽度", "完整显示"} : new String[]{"Fit width", "Show whole card"};
+        int selected = viewMode.equals("width") ? 0 : viewMode.equals("page") ? 1 : -1;
+        viewMenu = new ChoiceDropdown(modeButton, chinese ? "卡片查看方式" : "Card view mode", labels, selected, false, Gravity.CENTER_HORIZONTAL, viewControls,
+            index -> setViewMode(index == 0 ? "width" : "page", 1));
         compactModeIndicator(true);
-        viewMenu.onDismiss(() -> compactModeIndicator(false));
+        viewMenu.onDismiss(() -> {
+            if (viewControls.getParent() instanceof ViewGroup parent) parent.removeView(viewControls);
+            viewMenu = null;
+            compactModeIndicator(false);
+        });
     }
 
     private void compactModeIndicator(boolean expanded) {
@@ -382,16 +393,30 @@ final class VisualizationDialog extends Dialog {
             JSONObject state = new JSONObject(value); double scale = state.getDouble("scale");
             if (!viewMode.equals(state.optString("mode")) || !Double.isFinite(scale) || scale <= 0 || scale > 3) return;
             displayedScale = scale; setViewerEnabled(true);
-            zoomLabel.setText(scale < .001 ? "<0.1%" : scale < .1 ? String.format(java.util.Locale.ROOT, "%.1f%%", scale * 100) : Math.round(scale * 100) + "%");
-            modeButton.setText(viewMode.equals("page") ? (chinese ? "全卡" : "All") : viewMode.equals("width") ? (chinese ? "适宽" : "Fit") : (chinese ? "缩放" : "Zoom"));
+            updateViewLabel();
             zoomOut.setEnabled(scale > .0501); zoomIn.setEnabled(scale < 2.999);
             zoomOut.setAlpha(zoomOut.isEnabled() ? 1 : .35f); zoomIn.setAlpha(zoomIn.isEnabled() ? 1 : .35f);
             viewerHandler.post(this::updateOverflowHint);
         } catch (org.json.JSONException ignored) { /* A closed or not-yet-ready document reports null. */ }
     }
 
+    private void updateViewLabel() {
+        String percent = displayedScale < .001 ? "<0.1%" : displayedScale < .1
+            ? String.format(java.util.Locale.ROOT, "%.1f%%", displayedScale * 100)
+            : Math.round(displayedScale * 100) + "%";
+        if (zoomLabel != null) zoomLabel.setText(percent);
+        String label = switch (viewMode) {
+            case "page" -> chinese ? "全卡" : "All";
+            case "width" -> chinese ? "适宽" : "Fit";
+            default -> chinese ? "缩放" : "Zoom";
+        };
+        modeButton.setText(label + " · " + percent);
+        modeButton.setContentDescription((chinese ? "卡片查看方式，" : "Card view mode, ") + label + ", " + percent);
+        if (viewMenu != null) viewMenu.setSelected(viewMode.equals("width") ? 0 : viewMode.equals("page") ? 1 : -1);
+    }
+
     private void setViewerEnabled(boolean enabled) {
-        for (TextView button : new TextView[]{modeButton, zoomOut, zoomLabel, zoomIn, presentButton, rotateButton}) {
+        for (TextView button : new TextView[]{modeButton, zoomOut, zoomIn, presentButton, rotateButton}) {
             button.setEnabled(enabled); button.setAlpha(enabled ? 1 : .35f);
         }
     }
@@ -406,6 +431,14 @@ final class VisualizationDialog extends Dialog {
         setPresenting(!presenting);
     }
 
+    @Override public boolean dispatchKeyEvent(android.view.KeyEvent event) {
+        if (presenting && event.getKeyCode() == android.view.KeyEvent.KEYCODE_BACK) {
+            if (event.getAction() == android.view.KeyEvent.ACTION_UP) setPresenting(false);
+            return true;
+        }
+        return super.dispatchKeyEvent(event);
+    }
+
     private void setPresenting(boolean active) {
         if (presenting == active) return;
         presenting = active;
@@ -414,9 +447,9 @@ final class VisualizationDialog extends Dialog {
             ? (chinese ? "退出全屏演示" : "Exit the full-screen presentation")
             : (chinese ? "全屏演示卡片" : "Present the card full screen"));
         if (header != null) header.setVisibility(active ? View.GONE : View.VISIBLE);
-        applyPresenting(active);
-        notifyDocumentPresentation(active);
+        if (!active) applyPresenting(false);
         updateViewport();
+        notifyDocumentPresentation(active);
     }
 
     /**
@@ -450,13 +483,37 @@ final class VisualizationDialog extends Dialog {
     private void sendPresentationCommand(String command) {
         WebView browser = webView;
         if (browser == null || !documentReady || !presenting) return;
-        browser.evaluateJavascript("(function(){window.dispatchEvent(new CustomEvent('camellia:presentation-command',"
-            + "{detail:{command:" + JSONObject.quote(command) + "}}));})()", null);
+        browser.evaluateJavascript("(function(command){if(window.__camelliaPresentationCommand)"
+            + "window.__camelliaPresentationCommand(command);"
+            + "else window.dispatchEvent(new CustomEvent('camellia:presentation-command',{detail:{command:command}}));"
+            + "})(" + JSONObject.quote(command) + ")", null);
+    }
+
+    @Override public void onWindowFocusChanged(boolean focused) {
+        super.onWindowFocusChanged(focused);
+        if (focused && presenting) applyPresenting(true);
+    }
+
+    @Override public void onBackPressed() {
+        if (presenting) setPresenting(false);
+        else super.onBackPressed();
     }
 
     private void applyPresenting(boolean active) {
         Window window = getWindow();
         if (window == null) return;
+        if (active) window.addFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN);
+        else window.clearFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN);
+        if (Build.VERSION.SDK_INT >= 28) {
+            WindowManager.LayoutParams attrs = window.getAttributes();
+            int cutoutMode = !active ? WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_DEFAULT
+                : Build.VERSION.SDK_INT >= 30 ? WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
+                : WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;
+            if (attrs.layoutInDisplayCutoutMode != cutoutMode) {
+                attrs.layoutInDisplayCutoutMode = cutoutMode;
+                window.setAttributes(attrs);
+            }
+        }
         View decor = window.getDecorView();
         if (Build.VERSION.SDK_INT >= 30) {
             window.setDecorFitsSystemWindows(!active);
@@ -498,7 +555,7 @@ final class VisualizationDialog extends Dialog {
             ? android.content.pm.ActivityInfo.SCREEN_ORIENTATION_USER_LANDSCAPE
             : savedOrientation);
         if (rotateButton != null) {
-            rotateButton.setText(landscape ? (chinese ? "竖屏" : "Portrait") : (chinese ? "横屏" : "Landscape"));
+            rotateButton.setText(landscape ? (chinese ? "跟随设备方向" : "Follow device orientation") : (chinese ? "切换横屏" : "Rotate to landscape"));
             rotateButton.setContentDescription(landscape
                 ? (chinese ? "恢复跟随手机方向" : "Follow the device orientation again")
                 : (chinese ? "锁定横屏" : "Lock the card to landscape"));
@@ -525,7 +582,7 @@ final class VisualizationDialog extends Dialog {
             : android.content.pm.ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED);
         ownsOrientation = false;
         if (rotateButton != null) {
-            rotateButton.setText(chinese ? "横屏" : "Landscape");
+            rotateButton.setText(chinese ? "切换横屏" : "Rotate to landscape");
             rotateButton.setContentDescription(chinese ? "锁定横屏" : "Lock the card to landscape");
         }
     }

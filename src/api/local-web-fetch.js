@@ -3,6 +3,7 @@
 const { promises: dns } = require('node:dns');
 const net = require('node:net');
 const cheerio = require('cheerio');
+const { appVersion } = require('../shared/app-version');
 
 const MAX_BODY_BYTES = 2 * 1024 * 1024;
 const MAX_REDIRECTS = 5;
@@ -271,7 +272,7 @@ function createLocalWebFetch({ fetchImpl = fetch, lookup = dns.lookup, timeoutMs
           current = pageUrl(current.href);
           await assertPublicUrl(current, lookup, routeProxyDns ?? allowProxyDns);
           const response = await fetchImpl(current.href, {
-            headers: { Accept: 'text/html, application/xhtml+xml, text/plain;q=0.9, text/markdown;q=0.9', 'User-Agent': 'Camellia/1.0' },
+            headers: { Accept: 'text/html, application/xhtml+xml, text/plain;q=0.9, text/markdown;q=0.9', 'User-Agent': `Camellia/${appVersion}` },
             redirect: 'manual', signal: operationSignal,
           });
           if (REDIRECTS.has(response.status)) {

@@ -2459,12 +2459,14 @@ public final class MainActivity extends Activity {
 
     private android.app.Dialog createAttachmentDialog(View panel) {
         if (computerDialog != null) computerDialog.dismiss();
+        SettingsStyle style = new SettingsStyle(this);
+        style.sheetSurface(panel);
+        panel.setClipToOutline(true);
         android.app.Dialog dialog = new android.app.Dialog(this);
         dialog.requestWindowFeature(android.view.Window.FEATURE_NO_TITLE);
         dialog.setContentView(panel);
         dialog.setCanceledOnTouchOutside(true);
         computerDialog = dialog;
-        SettingsStyle style = new SettingsStyle(this);
         dialog.setOnShowListener(ignored -> style.contentSheetWindow(dialog.getWindow(), panel));
         return dialog;
     }
@@ -8104,6 +8106,8 @@ public final class MainActivity extends Activity {
     }
 
     @Override public void onBackPressed() {
+        VisualizationDialog card = visualizationDialog;
+        if (card != null && card.isShowing()) { card.onBackPressed(); return; }
         if (selectingConversations && screen.equals("list")) {
             selectingConversations = false; selectedConversations.clear(); renderConversations(); return;
         }

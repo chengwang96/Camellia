@@ -212,7 +212,7 @@ test('agent turns place the footer after their content and keep copy text raw', 
 });
 
 test('result chips and artifact cards stay above the footer', () => {
-  assert.match(source, /\(turnEl \|\| chat\)\.appendChild\(chip\);\n\s+moveTurnFooter\(turnEl\);/);
+  assert.match(source, /\(turnEl \|\| chat\)\.appendChild\(chip\);\n[\s\S]{0,300}moveTurnFooter\(turnEl\);/);
   assert.match(source, /if \(resultChip\) resultChip\.before\(list\); else turn\.appendChild\(list\);\n\s+moveTurnFooter\(turn\);/);
 });
 

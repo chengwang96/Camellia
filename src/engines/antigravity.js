@@ -12,7 +12,8 @@ const { readJson } = require('../shared/json-store');
 const { modelId } = require('../api/api-router-config');
 const { pythonEnvironment, globalPythonEnvironment } = require('../main/python-runtime');
 const { downloadSettings } = require('../main/download-network');
-const { createGoogleAccount, subscriptionEnvironment, requireGoogleProvider, effectiveSelection, stopCli, systemProxy } = require('./antigravity/subscription');
+const { appVersion } = require('../shared/app-version');
+const { createGoogleAccount, subscriptionEnvironment, requireGoogleProvider, effectiveSelection, lowestReasoningEffort, stopCli, systemProxy } = require('./antigravity/subscription');
 const { valid } = require('./permission-levels');
 const { accountSummary, accountsFor, normalizeLabel, DEFAULT_ACCOUNT_ID } = require('./subscription-accounts');
 const { getDiscussionLaunch, buildDiscussionSpec, assertDiscussionPoolAccess } = require('./discussions/native-launch');
@@ -34,6 +35,7 @@ function antigravitySpawnSpec({ runtime, home, route, config = {}, env, python, 
       : runtime.custom ? { ...env, PYTHONUTF8: '1', PYTHONDONTWRITEBYTECODE: '1' } : pythonEnvironment(runtime.dir, env)),
     CAMELLIA_ANTIGRAVITY_CONFIG: JSON.stringify({ home, baseUrl: route.baseUrl + '/compat/antigravity/v1', settings: config,
       ...(executionPolicy === undefined ? {} : { executionPolicy }) }),
+    CAMELLIA_APP_VERSION: appVersion,
   } };
 }
 
@@ -235,6 +237,7 @@ function createAntigravity({ dataDir, cliSettingsFile, node, openLogin, loadConf
     'goal-complete': () => goal.setPhase('complete'), 'goal-clear': () => goal.clear({ interrupt: false }),
   };
   return { get session() { return sessions.legacy; }, home, goal, settings, saveSettings, handlers, ensureSession, forkNative, history, sessions, workspaces,
+    summaryThinkingBudget: model => lowestReasoningEffort(account.state().models, model),
     generateTitle: ({ conversation, prompt }) => {
       const session = sessions.get({ conversationId: conversation.id });
       return session && !session.dead ? session.generateTitle(prompt) : '';

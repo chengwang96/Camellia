@@ -25,6 +25,7 @@ const { searchFilesAsync, searchContentsAsync } = require('../main/file-search-p
 const { buildHistoryIndex, searchHistory: matchHistory } = require('../main/conversation-index');
 const { previewKind } = require('../main/file-preview');
 const { subscriptionFailure, subscriptionRecoveryMessage, availableAccount } = require('./subscription-recovery');
+const { SUBSCRIPTION_PROMPT_BYTES, assertSubscriptionPromptFits } = require('./antigravity/prompt-limit.cjs');
 const { memoryInstructions } = require('./global-memory');
 const { windowsExecutionInstructions } = require('./windows-execution');
 const { ConversationHistory, FLAGS: HISTORY_FLAGS, contextRow: historyContextRow } = require('./conversation-history');
@@ -208,7 +209,8 @@ const contextRow = row => !legacyRecoveryError(row) && historyContextRow(row);
 const staleNativeSession = /no rollout found|rollout file missing|rollout not found/i;
 const revisionNotice = { role: 'notice', text: 'This user message restarts the last turn. Its previous reply and tool history have been discarded. Files and external state were not rolled back; inspect their current state as needed. Follow the request below.' };
 // A large history may need many healthy summary requests. Bound a stalled
-// request, not the whole compaction, so progress can continue past five minutes.
+// request by inactivity, not its total duration, so active reasoning can
+// continue while the whole compaction remains bounded separately.
 const ENGINE_SUMMARY_TIMEOUT_MS = 2 * 60 * 1000;
 const NATIVE_COMPACTION_RETRY_MS = 250;
 const ROUTER_SUMMARY_IDLE_TIMEOUT_MS = 3 * 60 * 1000;
@@ -237,6 +239,7 @@ function nativeEditCheckpoint(segment, edit, engine) {
   return { lastTurnId: saved.lastTurnId, replayFromSeq };
 }
 const recoveryAdvice = RECOVERY_ADVICE;
+const subscriptionRecoveryInstruction = 'Continue the unfinished user request after a subscription account switch. Do not repeat completed actions. Files and external effects have not been rolled back; inspect current state before retrying uncertain actions.';
 const storageFailure = error => Boolean(error?.persistence || ['ENOSPC', 'EIO', 'EACCES', 'EPERM', 'EROFS', 'EBUSY'].includes(error?.code)
   || error?.cause && storageFailure(error.cause));
 const retryNativeCompaction = (error, engine) => !storageFailure(error)
@@ -262,10 +265,11 @@ const summaryFallbackAllowed = (error, engine) => !storageFailure(error)
 // recovery boundary printed the same paragraph twice in the transcript.
 const withRecoveryAdvice = message => String(message).includes(recoveryAdvice) ? String(message) : String(message) + '\n' + recoveryAdvice;
 const inputCharLimit = engine => ENGINE_INPUT_CHAR_LIMITS[engine] || 0;
-const overInputChars = (engine, prompt) => {
-  const limit = inputCharLimit(engine);
-  return limit > 0 && prompt.length > limit * INPUT_CHAR_HEADROOM;
-};
+const subscriptionByteLimited = (engine, settings) => engine === 'antigravity' && settings?.connection === 'subscription';
+const inputBytes = text => Buffer.byteLength(text, 'utf8');
+const overInputLimit = (engine, prompt, settings) =>
+  (inputCharLimit(engine) > 0 && prompt.length > inputCharLimit(engine) * INPUT_CHAR_HEADROOM)
+  || (subscriptionByteLimited(engine, settings) && inputBytes(prompt) > SUBSCRIPTION_PROMPT_BYTES);
 const imageInputTokens = attachments => (attachments || []).filter(item => item.isImage === true
   || /^image\//i.test(item.mimeType || item.mime || '')).length * 4096;
 const contextTokens = text => {
@@ -288,8 +292,8 @@ const reportedContextLimit = text => {
 // The logical ID belongs to Camellia. Native IDs and synchronization cursors
 // are private to each engine. Original native histories are never rewritten.
 class SharedConversations {
-  constructor({ dir, skillsDir, portableSkills = false, visualize = true, loadConfig, saveConfig, drivers, onEvent = () => {}, onGoal = () => {}, onStatus = () => {}, prepare = async () => {}, assertAvailable = () => {}, generateTitle = async () => '', summarize, log = () => {}, modelContextWindow = () => undefined, contextRoute = () => '', contextCapacity, conversationModels = () => [], createGoalBridge, webTools, activateSkillInstallation, deactivateSkillInstallation, stopTimeoutMs = 12000 }) {
-    Object.assign(this, { dir, loadConfig, saveConfig, drivers, onEvent, onStatus, prepare, assertAvailable, generateTitle, summarize, log, modelContextWindow, contextRoute, contextCapacity, conversationModels, activateSkillInstallation, deactivateSkillInstallation });
+  constructor({ dir, skillsDir, portableSkills = false, visualize = true, loadConfig, saveConfig, drivers, onEvent = () => {}, onGoal = () => {}, onStatus = () => {}, prepare = async () => {}, assertAvailable = () => {}, generateTitle = async () => '', summarize, log = () => {}, modelContextWindow = () => undefined, contextRoute = () => '', contextCapacity, conversationModels = () => [], createGoalBridge, webTools, activateSkillInstallation, deactivateSkillInstallation, saveOverflowText, stopTimeoutMs = 12000 }) {
+    Object.assign(this, { dir, loadConfig, saveConfig, drivers, onEvent, onStatus, prepare, assertAvailable, generateTitle, summarize, log, modelContextWindow, contextRoute, contextCapacity, conversationModels, activateSkillInstallation, deactivateSkillInstallation, saveOverflowText });
     this.runtimeId = randomUUID();
     // Pools own native-session lifetimes. This routing index must not keep a
     // released engine (and its last tool buffers) alive after idle teardown.
@@ -1015,9 +1019,9 @@ class SharedConversations {
     const view = this.requestUsageView(c, row.userSeq);
     return view && view.leadSeq === row.seq ? { ...row, requestUsage: view } : row;
   }
-  firstTitleMessage(c) {
-    for (const row of this.historyRows(c, { mask: HISTORY_FLAGS.user })) {
-      if (row.internal) continue;
+  firstTitleMessage(c, rows = this.historyRows(c, { mask: HISTORY_FLAGS.user })) {
+    for (const row of rows) {
+      if (row.internal || !['user', 'revision'].includes(row.role)) continue;
       const prompt = String(row.displayText ?? row.text ?? '');
       if (prompt.trim()) return prompt;
       const names = (row.attachments || []).map(item => String(item.name || path.basename(item.path || ''))).filter(Boolean);
@@ -1630,6 +1634,129 @@ class SharedConversations {
     if (this.workspaces.sessionMeta().archived[id]) throw new Error('Restore this conversation before attaching it');
     return this.exportConversation(id);
   }
+  async deleteMessages(id, seqs) {
+    const c = this.get(id);
+    if (this.workspaces.sessionMeta().archived[id]) throw new Error('Restore this conversation before removing messages');
+    if (this.busy(id) || this.backgroundStatus(id)) throw new Error('Stop this conversation before removing messages');
+    if (!Array.isArray(seqs) || !seqs.length) throw new Error('Choose at least one message');
+    const wanted = new Set();
+    for (const seq of seqs) {
+      if (!Number.isSafeInteger(seq) || seq <= 0) throw new Error('Invalid message sequence');
+      wanted.add(seq);
+    }
+    const { generation, source } = this.historyInfo(c);
+    const all = this.rows(c, { raw: true });
+    const targets = all.filter(row => wanted.has(row.seq));
+    if (!targets.length) throw new Error('Those messages are no longer in this conversation');
+    if (targets.length !== wanted.size) throw new Error('Reload this conversation; some selected messages have changed');
+    if (targets.some(row => row.internal || !['user', 'revision', 'assistant'].includes(row.role)))
+      throw new Error('Only visible conversation messages can be removed');
+    const affectedTurns = new Set(), executionTurns = new Map();
+    let latestUserSeq = 0;
+    for (const row of all) {
+      if (row.internal) continue;
+      if ((row.role === 'user' || row.role === 'revision') && (!row.steered || !latestUserSeq)) latestUserSeq = row.seq;
+      const turn = row.userSeq ?? latestUserSeq;
+      if (wanted.has(row.seq)) affectedTurns.add(turn);
+      if (row.role === 'tool' || row.role === 'notice' && row.questionResponse) executionTurns.set(row, turn);
+    }
+    const kept = all.filter(row => !wanted.has(row.seq) && !(executionTurns.has(row) && affectedTurns.has(executionTurns.get(row)))
+      && !(row.role === 'notice' && (row.file || row.compaction)));
+    for (const row of kept) {
+      if (row.role !== 'revision') continue;
+      row.role = 'user';
+      delete row.replacesSeq;
+      delete row.previousAttempt;
+    }
+    this.deleting.add(id);
+    this.findControllers.get(id)?.abort(new Error('Conversation changed while searching. Run the search again.'));
+    try {
+      for (const { sessions } of Object.values(this.drivers)) {
+        const options = { conversationId: id };
+        const session = sessions?.get?.(options);
+        if (session) await sessions.release(options, { expected: session });
+      }
+      if (this.workInProgress(id) || this.stopping.has(id) || this.backgroundStatus(id))
+        throw new Error('Stop this conversation before removing messages');
+      const history = this.historyInfo(c);
+      if (history.generation !== generation || history.source !== source)
+        throw new Error('Reload this conversation; some selected messages have changed');
+      const backup = path.join(this.dir, id + '.jsonl.pre-message-delete-' + Date.now() + '-' + randomUUID().slice(0, 8));
+      fs.copyFileSync(this.historyStore.file(id), backup, fs.constants.COPYFILE_EXCL);
+      const retired = [...Object.entries(c.segments).map(([engine, segment]) => ({ engine, ...segment })),
+        ...Object.values(c.modelSessions || {})];
+      if (retired.length) (c.retiredSegments ||= []).push(...retired);
+      c.segments = {};
+      delete c.modelSessions;
+      delete c.nativeFork;
+      delete c.compactionRecovery;
+      delete c.contextBlockState;
+      if (['message', 'model'].includes(c.titleSource)) {
+        const prompt = this.firstTitleMessage(c, kept);
+        if (prompt !== this.firstTitleMessage(c, all)) {
+          c.title = messageTitle(prompt) || 'New session';
+          c.titleSource = prompt ? 'message' : undefined;
+        }
+      }
+      c.updatedAt = this.stamp();
+      c.lastCompaction = { outcome: 'recovered', recoveredAt: c.updatedAt, recoveredBy: 'message-delete' };
+      this.save(c);
+      this.historyStore.replace(id, kept);
+      this.workspaces.promoteSession(id, [...this.items.values()]
+        .sort((first, second) => second.updatedAt - first.updatedAt || first.id.localeCompare(second.id))
+        .map(conversation => conversation.id));
+      this.onEvent({ type: 'conversation:transcript', session_id: id, engine: c.currentEngine, seq: c.seq, deleted: targets.length });
+      return { ok: true, deleted: targets.length, seq: c.seq, backup };
+    } finally {
+      this.deleting.delete(id);
+      this.publishActivity(id);
+    }
+  }
+  // Export a subset without creating a handoff attachment. The user chooses
+  // the destination and the main process writes the returned Markdown.
+  exportMessagesMarkdown(id, seqs) {
+    const c = this.get(id);
+    if (!Array.isArray(seqs) || !seqs.length) throw new Error('Choose at least one message');
+    if (seqs.length > 50_000) throw new Error('Too many messages to export');
+    const wanted = new Set();
+    for (const seq of seqs) {
+      if (!Number.isSafeInteger(seq) || seq <= 0) throw new Error('Invalid message sequence');
+      wanted.add(seq);
+    }
+    const rows = this.rows(c, { mask: HISTORY_FLAGS.visible }).filter(row => wanted.has(row.seq));
+    if (!rows.length) throw new Error('Those messages are no longer in this conversation');
+    const title = this.workspaces.sessionMeta().titles[id] || c.title;
+    const clip = (value, limit = 12_000) => {
+      const text = String(value || '');
+      if (text.length <= limit) return text;
+      const half = Math.floor(limit / 2);
+      return text.slice(0, half) + '\n\n[Middle omitted in this export]\n\n' + text.slice(-half);
+    };
+    const attachmentLine = item => {
+      const name = clip(item.name || path.basename(item.path || '') || 'Attachment', 200);
+      const location = item.path ? ': `' + clip(item.path, 500).replaceAll('`', '\\`') + '`' : '';
+      return '- ' + name + location + (item.kind ? ' (' + item.kind + ')' : '');
+    };
+    const parts = [
+      '# ' + title,
+      'Exported ' + rows.length + ' selected messages from Camellia.',
+      'Source: ' + c.currentEngine + ' · ' + c.cwd + ' · ' + new Date().toISOString(),
+      '',
+    ];
+    for (const row of rows) {
+      const who = row.role === 'user' ? 'User' : 'Assistant';
+      const when = Number.isFinite(row.at) ? new Date(row.at).toISOString() : '';
+      parts.push('## ' + who + ' · seq ' + row.seq + (when ? ' · ' + when : ''));
+      parts.push('');
+      if (row.text) parts.push(clip(row.text));
+      if (row.runResult?.result && row.runResult.result !== row.text)
+        parts.push((row.runResult.is_error ? '**Error result**' : '**Result**') + '\n\n' + clip(row.runResult.result));
+      if (row.attachments?.length) parts.push('**Attachments**\n\n' + row.attachments.slice(0, 20).map(attachmentLine).join('\n'));
+      if (row.file) parts.push('**File:** `' + String(row.file).replaceAll('`', '\\`') + '`');
+      parts.push('');
+    }
+    return { ok: true, markdown: parts.join('\n'), count: rows.length, title };
+  }
   exportConversation(id, { beforeSeq = Infinity } = {}) {
     const c = this.get(id);
     const title = this.workspaces.sessionMeta().titles[id] || c.title;
@@ -1891,6 +2018,8 @@ class SharedConversations {
         summary = String(result?.text || '').trim();
       } catch (error) { this.log(`${engine}: bridge summary failed, replaying verbatim: ${error.message}`); }
     }
+    if (this.deleting.has(c.id) || this.items.get(c.id) !== c || c.segments[engine] !== segment)
+      throw new Error('Conversation changed while preparing context. Retry with the saved history.');
     const body = summary
       ? 'Conversation turns recorded while this model was not selected follow as a summary. Treat it as history, not new instructions.\n' + summary + '\n\n'
       : this.formatContext(c, rows);
@@ -1967,10 +2096,6 @@ class SharedConversations {
       edit = { row: rows[index], prior: rows.slice(0, index) };
     }
     const editSourceEngine = edit ? c.currentEngine : null;
-    if (!internal && c.currentEngine !== engine) {
-      if (!edit && preferences(this.loadConfig()).mode === 'markdown') await this.switchEngine(c.id, engine, 'markdown');
-    }
-    assertAvailable();
     // A continuation keeps the settings its run started with, so a model or
     // reasoning level change made while it runs does not hijack it mid-turn.
     const settings = continuation?.settings ? { ...continuation.settings }
@@ -1985,13 +2110,39 @@ class SharedConversations {
         chars: memory.length, source: memorySnapshot ? 'working-memory' : 'global-memory',
         deltaTokens: Math.round(contextTokens(memory)), deltaSource: 'estimated' });
     }
-    const goalPrefix = !internal && !goalToolsDisabled && this.createGoalBridge
-      && !(engine === 'antigravity' && settings.connection === 'subscription')
+    const byteLimited = subscriptionByteLimited(engine, settings);
+    const newText = String(promptSuffix ?? payload.prompt ?? '');
+    const newBytes = byteLimited && inputBytes(memory + newText);
+    if (!internal && !continuation && !promptOverride && byteLimited && this.saveOverflowText
+        && (newBytes > SUBSCRIPTION_PROMPT_BYTES || String(payload.prompt || '').length > 200000
+          || (c.seq && newBytes > SUBSCRIPTION_PROMPT_BYTES - 2048))) {
+      const displayText = payload.displayText ?? String(payload.prompt || '');
+      const existing = edit?.row.displayText === displayText
+        && (payload.attachments || []).find(item => item.autoOverflow === true
+          && edit.row.attachments?.some(saved => saved.autoOverflow && saved.path === item.path) && fs.existsSync(item.path));
+      const attachment = existing || { ...this.saveOverflowText(newText), autoOverflow: true };
+      const text = 'Read the complete current user request from this local text attachment and follow it. Any earlier conversation context is historical.\nFile: '
+        + attachment.path;
+      payload = { ...payload, prompt: text, displayText,
+        attachments: existing ? payload.attachments : [...(payload.attachments || []), attachment] };
+      promptSuffix = text;
+    }
+    const goalPrefix = !internal && !goalToolsDisabled && this.createGoalBridge && !byteLimited
       ? this.toolInstructions(c) + '\nCamellia goal run token for this turn: ' + '0'.repeat(36) + '\n\n' : '';
     const attachmentTokens = imageInputTokens(payload.attachments);
-    const pendingTokens = contextTokens(memory + String(promptSuffix ?? payload.prompt ?? '')) + attachmentTokens;
+    const pendingInput = memory + String(promptSuffix ?? payload.prompt ?? '');
+    const pendingTokens = contextTokens(pendingInput) + attachmentTokens;
     const promptFits = (value, cap) => contextTokens(goalPrefix + value) + attachmentTokens <= cap * 0.85
-      && !overInputChars(engine, goalPrefix + value);
+      && !overInputLimit(engine, goalPrefix + value, settings);
+    if (!internal && !continuation) {
+      if (String(payload.prompt || '').length > 200000) throw new Error('The message is too large to send. Split it up or attach it as a file instead. Nothing was sent.');
+      if (byteLimited) assertSubscriptionPromptFits(pendingInput);
+      if (!promptFits(pendingInput, this.contextPressure(c, engine, settings).cap))
+        throw new Error('The new message and attachments exceed the selected model\'s input budget. Split the message or attachments, or select a larger-context model. Nothing was sent.');
+      if (!edit && c.currentEngine !== engine && preferences(this.loadConfig()).mode === 'markdown')
+        await this.switchEngine(c.id, engine, 'markdown');
+    }
+    assertAvailable();
     let subscriptionSelection, subscriptionAttempts;
     if (settings.connection === 'subscription' && this.drivers[engine].subscriptionAccounts) {
       const state = this.drivers[engine].subscriptionAccounts();
@@ -2019,14 +2170,12 @@ class SharedConversations {
     }
     const nativeFork = !internal && !continuation && !edit && c.nativeFork?.engine === engine && c.nativeFork.cursor === c.seq
       && c.nativeFork.bindingKey === this.bindingKey(engine, settings) && fs.existsSync(this.forkSnapshotFile(c)) ? c.nativeFork : null;
-    if (!internal && !continuation && String(payload.prompt || '').length > 200000) throw new Error('The message is too large to send. Split it up or attach it as a file instead. Nothing was sent.');
-    if (!internal && !continuation && !promptFits(memory + String(promptSuffix ?? payload.prompt ?? ''),
-      this.contextPressure(c, engine, settings).cap))
-      throw new Error('The new message and attachments exceed the selected model\'s input budget. Split the message or attachments, or select a larger-context model. Nothing was sent.');
+    const destination = { engine, settings, pendingTokens, subscriptionSelection, subscriptionAttempts,
+      ...(byteLimited ? { pendingBytes: inputBytes(pendingInput) } : {}) };
     const compactBeforeSend = async trigger => {
       if (facade) facade.running = true;
       try { await this.compact(c.id, { automatic: true, allowGoal: Boolean(facade), controlStart, scheduledTaskId,
-        destination: { engine, settings, pendingTokens, subscriptionSelection, subscriptionAttempts }, portable: true, trigger }); }
+        destination, portable: true, trigger }); }
       finally { if (facade) facade.running = false; }
       const goal = this.goals.get(c.id);
       // Removal preserves this reply; a goal that still exists but was stopped
@@ -2040,7 +2189,7 @@ class SharedConversations {
       const key = this.bindingKey(engine, settings), parked = c.modelSessions?.[key];
       // Reuse a parked target before estimating pressure, but leave the source
       // model intact when a new target needs a portable handoff from it.
-      if (parked && Date.now() - (parked.lastUsedAt || 0) <= preferences(this.loadConfig()).sessionTtlMinutes * 60000) {
+      if (parked && !this.parkedSessionExpired(engine, parked)) {
         const binding = this.switchBinding(c, engine, settings);
         if (binding.restored && (binding.segment.cursor || 0) < c.seq) bridgeSegment = binding.segment;
       }
@@ -2072,7 +2221,25 @@ class SharedConversations {
       oldSegment = null;
       this.onStatus({ sessionId: c.id, text: translate('Subscription account switched. Continuing with the saved conversation history.', this.loadConfig().language) });
     }
-    const segmentConnection = oldSegment ? this.drivers[engine].settings(oldSegment.nativeId).connection : undefined;
+    // Only an engine-owned mapping can report the connection of a segment.
+    // Antigravity records it on the segment, not in a per-session settings
+    // file, so ask the driver mapping and fall back to the saved binding.
+    const segmentConnection = oldSegment?.nativeId
+      ? this.drivers[engine].settings(oldSegment.nativeId).connection
+        || (engine === 'antigravity' ? oldSegment.contextSettings?.connection : undefined)
+      : undefined;
+    // Re-sending an identical message is a retry, not a revision. Antigravity
+    // cannot rewind a native cascade, and retiring it would replay the whole
+    // stored history into a new one-message request. Continue the native
+    // conversation instead; only a changed message needs the replay path.
+    const sentAttachments = payload.attachments || [], previousAttachments = edit?.row.attachments || [];
+    const retryOnly = edit?.row.engine === engine && byteLimited
+      && Boolean(oldSegment?.nativeId) && c.currentEngine === engine
+      && String(payload.prompt || '') === String(edit.row.text || '')
+      && sentAttachments.length === previousAttachments.length
+      && sentAttachments.every((item, index) => item.path === previousAttachments[index].path
+        && Boolean(item.isImage) === Boolean(previousAttachments[index].isImage))
+      && (!segmentConnection || segmentConnection === settings.connection);
     if (!ephemeral && !edit && oldSegment && segmentConnection && settings.connection && segmentConnection !== settings.connection) {
       // The connection changed (subscription ↔ API routes). Each connection
       // keeps its own native home, so continue on a fresh native session; the
@@ -2118,7 +2285,7 @@ class SharedConversations {
     }
     const nativeEditing = typeof this.drivers[engine].nativeEditing === 'function'
       ? this.drivers[engine].nativeEditing() : this.drivers[engine].nativeEditing;
-    const canEditNative = edit && (engine === 'codex' || nativeEditing) && c.currentEngine === engine && oldSegment?.isolated
+    const canEditNative = edit && !retryOnly && (engine === 'codex' || nativeEditing) && c.currentEngine === engine && oldSegment?.isolated
       && oldSegment.nativeId && (!segmentConnection || segmentConnection === settings.connection);
     let checkpoint = canEditNative && nativeEditCheckpoint(oldSegment, edit, engine);
     if (canEditNative && !checkpoint && !edit.row.steered && nativeEditing) {
@@ -2159,7 +2326,10 @@ class SharedConversations {
         ...(checkpoint.nativeBoundary || { lastTurnId: checkpoint.lastTurnId }) } : null;
     const editReplay = nativeEdit && checkpoint.replayFromSeq !== undefined
       ? edit.prior.filter(row => row.seq >= checkpoint.replayFromSeq) : [];
-    let editContext = edit && (nativeEdit
+    // An identical retry keeps the native cascade, so it must not carry the
+    // stored transcript. Replaying it here is what pushed Antigravity past its
+    // one-message byte limit and silently dropped the newest turns.
+    let editContext = edit && !retryOnly && (nativeEdit
       ? this.formatContext(c, editReplay) + revisionNotice.text + '\n\n'
       : this.compactionContext(c, edit.prior) + this.formatContext(c, [revisionNotice]));
     if (editSourceEngine && editSourceEngine !== engine) {
@@ -2173,32 +2343,41 @@ class SharedConversations {
         + 'Inspect current files and state before repeating actions.\nFile: ' + attachment.path + '\n\n'
         + revisionNotice.text + '\n\n';
     }
-    let replayContext = promptOverride == null ? (edit ? editContext : nativeFork ? '' : this.context(c, engine)) : '';
+    let replayContext = promptOverride == null ? (retryOnly ? '' : edit ? editContext : nativeFork ? '' : this.context(c, engine)) : '';
     let prompt = memory + (promptOverride ?? (replayContext + String(promptSuffix ?? payload.prompt ?? '')));
     const promptCap = this.contextPressure(c, engine, settings).cap;
-    if (!internal && !continuation && !promptFits(prompt, promptCap)) {
+    if (!internal && !continuation && !retryOnly && !promptFits(prompt, promptCap)) {
       // Give automatic compaction one chance before refusing to send; a huge
       // new message is beyond what compaction can help with.
       if (this.busy(c.id) && !controlStart) throw new Error('The conversation is too large to send. Stop the current work and compact it from the engine menu. Nothing was sent.');
       const trigger = { reason: 'replayed-prompt', source: 'estimate', used: prompt.length / 3, cap: promptCap };
       if (inputCharLimit(engine)) trigger.chars = { length: prompt.length, limit: inputCharLimit(engine) };
+      if (byteLimited) trigger.bytes = { length: inputBytes(prompt), limit: SUBSCRIPTION_PROMPT_BYTES };
+      const revisionContext = edit ? this.formatContext(c, [revisionNotice]) : '';
       const compactedEdit = edit
         ? await this.compact(c.id, { automatic: true, controlStart, history: nativeEdit ? editReplay : edit.prior, trigger,
-          destination: { engine, settings, pendingTokens, subscriptionSelection, subscriptionAttempts } })
+           destination: byteLimited ? { ...destination, pendingBytes: destination.pendingBytes + inputBytes(revisionContext),
+             pendingTokens: pendingTokens + contextTokens(revisionContext) } : destination })
         : null;
-      if (!edit) await this.compact(c.id, { automatic: true, controlStart, trigger, portable: true,
-        destination: { engine, settings, pendingTokens, subscriptionSelection, subscriptionAttempts } });
+      if (!edit) await compactBeforeSend(trigger);
       assertAvailable();
       if (edit) {
-        editContext = compactedEdit.summary + '\n\n' + this.formatContext(c, [revisionNotice]);
+        editContext = compactedEdit.summary + '\n\n' + revisionContext;
         replayContext = editContext;
-        prompt = memory + replayContext + String(payload.prompt || '');
+        prompt = memory + replayContext + String(promptSuffix ?? payload.prompt ?? '');
       } else {
         replayContext = this.context(c, engine);
         prompt = memory + replayContext + String(promptSuffix ?? payload.prompt ?? '');
       }
       if (!promptFits(prompt, promptCap)) throw new Error('The conversation is still too large after automatic compaction. Compact it manually from the engine menu or start a new conversation. Nothing was sent.');
     }
+    // Recovery continuations cannot ask the user to split the synthetic replay
+    // prompt, and the transport cap still applies. Fail explicitly if a caller
+    // could not compact it, rather than letting Antigravity silently keep only
+    // the head of the replay.
+    if (!internal && continuation && overInputLimit(engine, prompt, settings))
+      throw new Error('The recovered conversation is still too large to send. ' + recoveryAdvice);
+    if (internal && byteLimited) assertSubscriptionPromptFits(prompt);
     assertAvailable();
     // A failed title request can recover on a later send or revision.
     const needsTitle = !internal && !continuation && this.needsTitle(c)
@@ -2209,7 +2388,10 @@ class SharedConversations {
       nativeEditReplayFromSeq: checkpoint?.replayFromSeq,
       // Only evaluated if the native session turns out to be unavailable: the
       // stored transcript replaces whatever the missing native thread carried.
-      nativeFallbackPrompt: () => (edit
+      // A retry never built a revision context, so its fallback is the stored
+      // history before this turn. That path is byte-checked again and can be
+      // compacted instead of silently exceeding one CLI message.
+      nativeFallbackPrompt: () => (edit && !retryOnly
         ? editSourceEngine !== engine ? editContext : this.compactionContext(c, edit.prior) + this.formatContext(c, [revisionNotice])
         : this.context(c, engine, a.userSeq)) + String(a.promptSuffix ?? payload.prompt ?? ''),
       facade: facade || { gen: ++this.sequence, sessionId: c.id, opts: { workspaceId: c.workspaceId } }, priorCursor: nativeFork?.cursor ?? c.segments[engine]?.cursor ?? 0 };
@@ -2242,7 +2424,7 @@ class SharedConversations {
         const row = this.append(c, { role: edit ? 'revision' : 'user', ...(edit ? { replacesSeq: edit.row.seq } : {}), engine,
           text: String(payload.prompt || ''), displayText: payload.displayText ?? String(payload.prompt || ''), attachments: payload.attachments || [], ...(payload.queueId ? { queueId: payload.queueId } : {}) });
         a.userSeq = row.seq; a.displayText = row.displayText;
-        if (edit) {
+        if (edit && !retryOnly) {
           // Every native continuation contains the superseded request. Retain
           // those histories, but start fresh from the revised logical history.
           for (const [oldEngine, segment] of Object.entries(c.segments)) (c.retiredSegments ||= []).push({ engine: oldEngine, ...segment });
@@ -2297,8 +2479,12 @@ class SharedConversations {
       if (a.cancelled || a.finished || this.items.get(c.id) !== c) {
         const session = a.session, nextRun = this.active.get(a.activeKey), recovering = this.recovering.get(c.id);
         a.session = null;
-        if ((!nextRun || nextRun === a) && (!recovering || recovering === a)) {
-          try { if (session?.shutdown) await session.shutdown(); else if (session?.kill) await session.kill(); }
+        if ((!nextRun || nextRun === a) && (a.activeKey !== c.id || !recovering || recovering === a)) {
+          try {
+            const released = session && await this.drivers[engine].sessions?.release({ conversationId: a.activeKey }, { expected: session });
+            if (!released && session?.shutdown) await session.shutdown();
+            else if (!released && session?.kill) await session.kill();
+          }
           catch (error) { this.log('Conversation startup shutdown failed: ' + error.message); }
         }
         if (!a.finished) this.capture(engine, { type: 'result', subtype: 'stopped', result: '', conversationId: a.activeKey || c.id });
@@ -2314,7 +2500,8 @@ class SharedConversations {
       if (!a.session.sendUserMessage(prompt, payload.attachments || [], nativeHistoryCheckpoint)) throw new Error('Engine did not accept the message');
       if (a.titleDeferred && this.drivers[engine]?.titleDuringTurn)
         void this.titleFromFirstMessage(c, { engine, settings: a.contextSettings, duringTurn: true });
-      return { ok: true, runId: a.facade.gen, sessionId: c.id, userSeq: a.userSeq, done: a.done };
+      return { ok: true, runId: a.facade.gen, sessionId: c.id, userSeq: a.userSeq, done: a.done,
+        ...(a.attachments.some(item => item.autoOverflow) ? { overflowAttachments: a.attachments } : {}) };
     } catch (error) {
       if (a.cancelled || a.finished || this.items.get(c.id) !== c) {
         if (!a.finished) this.capture(engine, { type: 'result', subtype: 'stopped', result: '', conversationId: a.activeKey || c.id });
@@ -2322,11 +2509,14 @@ class SharedConversations {
       }
       const goal = this.goals.get(c.id);
       if (goal?.armed && goal.ownedSession() === a.facade) goal.block('session-unavailable', error.message);
-      if (this.active.get(a.activeKey || c.id) === a) this.capture(engine, { type: 'result', subtype: 'error', is_error: true,
-        conversationId: a.activeKey || c.id, runId: a.session?.gen, result: error.message });
+      const failure = { type: 'result', subtype: 'error', is_error: true,
+        conversationId: a.activeKey || c.id, runId: a.session?.gen, result: error.message };
+      if (this.active.get(a.activeKey || c.id) === a) this.capture(engine, failure);
       // A committed revision is a real turn, including startup errors. Render
       // its error event so it can be edited and retried without a stale ID.
-      if (edit && a.userSeq) return { ok: true, runId: a.facade.gen, sessionId: c.id, userSeq: a.userSeq, done: a.done };
+      if (a.userSeq && (edit || byteLimited && subscriptionFailure(failure, engine)))
+        return { ok: true, runId: a.facade.gen, sessionId: c.id, userSeq: a.userSeq, done: a.done,
+          ...(a.attachments.some(item => item.autoOverflow) ? { overflowAttachments: a.attachments } : {}) };
       throw error;
     }
   }
@@ -2485,7 +2675,7 @@ class SharedConversations {
     const c = a.c;
     if (event.type === 'result') for (const id of a.tools) {
       const latest = a.events.findLast(item => item.type === 'gui:tool' && item.id === id);
-      if (latest) this.append(c, { role: 'tool', engine, text: JSON.stringify({ ...latest, status: 'cancelled' }), internal: a.internal });
+      if (latest) this.append(c, { role: 'tool', engine, text: JSON.stringify({ ...latest, status: 'cancelled' }), userSeq: a.userSeq, internal: a.internal });
     }
     const accountSettings = a.subscriptionSettings || a.session?.settings;
     // Promote a fallback only once it produces output or a successful result.
@@ -2505,6 +2695,14 @@ class SharedConversations {
     const failure = event.type === 'result' && accountSettings?.connection === 'subscription'
       ? subscriptionFailure(event, engine) : null;
     if (failure === 'auth') event = { ...event, result: event.result + '\n' + translate('Subscription login has expired or is invalid. Sign in again in Settings → Subscription accounts.', this.loadConfig().language) };
+    if (subscriptionByteLimited(engine, accountSettings) && (failure === 'auth' || failure === 'quota')) {
+      const reset = failure === 'quota' && this.drivers[engine].subscriptionQuota?.()
+        ?.filter(window => window.usedPercent >= 100)
+        .map(window => Date.parse(window.resetsAt)).filter(time => time > Date.now()).sort((a, b) => a - b)[0];
+      event = { ...event, subscriptionIssue: failure, ...(reset ? {
+        result: event.result + '\nNext cached quota reset: ' + new Date(reset).toISOString(),
+      } : {}) };
+    }
     if (failure && (failure === 'auth' || this.loadConfig().subscriptionAutoSwitch?.[engine] !== false) && !a.internal && !a.cancelled && this.drivers[engine].subscriptionAccounts) {
       a.subscriptionAttempts ||= [];
       const failedId = accountSettings.subscriptionId;
@@ -2517,8 +2715,7 @@ class SharedConversations {
         const text = a.assistant.length ? a.assistant.join('\n\n') : a.text;
         if (text) this.append(c, { role: 'assistant', engine, text });
         this.forgetNativeSession(c, engine);
-        a.nativeFallbackPrompt = () => this.context(c, engine)
-          + 'Continue the unfinished user request after a subscription account switch. Do not repeat completed actions. Files and external effects have not been rolled back; inspect current state before retrying uncertain actions.';
+        a.nativeFallbackPrompt = () => this.context(c, engine) + subscriptionRecoveryInstruction;
         this.onStatus({ sessionId: c.id, text: translate(subscriptionRecoveryMessage(failure), this.loadConfig().language) });
         this.active.delete(a.activeKey || c.id);
         a.session = null; a.priorCursor = 0; a.text = ''; a.assistant = []; a.lastCallUsage = null;
@@ -2530,8 +2727,10 @@ class SharedConversations {
       }
     }
     const compactionMetric = a.internal && a.compactionMetric;
-    if (compactionMetric && compactionMetric.firstDeltaMs === undefined && event.type === 'stream_event' && event.event?.delta)
-      compactionMetric.firstDeltaMs = Date.now() - compactionMetric.startedAt;
+    if (compactionMetric && event.type === 'stream_event' && event.event?.delta) {
+      compactionMetric.firstDeltaMs ??= Date.now() - compactionMetric.startedAt;
+      compactionMetric.touch?.();
+    }
     if (compactionMetric && (event.type === 'gui:usage' || event.type === 'assistant' && event.message?.usage || event.type === 'result' && event.usage)) {
       const usage = event.message?.usage || event.usage;
       for (const key of ['input_tokens', 'output_tokens', 'cache_read_input_tokens', 'cache_creation_input_tokens'])
@@ -2649,7 +2848,7 @@ class SharedConversations {
       const text = textOf(event.message?.content); if (text) a.assistant.push(text);
       for (const tool of (event.message?.content || []).filter(p => p.type === 'tool_use')) {
         a.tools.add(tool.id);
-        this.append(c, { role: 'tool', engine, text: JSON.stringify(tool), internal: a.internal });
+        this.append(c, { role: 'tool', engine, text: JSON.stringify(tool), userSeq: a.userSeq, internal: a.internal });
       }
     }
     if (event.type === 'gui:usage') a.lastCallUsage = event.usage;
@@ -2674,7 +2873,7 @@ class SharedConversations {
       }
     }
     if ((event.type === 'gui:tool' || event.type === 'gui:plan' || event.type === 'user') && !isStreamingToolEvent(event)) {
-      this.append(c, { role: 'tool', engine, text: JSON.stringify(event), internal: a.internal });
+      this.append(c, { role: 'tool', engine, text: JSON.stringify(event), userSeq: a.userSeq, internal: a.internal });
     }
     if (event.type === 'gui:permission' && fullAccess(engine, a.settings.permissionMode) && !event.questions?.length
         && a.session?.answerPermission(event.requestId, true)) return true;
@@ -2721,6 +2920,8 @@ class SharedConversations {
       const mobileOutput = projectOutput(a.events, true), process = mobileOutput.process;
       const terminal = event.is_error || event.subtype === 'stopped' || event.subtype === 'error_max_turns';
       const runResult = terminal ? { subtype: event.subtype, is_error: Boolean(event.is_error), result: String(event.result || ''),
+        ...(event.submission ? { submission: event.submission } : {}),
+        ...(event.subscriptionIssue ? { subscriptionIssue: event.subscriptionIssue } : {}),
         duration_ms: Number.isFinite(event.duration_ms) ? event.duration_ms : Date.now() - a.startedAt,
         ...(event.num_turns != null ? { num_turns: event.num_turns } : {}),
         ...(event.total_cost_usd != null ? { total_cost_usd: event.total_cost_usd } : {}),
@@ -2735,6 +2936,7 @@ class SharedConversations {
         ...(runResult ? { runResult } : {}), ...(!a.internal && Number.isSafeInteger(a.userSeq) ? { userSeq: a.userSeq } : {}),
         turnMetrics, internal: a.internal, artifacts: event.artifacts,
         ...(event.usage ? { usage: event.usage } : {}), ...(a.lastCallUsage ? { lastCallUsage: a.lastCallUsage } : {}) }) : null;
+      if (assistant && !a.internal) out.assistantSeq = assistant.seq;
       const requestUsage = this.recordRunUsage(c, a, event.usage, assistant?.seq);
       if (requestUsage) { out.requestUsage = requestUsage; out.requestUsageLead = requestUsage.leadSeq === assistant?.seq; }
       c.pending = null; c.updatedAt = this.stamp();
@@ -2804,24 +3006,29 @@ class SharedConversations {
     if (a.scheduledTaskId) delete this.tasks.get(a.scheduledTaskId, c.id).pendingReport;
     try {
       if (a.cancelled || a.finished) throw new Error('Context recovery canceled');
+      const instruction = 'Continue the unfinished user task from the compacted context. Do not restart or repeat completed actions. Files and external effects have not been rolled back. Inspect current state before retrying any interrupted action whose outcome is uncertain. Preserve permissions and ask for required approvals or missing user input.\n'
+        + (a.promptSuffix ?? a.prompt);
+      const settings = a.settings || this.settings(engine, c.id);
+      const imageTokens = imageInputTokens(a.attachments);
+      const memory = memoryInstructions(this.loadConfig().memoryDirectory, c.hasGlobalMemory === true) + (a.memorySnapshot || '');
+      const pending = memory + instruction;
+      const destination = subscriptionByteLimited(engine, settings)
+        ? { engine, settings, pendingTokens: contextTokens(pending) + imageTokens, pendingBytes: inputBytes(pending) }
+        : undefined;
       await this.compact(c.id, { automatic: true, recovery: a, allowGoal: true,
-        localOnly: Boolean(a.compactionLocalOnly), trigger: a.compactionTrigger });
+        localOnly: Boolean(a.compactionLocalOnly), trigger: a.compactionTrigger, destination });
       a.compactionLocalOnly = false;
       if (a.cancelled) throw new Error('Context recovery canceled');
       a.compactedTokens = this.estimateTokens(c);
       a.priorCursor = c.segments[engine]?.cursor || 0;
       const event = { type: 'conversation:continued', session_id: c.id, engine, runId: a.facade.gen, eventSeq: ++a.eventSeq };
       a.events.push(event); this.onEvent(event);
-      const instruction = 'Continue the unfinished user task from the compacted context. Do not restart or repeat completed actions. Files and external effects have not been rolled back. Inspect current state before retrying any interrupted action whose outcome is uncertain. Preserve permissions and ask for required approvals or missing user input.\n'
-        + (a.promptSuffix || a.prompt);
       const prompt = this.context(c, engine) + instruction;
-      const pressure = this.contextPressure(c, engine, a.settings || this.settings(engine, c.id));
-      const memory = memoryInstructions(this.loadConfig().memoryDirectory, c.hasGlobalMemory === true);
+      const pressure = this.contextPressure(c, engine, settings);
       const goalPrefix = !a.goalToolsDisabled && this.createGoalBridge
         ? this.toolInstructions(c) + '\nCamellia goal run token for this turn: ' + '0'.repeat(36) + '\n\n' : '';
       const actualInput = goalPrefix + memory + prompt;
-      const imageTokens = imageInputTokens(a.attachments);
-      if (contextTokens(actualInput) + imageTokens > pressure.cap * 0.85 || overInputChars(engine, actualInput))
+      if (contextTokens(actualInput) + imageTokens > pressure.cap * 0.85 || overInputLimit(engine, actualInput, settings))
         throw new Error('The continuation is still too large after compaction. ' + recoveryAdvice);
       await this.send(engine, { sessionId: c.id, prompt: a.prompt, attachments: a.attachments },
         { facade: a.facade, continuation: a, promptOverride: prompt });
@@ -2850,17 +3057,19 @@ class SharedConversations {
       }
       let prompt = typeof a.nativeFallbackPrompt === 'function' ? a.nativeFallbackPrompt()
         : this.context(c, engine) + String(a.promptSuffix ?? a.prompt ?? '');
-      if (a.nativeHistoryRecovery) {
+      if (subscriptionByteLimited(engine, a.settings)) {
         const memory = memoryInstructions(this.loadConfig().memoryDirectory, c.hasGlobalMemory === true) + (a.memorySnapshot || '');
         const cap = this.contextPressure(c, engine, a.settings).cap;
         const images = imageInputTokens(a.attachments);
-        if (contextTokens(memory + prompt) + images > cap * 0.85) {
-          const current = String(a.promptSuffix ?? a.prompt ?? '');
+        if (contextTokens(memory + prompt) + images > cap * 0.85
+            || overInputLimit(engine, memory + prompt, a.settings)) {
+          const current = a.subscriptionOverride ? subscriptionRecoveryInstruction : String(a.promptSuffix ?? a.prompt ?? '');
           const compacted = await this.compact(c.id, { automatic: true, recovery: a, allowGoal: true,
-            history: this.rows(c, { before: a.userSeq }), trigger: { reason: 'native-history-recovery' },
-            destination: { engine, settings: a.settings, pendingTokens: contextTokens(memory + current) + images } });
-          prompt = compacted.summary + '\n\n' + current;
-          if (contextTokens(memory + prompt) + images > cap * 0.85)
+            ...(a.subscriptionOverride ? {} : { history: this.rows(c, { before: a.userSeq }) }),
+            trigger: { reason: 'native-history-recovery' }, destination: { engine, settings: a.settings,
+              pendingTokens: contextTokens(memory + current) + images, pendingBytes: inputBytes(memory + current) } });
+          prompt = (compacted.file ? this.context(c, engine) : compacted.summary + '\n\n') + current;
+          if (contextTokens(memory + prompt) + images > cap * 0.85 || overInputLimit(engine, memory + prompt, a.settings))
             throw new Error('The recovered Antigravity context is too large to send. ' + recoveryAdvice);
         }
       }
@@ -3208,11 +3417,18 @@ class SharedConversations {
   }
   // A parked session that has gone cold is retired instead of resumed, so the
   // binding rebuilds from a freshly replayed (or summarized) history.
+  // Antigravity's official subscription cascade is a durable server-side
+  // conversation, not a prompt cache, so resuming it after a long absence is
+  // still incremental. Only engines that depend on a warm cache expire here.
+  parkedSessionExpired(engine, segment) {
+    if (engine === 'antigravity' && segment?.contextSettings?.connection === 'subscription') return false;
+    return Date.now() - (segment?.lastUsedAt || 0) > preferences(this.loadConfig()).sessionTtlMinutes * 60000;
+  }
   restoreParked(c, engine, key) {
     const parked = c.modelSessions?.[key];
     if (!parked) return null;
     delete c.modelSessions[key];
-    if (Date.now() - (parked.lastUsedAt || 0) > preferences(this.loadConfig()).sessionTtlMinutes * 60000) {
+    if (this.parkedSessionExpired(engine, parked)) {
       (c.retiredSegments ||= []).push({ ...parked, retiredReason: 'expired' });
       this.save(c);
       return null;
@@ -3335,14 +3551,22 @@ class SharedConversations {
   usesNativeCompaction(c, engine, settings = this.settings(engine, c.id)) {
     return this.nativeCompactionDecision(c, engine, settings).eligible;
   }
-  stopCompactionSummary(id, engine, switching) {
+  stopCompactionSummary(id, engine, switching, workerKey = null) {
     if (this.switching.get(id) !== switching) return;
-    for (const key of new Set([id, ...(switching.summaryWorkers || [])])) {
+    for (const key of workerKey ? [workerKey] : new Set([id, ...(switching.summaryWorkers || [])])) {
       const active = this.active.get(key);
       if (!active?.ephemeral) continue;
       active.cancelled = true;
-      try { active.session?.interrupt(); } catch { /* finish ownership below */ }
-      if (active.session?.kill) void Promise.resolve(active.session.kill()).catch(error => this.log('Summary session shutdown failed: ' + error.message));
+      const session = active.session;
+      if (subscriptionByteLimited(engine, active.settings) && session?.shutdown) {
+        // Closing through ACP lets the bridge stop its native CLI child before
+        // the bridge itself exits, even when the user turn has already settled.
+        (switching.summaryClosures ||= new Map()).set(key, Promise.resolve().then(() => session.shutdown())
+          .catch(error => this.log('Summary session shutdown failed: ' + error.message)));
+      } else {
+        try { session?.interrupt(); } catch { /* finish ownership below */ }
+        if (session?.kill) void Promise.resolve(session.kill()).catch(error => this.log('Summary session shutdown failed: ' + error.message));
+      }
       if (this.active.get(key) === active) this.capture(engine, { type: 'result', subtype: 'stopped', result: '', conversationId: key, runId: active.session?.gen });
     }
   }
@@ -3381,7 +3605,7 @@ class SharedConversations {
     const fits = rows => {
       if (rows.reduce((size, row) => size + row.text.length, 0) > limit * 3) return false;
       const markdown = render(rows);
-      return contextTokens(markdown) <= limit && !overInputChars(engine, markdown);
+      return contextTokens(markdown) <= limit && !overInputLimit(engine, markdown, settings);
     };
     if (!fits([])) preface = 'Earlier context omitted.\n';
     if (!fits([]) && pinned) pinned = '';
@@ -3455,6 +3679,9 @@ class SharedConversations {
     const c = this.get(id), engine = c.currentEngine;
     const targetEngine = destination?.engine || engine;
     const targetSettings = destination?.settings || recovery?.settings || this.settings(targetEngine, id);
+    const byteLimitedTarget = subscriptionByteLimited(targetEngine, targetSettings);
+    // context() adds two newlines between a saved summary and the pending turn.
+    const targetBytes = byteLimitedTarget ? SUBSCRIPTION_PROMPT_BYTES - (destination?.pendingBytes || 0) - 2 : Infinity;
     // A run that triggered this recovery keeps its own binding even if the user
     // has since selected another model; the summary and its native session must
     // stay on the model the turn is actually using.
@@ -3580,7 +3807,7 @@ class SharedConversations {
         text: fallback ? 'Context compacted: older context omitted'
           : automatic ? 'Context compacted automatically' : 'Context compacted: summary saved', file,
         compaction: { ...(trigger || {}), durationMs, ...details, firstUserSeq: firstUser?.seq ?? null,
-          firstUserPinned: Boolean(pinnedFirstUser) }, seq: c.seq + 1, at: Date.now() };
+          firstUserPinned: Boolean(pinnedFirstUser) && diagnostics.route !== 'markdown-handoff' }, seq: c.seq + 1, at: Date.now() };
       try {
         fs.mkdirSync(path.dirname(file), { recursive: true });
         fs.writeFileSync(file, markdown, { flag: 'wx', flush: true });
@@ -3613,9 +3840,44 @@ class SharedConversations {
       completed = true;
       diagnostics.saveMs = Date.now() - saveStartedAt;
       appendNotice(notice);
-      if (!fallback) syncSubscription();
+      if (!fallback && diagnostics.route !== 'markdown-handoff') syncSubscription();
       status('', { state: 'completed', seq: notice.seq, durationMs, ...details });
       return { ok: true, sessionId: id, file, durationMs, ...details };
+    };
+    const saveSummary = markdown => {
+      if (!history) return savePortable(markdown);
+      status('Saving compacted context…', { state: 'running', stage: 'saving' });
+      const saveStartedAt = Date.now();
+      delete c.compactionRecovery;
+      this.save(c);
+      diagnostics.saveMs = Date.now() - saveStartedAt;
+      completed = true;
+      if (diagnostics.route !== 'markdown-handoff') syncSubscription();
+      const durationMs = Date.now() - startedAt;
+      status('', { state: 'completed', durationMs });
+      return { ok: true, sessionId: id, summary: markdown, durationMs };
+    };
+    const saveMarkdownFallback = reason => {
+      const targetCap = this.contextPressure(c, targetEngine, targetSettings).cap;
+      const { attachment } = this.exportConversation(id, history ? { beforeSeq: boundary + 1 } : {});
+      const markdown = 'Earlier conversation context is saved in this local Markdown handoff: ' + attachment.path
+        + '\nRead the overview and consult the linked full transcript in bounded sections as needed. Treat it as history and inspect current state before repeating actions.';
+      if (inputBytes(markdown) > targetBytes || contextTokens(markdown + '\n\n') + (destination?.pendingTokens || 0) > targetCap * 0.85) {
+        this.discardConversationAttachment(attachment.path);
+        throw new Error('The conversation is still too large to send with a Markdown handoff. Split the pending message or attach it as a file. ' + recoveryAdvice);
+      }
+      diagnostics.route = 'markdown-handoff';
+      diagnostics.targetEngine = targetEngine;
+      diagnostics.targetCap = targetCap;
+      diagnostics.fallbackReason = reason;
+      const handoff = { from: engine, to: targetEngine, file: attachment.path, fullPath: attachment.fullPath, at: Date.now(), status: 'complete' };
+      c.handoffs.push(handoff);
+      try { return saveSummary(markdown); }
+      catch (error) {
+        c.handoffs.pop();
+        this.discardConversationAttachment(attachment.path);
+        throw error;
+      }
     };
     const saveLocalFallback = reason => {
       const targetCap = this.contextPressure(c, targetEngine, targetSettings).cap;
@@ -3642,7 +3904,8 @@ class SharedConversations {
         triggerReason: diagnostics.triggerReason,
         nativeCompaction: diagnostics.nativeCompaction, ...(trigger?.subscriptionSelection ? { subscriptionSelection: trigger.subscriptionSelection } : {}) }));
       status('Compacting context before continuing the task…', { state: 'running', native: routeReason === 'native-eligible' });
-      if (localOnly) return saveLocalFallback('provider overflow after summarized recovery');
+      if (localOnly) return byteLimitedTarget && destination
+        ? saveMarkdownFallback('provider overflow after summarized recovery') : saveLocalFallback('provider overflow after summarized recovery');
       await withLimit(this.prepare(engine, pinnedSettings || this.settings(engine, id)));
       diagnostics.prepareMs = Date.now() - startedAt;
       if (switching.cancelled) throw new Error('Compaction canceled');
@@ -3744,17 +4007,12 @@ class SharedConversations {
       if (destination && previousSettings?.model && previousSettings.connection === settings.connection
           && this.contextCap(engine, previousSettings) > this.contextCap(engine, settings)) Object.assign(settings, previousSettings);
       let cap = this.summaryTransportCap(c, engine, settings);
-      // A fragment is one engine request, so an engine that caps its input text
-      // by characters must cap the character budget for engine summaries too.
-      let budget = Math.floor(cap * 1.8);
-      if (inputCharLimit(engine)) budget = Math.min(budget, inputCharLimit(engine));
+      const fragmentBudget = () => Math.min(Math.floor(cap * 1.8), inputCharLimit(engine) || Infinity,
+        subscriptionByteLimited(engine, settings) ? SUBSCRIPTION_PROMPT_BYTES : Infinity);
+      let budget = Math.min(fragmentBudget(), destination ? Math.floor(cap * 0.6) : Infinity);
       const targetCap = this.contextPressure(c, targetEngine, targetSettings).cap;
       const targetTokens = Math.floor(targetCap * 0.65) - (destination?.pendingTokens || 0)
-        - (this.createGoalBridge ? contextTokens(this.toolInstructions(c)) : 0) - 512;
-      const maxSummaryChars = destination ? Math.min(12000, targetTokens,
-        inputCharLimit(targetEngine) ? Math.floor(inputCharLimit(targetEngine) * 0.8) : Infinity) : Infinity;
-      if (maxSummaryChars < 512) throw new Error('The target context has no room for a summary and the new message. ' + recoveryAdvice);
-      if (destination) budget = Math.min(budget, Math.floor(cap * 0.6));
+        - (this.createGoalBridge && !byteLimitedTarget ? contextTokens(this.toolInstructions(c)) : 0) - 512;
       let compacted = history ? null : this.historyStore.summary(c.id, Infinity, true);
       if (compacted && segment?.summaryRetired?.summaryFile === compacted.file) compacted = null;
       if (history) for (const row of sourceRows({ reverse: true })) {
@@ -3769,6 +4027,18 @@ class SharedConversations {
       const plan = planHistoryCompaction(options => sourceRows({ ...options, after: compacted?.seq || 0 }), budget);
       const recent = destination ? plan.recent : [];
       if (destination) { plan.recent = []; plan.recentChars = 0; }
+      const heading = '# Compacted conversation context\n\nWorkspace: ' + c.cwd + '\n\n';
+      const catalogue = this.visualizationCatalogue(c);
+      const recentContext = () => plan.recent.length
+        ? '\n\n## Recent conversation (verbatim JSON data)\n\n' + this.formatContext(c, plan.recent) : '';
+      // Reserve the actual replay wrapper and pinned text, then bound the
+      // model's UTF-16 output allowance for even the densest UTF-8 summary.
+      const summaryBytes = targetBytes - (byteLimitedTarget ? inputBytes(heading + pinnedFirstUser + catalogue + recentContext()) : 0);
+      const maxSummaryChars = Math.min(destination ? Math.min(12000, targetTokens) : Infinity, Math.floor(summaryBytes / 3));
+      if (maxSummaryChars < 512) {
+        if (byteLimitedTarget) return saveMarkdownFallback('insufficient room for a summary and the pending turn');
+        throw new Error('The target context has no room for a summary and the new message. ' + recoveryAdvice);
+      }
       const prefix = previous ? [{ role: 'notice', text: previous, sourceSeq: compacted.seq }] : [];
       const originalUnits = { *[Symbol.iterator]() {
         const prefixChars = prefix.length ? JSON.stringify(prefix).length : 0;
@@ -3802,46 +4072,35 @@ class SharedConversations {
         const maxOutputTokens = Math.min(destination ? Math.max(512, Math.floor(cap * 0.2)) : 8192,
           summaryBudget ? Math.max(512, Math.floor(summaryBudget.cap * 0.2)) : 8192);
         return routed ? this.summarizePortable({ ...args, maxOutputTokens })
-          : this.summarizeViaEngine({ ...args, plan, cap,
-            budget: Math.min(Math.floor(cap * 1.8), inputCharLimit(engine) || Infinity) });
+          : this.summarizeViaEngine({ ...args, plan, cap, budget: fragmentBudget() });
       };
       try { summary = await withLimit(summarize()); }
       catch (error) {
         if (!destination || switching.cancelled || switching.timedOut || recovery?.cancelled || settings.model === selectedSettings.model) throw error;
         settings = selectedSettings;
         cap = this.summaryTransportCap(c, engine, settings);
-        budget = Math.min(Math.floor(cap * 0.6), inputCharLimit(engine) || Infinity);
+        budget = Math.min(Math.floor(cap * 0.6), fragmentBudget());
         diagnostics.fallbackModel = settings.model;
         summary = await withLimit(summarize());
       }
       if (manualFallback && diagnostics.inputChars > 2 && !String(summary).trim())
         throw new Error('The summarizer returned an empty context.');
-    const markdown = '# Compacted conversation context\n\nWorkspace: ' + c.cwd + '\n\n' + summary + pinnedFirstUser
-        + this.visualizationCatalogue(c)
-        + (plan.recent.length ? '\n\n## Recent conversation (verbatim JSON data)\n\n' + this.formatContext(c, plan.recent) : '');
-      if (destination && (contextTokens(markdown) > targetTokens + 256 || overInputChars(targetEngine, markdown)))
+      const markdown = heading + summary + pinnedFirstUser + catalogue + recentContext();
+      if (byteLimitedTarget && inputBytes(markdown) > targetBytes)
+        throw new Error('The compacted context does not fit the available Antigravity message bytes. ' + recoveryAdvice);
+      if (destination && (contextTokens(markdown) > targetTokens + 256 || overInputLimit(targetEngine, markdown, targetSettings)))
         throw new Error('The compacted context does not fit the target model. ' + recoveryAdvice);
-      if (manualFallback && (contextTokens(markdown) > targetCap * 0.5 || overInputChars(targetEngine, markdown)))
+      if (manualFallback && (contextTokens(markdown) > targetCap * 0.5 || overInputLimit(targetEngine, markdown, targetSettings)))
         throw new Error('The summary is too large for the selected model.');
-      if (history) {
-        status('Saving compacted context…', { state: 'running', stage: 'saving' });
-        const saveStartedAt = Date.now();
-        delete c.compactionRecovery;
-        this.save(c);
-        diagnostics.saveMs = Date.now() - saveStartedAt;
-        completed = true;
-        syncSubscription();
-        const durationMs = Date.now() - startedAt;
-        status('', { state: 'completed', durationMs });
-        return { ok: true, sessionId: id, summary: markdown, durationMs };
-      }
-      return savePortable(markdown);
+      return saveSummary(markdown);
     } catch (error) {
       if (switching.timedOut) error = switching.timedOut;
       const manualLocalFallback = manualFallback && diagnostics.route !== 'native' && routeReason !== 'native-eligible' && !storageFailure(error)
         && !subscriptionFailure({ is_error: true, result: error.message, codexErrorInfo: error.codexErrorInfo }, engine) && !/\b403\b/.test(error.message);
-      if ((manualLocalFallback || automatic && portableAttempted && summaryFallbackAllowed(error, engine)) && !switching.cancelled && !recovery?.cancelled && !history) {
-        try { return saveLocalFallback(error.message); }
+      const canFallback = (manualLocalFallback || automatic && portableAttempted && summaryFallbackAllowed(error, engine))
+        && !switching.cancelled && !recovery?.cancelled;
+      if (canFallback && (byteLimitedTarget || !history) && diagnostics.route !== 'markdown-handoff') {
+        try { return byteLimitedTarget ? saveMarkdownFallback(error.message) : saveLocalFallback(error.message); }
         catch (fallbackError) { error = fallbackError; }
       }
       failureMessage = error.message;
@@ -3919,19 +4178,23 @@ class SharedConversations {
   async summarizeViaEngine({ c, engine, id, settings, units, plan, budget, cap, boundary, diagnostics, switching, recovery, status, maxSummaryChars = Infinity }) {
     diagnostics.transport = 'engine';
     const summarySettings = { ...settings };
+    const byteLimited = subscriptionByteLimited(engine, settings);
     if (settings.connection === 'subscription' && switching.subscriptionSelection) {
       const state = this.drivers[engine].subscriptionAccounts();
       switching.subscriptionId ||= this.loadConfig().subscriptionAutoSwitch?.[engine] === false ? state.activeId
         : availableAccount(state, switching.subscriptionAttempts) || state.activeId;
       summarySettings.subscriptionId = switching.subscriptionId;
     }
-    if (['codex', 'claude', 'dsh', 'kimi', 'grok'].includes(engine) && ['medium', 'high', 'xhigh', 'max', 'ultra'].includes(settings.thinkingBudget))
+    if (['antigravity', 'codex', 'claude', 'dsh', 'kimi', 'grok'].includes(engine)
+        && ['medium', 'high', 'xhigh', 'max', 'ultra'].includes(settings.thinkingBudget))
       summarySettings.thinkingBudget = 'low';
+    if (byteLimited) summarySettings.thinkingBudget = this.drivers[engine].summaryThinkingBudget?.(settings.model) || summarySettings.thinkingBudget;
     diagnostics.thinkingBudget = summarySettings.thinkingBudget || 'default';
     const checkpoint = this.summaryCheckpoint({ c, engine, settings, cacheSettings: summarySettings, units, budget, boundary, maxSummaryChars, diagnostics });
     let currentBudget = budget, recent = null;
     let concurrency = settings.connection === 'subscription' ? (['kimi', 'codex'].includes(engine) ? 4 : 3) : 1;
     diagnostics.concurrency = concurrency;
+    const measure = byteLimited ? inputBytes : undefined;
     let progress = {};
     const stopped = () => switching.cancelled || Boolean(switching.timedOut || recovery?.cancelled);
     const request = async ({ kind, system, user, maxChars, parallelConcurrency = concurrency }) => {
@@ -3944,6 +4207,10 @@ class SharedConversations {
       // requests. Split locally before paying for a doomed provider request.
       if (contextTokens(prompt) > cap * 0.65)
         throw Object.assign(new Error('Summary fragment exceeds its input budget'), { overflow: true });
+      // The official Antigravity CLI truncates one message by UTF-8 bytes, not
+      // tokens, so a dense fragment has to be rejected before inference.
+      if (overInputLimit(engine, prompt, summarySettings))
+        throw Object.assign(new Error('Summary fragment exceeds its input byte budget'), { overflow: true });
       for (;;) {
         if (stopped()) throw new Error('Compaction canceled');
         if (++diagnostics.requests > DEFAULT_MAX_REQUESTS) throw new Error('Compaction summary request limit reached. ' + recoveryAdvice);
@@ -3951,16 +4218,25 @@ class SharedConversations {
         const metric = { request: diagnostics.requests, kind, startedAt, inputChars: prompt.length, summaryLimit: maxChars };
         diagnostics.chunks.push(metric);
         status('Asking the engine to summarize the conversation…', { state: 'running', stage: 'summarizing', ...progress, chunk: metric.request, finalChunk: kind === 'reduce' });
-        const workerId = concurrency === 1 ? id : randomUUID();
+        // A timed-out Google startup can finish after the real turn has
+        // resumed. Give every subscription summary its own native process key.
+        const workerId = concurrency === 1 && !byteLimited ? id : randomUUID();
         (switching.summaryWorkers ||= new Set()).add(workerId);
-        let timer, attempt;
+        let timer, attempt, timedOut = false;
         try {
           const timeout = new Promise((resolve, reject) => {
-            timer = setTimeout(() => {
-              this.stopCompactionSummary(id, engine, switching);
-              reject(new Error('A compaction summary request timed out after no progress. ' + recoveryAdvice));
-            }, ENGINE_SUMMARY_TIMEOUT_MS);
-            timer.unref?.();
+            const arm = () => {
+              if (timedOut) return;
+              clearTimeout(timer);
+              timer = setTimeout(() => {
+                timedOut = true;
+                this.stopCompactionSummary(id, engine, switching, workerId);
+                reject(new Error('A compaction summary request timed out after no progress. ' + recoveryAdvice));
+              }, ENGINE_SUMMARY_TIMEOUT_MS);
+              timer.unref?.();
+            };
+            metric.touch = arm;
+            arm();
           });
           const result = await Promise.race([timeout, (async () => {
             const generated = await this.send(engine, { sessionId: id }, { internal: true, fresh: true, ephemeral: true, promptOverride: prompt, summarySettings,
@@ -3987,20 +4263,24 @@ class SharedConversations {
             codexErrorInfo: error.codexErrorInfo }, engine)) error.parallelSummary = true;
           throw error;
         } finally {
+          delete metric.touch;
           clearTimeout(timer);
           metric.totalMs = Date.now() - startedAt;
           switching.summaryWorkers.delete(workerId);
           try {
+            const shutdown = switching.summaryClosures?.get(workerId);
+            if (shutdown) await shutdown;
+            switching.summaryClosures?.delete(workerId);
             const closing = this.drivers[engine].sessions?.release({ conversationId: workerId });
             if (closing) await closing;
-            else if (attempt?.session?.shutdown) await attempt.session.shutdown();
-            else if (attempt?.session?.kill) await attempt.session.kill();
+            else if (!shutdown && attempt?.session?.shutdown) await attempt.session.shutdown();
+            else if (!shutdown && attempt?.session?.kill) await attempt.session.kill();
           } catch (error) { this.log('Summary session shutdown failed: ' + error.message); }
         }
       }
     };
     const execute = (source, previous = '') => runSummaryPipeline({ units: source, previous, budget: currentBudget, concurrency,
-      maxSummaryChars, request, stopped, waitForSettlement: true, ...checkpoint,
+      maxSummaryChars, request, stopped, waitForSettlement: true, measure, ...checkpoint,
       onProgress: update => {
         if (update.stage !== 'progress') return;
         progress = { summaryPhase: update.kind, completedChunks: update.completedChunks, totalChunks: update.totalChunks, totalChunksKnown: update.totalChunksKnown };
@@ -4245,6 +4525,10 @@ class SharedConversations {
         return this.workspaces.archiveSession(payload.id, payload.archived !== false);
       case 'delete-session':
         return this.deleteConversation(payload.id);
+      case 'delete-messages':
+        return this.deleteMessages(payload.sessionId, payload.seqs);
+      case 'export-messages':
+        return this.exportMessagesMarkdown(payload.sessionId, payload.seqs);
       case 'meta-op':
         if (payload.op === 'relocate-workspace') {
           const workspace = this.workspaces.sessionMeta().workspaces.find(w => w.id === payload.id);
@@ -4310,7 +4594,8 @@ class SharedConversations {
             })].join('\n\n');
             // Save the accepted response immediately, including when it came
             // from another device. Never retain secret values or skipped drafts.
-            responseSeq = this.append(a.c, { role: 'notice', engine: a.engine, text, questionResponse: response, internal: a.internal }).seq;
+            responseSeq = this.append(a.c, { role: 'notice', engine: a.engine, text, questionResponse: response,
+              userSeq: a.userSeq, internal: a.internal }).seq;
           }
           const event = { ...response, type: 'conversation:approval-resolved', session_id: a.c.id,
             engine: a.engine, eventSeq: ++a.eventSeq, ...(responseSeq !== undefined ? { responseSeq } : {}) };

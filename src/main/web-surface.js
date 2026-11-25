@@ -29,7 +29,7 @@ function finiteBounds(value) {
 
 function createWebSurfaceManager({
   app, BrowserWindow, WebContentsView, Menu, session, shell, ipcMain, nativeTheme,
-  getWindow, log = () => {}, layoutAssistant = null,
+  getWindow, log = () => {}, layoutAssistant = null, pollIntervalMs = EXTRACT_INTERVAL_MS,
 }) {
   const providerStates = new Map();
   const cachePath = path.join(app.getPath('userData'), 'web-sessions.json');
@@ -230,6 +230,16 @@ function createWebSurfaceManager({
     emitSoon();
   }
 
+  function scheduleHistoryRefresh(state, reason, delay = 300) {
+    if (disposed) return;
+    clearTimeout(state.extractionTimer);
+    state.extractionTimer = setTimeout(() => {
+      state.extractionTimer = null;
+      void extractNow(state.provider.id, reason);
+    }, delay);
+    state.extractionTimer.unref?.();
+  }
+
   function hide() {
     setVisible(false);
   }
@@ -398,6 +408,7 @@ function createWebSurfaceManager({
       state.loading = false;
       state.currentUrl = contents.getURL() || state.currentUrl;
       if (!state.ready) revealProvider(state);
+      scheduleHistoryRefresh(state, 'load-stop', 250);
       emitSoon();
     });
     contents.on('did-fail-load', (_event, code, description, validatedURL, isMainFrame) => {
@@ -442,20 +453,20 @@ function createWebSurfaceManager({
           true,
         ).catch(() => {});
       }
-      setTimeout(() => void extractNow(state.provider.id, 'dom-ready'), 350);
+      scheduleHistoryRefresh(state, 'dom-ready', 350);
     });
     const navigationChanged = () => {
       state.currentUrl = contents.getURL() || state.currentUrl;
       state.title = cleanTitle(contents.getTitle(), state.provider.label);
       persistSoon();
       emitSoon();
-      clearTimeout(state.extractionTimer);
-      state.extractionTimer = setTimeout(() => void extractNow(state.provider.id, 'navigation'), 300);
+      scheduleHistoryRefresh(state, 'navigation', 300);
     };
     contents.on('did-navigate', navigationChanged);
     contents.on('did-navigate-in-page', navigationChanged);
     contents.on('page-title-updated', (_event, title) => {
       state.title = cleanTitle(title, state.provider.label);
+      scheduleHistoryRefresh(state, 'title', 500);
       emitSoon();
     });
 
@@ -604,7 +615,7 @@ function createWebSurfaceManager({
       state.error = error.message;
       emitSoon();
     });
-    return { ok: true };
+    return { ok: true, state: publicState() };
   }
 
   function newConversation() {
@@ -615,7 +626,7 @@ function createWebSurfaceManager({
     if (!contents || contents.isDestroyed()) {
       const ready = ensureProvider(state.provider.id);
       if (!ready) return { ok: false, error: 'The web page is not ready.' };
-      return { ok: true };
+      return { ok: true, state: publicState() };
     }
     armReveal(state);
     void contents.loadURL(state.provider.startUrl).catch(error => {
@@ -623,7 +634,7 @@ function createWebSurfaceManager({
       state.error = error.message;
       emitSoon();
     });
-    return { ok: true };
+    return { ok: true, state: publicState() };
   }
 
   function reload(ignoreCache = false) {
@@ -701,7 +712,7 @@ function createWebSurfaceManager({
       const previousSessions = state.sessions;
       const signInPage = /(?:^|[./_-])(?:sign[-_]?in|login|log[-_]?in)(?:[./?#_-]|$)/i.test(String(result.url || ''));
       const preserveDuringNavigation = reason !== 'manual' && sessions.length === 0 && previousSessions.length > 0
-        && !signInPage && result.layout?.sidebarMarked === true;
+        && !signInPage && (result.layout?.sidebarMarked === true || state.loading === true);
       const nextSessions = preserveDuringNavigation ? previousSessions : sessions;
       const changed = JSON.stringify(nextSessions) !== JSON.stringify(previousSessions);
       const missingAfterHistory = !preserveDuringNavigation && sessions.length === 0 && previousSessions.length > 0 && !signInPage;
@@ -937,21 +948,40 @@ function createWebSurfaceManager({
     if (action === 'rename' && !value) return { ok: false, error: 'Enter a conversation name.' };
     const contents = state.view?.webContents;
     if (!contents || contents.isDestroyed()) return { ok: false, error: 'The web page is not ready.' };
-    const script = sessionActionScript(state.provider, { sessionId: session.id, action, value });
+    const autoConfirm = payload.autoConfirm !== false;
+    const script = sessionActionScript(state.provider, { sessionId: session.id, action, value, autoConfirm });
     if (!script) return { ok: false, error: 'This action is unavailable for the provider.' };
     let result;
     try {
       result = await contents.executeJavaScript(script, true);
     } catch (error) {
+      if (action === 'delete') {
+        await new Promise(resolve => setTimeout(resolve, 250));
+        await extractNow(state.provider.id, 'delete-navigation');
+        if (!state.sessions.some(item => item.id === session.id)) {
+          return { ok: true, action, sessionId: session.id, state: publicState() };
+        }
+      }
       return { ok: false, error: error.message };
     }
     if (!result?.ok) return { ok: false, error: result?.error || 'The website action failed.' };
     if (action === 'share') contents.focus();
     else {
-      await new Promise(resolve => setTimeout(resolve, 500));
+      if (action === 'delete' && result.confirmed === true) {
+        state.sessions = state.sessions.filter(item => item.id !== session.id);
+        const nextUrl = contents.getURL() || state.currentUrl;
+        state.currentUrl = navigationAllowed(state.provider, nextUrl)
+          && activeSessionId(state.provider, nextUrl) !== session.id
+          ? nextUrl
+          : state.provider.startUrl;
+        state.title = cleanTitle(contents.getTitle(), state.title || state.provider.label);
+        persistSoon();
+        emitSoon();
+      }
+      await new Promise(resolve => setTimeout(resolve, action === 'delete' ? 200 : 500));
       await extractNow(state.provider.id, 'session-action');
     }
-    return { ok: true, action, sessionId: session.id };
+    return { ok: true, action, sessionId: session.id, state: publicState() };
   }
 
   function providerMenu(payload = {}) {
@@ -1039,10 +1069,10 @@ function createWebSurfaceManager({
   const poll = setInterval(() => {
     if (!visible) return;
     const state = currentState();
-    if (state.view && !state.view.webContents.isDestroyed() && !state.loading) {
+    if (state.view && !state.view.webContents.isDestroyed()) {
       void extractNow(state.provider.id, 'poll');
     }
-  }, EXTRACT_INTERVAL_MS);
+  }, pollIntervalMs);
   poll.unref?.();
 
   function attachWindow(window) {

@@ -1409,6 +1409,7 @@ discussionBoundary = require('../engines/discussions/native-boundary').createDis
   },
 });
 sharedConversations = new SharedConversations({ dir: path.join(app.getPath('userData'), 'conversations'),
+  saveOverflowText: text => savePastedText(app.getPath('userData'), { text }),
   skillsDir: path.join(app.getPath('userData'), 'skills'), portableSkills: loadConfig().portableSkills !== false, loadConfig, saveConfig, log, modelContextWindow, generateTitle: generateConversationTitle,
   assertAvailable: assertRuntimeAvailable,
   contextCapacity: { budget: options => capacity().budget(options) },
@@ -1457,7 +1458,10 @@ sharedConversations = new SharedConversations({ dir: path.join(app.getPath('user
     codex: { sessions: codex.sessions, history: codex.history, settings: codex.settings, saveSettings: codex.saveSettings, subscriptionAccounts: () => codex.accountState(), syncSubscriptionAccount: codex.syncAccountSelection,
       resetCredits: { preview: payload => codex.handlers['account-reset-preview'](payload), consume: payload => codex.handlers['account-reset-consume'](payload) },
       ensure: codex.ensureSession, generateTitle: codex.generateTitle, titleDuringTurn: true, forkNative: codex.forkNative, nativeCompaction: true, nativeEditing: true },
-    antigravity: { sessions: antigravity.sessions, history: antigravity.history, settings: antigravity.settings, saveSettings: antigravity.saveSettings, ensure: antigravity.ensureSession, generateTitle: antigravity.generateTitle, titleDuringTurn: true, forkNative: antigravity.forkNative, nativeAutoCompaction: true },
+    antigravity: { sessions: antigravity.sessions, history: antigravity.history, settings: antigravity.settings, saveSettings: antigravity.saveSettings,
+      ensure: antigravity.ensureSession, generateTitle: antigravity.generateTitle, titleDuringTurn: true, forkNative: antigravity.forkNative,
+      nativeAutoCompaction: true, summaryThinkingBudget: antigravity.summaryThinkingBudget,
+      subscriptionQuota: () => antigravity.handlers['account-state']().usage?.latest?.windows },
     dsh: dshChat,
     grok: { ...grokChat, subscriptionAccounts: () => grokAccount.state(),
       nativeEditing: () => nativeEditingSupported('grok', runtimes().locate('grok')?.version) },
@@ -2815,10 +2819,34 @@ if (!gotSingleInstanceLock) {
       if (!READ_ONLY_REMOTE_COMMANDS.has(action)) remoteDesktop?.publish();
     }
   });
+  ipcMain.handle('dsh:conversation-export-messages', async (_event, { engine, sessionId, seqs } = {}) => {
+    try {
+      const result = await sharedConversations.command(engine, 'export-messages', { sessionId, seqs });
+      if (!result?.ok) throw new Error(result?.error || 'Could not export the selected messages');
+      const title = String(result.title || 'Camellia conversation')
+        .replace(/[<>:"/\\|?*\u0000-\u001f]/g, '_').replace(/\s+/g, ' ').trim().slice(0, 80)
+        || 'Camellia conversation';
+      const options = {
+        title: 'Export selected messages',
+        defaultPath: path.join(app.getPath('downloads'), title + ' - selected messages.md'),
+        filters: [{ name: 'Markdown document', extensions: ['md'] }],
+      };
+      const resultDialog = mainWindow
+        ? await dialog.showSaveDialog(mainWindow, options)
+        : await dialog.showSaveDialog(options);
+      if (resultDialog.canceled || !resultDialog.filePath) return { ok: true, canceled: true };
+      await fs.promises.writeFile(resultDialog.filePath, result.markdown, 'utf8');
+      return { ok: true, filePath: resultDialog.filePath, count: result.count };
+    } catch (error) { return { ok: false, error: error.message }; }
+  });
   ipcMain.handle('dsh:visualize-get', (_event, payload) => {
     try {
       sharedConversations.get(payload?.sessionId);
       try {
+        if (payload.revision !== undefined) {
+          return { ok: true, card: sharedConversations.visualize.getRevision(payload.sessionId,
+            payload.cardId, payload.revision) };
+        }
         return { ok: true, card: sharedConversations.visualize.get(payload.sessionId, payload?.cardId) };
       } catch (error) {
         const tombstone = sharedConversations.visualize.deleted?.(payload?.sessionId, payload?.cardId);
@@ -2854,7 +2882,8 @@ if (!gotSingleInstanceLock) {
   ipcMain.handle('dsh:visualize-list', (_event, payload) => {
     try {
       sharedConversations.get(payload?.sessionId);
-      return { ok: true, cards: sharedConversations.visualize.cards(payload?.sessionId) };
+      return { ok: true, cards: sharedConversations.visualize.cards(payload.sessionId,
+        { includeRevisions: payload.includeRevisions === true }) };
     } catch (error) { return { ok: false, error: error.message }; }
   });
   ipcMain.handle('dsh:visualize-export', async (_event, payload) => {

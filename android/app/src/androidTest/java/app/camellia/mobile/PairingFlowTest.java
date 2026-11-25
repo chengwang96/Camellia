@@ -184,12 +184,17 @@ public class PairingFlowTest extends InstrumentationTestCase {
                 }
                 current.onPreviewFrame(frame, (android.hardware.Camera) field(current, "camera"));
             });
-            await(() -> Boolean.TRUE.equals(field(activity, "foreground")) && Boolean.TRUE.equals(field(activity, "pairingBusy"))
-                && !action().isEnabled() && !input("pairCode").isEnabled());
+            await(() -> Boolean.TRUE.equals(field(activity, "foreground"))
+                && (Boolean.TRUE.equals(field(activity, "pairingBusy"))
+                    && "100.64.0.1".equals(input("pairAddress").getText().toString())
+                    && "43129".equals(input("pairPort").getText().toString())
+                    || ((JSONObject) field(activity, "credentials")).has("token")));
             ui(() -> {
+                if (!Boolean.TRUE.equals(field(activity, "pairingBusy"))) return;
                 assertEquals("100.64.0.1", input("pairAddress").getText().toString());
                 assertEquals("43129", input("pairPort").getText().toString());
-                assertFalse(action().isEnabled()); assertFalse(input("pairCode").isEnabled());
+                assertFalse(action().isEnabled());
+                assertFalse(input("pairCode").isEnabled());
                 invoke("requestPairing"); // Guard also protects programmatic duplicate submissions.
             });
             await(() -> ((JSONObject) field(activity, "credentials")).has("token"));

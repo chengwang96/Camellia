@@ -14,6 +14,7 @@ const { grokEditBoundary, grokUpdatesFile } = require('./native-edit-boundary');
 const { copyGrokFork } = require('./native-fork');
 const { harnessThinkingRoute } = require('../api/harness-thinking');
 const { withSessionAffinity } = require('../api/session-affinity');
+const { appVersion } = require('../shared/app-version');
 
 // Allow the native CLI's cold Windows startup before its ACP server is ready.
 const GROK_STARTUP_TIMEOUT_MS = 60000;
@@ -148,7 +149,7 @@ class GrokSession extends AcpSession {
   }
   async open() {
     await this.starting;
-    const initResult = await this.request('initialize', { protocolVersion: 1, clientCapabilities: {}, clientInfo: { name: 'Camellia', version: '1.0.1' } }, GROK_STARTUP_TIMEOUT_MS);
+    const initResult = await this.request('initialize', { protocolVersion: 1, clientCapabilities: {}, clientInfo: { name: 'Camellia', version: appVersion } }, GROK_STARTUP_TIMEOUT_MS);
     this.promptCapabilities = initResult?.agentCapabilities?.promptCapabilities || {};
     if (this.spec.authMethod) await this.request('authenticate', { methodId: this.spec.authMethod, _meta: { headless: true } });
     const sourceId = this.opts.sessionId;

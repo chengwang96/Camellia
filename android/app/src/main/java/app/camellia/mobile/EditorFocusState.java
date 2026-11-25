@@ -72,11 +72,16 @@ final class EditorFocusState {
         // editor still owns logical focus. Capture that intent before IME calls.
         boolean focused = input.hasFocus();
         int selectionStart = input.getSelectionStart(), selectionEnd = input.getSelectionEnd();
+        boolean windowFocused = root.hasWindowFocus();
+        boolean currentVisible = imeVisible(input);
+        // Before rotation the window still owns the real IME state. Do not let a
+        // cached pre-dismiss value make a hidden keyboard look visible again.
+        if (windowFocused && !currentVisible) stableIme.put(root, false);
         Boolean stable = stableIme.get(root);
-        boolean visible = stable == null ? imeVisible(input) : stable;
+        boolean visible = windowFocused ? currentVisible : stable == null ? currentVisible : stable;
         InputMethodManager keyboard = input.getContext().getSystemService(InputMethodManager.class);
         boolean served = keyboard != null && keyboard.isActive(input);
-        visible = visible && (root.hasWindowFocus() || served) || !served && pendingIme.containsKey(input);
+        visible = visible && (windowFocused || served) || !served && pendingIme.containsKey(input);
         return new EditorFocusState(input, focused, visible, selectionStart, selectionEnd);
     }
 

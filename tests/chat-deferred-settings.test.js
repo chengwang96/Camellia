@@ -128,9 +128,10 @@ test('quick switch uses fetched routed levels and clears an unsupported effort f
   }
 });
 
-function modelMenu(subscription, google = false, modelProfiles = {}) {
+function modelMenu(subscription, google = false, modelProfiles = {}, { harnessId = google ? 'antigravity' : 'kimi', sessionId = 'conversation-a' } = {}) {
   const state = {
-    supportsAccounts: () => true, sharedChat: true, context: { sessionId: 'conversation-a' },
+    supportsAccounts: () => true, sharedChat: true, context: { sessionId }, harnessId,
+    antigravityConnectionBound: () => harnessId === 'antigravity' && Boolean(state.context.sessionId),
     accountName: () => google ? 'Google' : 'Kimi', MODELS: [],
     accountModels: [{ id: 'shared-model', name: 'Shared model' }, { id: 'account-only', name: 'Account model' }],
     visibleAccountModels: () => state.accountModels,
@@ -147,6 +148,33 @@ test('the Google subscription model menu opens with only its account models', ()
   assert.equal(sections.length, 1);
   assert.equal(sections[0].title, 'Model · Google account');
   assert.deepEqual(sections[0].options.map(model => model.id), ['shared-model', 'account-only']);
+});
+
+test('a new Antigravity draft on Google still offers the shared API routes', () => {
+  const sections = modelMenu(true, true, {}, { sessionId: null });
+  assert.deepEqual(sections.map(section => section.connection), ['subscription', 'api']);
+  assert.deepEqual(sections[1].options.map(model => model.id), ['shared-model', 'api-only']);
+});
+
+test('a new Antigravity draft on Google without account models falls back to API routes', () => {
+  const state = { accountModels: [] };
+  const sections = (() => {
+    const context = { supportsAccounts: () => true, context: { sessionId: null }, harnessId: 'antigravity',
+      antigravityConnectionBound: () => false, accountName: () => 'Google', MODELS: [], accountModels: state.accountModels,
+      visibleAccountModels: () => [], routeModels: ['api-only'], routeModelCatalog: {},
+      accountSubscription: () => true, googleSubscription: () => true };
+    vm.createContext(context);
+    vm.runInContext(extract('  function routeModelLabel(', '  function openModelMenu()'), context);
+    return JSON.parse(JSON.stringify(context.modelSections()));
+  })();
+  assert.equal(sections.length, 1);
+  assert.equal(sections[0].connection, 'api');
+  assert.deepEqual(sections[0].options.map(model => model.id), ['api-only']);
+});
+
+test('an existing Antigravity API conversation does not offer Google account models', () => {
+  const sections = modelMenu(false, false, {}, { harnessId: 'antigravity' });
+  assert.deepEqual(sections.map(section => section.connection), ['api']);
 });
 
 test('shared model IDs retain both connections with the active subscription first', () => {

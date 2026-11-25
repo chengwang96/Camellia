@@ -53,6 +53,18 @@ test('ACP progress text streams as commentary without becoming the answer', t =>
   assert.equal(session.text, 'Final answer');
 });
 
+test('Antigravity progress preview and reasoning stay before the final answer', t => {
+  const { session } = fixture(t), events = [];
+  session.text = ''; session.onEvent = event => events.push(event);
+  session.update({ sessionUpdate: 'camellia_progress', content: { type: 'text', text: 'Reading files' } });
+  session.update({ sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text: 'Detailed planning' } });
+  session.update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'Final answer' } });
+  const starts = events.filter(event => event.type === 'stream_event' && event.event.type === 'content_block_start')
+    .map(event => event.event.content_block);
+  assert.deepEqual(starts, [{ type: 'text', phase: 'commentary' }, { type: 'thinking' }, { type: 'text' }]);
+  assert.equal(session.text, 'Final answer');
+});
+
 test('Kimi waits for a task follow-up that races the original prompt response', async t => {
   const { session } = fixture(t);
   session.sessionId = 'kimi-background'; session.spec.modeEngine = 'kimi'; session.ready = Promise.resolve();

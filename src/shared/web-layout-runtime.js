@@ -176,7 +176,7 @@ function extractionScript(provider, profileValue = null, options = {}) {
   })()`;
 }
 
-function sessionActionScript(provider, { sessionId, action, value = '' }) {
+function sessionActionScript(provider, { sessionId, action, value = '', autoConfirm = true }) {
   const labels = provider.sessionActions?.labels?.[action];
   if (!labels?.length) return null;
   const config = JSON.stringify({
@@ -187,6 +187,7 @@ function sessionActionScript(provider, { sessionId, action, value = '' }) {
     action,
     value: String(value || ''),
     sessionId: String(sessionId || ''),
+    autoConfirm: autoConfirm !== false,
   });
   return `(async () => {
     const cfg = ${config};
@@ -278,15 +279,30 @@ function sessionActionScript(provider, { sessionId, action, value = '' }) {
       }
 
       if (cfg.action === 'delete') {
-        const confirmLabels = ['删除', '确认', '确认删除', '确定', '删除对话', 'Delete', 'Delete conversation', 'Confirm', 'OK'];
+        const confirmLabels = [
+          '删除', '删除该对话', '确认', '确认删除', '确定', '删除对话',
+          'Delete', 'Delete conversation', 'Delete this conversation', 'Confirm', 'OK',
+        ];
         const confirm = await waitFor(() => {
           const dialogs = [...document.querySelectorAll(dialogSelector)].filter(visible);
-          return dialogs.flatMap(dialog => [...dialog.querySelectorAll('button, [role="button"]')])
-            .find(node => visible(node) && !node.disabled && confirmLabels.includes(clean(node.textContent)));
-        }, 900);
-        if (confirm) confirm.click();
-        await sleep(220);
-        return { ok: true, action: cfg.action };
+          const buttons = dialogs.flatMap(dialog => [...dialog.querySelectorAll('button, [role="button"]')])
+            .filter(node => visible(node) && !node.disabled);
+          return buttons.find(node => confirmLabels.includes(clean(node.textContent)))
+            || buttons.find(node => {
+              const label = clean(node.textContent);
+              if (!label || /cancel|close|取消|关闭/i.test(label)) return false;
+              return /^(删除|确认|确定|delete|confirm|ok)\b/i.test(label)
+                || /(?:删除|delete).+(?:对话|conversation)/i.test(label);
+            });
+        }, cfg.autoConfirm ? 900 : 1800);
+        if (cfg.autoConfirm && confirm) confirm.click();
+        if (!cfg.autoConfirm && confirm) {
+          await waitFor(() => !confirm.isConnected || !visible(confirm)
+            || !anchor.isConnected || !visible(anchor), 60000);
+        }
+        const confirmed = Boolean(await waitFor(() => !anchor.isConnected || !visible(anchor), 1600));
+        await sleep(150);
+        return { ok: true, action: cfg.action, confirmed };
       }
 
       throw new Error('Unsupported conversation action.');

@@ -42,17 +42,36 @@ public class CardViewerTest extends InstrumentationTestCase {
         return value == null || value.equals("null") ? new JSONObject() : new JSONObject(value);
     }
     private View control(String tag) { return dialog.getWindow().getDecorView().findViewWithTag(tag); }
+    private ChoiceDropdown openViewMenu() throws Exception {
+        ChoiceDropdown menu = (ChoiceDropdown) field(dialog, "viewMenu");
+        if (menu != null && menu.isShowing()) return menu;
+        control("cardViewMode").performClick();
+        return (ChoiceDropdown) field(dialog, "viewMenu");
+    }
+
+    private void viewAction(String tag, boolean dismiss) throws Exception {
+        ChoiceDropdown menu = openViewMenu();
+        View button = menu.panel.findViewWithTag(tag);
+        assertNotNull(button);
+        assertTrue(button.performClick());
+        if (dismiss && menu.isShowing()) menu.dismiss();
+    }
+
     private void mode(int index) throws Exception {
         ui(() -> {
-            control("cardViewMode").performClick();
-            ChoiceDropdown menu = (ChoiceDropdown) field(dialog, "viewMenu"); assertNotNull(menu);
+            ChoiceDropdown menu = openViewMenu(); assertNotNull(menu);
             View row = menu.panel.findViewWithTag("dropdownChoice:" + index); assertNotNull(row); row.performClick();
         });
-        String expected = index == 0 ? "width" : index == 1 ? "page" : "custom";
+        String expected = index == 0 ? "width" : "page";
         await(() -> expected.equals(metrics().optString("mode")), "Viewer mode must be applied");
     }
     @Override protected void setUp() throws Exception {
         super.setUp();
+        try (var output = new android.os.ParcelFileDescriptor.AutoCloseInputStream(
+            getInstrumentation().getUiAutomation().executeShellCommand(
+                "settings put secure immersive_mode_confirmations confirmed"))) {
+            while (output.read() != -1) { /* Drain the command before the dialog enters fullscreen. */ }
+        }
         boolean tablet = getInstrumentation().getTargetContext().getResources().getConfiguration().smallestScreenWidthDp >= 600;
         getInstrumentation().getUiAutomation().setRotation(tablet ? android.app.UiAutomation.ROTATION_FREEZE_90 : android.app.UiAutomation.ROTATION_FREEZE_0);
         activity = (MainActivity) getInstrumentation().startActivitySync(new Intent(getInstrumentation().getTargetContext(), MainActivity.class)
@@ -84,6 +103,34 @@ public class CardViewerTest extends InstrumentationTestCase {
         assertTrue(bounds.toString(), bounds.getDouble("end") <= state.getDouble("height") + 2);
         assertTrue(bounds.toString(), bounds.getDouble("left") >= -2);
     }
+    public void testViewMenuOpensDirectlyUnderItsToolbarButton() throws Exception {
+        assertViewMenuPosition();
+        int original = activity.getResources().getConfiguration().orientation;
+        rotate(original == android.content.res.Configuration.ORIENTATION_LANDSCAPE);
+        assertViewMenuPosition();
+    }
+
+    private void assertViewMenuPosition() throws Exception {
+        getInstrumentation().waitForIdleSync();
+        ui(() -> control("cardViewMode").performClick());
+        ChoiceDropdown menu = (ChoiceDropdown) field(dialog, "viewMenu");
+        assertNotNull(menu);
+        await(() -> menu.panel.isAttachedToWindow() && menu.panel.getHeight() > 0, "The menu must be laid out");
+        ui(() -> {
+            View anchor = control("cardViewMode");
+            var visible = PopupSurface.visibleFrame(anchor);
+            int[] button = new int[2], panel = new int[2];
+            anchor.getLocationOnScreen(button);
+            menu.panel.getLocationOnScreen(panel);
+            float density = anchor.getResources().getDisplayMetrics().density;
+            int margin = Math.round(12 * density);
+            int left = Math.max(visible.left + margin, Math.min(button[0] + (anchor.getWidth() - menu.panel.getWidth()) / 2, visible.right - menu.panel.getWidth() - margin));
+            assertEquals("Menu must center over the button, clamped to the screen", left, panel[0], 2);
+            assertEquals("Menu must sit just below the button", button[1] + anchor.getHeight() + Math.round(6 * density), panel[1], 2);
+            menu.dismiss();
+        });
+    }
+
     public void testWholeCardShowsTallExistingContentAndKeepsState() throws Exception {
         evaluate("note.value='retained draft';slider.value='41';window.saved=identity;true");
         mode(1); assertFits();
@@ -93,11 +140,18 @@ public class CardViewerTest extends InstrumentationTestCase {
         mode(0); assertEquals("retained draft", new org.json.JSONArray("[" + evaluate("note.value") + "]").getString(0));
         assertTrue(metrics().getDouble("contentHeight") > metrics().getDouble("height"));
     }
-    public void testZoomAndResetLeaveCardControlsAndCanvasLive() throws Exception {
-        ui(() -> { control("cardZoomIn").performClick(); control("cardZoomIn").performClick(); });
+    public void testZoomAndFitWidthLeaveCardControlsAndCanvasLive() throws Exception {
+        ui(() -> { viewAction("cardZoomIn", false); viewAction("cardZoomIn", false); });
         await(() -> Math.abs(metrics().optDouble("scale") - 1.5625) < .001, "Rapid zoom taps must each apply");
-        ui(() -> control("cardZoomReset").performClick());
-        await(() -> Math.abs(metrics().optDouble("scale") - 1) < .001, "Reset must restore actual size");
+        ui(() -> {
+            ChoiceDropdown menu = openViewMenu();
+            assertNull(menu.panel.findViewWithTag("dropdownChoice:2"));
+            View readout = menu.panel.findViewWithTag("cardZoomLevel");
+            assertNotNull(readout);
+            assertFalse(readout.isClickable());
+        });
+        mode(0);
+        await(() -> Math.abs(metrics().optDouble("scale") - 1) < .001, "Fit width must restore the viewport scale");
         mode(1);
         tapElement("choice"); await(() -> "1".equals(evaluate("window.picks")), "Scaled controls must receive actual taps");
         tapElement("drawing"); await(() -> "1".equals(evaluate("window.angle")), "The card's own canvas gesture must still receive input");
@@ -118,7 +172,7 @@ public class CardViewerTest extends InstrumentationTestCase {
         int original = activity.getResources().getConfiguration().orientation;
         rotate(original == android.content.res.Configuration.ORIENTATION_LANDSCAPE); assertFits();
         assertEquals("page", metrics().getString("mode"));
-        ui(() -> control("cardZoomIn").performClick());
+        ui(() -> viewAction("cardZoomIn", false));
         await(() -> "custom".equals(metrics().optString("mode")), "Explicit zoom must enter manual mode");
         double manual = metrics().getDouble("scale");
         rotate(original != android.content.res.Configuration.ORIENTATION_LANDSCAPE);
@@ -129,23 +183,27 @@ public class CardViewerTest extends InstrumentationTestCase {
     public void testViewerToolbarFitsAndRetainsTouchTargets() throws Exception {
         checkToolbar(); capture("toolbar");
         mode(1); checkToolbar();
-        mode(2);
-        await(() -> ((TextView)control("cardViewMode")).getText().toString().equals((boolean)field(dialog,"chinese") ? "缩放" : "Zoom"), "The current mode must appear in the toolbar");
+        ui(() -> viewAction("cardZoomIn", true));
+        await(() -> ((TextView)control("cardViewMode")).getText().toString().startsWith((boolean)field(dialog,"chinese") ? "缩放 · " : "Zoom · "), "The current mode must appear in the toolbar");
         checkToolbar(); capture("toolbar-manual");
     }
     private void checkToolbar() throws Exception {
         ui(() -> {
             View header = control("cardViewerToolbar"); float density = activity.getResources().getDisplayMetrics().density;
             assertTrue(header.getHeight() <= Math.ceil(56 * density));
-            for (String tag : new String[]{"cardViewMode","cardZoomOut","cardZoomReset","cardZoomIn","cardPresent","cardRotate"}) {
+            var visible = new android.graphics.Rect();
+            assertEquals("Close sits on the left", "cardClose", ((android.view.ViewGroup) header).getChildAt(0).getTag());
+            assertEquals("Present sits on the right", "cardPresent", ((android.view.ViewGroup) header).getChildAt(4).getTag());
+            for (String tag : new String[]{"cardZoomOut","cardZoomLevel","cardZoomIn","cardRotate"}) assertNull(control(tag));
+            for (String tag : new String[]{"cardClose","cardViewMode","cardPresent"}) {
                 View button = control(tag);
-                // The toolbar scrolls horizontally on narrow phones. Every
-                // target keeps its full 44dp hit area, while only the controls
-                // currently in view are painted.
+                assertTrue(tag + " must be visible", button.getGlobalVisibleRect(visible));
+                assertEquals(tag + " must not be clipped", button.getWidth(), visible.width());
                 assertTrue(tag + " width", button.getWidth() >= Math.floor(44 * density));
                 assertTrue(tag + " height", button.getHeight() >= Math.floor(44 * density));
-                TextView label = (TextView) button;
-                assertTrue(tag + " text must fit", label.getPaint().measureText(label.getText().toString()) <= label.getWidth() - label.getCompoundPaddingLeft() - label.getCompoundPaddingRight() + 1);
+                if (button instanceof TextView label) {
+                    assertTrue(tag + " text must fit", label.getPaint().measureText(label.getText().toString()) <= label.getWidth() - label.getCompoundPaddingLeft() - label.getCompoundPaddingRight() + 1);
+                }
             }
         });
     }
@@ -163,13 +221,16 @@ public class CardViewerTest extends InstrumentationTestCase {
         await(() -> "true".equals(evaluate("document.documentElement.hasAttribute('data-viz-presenting')")),
             "Presenting must reach the card document");
         assertTrue(dialog.isShowing());
-        // Immersive presentation hides the system bars as well.
         if (android.os.Build.VERSION.SDK_INT >= 30) {
-            await(() -> !dialog.getWindow().getDecorView().getRootWindowInsets()
-                .isVisible(android.view.WindowInsets.Type.statusBars()), "Presenting must hide the status bar");
+            await(this::presentationFillsScreen, "Presenting must hide both system bars and fill the screen");
+            boolean landscape = activity.getResources().getConfiguration().orientation
+                == android.content.res.Configuration.ORIENTATION_LANDSCAPE;
+            rotate(landscape);
+            await(this::presentationFillsScreen, "Rotation must keep both bars hidden and retain the fullscreen viewport");
         }
-        ui(() -> control("cardPresent").performClick());
+        getInstrumentation().sendKeyDownUpSync(android.view.KeyEvent.KEYCODE_BACK);
         await(() -> control("cardViewerToolbar").getVisibility() == View.VISIBLE, "Exiting must restore the toolbar");
+        assertTrue("Back from presentation must keep the card open", dialog.isShowing());
         await(() -> "false".equals(evaluate("document.documentElement.hasAttribute('data-viz-presenting')")),
             "Exiting must clear the card presentation flag");
         if (android.os.Build.VERSION.SDK_INT >= 30) {
@@ -179,14 +240,26 @@ public class CardViewerTest extends InstrumentationTestCase {
         assertEquals("false", evaluate("document.documentElement.hasAttribute('data-viz-presenting')"));
     }
 
+    private boolean presentationFillsScreen() {
+        var window = dialog.getWindow();
+        var insets = window.getDecorView().getRootWindowInsets();
+        if (insets == null || insets.isVisible(android.view.WindowInsets.Type.statusBars())
+                || insets.isVisible(android.view.WindowInsets.Type.navigationBars())) return false;
+        int[] origin = new int[2];
+        browser.getLocationOnScreen(origin);
+        var bounds = activity.getWindowManager().getCurrentWindowMetrics().getBounds();
+        return origin[0] == bounds.left && origin[1] == bounds.top
+            && browser.getWidth() == bounds.width() && browser.getHeight() == bounds.height();
+    }
+
     public void testLandscapeButtonRotatesAndClosingRestoresPortrait() throws Exception {
         int original = activity.getResources().getConfiguration().orientation;
-        ui(() -> control("cardRotate").performClick());
+        ui(() -> viewAction("cardRotate", true));
         int target = original == android.content.res.Configuration.ORIENTATION_LANDSCAPE
             ? android.content.res.Configuration.ORIENTATION_PORTRAIT
             : android.content.res.Configuration.ORIENTATION_LANDSCAPE;
         await(() -> activity.getResources().getConfiguration().orientation == target, "The rotate button must change orientation");
-        ui(() -> control("cardRotate").performClick());
+        ui(() -> viewAction("cardRotate", true));
         await(() -> activity.getResources().getConfiguration().orientation == original, "A second tap must restore the first orientation");
         ui(() -> dialog.dismiss());
         boolean tablet = getInstrumentation().getTargetContext().getResources().getConfiguration().smallestScreenWidthDp >= 600;
@@ -197,23 +270,23 @@ public class CardViewerTest extends InstrumentationTestCase {
     }
 
     public void testRotateControlReportsItsState() throws Exception {
-        TextView rotate = (TextView) control("cardRotate");
+        TextView rotate = ((View) field(dialog, "viewControls")).findViewWithTag("cardRotate");
         String initial = rotate.getText().toString();
-        ui(rotate::performClick);
-        await(() -> !((TextView) control("cardRotate")).getText().toString().equals(initial), "Rotate must toggle");
-        ui(() -> control("cardRotate").performClick());
-        await(() -> ((TextView) control("cardRotate")).getText().toString().equals(initial), "The control must return to its original label");
+        ui(() -> viewAction("cardRotate", true));
+        await(() -> !rotate.getText().toString().equals(initial), "Rotate must toggle");
+        ui(() -> viewAction("cardRotate", true));
+        await(() -> rotate.getText().toString().equals(initial), "The control must return to its original label");
     }
-    public void testTypingContinuesAfterViewerZoomAndReset() throws Exception {
+    public void testTypingContinuesAfterViewerZoomAndFitWidth() throws Exception {
         ui(() -> browser.requestFocus());
         evaluate("note.focus();note.setSelectionRange(2,4);true");
         ui(() -> activity.getSystemService(android.view.inputmethod.InputMethodManager.class).showSoftInput(browser,0));
         await(() -> browser.getRootWindowInsets().isVisible(android.view.WindowInsets.Type.ime()), "A real keyboard is required");
-        ui(() -> control("cardZoomIn").performClick());
+        ui(() -> viewAction("cardZoomIn", true));
         await(() -> Math.abs(metrics().optDouble("scale") - 1.25) < .001, "Viewer zoom must apply while editing");
         getInstrumentation().sendStringSync("x"); await(() -> "\"abxef\"".equals(evaluate("note.value")), "The editor must still receive text at its selection");
-        ui(() -> control("cardZoomReset").performClick());
-        getInstrumentation().sendStringSync("y"); await(() -> "\"abxyef\"".equals(evaluate("note.value")), "Reset must retain the input connection");
+        mode(0);
+        getInstrumentation().sendStringSync("y"); await(() -> "\"abxyef\"".equals(evaluate("note.value")), "Fit width must retain the input connection");
     }
     private void tapElement(String id) throws Exception {
         JSONObject point = new JSONObject(evaluate("(function(){var r=document.getElementById(" + JSONObject.quote(id) + ").getBoundingClientRect();return {x:r.left+r.width/2,y:r.top+r.height/2}})()"));

@@ -19,6 +19,21 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
   const input = $('input');
   const sendBtn = $('send');
   const statusLine = $('statusLine');
+  const messageSelection = window.CamelliaMessageSelection?.create({
+    chat,
+    chatScroll,
+    inputZone: document.querySelector('.input-zone'),
+    header: document.querySelector('.main-header'),
+    getSessionId: () => context.sessionId,
+    getBusy: () => conversationBusy() || contextBusy(),
+    getBlockedReason: () => conversationBusy() || contextBusy() ? 'Wait for this conversation to finish or stop it first.' : null,
+    setStatus: text => setStatus(text),
+    reload: async () => {
+      if (!context.sessionId) return;
+      const session = context.sessionId;
+      await openHistorySession(session);
+    },
+  });
 
 
   let running = false;
@@ -126,6 +141,8 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
   let routeModels = [];
   let routeModelCatalog = {};
   const googleSubscription = () => harnessId === 'antigravity' && currentConnection === 'subscription';
+  // Antigravity session IDs encode their native runtime, so only drafts can change connection.
+  const antigravityConnectionBound = () => harnessId === 'antigravity' && Boolean(context.sessionId);
   // A session saved before the Google catalog was grouped still names a single
   // effort row; show it as its base model, which now owns the effort timeline.
   const accountFamily = id => accountModels.find(model => model.id === id
@@ -1080,9 +1097,10 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     // Engines with subscriptions list account and API models together, so the
     // composer itself chooses the connection; a session cannot switch engines.
     if (!supportsAccounts()) return [{ title: 'Model · Same-model failover', options: MODELS }];
+    const bound = antigravityConnectionBound();
     // API routes remain selectable even when the saved connection is a
     // subscription with no usable account catalog (including a fresh install).
-    if (!accountModels.length && !googleSubscription() && routeModels.length) return [{
+    if (!accountModels.length && !(googleSubscription() && bound) && routeModels.length) return [{
       title: 'Model · Same-model failover', connection: 'api',
       options: accountSubscription() ? routeModels.map(id => ({ id, label: routeModelLabel(id) })) : MODELS,
     }];
@@ -1090,7 +1108,9 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     if (!accountModels.length) return [{ title: 'Model · Same-model failover', options: MODELS }];
     const account = { title: 'Model · ' + accountName() + ' account', connection: 'subscription', options: visibleAccountModels().map(model => ({ id: model.id, label: model.name || model.displayName || model.id })) };
     const api = { title: 'Model · Shared API routes', connection: 'api', options: routeModels.map(id => ({ id, label: routeModelLabel(id) })) };
-    if (googleSubscription()) return account.options.length ? [account] : [];
+    // An existing Antigravity conversation keeps the runtime that created it
+    // (Google CLI or API SDK); a new draft may choose either connection.
+    if (bound) return [googleSubscription() ? account : api].filter(section => section.options.length);
     const sections = accountSubscription() ? [account, api] : [api, account];
     // Connection is part of a choice's identity: an API route must not hide
     // the same model offered by the signed-in account.
@@ -1279,9 +1299,12 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
   // value so it keeps tracking the window on every screen size.
   const CHAT_CONTENT_WIDTHS = { standard: '768px', wide: '1080px', full: 'none' };
   function applyChatContentWidth(value) {
-    const width = CHAT_CONTENT_WIDTHS[value] || CHAT_CONTENT_WIDTHS.standard;
-    document.documentElement.style.setProperty('--content-width', width);
-    writeUi('content-width', value);
+    const mode = Object.hasOwn(CHAT_CONTENT_WIDTHS, value) ? value : 'standard';
+    document.documentElement.dataset.chatContentWidth = mode;
+    document.documentElement.style.setProperty('--composer-width', CHAT_CONTENT_WIDTHS.wide);
+    document.documentElement.style.setProperty('--content-width', CHAT_CONTENT_WIDTHS[mode]);
+    writeUi('content-width', mode);
+    conversationNavigator?.refresh();
   }
   function applyAdvancedAnimations(value) {
     document.documentElement.dataset.advancedAnimations = value === false ? 'off' : 'on';
@@ -2017,6 +2040,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
   // Drag & drop onto the input card
   inputCard.addEventListener('dragover', (e) => {
     e.preventDefault();
+    if (messageSelection?.isSelecting()) return;
     inputCard.classList.add('dragging');
   });
   inputCard.addEventListener('dragleave', (e) => {
@@ -2025,7 +2049,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
   inputCard.addEventListener('drop', (e) => {
     e.preventDefault();
     inputCard.classList.remove('dragging');
-    if (!e.dataTransfer) return;
+    if (messageSelection?.isSelecting() || !e.dataTransfer) return;
     const paths = [];
     const previewPath = e.dataTransfer.getData(attachmentDragType);
     if (previewPath) paths.push(previewPath);
@@ -2146,25 +2170,12 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     const div = document.createElement('div');
     div.className = 'msg-user';
     div.messageData = { text, attachments: atts || [], seq: meta.seq, at: meta.at };
+    if (meta.seq) div.dataset.seq = String(meta.seq);
     // A prompt is rendered with the same rules as a reply so a pasted snippet
     // keeps its formatting; `textContent` stays the copy/edit source of truth.
     // An attachment-only message has no body, so it renders no empty bubble.
     renderUserBubble(div, text);
-    if (atts && atts.length) {
-      const chips = document.createElement('div');
-      chips.className = 'attchips';
-      for (const a of atts) {
-        const c = document.createElement('span');
-        c.className = 'attchip-inline';
-        c.innerHTML = attachmentGlyph(a.name, a.isImage, 'attchip-inline-icon') + '<span class="attchip-inline-name"></span>';
-        c.querySelector('.attchip-inline-name').textContent = a.name;
-        c.tabIndex = 0; c.role = 'button'; c.title = window.CamelliaI18n.t('Preview');
-        c.addEventListener('click', () => void openFilePreview(a.path));
-        c.addEventListener('keydown', event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); void openFilePreview(a.path); } });
-        chips.appendChild(c);
-      }
-      div.appendChild(chips);
-    }
+    renderUserAttachments(div, atts);
     const actions = messageActions(meta.at, () => div.messageData.text || (div.messageData.attachments || [])
       .map(attachment => attachment.name).filter(Boolean).join(', '));
     const resend = document.createElement('button');
@@ -2187,6 +2198,32 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     return div;
   }
 
+  function renderUserAttachments(div, atts, footer) {
+    if (atts && atts.length) {
+      const chips = document.createElement('div');
+      chips.className = 'attchips';
+      for (const a of atts) {
+        const c = document.createElement('span');
+        c.className = 'attchip-inline';
+        c.innerHTML = attachmentGlyph(a.name, a.isImage, 'attchip-inline-icon') + '<span class="attchip-inline-name"></span>';
+        c.querySelector('.attchip-inline-name').textContent = a.name;
+        c.tabIndex = 0; c.role = 'button'; c.title = window.CamelliaI18n.t('Preview');
+        c.addEventListener('click', () => void openFilePreview(a.path));
+        c.addEventListener('keydown', event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); void openFilePreview(a.path); } });
+        chips.appendChild(c);
+      }
+      if (footer) div.insertBefore(chips, footer);
+      else div.appendChild(chips);
+    }
+  }
+
+  function syncOverflowAttachments(div, attachments) {
+    if (!attachments?.some(item => item.autoOverflow) && !div.messageData.attachments?.some(item => item.autoOverflow)) return;
+    div.messageData.attachments = attachments;
+    div.querySelector('.attchips')?.remove();
+    renderUserAttachments(div, attachments, div.querySelector('.message-actions'));
+  }
+
   function showFailedSend(attempt, existing) {
     if (!attempt || !context.sessionId) return;
     const persisted = !existing && Number.isFinite(attempt.at)
@@ -2197,8 +2234,10 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     const cancelled = attempt.cancelled || window.CamelliaContextOverflow.requestCancelledText(attempt.error);
     const controls = document.createElement('div'); controls.className = 'failed-send';
     controls.dataset.state = cancelled ? 'cancelled' : 'failed';
+    if (attempt.error) controls.dataset.error = String(attempt.error);
     const recovery = window.CamelliaContextOverflow.contextRecoveryText(attempt.error);
-    const canonical = recovery && chat.querySelector('.context-compaction .context-recovery');
+    const canonical = !cancelled && (recovery ? Boolean(chat.querySelector('.context-compaction .context-recovery'))
+      : failedCompactionMatches(attempt.error));
     const error = document.createElement('span');
     error.textContent = cancelled ? window.CamelliaI18n.t('Not sent')
       : canonical ? window.CamelliaI18n.t('Failed to start. Recover the context below, then send again.')
@@ -2306,8 +2345,33 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     void resendEditedMessage(editingMessage);
   }
 
+  function normalizedFailureText(value) {
+    return window.CamelliaContextOverflow.recoverySummary(String(value ?? '')).trim();
+  }
+  function failedCompactionMatches(error) {
+    const text = normalizedFailureText(error);
+    if (!text) return false;
+    return [...chat.querySelectorAll('.context-compaction[data-state="failed"]:not([data-kind="storage"])')]
+      .some(row => row.querySelector('.context-recovery')
+        && normalizedFailureText(row.dataset.compactionError) === text);
+  }
+  function shortenRepeatedFailedCompactionError(error) {
+    const text = normalizedFailureText(error);
+    if (!text) return;
+    chat.querySelectorAll('.failed-send[data-state="failed"]').forEach(controls => {
+      if (normalizedFailureText(controls.dataset.error) !== text) return;
+      const label = controls.querySelector(':scope > span');
+      if (label) label.textContent = window.CamelliaI18n.t('Failed to start. Recover the context below, then send again.');
+      controls.querySelector('.context-recovery')?.remove();
+    });
+    const status = editingMessage?.status;
+    if (status && normalizedFailureText(status.dataset.error) === text)
+      status.textContent = window.CamelliaI18n.t('Could not resend. Recover the context below, then send again.');
+  }
+
   function messageEditErrorText(text) {
-    if (!window.CamelliaContextOverflow.contextRecoveryText(text)) return text;
+    const recovery = window.CamelliaContextOverflow.contextRecoveryText(text);
+    if (!recovery && !failedCompactionMatches(text)) return text;
     // The failed compaction notice below already reports this failure and
     // hosts the recovery choices; repeating the full engine message here would
     // show the same error and the same two buttons twice.
@@ -2317,7 +2381,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
   }
   function showMessageEditStatus(state, text, error = false) {
     const display = error ? messageEditErrorText(text) : text;
-    state.status.dataset.recoveryError = error && window.CamelliaContextOverflow.contextRecoveryText(text) ? text : '';
+    state.status.dataset.error = error ? String(text ?? '') : '';
     state.status.textContent = display; state.status.hidden = false;
     state.status.classList.toggle('error', error); state.status.setAttribute('role', error ? 'alert' : 'status');
     renderContextRecovery(state.form, error ? text : '');
@@ -2430,6 +2494,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     if (!bubble) return false;
     const pending = bubble.messageData.pendingSend;
     bubble.messageData.seq = ev.userSeq;
+    if (ev.attachments?.some(item => item.autoOverflow)) syncOverflowAttachments(bubble, ev.attachments);
     delete bubble.messageData.pendingSend;
     bubble.querySelector('.pending-send')?.remove();
     clearPendingSend(pending.sessionId, pending.id);
@@ -2469,7 +2534,8 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     if (editingMessage !== state || state.sessionId !== context.sessionId) return;
     if (sending) return;
     if (conversationBusy() || contextBusy()) { showMessageEditStatus(state, 'Wait for this conversation to finish or stop it first.', true); return; }
-    const draftText = state.textarea.value, text = draftText.trim(), atts = state.div.messageData.attachments;
+    const draftText = state.textarea.value, text = draftText.trim();
+    const atts = state.div.messageData.attachments.filter(item => !item.autoOverflow || text === state.div.messageData.text);
     if (!text && !atts.length) { showMessageEditStatus(state, 'Message cannot be empty', true); return; }
     const originalText = state.div.messageData.text, originalAt = state.div.messageData.at;
     const sendContext = { sessionId: state.sessionId, openSeq: sessionOpenSeq, dispatched: true, cancelled: false };
@@ -2550,6 +2616,8 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     pendingRow.remove();
     state.form.remove();
     state.div.messageData.seq = res.userSeq;
+    if (res.overflowAttachments || state.div.messageData.attachments.some(item => item.autoOverflow))
+      syncOverflowAttachments(state.div, res.overflowAttachments || atts);
     currentRunId = res.runId; acceptSessionEvents = true; loadedEngine = harnessId;
     followRunOutput = true; restoringRun = false;
     for (const event of eventsDuringRestore.splice(0)) handleEvent(event);
@@ -3468,9 +3536,13 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     row.querySelector('span').textContent = compaction.state === 'running' ? progress : label;
     let errorEl = row.querySelector('.context-compaction-error');
     if (compaction.state === 'failed' && compaction.error) {
+      row.dataset.compactionError = String(compaction.error);
       if (!errorEl) { errorEl = document.createElement('div'); errorEl.className = 'context-compaction-error'; row.appendChild(errorEl); }
       errorEl.textContent = compaction.storage ? compaction.error : window.CamelliaContextOverflow.recoverySummary(compaction.error);
-    } else errorEl?.remove();
+    } else {
+      delete row.dataset.compactionError;
+      errorEl?.remove();
+    }
     if (recoverable && !compaction.storage && compaction.state === 'failed') renderContextRecovery(row, compaction.error, true);
     else row.querySelector('.context-recovery')?.remove();
     // The label is translated in place, so the elapsed time lives beside it
@@ -3697,7 +3769,13 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     label.textContent = (stopped ? '■ Stopped' : ok ? '✓ Done' : '✗ ' + detail)
       + (stats.length ? ' · ' + stats.slice(0, 3).join(' · ') : '');
     chip.append(label);
-    if (!ok && !stopped && Number.isSafeInteger(retrySeq)) {
+    if (!ok && !stopped && ev.subscriptionIssue) {
+      const account = document.createElement('button'); account.type = 'button'; account.className = 'run-retry';
+      account.textContent = window.CamelliaI18n.t(ev.subscriptionIssue === 'auth' ? 'Subscription accounts' : 'View usage');
+      account.onclick = () => window.dshDesktop.openSettingsWindow({ page: 'subscriptions', focus: 'antigravity' });
+      chip.append(account);
+    }
+    if (!ok && !stopped && !ev.submission && Number.isSafeInteger(retrySeq)) {
       const retry = document.createElement('button'); retry.type = 'button'; retry.className = 'run-retry';
       retry.textContent = window.CamelliaI18n.t('Retry turn');
       retry.title = window.CamelliaI18n.t('Restart this turn from the saved history');
@@ -3782,6 +3860,10 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     if (ev.type === 'conversation:transcript') {
       scheduleSidebarLoad();
       if (restoringRun) { eventsDuringRestore.push(ev); return; }
+      if (ev.deleted && ev.session_id === context.sessionId) {
+        messageSelection?.exit();
+        return;
+      }
       // The window that issued the search already reloaded; only a search
       // started elsewhere (for example on the phone) needs this reload.
       if (ev.origin === 'desktop') return;
@@ -4078,6 +4160,10 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
         }
       }
       (turnEl || chat).appendChild(chip);
+      if (turnEl?.isConnected && Number.isSafeInteger(ev.assistantSeq)) {
+        turnEl.dataset.seq = String(ev.assistantSeq);
+        if (messageSelection?.isSelecting()) messageSelection.refresh();
+      }
       moveTurnFooter(turnEl);
       const requestUsage = ev.requestUsageLead && ev.requestUsage?.breakdown ? ev.requestUsage : null;
       if (ev.requestUsageLead && Number.isSafeInteger(ev.userSeq)) requestTurns.set(ev.userSeq, turnEl);
@@ -4391,7 +4477,11 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
         if (saved?.text === text) writeUi('draft:' + sentDraftKey, { ...saved, text: '', attachments: [] });
         // If the started event was missed, adopt a restored row directly.
         const bubble = takePendingSendBubble(sendContext);
-        if (bubble) { bubble.messageData.seq = res.userSeq; updateMessageActions(); }
+        if (bubble) {
+          bubble.messageData.seq = res.userSeq;
+          if (res.overflowAttachments) syncOverflowAttachments(bubble, res.overflowAttachments);
+          updateMessageActions();
+        }
       }
       if (context.sessionId === sendContext.sessionId && !loadingSession && !sending) {
         if (!res.ok) {
@@ -4452,6 +4542,8 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     if (running) currentRunId = res.runId;
     if (res.sessionId) setConversationSessionId(res.sessionId);
     userMessage.messageData.seq = res.userSeq;
+    if (res.overflowAttachments) syncOverflowAttachments(userMessage, res.overflowAttachments);
+    if (res.userSeq) userMessage.dataset.seq = String(res.userSeq);
     loadedEngine = harnessId;
     restoringRun = false;
     if (typeof canUseUnifiedQueue === 'function' && typeof migrateLocalQueueToUnified === 'function'
@@ -4596,11 +4688,9 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       if (cards.length) { existing?.remove(); return; }
     } else {
       chat.querySelectorAll('.context-recovery').forEach(card => { if (card !== existing) card.remove(); });
-      // Status can arrive after the editor's rejected send. Reconcile that
-      // earlier error too, regardless of which callback completed first.
-      const status = editingMessage?.status;
-      if (status?.dataset.recoveryError)
-        status.textContent = window.CamelliaI18n.t('Could not resend. Recover the context below, then send again.');
+      // Status can arrive after the message or editor's rejected send.
+      // Reconcile that earlier error too, regardless of callback order.
+      shortenRepeatedFailedCompactionError(error);
     }
     if (existing) return;
     const sessionId = context.sessionId;
@@ -4713,6 +4803,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     acceptSessionEvents = false;
     currentRunId = null;
     setConversationSessionId(null);
+    messageSelection?.exit();
     // The previous reset ran before the id was cleared; render the new
     // session's empty state now that there is no conversation to inspect.
     contextPanel?.reset();
@@ -5211,6 +5302,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     updateMessageActions();
   }
   function resetConversationView() {
+    cardFinder?.close();
     currentFastMode = false;
     chatScroll.classList.remove('history-opening');
     workPanel.reset();
@@ -5304,7 +5396,14 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     status: $('cardFinderStatus'), list: $('cardFinderList'),
     getSessionId: () => context.sessionId,
     onStatus: setStatus,
-    onOpen: card => { cardFinder?.setAvailable(true); revealCard(card.cardId); },
+    onOpen: card => {
+      if (card.historical) {
+        $('cardSearchToggle').focus();
+        void window.CamelliaVisualize.previewRevision(card, context.sessionId);
+      } else {
+        revealCard(card.cardId);
+      }
+    },
   });
   // The button only appears when the conversation actually has cards, so a
   // plain chat keeps its original header.
@@ -5339,12 +5438,14 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
   function updatePanelReservation() {
     const open = mainElement.classList.contains('has-context-panel') ? 'context'
       : mainElement.classList.contains('has-work-panel') ? 'work'
-        : mainElement.classList.contains('has-review-panel') ? 'review' : null;
+        : mainElement.classList.contains('has-review-panel') ? 'review'
+          : mainElement.classList.contains('has-card-finder') ? 'cards' : null;
     const fits = Boolean(open)
       && mainElement.clientWidth - SIDE_PANEL_RESERVE - CHAT_GUTTER >= INLINE_MEDIA_WIDTH;
     mainElement.classList.toggle('panel-fits', fits);
     if (open && open === sidePanelFitKind && sidePanelFits && !fits) {
-      (open === 'context' ? contextPanel : open === 'review' ? reviewPanel : workPanel).setOpen(false);
+      if (open === 'cards') cardFinder?.close();
+      else (open === 'context' ? contextPanel : open === 'review' ? reviewPanel : workPanel).setOpen(false);
     }
     sidePanelFitKind = open;
     sidePanelFits = fits;
@@ -5489,6 +5590,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     historyOpening = true;
     restoringRun = true;
     setConversationSessionId(id);
+    messageSelection?.exit();
     // resetConversationView cleared the panel while the old session id was
     // still current; clear it again for the incoming id so it shows the new
     // conversation's loading state instead of the previous one's request.
@@ -5739,6 +5841,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
           else {
             const div = document.createElement('div');
             div.className = 'turn';
+            div.dataset.seq = String(m.seq || '');
             const label = m.engine ? ENGINE_SHORT_NAMES[m.engine] || m.engine : 'Assistant';
             div.innerHTML = '<div class="turn-meta">' + (m.engine ? engineAvatar(m.engine) : chatAvatar) + '<span>' + esc(label) + '</span></div><div class="turn-body"><div class="md"></div></div>';
             const runResult = m.runResult;
@@ -6059,7 +6162,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       applyRouterModels(routerState);
       if (subscription) {
         const account = accountState || {};
-        const apiOnly = !accountModels.length && !googleSubscription() && routeModels.length > 0;
+        const apiOnly = !accountModels.length && !(googleSubscription() && antigravityConnectionBound()) && routeModels.length > 0;
         if (!account.ok && !apiOnly) throw new Error(account.error);
         if (!apiOnly) {
           const visible = visibleAccountModels();
@@ -6091,6 +6194,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
   sidebar.render();
   void goalUI.refresh();
   chatApi.onEvent((ev) => handleEvent(ev));
+  window.addEventListener('camellia:language', () => messageSelection?.refresh());
   void (async () => {
     input.disabled = true;
     await sidebar.load();

@@ -299,14 +299,15 @@ with sync_playwright() as p:
             ('#send', '#send', ['width', 'height', 'borderRadius']),
         ]:
             assert styles(normal, left, properties) == styles(discussion, right, properties), (theme, left, styles(normal, left, properties), styles(discussion, right, properties))
-        for preference, width in [('standard', 768), ('wide', 1080), ('full', None)]:
+        for preference in ('standard', 'wide', 'full'):
             for page in (normal, discussion):
-                page.evaluate('(width)=>changeWidth(width)', preference)
+                page.evaluate('(preference)=>changeWidth(preference)', preference)
             expect(discussion.locator('#inputCard')).to_have_css('max-width', 'none')
             assert abs(bounds(normal, '#inputCard')['width'] - bounds(discussion, '#inputCard')['width']) < 1
-            if width:
-                assert bounds(discussion, '#inputCard')['width'] == width
-            assert bounds(discussion, '#inputCard')['x'] == bounds(discussion, '#chatScroll .column')['x']
+            assert bounds(discussion, '#inputCard')['width'] == 1080
+            composer = bounds(discussion, '#inputCard')
+            column = bounds(discussion, '#chatScroll .column')
+            assert abs((composer['x'] + composer['width'] / 2) - (column['x'] + column['width'] / 2)) < 1
         for page in (normal, discussion):
             page.evaluate("changeWidth('standard')")
         normal.locator('[data-sid="chat-fixture"] .session-more').click()

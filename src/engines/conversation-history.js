@@ -369,6 +369,51 @@ class ConversationHistory {
       if (revised) this.pruneToolProjections(value, previousGeneration);
     } catch (error) { this.forget(id); this.report(error); }
   }
+  // Replace the JSONL atomically from a caller-supplied row list. The old
+  // conversation and index are never edited in place: an interrupted rewrite
+  // leaves the original transcript readable, and readers holding the previous
+  // generation fail instead of mixing old and new rows.
+  replace(id, rows) {
+    if (!Array.isArray(rows)) throw new TypeError('History rows are required');
+    const source = this.file(id), index = this.index(id);
+    fs.mkdirSync(this.indexDir, { recursive: true });
+    this.checkIndex(index, true);
+    const token = randomUUID(), pendingSource = source + '.replace-' + token, pendingIndex = index + '.replace-' + token;
+    const previousGeneration = this.ensure(id).generation;
+    const value = this.empty(id, null), newline = Buffer.from('\n');
+    let sourceFd, indexFd, committed = false;
+    try {
+      sourceFd = openSync(pendingSource, 'wx+', 0o600); indexFd = openSync(pendingIndex, 'wx+', 0o600);
+      let offset = 0;
+      for (const row of rows) {
+        const buffer = Buffer.from(JSON.stringify(row));
+        writeAt(sourceFd, buffer, offset); writeAt(sourceFd, newline, offset + buffer.length);
+        this.add(indexFd, value, row, offset, buffer.length);
+        offset += buffer.length + 1;
+      }
+      fs.fsyncSync(sourceFd); fs.closeSync(sourceFd); sourceFd = undefined;
+      fs.renameSync(pendingSource, source);
+      this.forget(id);
+      try {
+        const after = stat(source);
+        value.source = signature(after); value.size = after.size; value.tail = null; value.repaired = false;
+        fs.ftruncateSync(indexFd, HEADER + value.count * RECORD);
+        this.header(indexFd, value); fs.fsyncSync(indexFd); fs.closeSync(indexFd); indexFd = undefined;
+        fs.renameSync(pendingIndex, index);
+        const result = { ...value, index, indexStamp: signature(stat(index)) };
+        this.put(id + ':meta', result, HEADER);
+        this.pruneToolProjections(result, previousGeneration);
+        committed = true;
+      } catch (error) { this.report(error); }
+    } finally {
+      if (sourceFd !== undefined) fs.closeSync(sourceFd);
+      if (indexFd !== undefined) fs.closeSync(indexFd);
+      if (!committed) {
+        try { fs.unlinkSync(pendingSource); } catch {}
+        try { fs.unlinkSync(pendingIndex); } catch {}
+      }
+    }
+  }
   record(value, i, rebuilt = false) {
     const block = Math.floor(i / 512), key = value.id + ':index:' + value.generation + ':' + block;
     let buffer = this.get(key);
@@ -441,7 +486,7 @@ class ConversationHistory {
     }
     return projected;
   }
-  *iterate(id, { after = -Infinity, before = Infinity, mask = 0, reverse = false, snapshot = false } = {}) {
+  *iterate(id, { after = -Infinity, before = Infinity, mask = 0, reverse = false, snapshot = false, raw = false } = {}) {
     let value = this.ensure(id);
     // Deletion needs paths, not message text. Most conversations have no file
     // references at all, so their index records need not be visited either.
@@ -480,7 +525,12 @@ class ConversationHistory {
         const record = this.record(value, i);
         if ((!mask || record.flags & mask) && (record.flags & FLAGS.sequence || after === -Infinity && before === Infinity)
           && record.seq > after && record.seq < before) {
-          const row = this.row(value, record, readSource);
+          let row;
+          if (raw) {
+            const buffer = readSource(record);
+            this.metrics.historyBytes += buffer.length; this.metrics.parsedRows++;
+            row = JSON.parse(buffer.toString('utf8'));
+          } else row = this.row(value, record, readSource);
           if (snapshot) Object.defineProperty(row, 'historyIndex', { value: i });
           yield row;
         }

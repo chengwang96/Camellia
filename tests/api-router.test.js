@@ -1235,6 +1235,17 @@ test('an authentication failure from a title request does not block the shared k
   assert.equal((await f.post({})).status,200,'Real work still uses a key that only failed for a title');
 });
 
+test('identical auxiliary route failures are counted instead of repeated', async t => {
+  const f=await fixture(t,(_r,res)=>reply(res,503,{error:'temporarily unavailable'}),
+    url=>[provider('OpenCode Go',url,['first-secret','second-secret'])]);
+  const res=await f.post({max_tokens:256}, '/v1/chat/completions', {headers:{'x-camellia-aux':'compaction'}});
+  assert.equal(res.status,503);
+  const message=(await res.json()).error.message;
+  assert.match(message,/OpenCode Go: Provider temporarily unavailable \(2 routes\)/);
+  assert.equal((message.match(/Provider temporarily unavailable/g)||[]).length,1);
+  assert.equal(f.requests.length,2,'Both enabled keys were attempted');
+});
+
 test('401 key is skipped; replacing it clears its block and does not inherit old usage', async t => {
   const f=await fixture(t,(r,res)=>r.headers.authorization==='Bearer bad-secret' ? reply(res,401,{error:'invalid key'}) : reply(res,200,completion(r.body.model)),url=>[provider('a',url,['bad-secret','good-secret'])]);
   assert.equal((await f.post({})).status,200);

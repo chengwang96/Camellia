@@ -8,6 +8,12 @@
     pointer-events: none;
   }
   .conversation-rail[hidden] { display: none; }
+  [data-chat-content-width="full"] .main:has(> .conversation-rail:not([hidden])) > .chat-scroll {
+    padding-inline-start: calc(var(--conversation-rail-gutter) + var(--message-selection-outset));
+  }
+  .main:has(> .conversation-rail:not([hidden])) > .input-zone {
+    padding-inline-start: calc(var(--conversation-rail-gutter) + var(--message-selection-outset));
+  }
   .conversation-rail-track {
     display: flex;
     flex-direction: column;

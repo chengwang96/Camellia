@@ -1,6 +1,7 @@
 'use strict';
 const { validateAttachments } = require('./assets');
 const { tokens: estimateTokens } = require('../conversation-history');
+const { SUBSCRIPTION_PROMPT_BYTES } = require('../antigravity/prompt-limit.cjs');
 
 // Text-only baseline: preserve exact attribution and the frozen input boundary.
 // Until a drained summary activity is connected, over-budget input is rejected
@@ -38,6 +39,11 @@ function prepareTextInput(state, delivery, signal, capability = {}) {
   const limit = delivery.profile.contextWindow;
   if (!Number.isSafeInteger(limit) || limit < 1024) {
     throw Object.assign(new Error('Set a context window for this model before sending.'), { code: 'DISCUSSION_CONTEXT_UNKNOWN' });
+  }
+  if (delivery.profile.engine === 'antigravity' && delivery.profile.connection === 'subscription'
+      && Buffer.byteLength(prompt, 'utf8') > SUBSCRIPTION_PROMPT_BYTES) {
+    throw Object.assign(new Error('This member’s Antigravity Google subscription message exceeds the 172,800-byte UTF-8 limit. Split a long request or start a new group with a shorter brief.'),
+      { code: 'DISCUSSION_CONTEXT_FULL' });
   }
   // Use the same text-token estimate as ordinary chat for every retained native
   // input/output. UTF-8 bytes greatly overcount Chinese; reserve overhead below.
