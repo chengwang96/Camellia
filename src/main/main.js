@@ -264,6 +264,7 @@ function defaultConfig() {
     portableSkills: true,   // Shared skill bridge for every harness.
     vscodePath: '',         // Empty selects the first installed VS Code; otherwise an absolute executable path.
     computerName: '',       // Display name of this computer, shared with paired phones.
+    tailscaleFollow: null,  // null follows on new installs and keeps an existing node's name.
     downloadProxy: { mode: 'direct', url: '' },
     subscriptionAutoRefresh: {}, // Per-engine opt-out from the background quota cadence.
     shortcuts: {},          // Action id -> accelerator; '' deliberately unbinds the action.
@@ -311,6 +312,23 @@ function computerName(config = loadConfig()) {
 function computerHostname(value) {
   return String(value || '').toLowerCase().replace(/[^a-z0-9-]+/g, '-')
     .replace(/^-+|-+$/g, '').slice(0, 63).replace(/-+$/g, '');
+}
+// The embedded node's saved hostname. Null means "the node already exists and
+// keeps whatever name it registered before", which protects MagicDNS bookmarks
+// and SSH configs across the upgrade. An explicit true follows the display
+// name; an explicit false keeps the old network name.
+function networkHostname(config = loadConfig()) {
+  if (!followsTailscaleName(config)) return null;
+  return computerHostname(config.computerName);
+}
+// New installs follow their display name. An installation that already has an
+// embedded node keeps the name it registered before the follow option existed.
+function followsTailscaleName(config = loadConfig()) {
+  if (config.tailscaleFollow === true || config.tailscaleFollow === false) return config.tailscaleFollow;
+  try {
+    const directory = path.join(app.getPath('userData'), 'remote', 'tailnet');
+    return !fs.existsSync(directory) || fs.readdirSync(directory).length === 0;
+  } catch { return true; }
 }
 function uiText(text) { return translate(text, normalizeLanguage(loadConfig().language)); }
 
@@ -1459,6 +1477,7 @@ sharedConversations = new SharedConversations({ dir: path.join(app.getPath('user
       resetCredits: { preview: payload => codex.handlers['account-reset-preview'](payload), consume: payload => codex.handlers['account-reset-consume'](payload) },
       ensure: codex.ensureSession, generateTitle: codex.generateTitle, titleDuringTurn: true, forkNative: codex.forkNative, nativeCompaction: true, nativeEditing: true },
     antigravity: { sessions: antigravity.sessions, history: antigravity.history, settings: antigravity.settings, saveSettings: antigravity.saveSettings,
+      subscriptionSessionTools: antigravity.subscriptionSessionTools,
       ensure: antigravity.ensureSession, generateTitle: antigravity.generateTitle, titleDuringTurn: true, forkNative: antigravity.forkNative,
       nativeAutoCompaction: true, summaryThinkingBudget: antigravity.summaryThinkingBudget,
       subscriptionQuota: () => antigravity.handlers['account-state']().usage?.latest?.windows },
@@ -1527,13 +1546,14 @@ remoteDesktop = require('./remote/desktop').createRemoteDesktop({ app, BrowserWi
   getDiscussions: ['win32', 'darwin'].includes(process.platform) ? discussions : null,
   prepareRestart: prepareCamelliaRestart, log,
   manager: sharedConversations, rendererRoot: RENDERER_ROOT, loadConfig, getSettingsWindow: () => settingsWindow, apiRoutes: apiRoutesBundle,
-  computerName, networkHostname: () => computerHostname(loadConfig().computerName),
+  computerName, networkHostname: () => networkHostname(loadConfig()), tailscaleFollow: () => followsTailscaleName(loadConfig()),
   downloadConnection: () => require('./download-network').createDownloadConnection(loadConfig().downloadProxy),
   assertTailnetUpdateAllowed: () => {
     if (appQuitting || migrationBusy || appUpdatesService?.state().installing)
       throw new Error('Wait for the current transfer or Camellia update before updating embedded Tailscale');
   },
-  saveComputerName: name => normalizeComputerName(saveConfig({ computerName: normalizeComputerName(name) }).computerName) });
+  saveComputerName: name => normalizeComputerName(saveConfig({ computerName: normalizeComputerName(name) }).computerName),
+  saveTailscaleFollow: value => saveConfig({ tailscaleFollow: value === true }).tailscaleFollow });
 // ---------------------------------------------------------------------------
 // dsh detection
 // ---------------------------------------------------------------------------
@@ -2401,6 +2421,7 @@ if (!gotSingleInstanceLock) {
         patch.verboseLogging = payload.verboseLogging;
       }
       if (payload && Object.prototype.hasOwnProperty.call(payload, 'computerName')) patch.computerName = normalizeComputerName(payload.computerName);
+      if (payload && Object.prototype.hasOwnProperty.call(payload, 'tailscaleFollow')) patch.tailscaleFollow = payload.tailscaleFollow === true;
       if (payload && Object.prototype.hasOwnProperty.call(payload, 'chatContentWidth')) patch.chatContentWidth = normalizeChatContentWidth(payload.chatContentWidth);
       if (payload && Object.prototype.hasOwnProperty.call(payload, 'advancedAnimations')) {
         if (typeof payload.advancedAnimations !== 'boolean') throw new Error('Invalid advanced animations preference');
@@ -2532,8 +2553,12 @@ if (!gotSingleInstanceLock) {
         setTimeout(() => { void webSurface?.preload(); }, 200).unref?.();
       }
       if (patch.computerName !== undefined) {
-        const hostname = computerHostname(patch.computerName);
-        void remoteDesktop.updateHostname(hostname).catch(error => log(`Embedded network name sync failed: ${error.message}`));
+        const hostname = networkHostname();
+        void remoteDesktop?.updateHostname(hostname).catch(error => log(`Embedded network name sync failed: ${error.message}`));
+      }
+      if (patch.tailscaleFollow !== undefined) {
+        const hostname = networkHostname();
+        void remoteDesktop?.updateHostname(hostname).catch(error => log(`Embedded network name sync failed: ${error.message}`));
       }
       if (patch.portableSkills !== undefined) sharedConversations?.setPortableSkills(patch.portableSkills);
       if (patch.verboseLogging !== undefined) log('Detailed diagnostic logging ' + (patch.verboseLogging ? 'enabled' : 'disabled'));

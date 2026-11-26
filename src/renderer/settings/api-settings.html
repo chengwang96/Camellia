@@ -215,6 +215,15 @@
           <button id="mobile-logout" hidden data-copy="logout">退出 Tailscale 登录</button>
         </details>
       </section>
+      <section id="mobile-tailnetTrust" class="device-section device-card tailnet-trust" aria-labelledby="mobile-tailnetTrustTitle">
+        <div class="device-heading"><h2 id="mobile-tailnetTrustTitle" data-copy="tailnetTrustTitle">Tailnet 信任</h2><span id="mobile-tailnetTrustStatus" class="device-status" role="status"></span></div>
+        <div class="relay-setting"><span id="mobile-tailnetTrustToggleLabel" data-copy="tailnetTrustToggle">信任我的 Tailnet 设备</span><input id="mobile-tailnetTrustToggle" type="checkbox" role="switch" aria-labelledby="mobile-tailnetTrustToggleLabel" aria-describedby="mobile-tailnetTrustHint"></div>
+        <p id="mobile-tailnetTrustHint" class="hint" data-copy="tailnetTrustHint"></p>
+        <div id="mobile-tailnetTrustScope" class="tailnet-scope"></div>
+        <div class="relay-setting"><span id="mobile-tailnetAutoApproveLabel" data-copy="tailnetAutoApprove">自动批准我的设备</span><input id="mobile-tailnetAutoApprove" type="checkbox" role="switch" aria-labelledby="mobile-tailnetAutoApproveLabel" aria-describedby="mobile-tailnetAutoApproveHint"></div>
+        <p id="mobile-tailnetAutoApproveHint" class="hint" data-copy="tailnetAutoApproveHint"></p>
+        <p id="mobile-tailnetDiscovery" class="hint" role="status"></p>
+      </section>
       <section class="device-section device-card device-lan" aria-labelledby="mobile-lanTitle">
         <div class="device-heading"><h2 id="mobile-lanTitle" data-copy="lanTitle">局域网访问</h2><span id="mobile-lanStatus" class="device-status" role="status"></span></div>
         <div class="relay-setting"><span id="mobile-lanToggleLabel" data-copy="lanToggleLabel">允许同一 Wi-Fi 的手机直连</span><input id="mobile-lanToggle" type="checkbox" role="switch" aria-labelledby="mobile-lanToggleLabel" aria-describedby="mobile-lanHint"></div>
@@ -241,6 +250,8 @@
       <section class="device-section device-card device-pair" aria-labelledby="mobile-pairTitle">
         <div class="device-heading"><h2 id="mobile-pairTitle" data-copy="pair">配对设备</h2><span id="mobile-pairSummary" class="device-status"></span></div>
         <div class="device-name-row"><label for="mobile-deviceName" data-copy="deviceName">本机名称</label><input id="mobile-deviceName" maxlength="80" autocomplete="off"><button id="mobile-saveDeviceName" data-copy="deviceNameSave">保存名称</button><button id="mobile-invite" disabled data-copy="generate" class="primary">生成配对码</button></div>
+        <div class="relay-setting"><span id="mobile-tailscaleFollowLabel" data-copy="tailscaleFollow">跟随本机名称</span><input id="mobile-tailscaleFollow" type="checkbox" role="switch" aria-labelledby="mobile-tailscaleFollowLabel" aria-describedby="mobile-tailscaleFollowHint"></div>
+        <p id="mobile-tailscaleFollowHint" class="hint" data-copy="tailscaleFollowHint"></p>
         <p id="mobile-deviceNameStatus" class="hint" role="status"></p>
         <div id="mobile-invitation" hidden><div class="mobile-pair-layout"><div id="mobile-qr" class="qr"></div><div class="mobile-pair-details"><code id="mobile-code"></code><p id="mobile-expires" class="hint" role="timer"></p><p class="hint sr-only" data-copy="scanHint"></p><div class="pair-code-actions"><button id="mobile-refreshInvite" hidden data-copy="refreshCode">刷新二维码</button></div></div></div></div>
         <div id="mobile-pairPending" class="mobile-pair-success" role="status" hidden><span class="mobile-success-mark" aria-hidden="true">…</span><div><strong id="mobile-pairPendingLabel" data-copy="pairWaiting">等待电脑授权</strong><span id="mobile-pendingName"></span></div></div>

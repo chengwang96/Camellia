@@ -55,6 +55,37 @@ public class RemoteConnectionTest extends InstrumentationTestCase {
         });
     }
 
+    public void testOpeningAConversationDoesNotReportAComputerReconnect() throws Exception {
+        var routeField = EmbeddedNetwork.class.getDeclaredField("route"); routeField.setAccessible(true);
+        Object originalRoute = routeField.get(null);
+        try {
+            ui(() -> routeField.set(null, new NetworkRoute("online", "links")));
+            ui(() -> {
+                String id = "00000000-0000-0000-0000-000000000001";
+                field("credentials", new JSONObject().put("address", "http://100.64.0.1:43128")
+                    .put("token", "a".repeat(43)));
+                invoke("listScreen");
+                invoke("listConnected");
+                android.widget.TextView listHeader =
+                    activity.getWindow().getDecorView().findViewWithTag("headerConnectionState");
+                assertTrue(listHeader.getText().toString().matches("Connected|已连接"));
+
+                field("conversationId", id);
+                invoke("detailScreen");
+                android.widget.TextView detailHeader =
+                    activity.getWindow().getDecorView().findViewWithTag("headerConnectionState");
+                assertTrue("Switching from the list to its conversation must not claim the computer reconnected",
+                    detailHeader.getText().toString().matches("Connected|已连接"));
+                var statusField = MainActivity.class.getDeclaredField("status"); statusField.setAccessible(true);
+                android.widget.TextView status = (android.widget.TextView) statusField.get(activity);
+                assertTrue(status.getText().toString().contains("等待同步会话")
+                    || status.getText().toString().contains("Waiting for conversation sync"));
+            });
+        } finally {
+            ui(() -> routeField.set(null, originalRoute));
+        }
+    }
+
     public void testHttpErrorsAndNativeLoginRemainDistinct() {
         for (int code : new int[] {401, 403, 404, 409, 429, 500, 502, 503, 504}) {
             assertTrue(RemoteApi.failureMessage(new RemoteApi.Failure(code), true).contains("[HTTP " + code + "]"));

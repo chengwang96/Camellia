@@ -138,9 +138,30 @@ public final class EmbeddedNetwork {
         }
     }
 
+    static org.json.JSONArray peers() throws IOException {
+        try {
+            return new org.json.JSONArray(node().peers());
+        } catch (org.json.JSONException error) {
+            throw new IOException("Invalid embedded peer response", error);
+        } catch (Exception error) {
+            throw new IOException("Cannot read embedded peers", error);
+        }
+    }
+
+    static JSONObject hello(String host) throws IOException {
+        try {
+            return new JSONObject(node().hello(host));
+        } catch (org.json.JSONException error) {
+            throw new IOException("Invalid embedded hello response", error);
+        } catch (Exception error) {
+            throw new IOException("Cannot probe embedded peer", error);
+        }
+    }
+
     private static Node createNode() throws IOException {
         try {
             registerInterfaces();
+            migrateLegacyHostname();
             CredentialStore storage = new CredentialStore(context, "tailnet-private");
             Storage encrypted = new Storage() {
                 @Override public synchronized String read(String key) throws Exception { return storage.load().optString(key, ""); }
@@ -162,7 +183,22 @@ public final class EmbeddedNetwork {
      * Go side should use its platform fallback.
      */
     static String nodeHostname() {
-        return hostnameLabel(MobilePreferences.savedDeviceName(context));
+        return MobilePreferences.followDeviceName(context)
+            ? hostnameLabel(MobilePreferences.savedDeviceName(context)) : "";
+    }
+
+    /**
+     * Existing nodes keep the name they already registered. Only a node that
+     * has never been created follows the phone name immediately, which is the
+     * documented upgrade rule for MagicDNS bookmarks and SSH configs.
+     */
+    private static void migrateLegacyHostname() {
+        if (MobilePreferences.hostnameInitialized(context)) return;
+        boolean existing = context.getSharedPreferences("tailnet-private", Context.MODE_PRIVATE).contains("credential");
+        // An existing node keeps its current Tailscale name until the user
+        // explicitly opts in; a brand-new node follows the phone from day one.
+        MobilePreferences.set(context, "deviceNameFollow", existing ? "existing" : "follow");
+        MobilePreferences.set(context, "deviceNameHostnameInitialized", "1");
     }
 
     /**
@@ -170,7 +206,7 @@ public final class EmbeddedNetwork {
      * a route change read the same preference, so the name is not lost.
      */
     public static CompletableFuture<Void> setNodeHostname(String name) {
-        String label = hostnameLabel(name);
+        String label = MobilePreferences.followDeviceName(context) ? hostnameLabel(name) : "";
         return lifecycle == null ? CompletableFuture.completedFuture(null)
             : lifecycle.useReadyNode(node -> node.setHostname(label));
     }

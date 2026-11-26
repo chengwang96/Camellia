@@ -164,6 +164,22 @@ test('real background process receives exact argv, writes both log streams and e
   assert.match(output, /stdout captured/); assert.match(output, /stderr captured/);
 });
 
+test('waitForExit returns the actual exit receipt after the log is flushed', async t => {
+  const spec = fixture(t), launcher = path.resolve(__dirname, '../src/engines/background-process.cjs');
+  const script = path.join(spec.cwd, 'exit.cjs'), specFile = path.join(spec.cwd, 'launch.json');
+  fs.writeFileSync(script, "setTimeout(() => { console.log('output complete'); console.error('stderr complete'); process.exitCode = Number(process.argv[2]); }, 80);");
+  for (const exitCode of [0, 7]) {
+    fs.writeFileSync(specFile, JSON.stringify({ ...spec, file: process.execPath, args: [script, String(exitCode)], waitForExit: true }));
+    const result = await runLauncher(launcher, specFile);
+    assert.equal(result.code, exitCode === 0 ? 0 : 1, result.stderr);
+    const receipt = JSON.parse(result.stdout);
+    assert.ok(receipt.pid > 0);
+    assert.equal(receipt.exitCode, exitCode);
+    assert.equal(receipt.signal, null);
+    assert.match(fs.readFileSync(receipt.logFile, 'utf8'), /output complete[\s\S]*stderr complete/);
+  }
+});
+
 test('real Windows grandchildren share a hidden console after the caller exits and the worker cleans up',
   { skip: process.platform !== 'win32' }, async t => {
   const spec = fixture(t), resultFile = path.join(spec.cwd, 'console.json');

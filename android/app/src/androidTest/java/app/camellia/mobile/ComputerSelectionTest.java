@@ -61,6 +61,8 @@ public class ComputerSelectionTest extends InstrumentationTestCase {
             root().findViewWithTag("nav:computers").performClick(); assertEquals("computers", field("screen"));
             root().findViewWithTag("addComputer").performClick();
             assertEquals("pair", field("screen")); assertEquals(2, computers.all().size());
+            assertNull("Tailnet discovery stays out of the computer list",
+                root().findViewWithTag("tailnetComputerGroup"));
         });
     }
 
@@ -138,7 +140,12 @@ public class ComputerSelectionTest extends InstrumentationTestCase {
             assertNull("the empty state must not sit inside the computer card",
                 root().findViewWithTag("computerList").findViewById(empty.getId()));
             assertEquals(1, exactTextCount(root(), "添加电脑"));
+            assertNull("Tailnet discovery belongs in the add-computer flow, not on the computer list",
+                root().findViewWithTag("tailnetComputerGroup"));
             root().findViewWithTag("addComputer").performClick(); assertEquals("pair", field("screen"));
+            assertNotNull("The add-computer flow keeps the LAN and Tailnet candidates",
+                root().findViewWithTag("pairTailnetList"));
+            assertNotNull(root().findViewWithTag("pairLanList"));
         });
     }
 

@@ -8,13 +8,14 @@ const { AcpSession } = require('./acp-session');
 const { ClaudeHistory } = require('./claude-history');
 const { ClaudeGoal } = require('./claude-goal');
 const { createSessionWorkspaces } = require('./session-workspaces');
-const { readJson } = require('../shared/json-store');
+const { readJson, writeJson } = require('../shared/json-store');
+const { assertSubscriptionPromptFits } = require('./antigravity/prompt-limit.cjs');
 const { modelId } = require('../api/api-router-config');
 const { pythonEnvironment, globalPythonEnvironment } = require('../main/python-runtime');
 const { downloadSettings } = require('../main/download-network');
 const { appVersion } = require('../shared/app-version');
 const { createGoogleAccount, subscriptionEnvironment, requireGoogleProvider, effectiveSelection, lowestReasoningEffort, stopCli, systemProxy } = require('./antigravity/subscription');
-const { valid } = require('./permission-levels');
+const { valid, fullAccess } = require('./permission-levels');
 const { accountSummary, accountsFor, normalizeLabel, DEFAULT_ACCOUNT_ID } = require('./subscription-accounts');
 const { getDiscussionLaunch, buildDiscussionSpec, assertDiscussionPoolAccess } = require('./discussions/native-launch');
 const { locateRuntime } = require('../main/runtime-manager');
@@ -51,6 +52,66 @@ function subscriptionSpawnSpec({ runtime, home, env, proxyUrl, model = '', effor
   } };
 }
 const sessionConnection = id => id.startsWith('agy-') ? 'subscription' : 'api';
+const cascadeId = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/;
+function supportsSessionMcp(runtime) {
+  const [major, minor, patch] = String(runtime?.version || '').split('.').map(Number);
+  return major > 1 || major === 1 && (minor > 5 || minor === 5 && patch >= 17);
+}
+
+class AntigravityNativeAcp extends AcpSession {
+  async request(method, params, timeout) {
+    const opening = method === 'session/new' || method === 'session/resume';
+    if (opening && params.sessionId) {
+      const id = params.sessionId;
+      if (!id.startsWith('agy-') || !cascadeId.test(id.slice(4))) throw new Error('Invalid Google subscription session');
+      const saved = readJson(path.join(this.spec.home, 'cli-sessions', id + '.json'), null);
+      if (!saved?.conversationId) throw Object.assign(new Error('Antigravity native session mapping is missing'), { data: { nativeHistoryUnavailable: true } });
+      if (saved.id !== id || saved.cwd !== this.cwd || !cascadeId.test(saved.conversationId))
+        throw new Error('Antigravity native session mapping does not match this workspace');
+      this.nativeId = saved.conversationId;
+    }
+    if (method === 'session/prompt') {
+      assertSubscriptionPromptFits(params.prompt.filter(part => part.type === 'text').map(part => part.text).join('\n'));
+      delete params.nativeHistoryCheckpoint;
+    }
+    if (method === 'session/set_mode') params = { ...params, modeId: {
+      acceptEdits: 'accept-edits', bypassPermissions: 'auto',
+    }[params.modeId] || params.modeId };
+    let result;
+    try { result = await super.request(method, params, timeout); }
+    catch (error) {
+      if (method === 'session/resume' && /not found|does not exist|no conversation/i.test(error.message))
+        error.data = { nativeHistoryUnavailable: true };
+      // A disconnected ACP peer cannot acknowledge or safely replay a prompt.
+      if (method === 'session/prompt' && (this.dead || ['EPIPE', 'ERR_STREAM_DESTROYED'].includes(error.code)
+          || /connection reset|socket hang up|unexpected EOF|transport (?:closed|disconnected)/i.test(error.message))) {
+        throw Object.assign(new Error('Antigravity disconnected during this message. Check the conversation and file changes before resending.', { cause: error }),
+          { data: { submission: 'unknown' } });
+      }
+      throw error;
+    }
+    if (!opening) return result;
+    if (!cascadeId.test(result?.sessionId || '') || this.nativeId && result.sessionId !== this.nativeId)
+      throw new Error('Antigravity returned a different native session');
+    this.nativeId = result.sessionId;
+    const id = params.sessionId || 'agy-' + this.nativeId;
+    if (!params.sessionId) writeJson(path.join(this.spec.home, 'cli-sessions', id + '.json'),
+      { id, cwd: this.cwd, conversationId: this.nativeId });
+    return { ...result, sessionId: id };
+  }
+
+  write(message) {
+    if (this.nativeId && message.params?.sessionId)
+      message = { ...message, params: { ...message.params, sessionId: this.nativeId } };
+    return super.write(message);
+  }
+
+  receive(message) {
+    if (this.nativeId && message.params?.sessionId === this.nativeId)
+      message = { ...message, params: { ...message.params, sessionId: this.sessionId || this.opts.sessionId } };
+    return super.receive(message);
+  }
+}
 
 class AntigravitySession extends AcpSession {
   async generateTitle(prompt = '') {
@@ -143,13 +204,19 @@ function createAntigravity({ dataDir, cliSettingsFile, node, openLogin, loadConf
     // A configured shared interpreter takes precedence; otherwise the managed
     // SDK environment (or an explicit script path) provides the runtime.
     const sharedPython = !discussion && python() || null;
-    const spec = discussion ? buildDiscussionSpec(discussion, runtime, selected) : subscription ? subscriptionSpawnSpec({ runtime, home, env: environment(), proxyUrl: selected.proxyUrl || await systemProxy(),
+    const sessionMcp = !discussion && subscription && Boolean(opts.goalBridge);
+    if (sessionMcp && !supportsSessionMcp(runtime)) throw new Error('Update Antigravity CLI to 1.5.17 or newer to use Camellia tools');
+    const spec = sessionMcp ? { args: ['acp', '--stdio', ...(fullAccess('antigravity', selected.permissionMode) ? ['--dangerously-skip-permissions'] : [])],
+      home, modeEngine: 'antigravity', thinkingId: 'thought_level',
+      env: subscriptionEnvironment(environment(), selected.proxyUrl || await systemProxy()) }
+      : discussion ? buildDiscussionSpec(discussion, runtime, selected) : subscription ? subscriptionSpawnSpec({ runtime, home, env: environment(), proxyUrl: selected.proxyUrl || await systemProxy(),
       model: selected.model, effort: selected.thinkingBudget })
       : antigravitySpawnSpec({ runtime, home, route: withSessionAffinity(getRoute(), opts.conversationId), env: environment(),
         python: sharedPython?.file ? sharedPython : null, config: readJson(path.join(home, 'settings.json'), {}), thinkingBudget: selected.thinkingBudget || '' });
     const previousClosed = current?.shutdown();
-    const next = new AntigravitySession({ name: 'Antigravity', gen: ++generation, settings: selected, opts,
-      exe: discussion ? spec.exe : subscription ? node() : runtime.file, spec, spawn: discussion?.spawn || spawn, log, history: discussion ? discussionHistory : history,
+    const Session = sessionMcp ? AntigravityNativeAcp : AntigravitySession;
+    const next = new Session({ name: 'Antigravity', gen: ++generation, settings: selected, opts,
+      exe: discussion ? spec.exe : subscription && !sessionMcp ? node() : runtime.file, spec, spawn: discussion?.spawn || spawn, log, history: discussion ? discussionHistory : history,
       usageMeter: createUsageMeter('antigravity', { settings: selected }),
       onEvent: event => { if (sessions.get(opts) === next) onEvent({ ...event, conversationId: opts.conversationId }); },
       onSessionId: id => {
@@ -237,10 +304,14 @@ function createAntigravity({ dataDir, cliSettingsFile, node, openLogin, loadConf
     'goal-complete': () => goal.setPhase('complete'), 'goal-clear': () => goal.clear({ interrupt: false }),
   };
   return { get session() { return sessions.legacy; }, home, goal, settings, saveSettings, handlers, ensureSession, forkNative, history, sessions, workspaces,
+    subscriptionSessionTools: () => {
+      try { return supportsSessionMcp(runtimes().locate('antigravity', 'subscription')); }
+      catch { return false; } // Runtime preparation reports invalid paths at launch.
+    },
     summaryThinkingBudget: model => lowestReasoningEffort(account.state().models, model),
     generateTitle: ({ conversation, prompt }) => {
       const session = sessions.get({ conversationId: conversation.id });
-      return session && !session.dead ? session.generateTitle(prompt) : '';
+      return session && !session.dead ? session.generateTitle?.(prompt) || '' : '';
     },
     nativeStorageDirectory(id) {
       if (sessionConnection(id) === 'api') return path.join(home, 'sessions', id, 'native');
@@ -251,4 +322,4 @@ function createAntigravity({ dataDir, cliSettingsFile, node, openLogin, loadConf
     async shutdown() { await sessions.shutdown(); } };
 }
 
-module.exports = { createAntigravity, AntigravitySession, antigravitySpawnSpec, subscriptionSpawnSpec };
+module.exports = { createAntigravity, AntigravitySession, AntigravityNativeAcp, antigravitySpawnSpec, subscriptionSpawnSpec };

@@ -7250,7 +7250,7 @@ test('Antigravity checks its persisted history checkpoint and replays a rejected
     const session = ensure(options);
     if (options.sessionId) session.sendUserMessage = (prompt, attachments, expected) => {
       assert.deepEqual(expected, checkpoint);
-      assert.equal(prompt, 'Continue the decision');
+      assert.equal(prompt, windowsExecutionInstructions() + 'Continue the decision');
       manager.capture('antigravity', { type: 'result', subtype: 'error', is_error: true,
         nativeHistoryUnavailable: true, session_id: session.sessionId, runId: session.gen, result: 'Shortened native history' });
       return true;
@@ -8719,7 +8719,7 @@ test('an identical Antigravity retry keeps its native cascade instead of replayi
   await retried.done;
   const sent = h.sent.at(-1);
   assert.equal(sent.opts.sessionId, nativeId, 'the same native cascade is resumed');
-  assert.equal(sent.prompt, prompt);
+  assert.equal(sent.prompt, windowsExecutionInstructions() + prompt);
   assert.doesNotMatch(sent.prompt, /Conversation context|OLD_SEARCH_RESULTS/);
   assert.equal(conversation.retiredSegments, undefined, 'no native binding is retired');
   assert.equal(h.manager.rows(conversation).filter(row => row.role === 'user').length, 1);
@@ -8737,8 +8737,10 @@ test('Antigravity subscription rejects oversized UTF-8 input before a Markdown s
   assert.equal(c.currentEngine, 'codex');
   assert.equal(c.seq, previous.seq);
   assert.equal(h.sent.length, 0);
-  const run = await manager.send('antigravity', { prompt });
-  assert.equal(h.sent.at(-1).prompt, prompt);
+  const guidance = windowsExecutionInstructions();
+  const fitting = 'a'.repeat(172800 - Buffer.byteLength(guidance));
+  const run = await manager.send('antigravity', { prompt: fitting });
+  assert.equal(h.sent.at(-1).prompt, guidance + fitting);
   h.finish('antigravity');
   await run.done;
 });
@@ -8885,6 +8887,28 @@ test('Antigravity API mode is not limited by the subscription CLI byte cap', asy
   assert.equal(sent.opts.settings.connection, 'api');
   assert.equal(sent.prompt, prompt);
   h.finish('antigravity'); await run.done;
+});
+
+test('Antigravity subscription mounts Camellia tools only when its CLI supports session MCP', async t => {
+  const h = fixture(t, { createGoalBridge: async options => ({ call: options.call, close() {} }) });
+  const driver = h.drivers.antigravity;
+  driver.settings = () => ({ connection: 'subscription', model: 'gemini-4-neon' });
+  for (const supported of [false, true]) {
+    driver.subscriptionSessionTools = () => supported;
+    const run = await h.manager.send('antigravity', { prompt: 'Create a small interactive card' });
+    const sent = h.sent.at(-1);
+    assert.equal(Boolean(sent.opts.goalBridge), supported);
+    assert.equal(sent.prompt.includes('Camellia goal run token for this turn:'), supported);
+    if (supported) {
+      const token = h.manager.active.get(run.sessionId).goalRunToken;
+      const result = await sent.opts.goalBridge.call('camellia_visualize', {
+        run_token: token, action: 'create', title: 'CLI bridge', fragment: '<p>Card content</p>',
+      });
+      assert.equal(result.ok, true, result.error);
+    }
+    h.finish('antigravity');
+    await run.done;
+  }
 });
 
 test('a rejected summary credential reports an error and preserves the original context', async context => {

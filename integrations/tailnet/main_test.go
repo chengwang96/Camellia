@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -12,6 +13,7 @@ import (
 
 	"tailscale.com/ipn"
 	"tailscale.com/ipn/ipnstate"
+	"tailscale.com/tailcfg"
 )
 
 func TestEncryptedState(t *testing.T) {
@@ -77,6 +79,19 @@ func TestStatusResultIncludesHealth(t *testing.T) {
 	}
 }
 
+func TestStatusResultIncludesOwnerIdentity(t *testing.T) {
+	result := statusResult(&ipnstate.Status{
+		BackendState: "Running",
+		Self:         &ipnstate.PeerStatus{HostName: "work-pc", Online: true, UserID: 42},
+		User: map[tailcfg.UserID]tailcfg.UserProfile{42: {
+			ID: 42, LoginName: "me@example.com", DisplayName: "Me",
+		}},
+	})
+	if result["selfUserId"] != "42" || result["selfLoginName"] != "me@example.com" || result["selfDisplayName"] != "Me" {
+		t.Fatal("owner identity was lost", result)
+	}
+}
+
 func TestNodeHostname(t *testing.T) {
 	for input, expected := range map[string]string{"": "camellia-desktop", "camellia-server": "camellia-server", "gpu-lab-01": "gpu-lab-01", "a": "a"} {
 		actual, err := nodeHostname(input)
@@ -132,6 +147,47 @@ func TestProxyPreservesHostAndReplacesTransportIdentity(t *testing.T) {
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
 	if response.Code != 200 || response.Body.String() != "data: snapshot\n\n" {
+		t.Fatal(response)
+	}
+}
+
+func TestProxyAddsVerifiedTailnetIdentityAndStripsSpoofedHeaders(t *testing.T) {
+	token := strings.Repeat("a", 64)
+	backend := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if request.Header.Get("X-Camellia-Tailnet-Node") != "stable-phone" {
+			t.Error("missing verified node", request.Header)
+		}
+		if request.Header.Get("X-Camellia-Tailnet-User") != "42" {
+			t.Error("missing verified user", request.Header)
+		}
+		if request.Header.Get("X-Camellia-Tailnet-Login") != "me@example.com" {
+			t.Error("missing verified login", request.Header)
+		}
+		if request.Header.Get("X-Camellia-Tailnet-Tags") != "tag:phone,tag:trusted" {
+			t.Error("missing verified tags", request.Header)
+		}
+		if request.Header.Get("X-Camellia-Peer") != "100.90.1.2" {
+			t.Error("lost peer address", request.Header)
+		}
+		response.WriteHeader(http.StatusNoContent)
+	}))
+	defer backend.Close()
+	handler, err := proxyHandlerWithIdentity(backend.URL, token, func(context.Context, string) (tailnetIdentity, bool) {
+		return tailnetIdentity{NodeID: "stable-phone", UserID: "42", Login: "me@example.com",
+			Name: "phone.tailnet.ts.net", Tags: []string{"tag:phone", "tag:trusted"}}, true
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest("GET", "http://100.80.1.2:43127/v1/hello", nil)
+	request.RemoteAddr = "100.90.1.2:2345"
+	request.Header.Set("X-Camellia-Tailnet-Node", "spoof")
+	request.Header.Set("X-Camellia-Tailnet-User", "spoof")
+	request.Header.Set("X-Camellia-Tailnet-Login", "spoof")
+	request.Header.Set("X-Camellia-Tailnet-Tags", "spoof")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusNoContent {
 		t.Fatal(response)
 	}
 }

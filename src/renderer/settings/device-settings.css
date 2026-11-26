@@ -146,3 +146,29 @@ dialog.mobile-logout::backdrop { background: var(--dsw-alias-bg-mask-1); }
   .device-settings .device-row { gap: 12px; }
   .device-settings .device-actions { flex: 1 1 100%; }
 }
+
+.device-settings .tailnet-scope { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.device-settings .tailnet-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 100%;
+  padding: 4px 8px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 7px;
+  background: var(--dsw-alias-bg-soft);
+  color: var(--dsw-alias-label-secondary);
+  font: var(--f-xxs-12);
+  overflow-wrap: anywhere;
+}
+.device-settings .tailnet-chip strong { color: var(--dsw-alias-label-primary); font-weight: 600; }
+.device-settings .tailnet-chip .tailnet-dot {
+  width: 6px;
+  height: 6px;
+  flex: 0 0 6px;
+  border-radius: 50%;
+  background: var(--dsw-alias-state-success-primary);
+}
+.device-settings .tailnet-chip.muted { color: var(--dsw-alias-label-tertiary); }
+.device-settings .tailnet-trust .relay-setting { padding-block: 8px; }
+.device-settings .tailnet-trust .hint { margin-top: 6px; }

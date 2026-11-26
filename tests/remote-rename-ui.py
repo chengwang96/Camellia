@@ -1,4 +1,4 @@
-"""Rename mobile devices in place on both desktop surfaces, including polling and failures."""
+"""Set a local remark on mobile devices in place on both desktop surfaces."""
 import re
 from pathlib import Path
 from playwright.sync_api import sync_playwright, expect
@@ -19,14 +19,16 @@ bridge = """(() => {
   const control = async (action, payload) => {
     remoteCalls.push({ action, payload });
     if (action === 'state' && window.remoteStateFailure) return { ok: false, error: 'Mobile access is unavailable' };
-    if (action === 'rename') {
+    if (action === 'rename' || action === 'clear-remark') {
       if (window.holdRename) await new Promise(resolve => {
         window.pendingRenameResolvers ||= [];
         window.pendingRenameResolvers.push(resolve);
         window.finishRename = () => { for (const finish of window.pendingRenameResolvers.splice(0)) finish(); };
       });
       if (window.renameFailure) return { ok: false, error: 'Rename failed. Please retry.' };
-      state.devices.find(device => device.id === payload.id).name = payload.name;
+      const device = state.devices.find(device => device.id === payload.id);
+      if (action === 'rename') device.remark = payload.name;
+      if (action === 'clear-remark') delete device.remark;
     }
     return { ok: true, result: structuredClone(state) };
   };
@@ -49,7 +51,7 @@ def poll(page):
 
 
 def rename_calls(page):
-    return page.evaluate("remoteCalls.filter(call => call.action === 'rename')")
+    return page.evaluate("remoteCalls.filter(call => call.action === 'rename' || call.action === 'clear-remark')")
 
 
 with sync_playwright() as playwright:
@@ -73,7 +75,7 @@ with sync_playwright() as playwright:
                 devices = page.locator(f'#{prefix}devices')
                 row = devices.locator('.device-row').first
                 rename = row.locator('.device-rename-start')
-                field = row.get_by_role('textbox', name='移动设备名称' if chinese else 'Mobile device name', exact=True)
+                field = row.get_by_role('textbox', name='本机备注' if chinese else 'Device remark', exact=True)
                 save = row.get_by_role('button', name='保存' if chinese else 'Save', exact=True)
                 cancel = row.get_by_role('button', name='取消' if chinese else 'Cancel', exact=True)
                 original = page.evaluate('structuredClone(remoteTest)')
@@ -81,10 +83,10 @@ with sync_playwright() as playwright:
                 rename.click()
                 expect(page.locator('dialog.device-rename')).to_have_count(0)
                 expect(row).to_have_class(re.compile(r'\bdevice-inline-rename\b'))
-                expect(field).to_have_value('iPad14,1')
+                expect(field).to_have_value('')
                 expect(field).to_be_focused()
-                expect(devices.locator('.device-row').nth(1).get_by_role('button', name='重命名' if chinese else 'Rename', exact=True)).to_be_visible()
-                expect(devices.locator('.device-row').nth(1).get_by_role('button', name='重命名' if chinese else 'Rename', exact=True)).to_be_disabled()
+                expect(devices.locator('.device-row').nth(1).get_by_role('button', name='添加备注' if chinese else 'Add remark', exact=True)).to_be_visible()
+                expect(devices.locator('.device-row').nth(1).get_by_role('button', name='添加备注' if chinese else 'Add remark', exact=True)).to_be_disabled()
                 field.fill('Reading iPad')
                 poll(page)
                 expect(save).to_be_enabled()
@@ -112,10 +114,6 @@ with sync_playwright() as playwright:
                 # Validation and a failed save stay in the edited row.
                 expect(row.locator('.device-rename-start')).to_be_enabled()
                 row.locator('.device-rename-start').click()
-                field.fill('   ')
-                save.click()
-                expect(row.get_by_role('status')).to_have_text('请输入 1–80 个字符的名称。' if chinese else 'Enter a name of 1–80 characters.')
-                assert rename_calls(page) == []
                 field.fill('  Reading iPad  ')
                 page.evaluate('window.renameFailure = true')
                 save.click()
@@ -141,7 +139,7 @@ with sync_playwright() as playwright:
                 expect(field).to_have_count(0)
                 expect(row.locator('.device-name-text')).to_have_text('Reading iPad')
                 assert rename_calls(page)[-1]['payload'] == {'id': 'ipad', 'name': 'Reading iPad'}
-                original['devices'][0]['name'] = 'Reading iPad'
+                original['devices'][0]['remark'] = 'Reading iPad'
                 assert page.evaluate('remoteTest') == original
                 expect(page.locator(f'#{prefix}deviceName')).to_have_value('Desktop')
 
@@ -166,9 +164,19 @@ with sync_playwright() as playwright:
                 expect(field).to_have_count(0)
                 assert len(rename_calls(page)) == 2
 
+                # Clearing a remark returns the row to the phone's own name and
+                # sends clear-remark rather than an empty rename.
+                rename.click()
+                field.fill('')
+                save.click()
+                expect(field).to_have_count(0)
+                expect(row.locator('.device-name-text')).to_have_text('iPad14,1')
+                assert page.evaluate("remoteCalls.filter(call => call.action === 'clear-remark').length") == 1
+                assert 'remark' not in page.evaluate('remoteTest.devices[0]')
+
                 # The network sign-out confirmation stays in the app, preserves
                 # cancellation and focus, and survives background polling.
-                page.locator('.mobile-help summary').click()
+                page.locator('.mobile-help summary').first.click()
                 logout = page.locator(f'#{prefix}logout')
                 logout_dialog = page.locator('dialog.mobile-logout')
                 logout.click()

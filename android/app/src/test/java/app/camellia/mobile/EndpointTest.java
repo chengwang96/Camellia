@@ -154,6 +154,19 @@ public class EndpointTest {
         }
     }
 
+    @Test public void allowsOnlyTheExactTailnetDiscoveryAndPairingRoutes() {
+        Endpoint endpoint = new Endpoint("http://100.64.0.1:43127");
+        for (String route : new String[]{"/v1/hello", "/v1/tailnet/request", "/v1/tailnet/claim", "/v1/device/name"}) {
+            assertEquals(endpoint.origin() + route, endpoint.uri(route).toString());
+            for (String suffix : new String[]{"/", "?x=1", "/extra", "#fragment"}) {
+                assertThrows(route + suffix, IllegalArgumentException.class, () -> endpoint.uri(route + suffix));
+            }
+        }
+        for (String route : new String[]{"/v1/tailnet", "/v1/tailnet/other", "/v1/hello/extra", "/v1/HELLO"}) {
+            assertThrows(route, IllegalArgumentException.class, () -> endpoint.uri(route));
+        }
+    }
+
     @Test public void acceptsOnlyTheExactWorkbenchRoutes() {
         Endpoint endpoint = new Endpoint("http://100.64.0.1:43127");
         assertEquals("http://100.64.0.1:43127/v1/workbench", endpoint.uri("/v1/workbench").toString());

@@ -85,7 +85,7 @@ public final class Endpoint {
         if (path.matches("/v1/discussions(?:\\?(?:offset)=\\d{1,12}|/(?:catalog|events|commands(?:/[a-f0-9-]{36})?|[a-f0-9-]{36}(?:/events|\\?before=\\d{1,12})?))?")) {
             return URI.create(origin + path);
         }
-        if (!path.matches("/v1/(?:(?:status|commands|pair/(request|claim)|lan/join|conversations(?:/events|/[a-f0-9-]{36}(?:/(?:events|commands|artifacts(?:/[a-f0-9]{64})?))?)?)(?:\\?(?:offset|before)=\\d{1,12})?|api-keys)")) {
+        if (!path.matches("/v1/(?:(?:status|hello|commands|device/name|pair/(request|claim)|tailnet/(request|claim)|lan/join|conversations(?:/events|/[a-f0-9-]{36}(?:/(?:events|commands|artifacts(?:/[a-f0-9]{64})?))?)?)(?:\\?(?:offset|before)=\\d{1,12})?|api-keys)")) {
             throw new IllegalArgumentException("Unsupported remote endpoint");
         }
         return URI.create(origin + path);

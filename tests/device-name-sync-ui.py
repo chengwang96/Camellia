@@ -25,16 +25,16 @@ bridge = """(() => {
 messages = {
     'zh-CN': {
         'synced': '已同步到 Tailscale。',
-        'local': '已更新内置网络；控制台名称未同步。',
+        'local': '内置网络已更新；控制台名称尚未确认。',
         'offline': '已保存；连接 Tailscale 后再同步。',
-        'invalid': '已保存；Tailscale 名称需要字母、数字或连字符，未同步。',
+        'invalid': '已保存；当前名称不是有效的 Tailscale 标签，未同步。',
         'error': '已保存；Tailscale 同步失败：Test API error',
     },
     'en': {
         'synced': 'Synced to Tailscale.',
-        'local': 'Embedded network updated; the console name was not synced.',
+        'local': 'Embedded network updated; the console name is not confirmed yet.',
         'offline': 'Saved; connect to Tailscale to sync it.',
-        'invalid': 'Saved; Tailscale names allow letters, digits and hyphens only, so it was not synced.',
+        'invalid': 'Saved; the current name is not a valid Tailscale label, so it was not synced.',
         'error': 'Saved; Tailscale sync failed: Test API error',
     },
 }

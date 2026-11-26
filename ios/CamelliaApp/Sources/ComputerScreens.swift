@@ -324,12 +324,12 @@ private struct ComputerManagePanel: View {
                         SettingsDivider(leading: 16)
                     }
                     Button {
-                        name = computer.displayName
-                        feedback = "最多 80 个字符"
+                        name = computer.remark
+                        feedback = "最多 80 个字符；留空恢复电脑名称。"
                         mode = .rename
                     } label: {
-                        SettingsRowLabel(icon: "", title: "重命名",
-                                         detail: "更改这台电脑在本机显示的名称")
+                        SettingsRowLabel(icon: "", title: "编辑备注",
+                                         detail: "只改这台设备上的显示备注")
                     }
                     .buttonStyle(.plain)
                     SettingsDivider(leading: 16)
@@ -350,12 +350,16 @@ private struct ComputerManagePanel: View {
         case .rename:
             VStack(alignment: .leading, spacing: 0) {
                 if !compactRename { grip }
-                header("重命名电脑",
+                header("电脑备注",
                        description: compactRename ? "" : (UIDevice.current.userInterfaceIdiom == .pad
-                           ? "取一个容易辨认的名字，仅在这台平板上显示。"
-                           : "取一个容易辨认的名字，仅在这台手机上显示。"),
+                           ? "取一个容易辨认的备注，仅在这台平板上显示，不会改变电脑自己的名称。"
+                           : "取一个容易辨认的备注，仅在这台手机上显示，不会改变电脑自己的名称。"),
                        localized: true)
-                Text("电脑名称")
+                Text("电脑名称：" + computer.computerName)
+                    .font(.system(size: Palette.textSmall))
+                    .foregroundColor(Palette.secondary)
+                    .padding(.bottom, 4)
+                Text("本机备注")
                     .font(.system(size: Palette.textSmall))
                     .foregroundColor(Palette.secondary)
                     .padding(.bottom, 6)
@@ -372,7 +376,7 @@ private struct ComputerManagePanel: View {
                         .fill(Palette.field))
                     .overlay(RoundedRectangle(cornerRadius: Palette.fieldRadius, style: .continuous)
                         .stroke(Palette.fieldBorder, lineWidth: 1))
-                    .accessibilityLabel("电脑名称")
+                    .accessibilityLabel("本机备注")
                     .onChange(of: name) { value in
                         if ComposerText.utf16Length(value) > 80 {
                             name = ComposerText.limited(value, to: 80)
@@ -380,7 +384,7 @@ private struct ComputerManagePanel: View {
                     }
                 Text(LocalizedStringKey(feedback))
                     .font(.system(size: Palette.textSmall))
-                    .foregroundColor(feedback == "最多 80 个字符" ? Palette.secondary : Palette.error)
+                    .foregroundColor(feedback == "最多 80 个字符；留空恢复电脑名称。" ? Palette.secondary : Palette.error)
                     .padding(.top, 6)
                 VStack(spacing: 8) {
                     SettingsDialogAction(title: "保存", primary: true, action: saveName)
@@ -499,11 +503,6 @@ private struct ComputerManagePanel: View {
 
     private func saveName() {
         let value = ComposerText.androidTrim(name)
-        guard !value.isEmpty else {
-            feedback = "请输入电脑名称"
-            nameFocused = true
-            return
-        }
         if model.rename(computer.address, to: value) {
             onClose()
         } else {
@@ -1115,10 +1114,21 @@ struct SettingsView: View {
                 Text(deviceNameTitle)
                     .font(.system(size: Palette.textTitle, weight: .semibold))
                     .foregroundColor(Palette.ink)
-                Text("配对时默认提交这个名称，电脑端可以在授权时确认。最多 80 个字符。")
+                Text("其他已配对电脑会自动更新这个名称；电脑端不会修改它。最多 80 个字符。")
                     .font(.system(size: Palette.textNote))
                     .foregroundColor(Palette.secondary)
                     .fixedSize(horizontal: false, vertical: true)
+                Toggle(isOn: followBinding) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("跟随本机名称")
+                            .font(.system(size: Palette.textBody))
+                            .foregroundColor(Palette.ink)
+                        Text("关闭后保留内置 Tailscale 当前网络名，Camellia 名称仍会更新。")
+                            .font(.system(size: Palette.textSmall))
+                            .foregroundColor(Palette.secondary)
+                    }
+                }
+                .toggleStyle(SwitchToggleStyle(tint: Palette.accent))
                 Text("设备名称")
                     .font(.system(size: Palette.textSmall))
                     .foregroundColor(Palette.secondary)
@@ -1160,6 +1170,21 @@ struct SettingsView: View {
         }
         model.setDeviceName(name)
         editingName = false
+    }
+
+    private var followBinding: Binding<Bool> {
+        Binding(get: { model.preferences.deviceNameFollow },
+                set: { value in
+                    model.preferences.deviceNameFollow = value
+                    EmbeddedNetwork.shared.followsConfiguredHostname = value
+                    if value, !model.preferences.savedDeviceName.isEmpty {
+                        let name = model.preferences.savedDeviceName
+                        DispatchQueue.global(qos: .utility).async {
+                            try? EmbeddedNetwork.shared.setHostname(name)
+                        }
+                    }
+                    model.objectWillChange.send()
+                })
     }
 }
 

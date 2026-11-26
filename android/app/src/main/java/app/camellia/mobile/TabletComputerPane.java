@@ -141,7 +141,7 @@ final class TabletComputerPane extends LinearLayout {
         TextView management = label(tr("电脑管理", "Computer management"), 14, style.ink); medium(management);
         management.setPadding(0, dp(22), 0, dp(10)); detail.addView(management);
         LinearLayout tiles = new ActionTiles();
-        LinearLayout rename = tile(tr("显示名称", "Display name"), listener.name(computer), tr("仅在此设备显示，不修改电脑名称", "Used on this device; the computer's name stays unchanged"),
+        LinearLayout rename = tile(tr("编辑备注", "Edit remark"), listener.name(computer), tr("仅在此设备显示，不修改电脑名称", "Used on this device; the computer's name stays unchanged"),
             "tabletComputerRename", () -> listener.rename(computer));
         tiles.addView(rename, new LayoutParams(-1, -2));
         detail.addView(tiles);

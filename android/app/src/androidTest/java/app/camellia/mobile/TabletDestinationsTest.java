@@ -199,6 +199,7 @@ public class TabletDestinationsTest extends InstrumentationTestCase {
             assertTrue(bounds(find("tabletConnectionMethodLabel")).bottom <= bounds(find("tabletConnectionPathLabel")).top);
             assertTrue(bounds(find("tabletConnectionPathLabel")).bottom <= bounds(find("tabletComputerPermissionLabel")).top);
         }
+        assertEquals("编辑备注", ((TextView) find("tabletComputerRenameTitle")).getText().toString());
         assertTrue(bounds(find("tabletComputerRenameTitle")).bottom <= bounds(find("tabletComputerRenameDescription")).top);
         ui(() -> find("tabletComputerMore").performClick());
         assertTrue(find("tabletComputerRestart").isEnabled());
@@ -228,7 +229,7 @@ public class TabletDestinationsTest extends InstrumentationTestCase {
             assertEquals("Connection values must not break inside a single word: " + value.getText(), 1, value.getLineCount());
         }
         View rename = find("tabletComputerRename");
-        assertTrue("The display-name action must remain visible", rename.getWidth() > 0 && rename.getHeight() > 0);
+        assertTrue("The remark action must remain visible", rename.getWidth() > 0 && rename.getHeight() > 0);
         capture("native-computer-compact-audit");
     }
 

@@ -403,6 +403,9 @@ public final class SettingsActivity extends Activity {
     @Override protected void onResume() {
         super.onResume();
         if (store != null && section.equals("notifications")) notifications();
+        if (store != null && section.equals("downloads") && downloadedArtifacts != null && !downloadedDeleting) {
+            loadDownloadedArtifacts();
+        }
     }
 
     @Override public void onRequestPermissionsResult(int request, String[] permissions, int[] grants) {

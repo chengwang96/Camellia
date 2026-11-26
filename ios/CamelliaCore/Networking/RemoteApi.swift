@@ -133,6 +133,16 @@ public final class RemoteApi {
                  method: "POST", payload: ["lastReplyAt": lastReplyAt])
     }
 
+    /// Publishes this phone's own display name to one paired computer.
+    ///
+    /// The bearer token identifies the device record, so the desktop updates
+    /// that record and nothing else. An older desktop answers 404; callers keep
+    /// the local name and retry when it is next reachable.
+    @discardableResult
+    public func updateDeviceName(_ name: String) throws -> JSONObject {
+        try json("/v1/device/name", method: "POST", payload: ["name": name])
+    }
+
     // MARK: - Pairing
 
     /// Offers a one-time code and asks for a claim handle.

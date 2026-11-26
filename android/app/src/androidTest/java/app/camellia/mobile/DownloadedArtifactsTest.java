@@ -127,6 +127,29 @@ public class DownloadedArtifactsTest extends InstrumentationTestCase {
         assertNotNull(root().findViewWithTag("settingsEmptyState"));
     }
 
+    public void testReturningToDownloadsRechecksFilesRemovedOutsideCamellia() throws Exception {
+        Context context = getInstrumentation().getTargetContext();
+        Uri file = download("removed-while-open.pdf", "report");
+        ArtifactDownloadHistory.complete(context, ADDRESS, CONVERSATION, false, "f".repeat(64),
+            "removed-while-open.pdf", file, 6);
+        launchDownloads();
+        awaitRows(1);
+        ui(() -> assertNotNull(root().findViewWithTag("downloadedArtifactOpen:0")));
+
+        assertTrue(DocumentsContract.deleteDocument(context.getContentResolver(), file));
+        ui(() -> {
+            getInstrumentation().callActivityOnPause(activity);
+            getInstrumentation().callActivityOnResume(activity);
+        });
+        await(() -> root().findViewWithTag("downloadedArtifactOpen:0") == null);
+        ui(() -> {
+            View remove = root().findViewWithTag("downloadedArtifactDelete:0");
+            assertNotNull("The stale record stays removable", remove);
+            assertTrue("The stale record offers removal",
+                containsText(remove, "移除") || containsText(remove, "Remove"));
+        });
+    }
+
     public void testRepeatedDownloadsKeepEveryDestinationAndOpenTheNewest() throws Exception {
         Context context = getInstrumentation().getTargetContext();
         String artifact = "e".repeat(64);
@@ -150,6 +173,18 @@ public class DownloadedArtifactsTest extends InstrumentationTestCase {
             output.write(content.getBytes(java.nio.charset.StandardCharsets.UTF_8));
         }
         return file;
+    }
+
+    private boolean containsText(View view, String text) {
+        if (view instanceof android.widget.TextView
+                && ((android.widget.TextView) view).getText().toString().contains(text)) return true;
+        if (view instanceof android.view.ViewGroup) {
+            android.view.ViewGroup group = (android.view.ViewGroup) view;
+            for (int index = 0; index < group.getChildCount(); index++) {
+                if (containsText(group.getChildAt(index), text)) return true;
+            }
+        }
+        return false;
     }
 
     private void launchDownloads() throws Exception {

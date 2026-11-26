@@ -78,6 +78,23 @@ public class DialogRotationTest extends InstrumentationTestCase {
         assertFalse("Normal navigation must still dismiss the obsolete form", dialog.isShowing());
     }
 
+    public void testComputerRemarkLeavesTheComputersOwnNameIntact() throws Exception {
+        var context = getInstrumentation().getTargetContext();
+        JSONObject computer = new JSONObject().put("address", "http://100.80.1.23:43127")
+            .put("token", "s".repeat(43)).put("computerName", "Original computer");
+        ComputerStore store = new ComputerStore(new CredentialStore(context, "rotation-computer-remark-test")); store.save(computer);
+        store.rename(computer.getString("address"), "Local label");
+        assertEquals("Original computer", store.load().getString("computerName"));
+        assertEquals("Local label", store.load().getString("remark"));
+        store.updateComputerName(computer.getString("address"), "Renamed on desktop");
+        assertEquals("Renamed on desktop", store.load().getString("computerName"));
+        assertEquals("Local label", store.load().getString("remark"));
+        store.clearRemark(computer.getString("address"));
+        assertEquals("Renamed on desktop", store.load().getString("computerName"));
+        assertFalse(store.load().has("remark"));
+        new CredentialStore(context, "rotation-computer-remark-test").clear();
+    }
+
     public void testQueueEditorKeepsFocusAboveTheConversationAndClosesOnNavigation() throws Exception {
         var context = getInstrumentation().getTargetContext();
         activity = getInstrumentation().startActivitySync(new Intent(context, MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));

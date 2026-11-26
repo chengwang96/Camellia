@@ -1,12 +1,36 @@
 # Desktop remote access and Android control
 
-Camellia's desktop gateway lets an approved Android device read and control desktop conversations over the embedded Tailscale network or a pinned TLS connection on the same private LAN. The device can send text and supported attachments, stop a run, answer questions, approve or deny one tool request, and download files already referenced by an authorized conversation. It cannot browse arbitrary desktop files, run a terminal command through the gateway, or edit global desktop settings. See the [Android guide](../android/README.md) for the client.
+Camellia's desktop gateway lets an approved Android device read and control desktop conversations over the embedded Tailscale network or a pinned TLS connection on the same private LAN. A phone can discover computers on its Tailnet automatically and request access without scanning a QR code; a pairing code remains available as a fallback. The device can send text and supported attachments, stop a run, answer questions, approve or deny one tool request, and download files already referenced by an authorized conversation. It cannot browse arbitrary desktop files, run a terminal command through the gateway, or edit global desktop settings. See the [Android guide](../android/README.md) for the client.
+
+## Tailnet trust and discovery
+
+Enable **Settings → Mobile access → Tailnet trust** to let phones on the same Tailnet discover this computer. The desktop reads its own Tailnet owner identity from the embedded node and allows that owner by default. **Automatically approve my devices** is off by default: a phone's first request appears under **Authorized devices** for explicit approval. Turning it on approves same-owner devices immediately. The optional `allowedUsers` and `allowedTags` fields in `tailnet-trust.json` can extend the policy, but the settings panel currently exposes only the owner allowlist and the automatic-approval switch.
+
+The phone reads the embedded node's peer table, probes each online peer's `GET /v1/hello` over Tailscale with a short timeout, and shows only peers that answer as Camellia. The hello endpoint is unauthenticated at the application layer but is reachable only through the embedded helper transport secret. It returns only the protocol, computer ID and name, supported authentication and join flags, and transport descriptors. It does not return conversations, keys or device tokens.
+
+The desktop helper authenticates the caller's Tailscale node and user with the local `WhoIs` API and forwards that identity to the loopback gateway in private headers. The gateway never accepts Tailscale identity headers from an untrusted transport. A first connection uses `POST /v1/tailnet/request` with the phone name and then `POST /v1/tailnet/claim` with the returned id and claim. The claim is bound to the same Tailscale node that made the request. The approved device receives its own 256-bit computer-specific token; tokens are never shared between phones or computers.
+
+The phone stores the desktop computer ID, Tailscale node ID and login alongside the LAN route. Discovery refreshes the Tailscale address and can populate the pinned LAN descriptor, while the existing route selector still prefers a verified LAN path and falls back to Tailscale. The QR and one-time-code flow is retained for older clients, computers with Tailnet trust off, and recovery when the embedded helper has not been updated.
+
+The Android client currently implements the discovery and first-request UI described here. The iOS client still uses the QR and pairing-code flow; its shared embedded-network bridge contains the same peer and hello primitives for a future macOS build.
+
+The desktop main process and embedded helper must both come from an updated build. Fully quit Camellia, including the tray, and restart it after installing the update; a phone-only update cannot add the verified identity headers or the discovery endpoint.
+
+## Device names
+
+Each device owns the name it reports for itself. A desktop or phone can change its own **This computer name** or **Phone name** in settings; every paired peer updates that label on its next authenticated connection. A desktop may keep a private **remark** for a phone, and a phone may keep a private remark for a computer, but neither remark changes the other device's own name. No device can rename another device through the remote gateway.
+
+The embedded Tailscale name follows the Camellia name when **Follow this computer name** is on. It is on for new embedded nodes and can be turned off to keep the name already registered. Existing nodes upgraded to this version keep their current Tailscale name until the user turns following on, so MagicDNS names, SSH configuration and bookmarks are not silently changed. The settings panel reports the Camellia name separately from the Tailscale control-plane result because the control plane may assign a `-1` suffix or an administrator may pin a different name.
+
+The authenticated `POST /v1/device/name` call updates only the record belonging to the credential making the request. Offline changes remain local to the device and are retried when it next connects; the latest name wins after several edits. A name change does not alter the pairing, token, workspace scope or revoke state.
 
 ## Pair a device
 
+If Tailnet trust is enabled and the phone is on the same Tailnet, skip to step 4: the phone should list this computer automatically, and the request appears here for approval. Use the following QR or one-time-code flow when trust is disabled, the phone is an older build, or the computer must be recovered.
+
 1. On the desktop, open **Settings → Mobile access** and enable the embedded network. Sign in through the official Tailscale browser flow. The desktop shows its own Tailnet address, usually `100.x.x.x:43127`.
 2. Sign the Android client into the same Tailnet. The embedded phone and desktop nodes are distinct devices; Tailnet policy and device approval must allow their connection. Each node uses the saved **device name** (desktop: **This computer name**), or a platform default such as `camellia-desktop`, `camellia-android` or `camellia-ios` when no name has been set.
-3. Generate a pairing code on the desktop. Scan its QR code on Android or enter the displayed address and one-time code manually. The code expires after five minutes.
+3. If automatic discovery is unavailable, generate a pairing code on the desktop. Scan its QR code on Android or enter the displayed address and one-time code manually. The code expires after five minutes.
 4. Review the device name on the desktop and explicitly approve the request. New approvals cover current and future workspaces and standalone conversations. Archived conversations stay out of the ordinary list but remain readable, and only restorable, when a phone is already viewing one.
 
 The QR code contains a versioned JSON object with `v`, `type`, `address`, and `code`. It does not carry the computer name or a device token. Existing restricted devices keep their scope until explicitly upgraded or paired again. Revoke a device in Mobile access to close its streams and reject future requests. Closing the settings panel does not close the gateway; fully quitting Camellia or sleeping the computer interrupts access. If trusted devices remain, the desktop may restore the gateway at startup with its saved login, without opening a browser or creating a new approval.
@@ -66,6 +90,7 @@ A full-device control pairing can use **Remote control → computer menu → Res
 The desktop advertises `desktop-restart` only to full-device control devices. `POST /v1/desktop/restart` requires `confirmed: true`, a UUID `requestId`, and the current status `instanceId`. The receipt is persisted before acknowledgment, and restart starts after the acknowledgment is written. Repeating that same request after reconnecting returns its receipt without restarting again. The endpoint is unavailable to read-only and workspace-scoped pairings.
 
 - The packaged Go helper uses pinned `tsnet` 1.104.7. The Tailscale gateway listens only on a random `127.0.0.1` port; the helper authenticates to it with a fresh 256-bit transport secret. The optional LAN gateway listens only on a private IPv4 address over TLS and is never exposed on a public interface.
+- Tailnet discovery and access requests depend on the helper's local `WhoIs` result. The gateway accepts that identity only through the private loopback transport and strips any client-supplied Tailnet identity headers. `tailnet-trust.json` stores policy and owner identity, not device tokens. Same-tailnet membership is not sufficient on its own: an out-of-policy device receives no claimable token, and nodes shared into the tailnet by another owner are not auto-trusted.
 - Node identity is encrypted with AES-256-GCM and a key protected by Electron `safeStorage`. The gateway refuses to start if secure storage is unavailable. Device tokens are 256-bit random values, stored as SHA-256 digests on the desktop and encrypted with Android Keystore on the phone.
 - Tailscale application HTTP travels inside the tunnel. LAN application HTTP uses TLS pinned to the certificate fingerprint learned from the desktop or its authenticated status response. The Android client accepts only an explicit Tailnet IPv4 address or a private LAN IPv4 address, does not follow redirects, and does not send its token through a system HTTP proxy. Host and Origin checks block cross-origin browser use.
 - Authorized devices can read conversation text and referenced artifact bytes. Secrets written in a message body are part of that body; Camellia does not redact them. API keys are absent from ordinary status and history responses.
@@ -96,8 +121,12 @@ A host advertising `live-deltas` accepts `?incremental=1&delta=live-v1` on conve
 
 | Method | Path | Purpose |
 | --- | --- | --- |
+| GET | `/v1/hello` | Minimal unauthenticated descriptor for Tailnet discovery; bound to the embedded helper transport. |
 | POST | `/v1/pair/request` | Submit `{ "code": "one-time code", "name": "My Android" }`; receive an application ID and claim credential. |
 | POST | `/v1/pair/claim` | Poll with `{ "id": "application ID", "claim": "claim credential" }` at least five seconds apart; receive a token only after desktop approval. |
+| POST | `/v1/tailnet/request` | Submit `{ "name": "My Android" }` over the embedded Tailnet transport; receive an id, claim and pending or approved state. |
+| POST | `/v1/tailnet/claim` | Poll with `{ "id": "...", "claim": "..." }`; the claim is bound to the same Tailscale node that requested access. |
+| POST | `/v1/device/name` | Change this device's own reported name; the bearer credential selects the record. |
 | GET | `/v1/status` | Protocol, capabilities, permission, gateway `instanceId`, cursor, and supported settings. |
 | GET | `/v1/conversations?offset=0` | Up to 100 authorized conversations per page, plus `nextOffset`. |
 | GET | `/v1/conversations/{id}` | Recent history, live state, approvals, queue state, and pagination cursor. |

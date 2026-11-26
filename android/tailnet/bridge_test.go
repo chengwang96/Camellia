@@ -16,6 +16,8 @@ import (
 	"tailscale.com/ipn"
 	"tailscale.com/ipn/ipnstate"
 	"tailscale.com/tailcfg"
+	"tailscale.com/types/key"
+	"tailscale.com/types/views"
 )
 
 func TestConnectionFailureCodesAreSafeAndSpecific(t *testing.T) {
@@ -416,8 +418,9 @@ func TestStatusPayloadKeepsTheContractBothClientsRead(t *testing.T) {
 		BackendState:   "NeedsLogin",
 		AuthURL:        "https://login.tailscale.com/a/abc",
 		TailscaleIPs:   []netip.Addr{netip.MustParseAddr("100.88.1.2"), netip.MustParseAddr("fd7a::1")},
-		Self:           &ipnstate.PeerStatus{HostName: "camellia-ios", Online: true},
+		Self:           &ipnstate.PeerStatus{HostName: "camellia-ios", Online: true, UserID: 42},
 		CurrentTailnet: &ipnstate.TailnetStatus{Name: "example.ts.net"},
+		User:           map[tailcfg.UserID]tailcfg.UserProfile{42: {ID: 42, LoginName: "me@example.com", DisplayName: "Me"}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -438,9 +441,50 @@ func TestStatusPayloadKeepsTheContractBothClientsRead(t *testing.T) {
 	if decoded["tailnet"] != "example.ts.net" {
 		t.Fatalf("tailnet name missing: %v", decoded["tailnet"])
 	}
+	if decoded["selfUserId"] != "42" || decoded["selfLoginName"] != "me@example.com" || decoded["selfDisplayName"] != "Me" {
+		t.Fatalf("owner identity missing: %v", decoded)
+	}
 	addresses, ok := decoded["tailnetIPs"].([]any)
 	if !ok || len(addresses) != 2 || addresses[0] != "100.88.1.2" {
 		t.Fatalf("addresses wrong: %v", decoded["tailnetIPs"])
+	}
+}
+
+func TestPeerListIncludesOnlyTailnetIPv4ControlTargets(t *testing.T) {
+	tags := views.SliceOf([]string{"tag:phone", "tag:trusted"})
+	status := &ipnstate.Status{
+		Self: &ipnstate.PeerStatus{ID: "self-node"},
+		Peer: map[key.NodePublic]*ipnstate.PeerStatus{
+			{}: {
+				ID: "phone-node", NodeID: 7, HostName: "Phone", DNSName: "phone.example.ts.net.",
+				OS: "android", UserID: 42, Online: true, Tags: &tags,
+				TailscaleIPs: []netip.Addr{netip.MustParseAddr("100.90.1.2"), netip.MustParseAddr("fd7a::2")},
+			},
+		},
+		User: map[tailcfg.UserID]tailcfg.UserProfile{42: {ID: 42, LoginName: "me@example.com", DisplayName: "Me"}},
+	}
+	peers := peerList(status)
+	if len(peers) != 1 {
+		t.Fatalf("expected one peer, got %+v", peers)
+	}
+	peer := peers[0]
+	if peer.ID != "phone-node" || peer.NodeID != "7" || peer.UserID != "42" || peer.LoginName != "me@example.com" {
+		t.Fatalf("peer identity lost: %+v", peer)
+	}
+	if len(peer.Addresses) != 1 || peer.Addresses[0] != "100.90.1.2" {
+		t.Fatalf("peer addresses are not limited to Tailnet IPv4: %+v", peer)
+	}
+	if !peer.Online || len(peer.Tags) != 2 || peer.Tags[0] != "tag:phone" {
+		t.Fatalf("peer state lost: %+v", peer)
+	}
+}
+
+func TestHelloRejectsNonTailnetTargets(t *testing.T) {
+	node := &Node{}
+	for _, target := range []string{"", "127.0.0.1", "192.168.1.2", "example.com", "100.90.1.2:43127", "fd7a::2"} {
+		if _, err := node.Hello(target); err == nil {
+			t.Fatalf("accepted non-Tailnet target %q", target)
+		}
 	}
 }
 

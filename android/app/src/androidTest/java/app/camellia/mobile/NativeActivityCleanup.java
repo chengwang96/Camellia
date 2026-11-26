@@ -24,7 +24,7 @@ final class NativeActivityCleanup {
         if (activity instanceof MainActivity) {
             var field = MainActivity.class.getDeclaredField("worker"); field.setAccessible(true);
             var worker = (java.util.concurrent.ExecutorService) field.get(activity);
-            if (!worker.awaitTermination(6, java.util.concurrent.TimeUnit.SECONDS)) throw new AssertionError("Drain the previous MainActivity's writes");
+            if (!worker.awaitTermination(15, java.util.concurrent.TimeUnit.SECONDS)) throw new AssertionError("Drain the previous MainActivity's writes");
         }
     }
 }

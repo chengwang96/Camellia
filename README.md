@@ -16,7 +16,7 @@ Camellia brings **Claude Code, Codex CLI, DeepSeek Harness, Kimi Code, Antigravi
 - **Official web surfaces.** Switch between Agent and Web to use DeepSeek or Kimi in isolated embedded sessions. Each provider keeps its own sign-in, layout adaptations and separate conversation list with rename, pin, share, multi-select and delete actions; web sessions are desktop-only and do not enter mobile remote control.
 - **Agent discussions (beta).** Invite up to four configured agents, assign roles, and choose who replies. Discussion messages, member state, tool activity, and approvals stay together in the desktop or paired Android view.
 - **One routing and account view.** Manage API providers, multiple keys, supported subscription sign-ins, same-model failover, usage, balances, and optional engine runtimes in the app.
-- **Remote work.** Approve a mobile device to read and control selected desktop conversations over the embedded Tailscale connection.
+- **Remote work.** Discover computers on the same Tailnet, approve a mobile device once, and read or control selected desktop conversations over the embedded Tailscale connection. A pairing code remains available as a fallback.
 - **Inline media.** Explicit `![alt](path)` Markdown shows images and videos inside the conversation on desktop and paired phones; ordinary file links stay artifacts.
 - **Long-running work.** Goals, scheduled checks, queued messages, and next-turn model changes help manage work that outlasts one reply. A [work panel](docs/conversation-work-panel.md) gathers subtasks and artifacts on desktop; mobile uses turn cards and child pages with independent controls.
 

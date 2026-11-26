@@ -14,7 +14,16 @@ const copy = {
     start: '开启手机访问', stop: '关闭手机访问', noAddress: '开启后显示 Tailscale 地址',
     tray: '关闭窗口可驻留托盘；退出应用或电脑休眠会断开连接。', noTray: '请保持窗口打开，或在设置中启用关闭到托盘。退出应用或电脑休眠会断开连接。',
     noDevices: '尚未授权任何设备。', approve: '授权设备', reject: '拒绝', revoke: '撤销',
-    expires: '配对码失效时间：', expired: '配对码已过期，请重新生成。' },
+    expires: '配对码失效时间：', expired: '配对码已过期，请重新生成。',
+    tailnetTrustTitle: 'Tailnet 信任', tailnetTrustToggle: '信任我的 Tailnet 设备',
+    tailnetTrustHint: '同一 Tailnet 的电脑会出现在手机端；首次连接默认在这里等待确认。',
+    tailnetTrustOn: '已启用', tailnetTrustOff: '已关闭', tailnetTrustIdentity: '等待身份',
+    tailnetAutoApprove: '自动批准我的设备',
+    tailnetAutoApproveHint: '仅建议在完全由你控制的 Tailnet 中开启。关闭时，新手机首次连接会在这里等待确认。',
+    tailnetDiscoveryOn: '手机可通过 Tailnet 自动发现这台电脑。',
+    tailnetDiscoveryWaiting: '开启手机访问并登录 Tailscale 后，手机会自动发现这台电脑。',
+    tailnetDiscoveryOff: '启用信任后，手机无需扫码即可发现这台电脑。',
+    tailnetNoIdentity: '等待 Tailnet 身份', tailnetDevice: 'Tailnet' },
   en: { title: 'Mobile access', intro: 'Connect your phone with Tailscale or the same Wi-Fi.', connection: 'Connection', pair: 'Pair a device', devices: 'Authorized devices', connectionHelp: 'Connection and permissions',
     network: 'Tailscale is built in; no separate client needed. On a home Wi-Fi you can also pair with a six-digit PIN. Local mode never opens a public listener. Enable it once; later starts restore access automatically when a trusted device remains.',
     generate: 'Generate pairing code',
@@ -24,7 +33,16 @@ const copy = {
     start: 'Enable mobile access', stop: 'Disable mobile access', noAddress: 'Enable to show the Tailscale address',
     tray: 'Closing the window keeps the app in the tray. Quitting or computer sleep disconnects clients.', noTray: 'Keep the window open or enable close to tray in Settings. Quitting or computer sleep disconnects clients.',
     noDevices: 'No authorized devices yet.', approve: 'Authorize device', reject: 'Reject', revoke: 'Revoke',
-    expires: 'Pairing code expires at: ', expired: 'The pairing code expired. Generate another.' },
+    expires: 'Pairing code expires at: ', expired: 'The pairing code expired. Generate another.',
+    tailnetTrustTitle: 'Tailnet trust', tailnetTrustToggle: 'Trust my Tailnet devices',
+    tailnetTrustHint: 'Computers on the same tailnet appear on the phone; first-time connections wait here by default.',
+    tailnetTrustOn: 'On', tailnetTrustOff: 'Off', tailnetTrustIdentity: 'Waiting for identity',
+    tailnetAutoApprove: 'Automatically approve my devices',
+    tailnetAutoApproveHint: 'Use only on a tailnet you fully control. When off, a new phone waits here for approval.',
+    tailnetDiscoveryOn: 'Phones can discover this computer over Tailscale.',
+    tailnetDiscoveryWaiting: 'Enable mobile access and sign in to Tailscale so phones can discover this computer.',
+    tailnetDiscoveryOff: 'Enable trust to let phones discover this computer without scanning a code.',
+    tailnetNoIdentity: 'Waiting for Tailnet identity', tailnetDevice: 'Tailnet' },
 };
 Object.assign(copy.zh, {
   lanTitle: '局域网访问', lanToggleLabel: '允许同一 Wi-Fi 的手机直连',
@@ -79,8 +97,8 @@ Object.assign(copy.zh, { login: '登录 Tailscale', openLogin: '打开浏览器�
   connecting: '正在连接内置网络…', needsLogin: '请登录 Tailscale', needsApproval: '请在 Tailscale 管理后台批准此设备', networkError: '内置网络已断开，请重新开启', networkReady: '内置网络已连接', networkOff: '内置网络已关闭', renameSaving: '正在保存名称…' });
 Object.assign(copy.en, { login: 'Sign in to Tailscale', openLogin: 'Authorize in browser', logout: 'Sign out of Tailscale', confirmLogout: 'Sign out of embedded Tailscale? Mobile devices will disconnect. Sign in to Tailscale again to reconnect.',
   connecting: 'Connecting to embedded network…', needsLogin: 'Sign in to Tailscale', needsApproval: 'Approve this device in the Tailscale admin console', networkError: 'Embedded network disconnected. Enable it again.', networkReady: 'Embedded network connected', networkOff: 'Embedded network off', renameSaving: 'Saving name…' });
-Object.assign(copy.zh, { deviceName: '本机名称', deviceNameHint: '此名称会同步到 Tailscale。', deviceNameSave: '保存名称', deviceNameSaved: '已保存本机名称：', deviceNameSynced: '已同步到 Tailscale。', deviceNameLocalSynced: '已更新内置网络；控制台名称未同步。', deviceNameSyncSkipped: '已保存；Tailscale 名称需要字母、数字或连字符，未同步。', deviceNameSyncOffline: '已保存；连接 Tailscale 后再同步。', deviceNameSyncFailed: '已保存；Tailscale 同步失败：', scanHint: '用手机扫码填入地址和配对码，也可手动输入。', qrLabel: '配对二维码', refreshCode: '刷新二维码', copyAddress: '复制地址', addressCopied: '连接地址已复制', pairWaiting: '等待电脑授权', pairApproved: '电脑已授权，等待手机完成', pairSuccess: '配对成功', continuePair: '继续配对', pairFailed: '配对请求已结束，请重新生成二维码。', lastConnected: '最近连接：', justNow: '刚刚', minutesAgo: '{0} 分钟前', hoursAgo: '{0} 小时前', daysAgo: '{0} 天前', rename: '重命名', renameName: '移动设备名称', renameSave: '保存', renameCancel: '取消', nameInvalid: '请输入 1–80 个字符的名称。' });
-Object.assign(copy.en, { deviceName: 'This computer name', deviceNameHint: 'Also updates the Tailscale device name.', deviceNameSave: 'Save name', deviceNameSaved: 'Computer name saved: ', deviceNameSynced: 'Synced to Tailscale.', deviceNameLocalSynced: 'Embedded network updated; the console name was not synced.', deviceNameSyncSkipped: 'Saved; Tailscale names allow letters, digits and hyphens only, so it was not synced.', deviceNameSyncOffline: 'Saved; connect to Tailscale to sync it.', deviceNameSyncFailed: 'Saved; Tailscale sync failed: ', scanHint: 'Scan with your phone to fill in the address and code, or enter them manually.', qrLabel: 'Pairing QR code', refreshCode: 'Refresh QR code', copyAddress: 'Copy address', addressCopied: 'Connection address copied', pairWaiting: 'Waiting for computer approval', pairApproved: 'Computer approved; waiting for the phone', pairSuccess: 'Paired successfully', continuePair: 'Pair another device', pairFailed: 'The pairing request ended. Generate a new code.', lastConnected: 'Last connected: ', justNow: 'Just now', minutesAgo: '{0} min ago', hoursAgo: '{0} hr ago', daysAgo: '{0} days ago', rename: 'Rename', renameName: 'Mobile device name', renameSave: 'Save', renameCancel: 'Cancel', nameInvalid: 'Enter a name of 1–80 characters.' });
+Object.assign(copy.zh, { deviceName: '本机名称', deviceNameHint: '其他已配对设备会自动更新这个名称；Tailscale 网络名会按设置跟随。', deviceNameSave: '保存名称', deviceNameSaved: '已保存本机名称：', deviceNameSynced: '已同步到 Tailscale。', deviceNameLocalSynced: '内置网络已更新；控制台名称尚未确认。', deviceNameSyncSkipped: '已保存；当前名称不是有效的 Tailscale 标签，未同步。', deviceNameSyncOffline: '已保存；连接 Tailscale 后再同步。', deviceNameSyncFailed: '已保存；Tailscale 同步失败：', tailscaleFollow: '跟随本机名称', tailscaleFollowHint: '关闭后保留内置 Tailscale 当前网络名；Camellia 名称仍会更新。', deviceNameFollowOn: '已开启 Tailscale 名称跟随。', deviceNameFollowOff: '已关闭；保留当前 Tailscale 网络名。', deviceNameFollowOffStatus: '未同步；当前未开启 Tailscale 名称跟随。', scanHint: '用手机扫码填入地址和配对码，也可手动输入。', qrLabel: '配对二维码', refreshCode: '刷新二维码', copyAddress: '复制地址', addressCopied: '连接地址已复制', pairWaiting: '等待电脑授权', pairApproved: '电脑已授权，等待手机完成', pairSuccess: '配对成功', continuePair: '继续配对', pairFailed: '配对请求已结束，请重新生成二维码。', lastConnected: '最近连接：', justNow: '刚刚', minutesAgo: '{0} 分钟前', hoursAgo: '{0} 小时前', daysAgo: '{0} 天前', remark: '添加备注', editRemark: '编辑备注', remarkName: '本机备注', remarkSave: '保存', remarkCancel: '取消', remarkSaving: '正在保存备注…', remarkInvalid: '备注最多 80 个字符。', renameSave: '保存', renameCancel: '取消', renameSaving: '正在保存备注…', nameInvalid: '请输入 1–80 个字符的名称。' });
+Object.assign(copy.en, { deviceName: 'This computer name', deviceNameHint: 'Paired devices update automatically; the Tailscale network name follows this setting.', deviceNameSave: 'Save name', deviceNameSaved: 'Computer name saved: ', deviceNameSynced: 'Synced to Tailscale.', deviceNameLocalSynced: 'Embedded network updated; the console name is not confirmed yet.', deviceNameSyncSkipped: 'Saved; the current name is not a valid Tailscale label, so it was not synced.', deviceNameSyncOffline: 'Saved; connect to Tailscale to sync it.', deviceNameSyncFailed: 'Saved; Tailscale sync failed: ', tailscaleFollow: 'Follow this computer name', tailscaleFollowHint: 'Turn off to keep the embedded Tailscale network name; the Camellia name still updates.', deviceNameFollowOn: 'Tailscale name following is on.', deviceNameFollowOff: 'Off. The current Tailscale network name is kept.', deviceNameFollowOffStatus: 'Not synced; Tailscale name following is off.', scanHint: 'Scan with your phone to fill in the address and code, or enter them manually.', qrLabel: 'Pairing QR code', refreshCode: 'Refresh QR code', copyAddress: 'Copy address', addressCopied: 'Connection address copied', pairWaiting: 'Waiting for computer approval', pairApproved: 'Computer approved; waiting for the phone', pairSuccess: 'Paired successfully', continuePair: 'Pair another device', pairFailed: 'The pairing request ended. Generate a new code.', lastConnected: 'Last connected: ', justNow: 'Just now', minutesAgo: '{0} min ago', hoursAgo: '{0} hr ago', daysAgo: '{0} days ago', remark: 'Add remark', editRemark: 'Edit remark', remarkName: 'Device remark', remarkSave: 'Save', remarkCancel: 'Cancel', remarkSaving: 'Saving remark…', remarkInvalid: 'Remarks can contain up to 80 characters.', renameSave: 'Save', renameCancel: 'Cancel', renameSaving: 'Saving remark…', nameInvalid: 'Enter a name of 1–80 characters.' });
 Object.assign(copy.zh, { unavailable: '状态加载失败', loading: '正在加载…', retry: '重试', openPanel: '打开独立手机访问面板',
   restart: '手机访问页面已更新，但桌面主进程仍是旧版。请保存工作后完全退出 Camellia（包括托盘）并重新启动；刷新页面不会更新主进程。也可先打开独立面板管理连接。',
   loadFailed: '无法加载手机访问状态，请重试。', loadDevices: '暂时无法加载已授权设备，请重试。' });
@@ -276,6 +294,61 @@ function renderGuard() {
   status.classList.toggle('online', Boolean(info.enabled && info.running));
   status.classList.toggle('error', Boolean(!info.supported || !info.available));
 }
+function renderTailnetTrust() {
+  const section = element('tailnetTrust');
+  if (!section) return;
+  if (!state?.tailnetTrust) { section.hidden = true; return; }
+  section.hidden = false;
+  const trust = state?.tailnetTrust || {};
+  const status = element('tailnetTrustStatus');
+  if (status) {
+    status.className = 'status device-status';
+    if (!trust.enabled) status.textContent = translate('tailnetTrustOff');
+    else if (!trust.ready) status.textContent = translate('tailnetTrustIdentity');
+    else { status.textContent = translate('tailnetTrustOn'); status.classList.add('online'); }
+  }
+  const toggle = element('tailnetTrustToggle');
+  if (toggle) {
+    toggle.checked = Boolean(trust.enabled);
+    toggle.disabled = working || !state.enabled;
+  }
+  const auto = element('tailnetAutoApprove');
+  if (auto) {
+    auto.checked = Boolean(trust.autoApprove);
+    auto.disabled = working || !trust.enabled || !trust.ready;
+  }
+  if (element('tailnetTrustHint')) element('tailnetTrustHint').textContent = translate('tailnetTrustHint');
+  if (element('tailnetAutoApproveHint')) element('tailnetAutoApproveHint').textContent = translate('tailnetAutoApproveHint');
+  const scope = element('tailnetTrustScope');
+  if (scope) {
+    scope.replaceChildren();
+    const owner = trust.ownerDisplayName || trust.ownerLogin;
+    if (owner) {
+      const chip = document.createElement('span'); chip.className = 'tailnet-chip';
+      const dot = document.createElement('span'); dot.className = 'tailnet-dot';
+      const name = document.createElement('strong'); name.textContent = owner;
+      chip.append(dot, name);
+      if (trust.ownerLogin && trust.ownerLogin !== owner) chip.append(document.createTextNode(' · ' + trust.ownerLogin));
+      scope.append(chip);
+    }
+    const tailnet = trust.tailnetName || state.network?.tailnet || '';
+    if (tailnet) {
+      const chip = document.createElement('span'); chip.className = 'tailnet-chip';
+      chip.textContent = 'Tailnet · ' + tailnet; scope.append(chip);
+    }
+    if (!trust.ready) {
+      const chip = document.createElement('span'); chip.className = 'tailnet-chip muted';
+      chip.textContent = translate('tailnetNoIdentity'); scope.append(chip);
+    }
+    for (const tag of Array.isArray(trust.allowedTags) ? trust.allowedTags : []) {
+      const chip = document.createElement('span'); chip.className = 'tailnet-chip';
+      chip.textContent = tag; scope.append(chip);
+    }
+  }
+  const discovery = element('tailnetDiscovery');
+  if (discovery) discovery.textContent = !trust.enabled ? translate('tailnetDiscoveryOff')
+    : state.running ? translate('tailnetDiscoveryOn') : translate('tailnetDiscoveryWaiting');
+}
 function renderLan() {
   const info = state?.lan;
   if (!info) return;
@@ -382,16 +455,19 @@ function renderDevices(target, entries, pending) {
     const row = document.createElement('div'), icon = mobileDeviceIcon(), name = document.createElement('div'), title = document.createElement('span'), meta = document.createElement('div'), label = document.createElement('small'), actions = document.createElement('div');
     row.className = 'device device-row'; icon.classList.add('device-icon'); name.className = 'name device-info'; meta.className = 'device-meta'; actions.className = 'actions device-actions';
     title.className = 'device-name-text';
-    title.textContent = entry.name;
+    title.textContent = entry.remark || entry.name;
+    const source = entry.auth === 'tailnet'
+      ? translate('tailnetDevice') + (entry.tailnet?.login ? ' · ' + entry.tailnet.login : '')
+      : entry.auth === 'lan' ? translate('lanTitle') : '';
     label.textContent = pending
-      ? `${entry.computerName || ''}${entry.computerName ? ' · ' : ''}${translate(entry.state === 'approved' ? 'pairApproved' : entry.state === 'rejected' ? 'pairingRejected' : 'pairWaiting')}`
-      : translate('lastConnected') + (entry.lastSeenAt ? relativeTime(entry.lastSeenAt) : '—');
+      ? `${source || entry.computerName || ''}${(source || entry.computerName) ? ' · ' : ''}${translate(entry.state === 'approved' ? 'pairApproved' : entry.state === 'rejected' ? 'pairingRejected' : 'pairWaiting')}`
+      : `${entry.remark ? entry.name + ' · ' : ''}${source ? source + ' · ' : ''}${translate('lastConnected')}${entry.lastSeenAt ? relativeTime(entry.lastSeenAt) : '—'}`;
     meta.append(label);
     name.append(title, meta);
     if (!pending) {
       const rename = document.createElement('button');
       rename.className = 'device-rename-start';
-      rename.textContent = translate('rename'); rename.disabled = working || Boolean(renameEditor);
+      rename.textContent = translate(entry.remark ? 'editRemark' : 'remark'); rename.disabled = working || Boolean(renameEditor);
       rename.addEventListener('click', () => renameDevice(entry, row, title, name));
       actions.append(rename);
       const saveName = document.createElement('button');
@@ -400,7 +476,7 @@ function renderDevices(target, entries, pending) {
       actions.append(saveName);
       const cancelName = document.createElement('button');
       cancelName.className = 'device-rename-cancel'; cancelName.type = 'button';
-      cancelName.textContent = translate('renameCancel'); cancelName.hidden = true;
+      cancelName.textContent = translate('remarkCancel'); cancelName.hidden = true;
       actions.append(cancelName);
       if (state.diagnosticsAvailable && window.CamelliaNetworkDiagnostics) {
         const diagnose = document.createElement('button');
@@ -659,8 +735,8 @@ function renameDevice(entry, row, title, name) {
   field.className = 'device-rename-field';
   field.maxLength = 80;
   field.autocomplete = 'off';
-  field.value = entry.name;
-  field.setAttribute('aria-label', translate('renameName'));
+  field.value = entry.remark || '';
+  field.setAttribute('aria-label', translate('remarkName'));
   const status = document.createElement('p');
   status.className = 'hint device-rename-status';
   status.setAttribute('role', 'status');
@@ -697,9 +773,9 @@ function renameDevice(entry, row, title, name) {
     if (saving || working || renameEditor !== editor) return;
     field.setCustomValidity('');
     const value = field.value.trim();
-    if (!value || value.length > 80) {
-      field.setCustomValidity(translate('nameInvalid'));
-      status.textContent = translate('nameInvalid');
+    if (value.length > 80) {
+      field.setCustomValidity(translate('remarkInvalid'));
+      status.textContent = translate('remarkInvalid');
       status.classList.add('error');
       field.setAttribute('aria-invalid', 'true');
       field.focus();
@@ -710,12 +786,13 @@ function renameDevice(entry, row, title, name) {
     const save = editor.save, cancel = editor.cancel;
     field.disabled = save.disabled = cancel.disabled = true;
     status.classList.remove('error');
-    status.textContent = translate('renameSaving');
+    status.textContent = translate('remarkSaving');
     try {
-      await call('rename', { id: entry.id, name: value });
-      title.textContent = value;
+      await call(value ? 'rename' : 'clear-remark', { id: entry.id, name: value });
+      title.textContent = value || entry.name;
       closeRenameEditor(editor);
-      state.devices = (state.devices || []).map(device => device.id === entry.id ? { ...device, name: value } : device);
+      state.devices = (state.devices || []).map(device => device.id === entry.id
+        ? { ...device, ...(value ? { remark: value } : { remark: undefined }) } : device);
       render();
       try { await refresh(); } catch { showError(new Error(translate('loadFailed'))); }
       return { ok: true };
@@ -754,6 +831,14 @@ function render() {
   element('retry').hidden = true;
   if (embedded) element('openPanel').hidden = true;
   if (element('deviceName') && document.activeElement !== element('deviceName')) element('deviceName').value = state.computerName || '';
+  if (element('tailscaleFollow')) {
+    element('tailscaleFollow').hidden = Boolean(state.network && !state.network.hostName && state.network.state !== 'Running');
+    const followHint = element('tailscaleFollowHint');
+    if (followHint) followHint.hidden = element('tailscaleFollow').hidden;
+    element('tailscaleFollow').checked = state.tailscaleFollow !== false;
+    element('tailscaleFollow').disabled = working;
+  }
+  if (element('tailscaleFollowHint')) element('tailscaleFollowHint').textContent = translate('tailscaleFollowHint');
   // run() disables page buttons up front, so each control must restore its own
   // enabled state here; otherwise this one stays disabled after the first load.
   if (element('saveDeviceName')) element('saveDeviceName').disabled = working;
@@ -832,6 +917,7 @@ function render() {
   renderDevices(element('pending'), state.pending, true);
   renderDevices(element('devices'), state.devices, false);
   renderLan();
+  renderTailnetTrust();
   renderGuard();
   renderTailscale();
   renderRelayPath();
@@ -883,6 +969,12 @@ if (embedded) element('openPanel').addEventListener('click', async () => {
   } catch (error) { showError(error); }
 });
 element('toggle').addEventListener('click', () => run(() => call(state.enabled || state.running ? 'stop' : 'start')));
+element('tailnetTrustToggle')?.addEventListener('change', () => run(async () => {
+  await call('tailnet-trust', { enabled: element('tailnetTrustToggle').checked });
+}));
+element('tailnetAutoApprove')?.addEventListener('change', () => run(async () => {
+  await call('tailnet-trust', { autoApprove: element('tailnetAutoApprove').checked });
+}));
 function validateLanPin() {
   const pin = element('lanPin');
   const valid = /^\d{6}$/.test(pin.value);
@@ -942,7 +1034,7 @@ element('logout').addEventListener('click', () => {
   dialog.setAttribute('aria-labelledby', title.id); dialog.setAttribute('aria-describedby', description.id);
   const actions = document.createElement('form'); actions.method = 'dialog'; actions.className = 'mobile-logout-actions';
   const cancel = document.createElement('button'); cancel.type = 'submit'; cancel.value = 'cancel'; cancel.autofocus = true;
-  cancel.dataset.copy = 'renameCancel'; cancel.textContent = translate('renameCancel');
+  cancel.dataset.copy = 'remarkCancel'; cancel.textContent = translate('remarkCancel');
   const confirm = document.createElement('button'); confirm.type = 'submit'; confirm.value = 'logout'; confirm.className = 'danger';
   confirm.dataset.copy = 'logout'; confirm.textContent = translate('logout');
   actions.append(cancel, confirm); dialog.append(title, description, actions);
@@ -995,12 +1087,20 @@ element('saveDeviceName')?.addEventListener('click', () => run(async () => {
   // The management API result determines whether the console name was synced,
   // independently of whether the embedded helper could update its hostname.
   if (sync.synced) suffix = translate('deviceNameSynced');
+  else if (sync.reason === 'not-following') suffix = translate('deviceNameFollowOffStatus');
   else if (sync.reason === 'invalid-name') suffix = translate('deviceNameSyncSkipped');
   else if (sync.reason === 'error' && sync.error) suffix = translate('deviceNameSyncFailed') + sync.error;
   else if (embeddedSync.synced) suffix = translate('deviceNameLocalSynced');
   const message = translate('deviceNameSaved') + result.computerName + ' · ' + suffix;
   element('deviceNameStatus').textContent = message;
 }));
+element('tailscaleFollow')?.addEventListener('change', () => {
+  const follow = element('tailscaleFollow').checked;
+  void run(async () => {
+    await call('set-name', { name: state.computerName, tailscaleFollow: follow });
+    element('deviceNameStatus').textContent = translate(follow ? 'deviceNameFollowOn' : 'deviceNameFollowOff');
+  });
+});
 element('tailscaleOpen')?.addEventListener('click', () => run(async () => {
   await call('tailscale-open-credentials');
   element('tailscaleFeedback').textContent = translate('tailscaleOpened');

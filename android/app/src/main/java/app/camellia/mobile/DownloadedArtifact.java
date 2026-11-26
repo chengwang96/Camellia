@@ -80,62 +80,76 @@ final class DownloadedArtifact {
     }
 
     private static DownloadedArtifact inspect(Context context, ArtifactDownloadHistory.Entry entry) {
-        ContentResolver resolver = context.getContentResolver();
+        Inspection inspection = inspectDestination(context, entry.destination);
         String name = entry.name == null ? "" : entry.name;
         long size = entry.size;
-        boolean available = false;
-        boolean missing = false;
+        if (inspection.name != null && !inspection.name.trim().isEmpty()) name = inspection.name;
+        if (inspection.size >= 0) size = inspection.size;
+        if (name.trim().isEmpty()) name = "download";
+        return new DownloadedArtifact(entry, name, size, inspection.available, inspection.missing);
+    }
+
+    static final class Inspection {
+        final boolean available;
+        final boolean missing;
+        final String name;
+        final long size;
+
+        Inspection(boolean available, boolean missing, String name, long size) {
+            this.available = available;
+            this.missing = missing;
+            this.name = name;
+            this.size = size;
+        }
+    }
+
+    /**
+     * Checks that a downloaded document still exists and can be read.
+     *
+     * A history entry only records that a write completed once. The user can
+     * remove the file in the system file manager without notifying Camellia,
+     * so an "Open" action must inspect the provider instead of trusting the
+     * record. Revoked access also hides "Open"; the record stays removable.
+     */
+    static Inspection inspectDestination(Context context, Uri uri) {
+        if (context == null || uri == null) return new Inspection(false, false, null, -1);
+        ContentResolver resolver = context.getContentResolver();
+        String name = null;
+        long size = -1;
         Cursor cursor = null;
         try {
-            cursor = resolver.query(entry.destination, new String[]{
-                OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE
-            }, null, null, null);
+            cursor = resolver.query(uri, new String[]{OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE},
+                null, null, null);
             if (cursor == null) {
-                try (var descriptor = resolver.openAssetFileDescriptor(entry.destination, "r")) {
-                    available = descriptor != null;
-                    missing = !available;
-                } catch (FileNotFoundException error) {
-                    missing = true;
-                } catch (SecurityException error) {
-                    // Keep the record available for explicit removal.
-                } catch (Exception error) {
-                    // The provider cannot describe the document through this page.
-                }
-            } else if (!cursor.moveToFirst()) {
-                missing = true;
-            } else {
-                available = true;
-                int nameColumn = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME);
-                int sizeColumn = cursor.getColumnIndex(OpenableColumns.SIZE);
-                if (nameColumn >= 0 && !cursor.isNull(nameColumn)) {
-                    String actual = cursor.getString(nameColumn);
-                    if (actual != null && !actual.trim().isEmpty()) name = actual;
-                }
-                if (sizeColumn >= 0 && !cursor.isNull(sizeColumn)) {
-                    long actual = cursor.getLong(sizeColumn);
-                    if (actual >= 0) size = actual;
+                try (var descriptor = resolver.openAssetFileDescriptor(uri, "r")) {
+                    boolean available = descriptor != null;
+                    return new Inspection(available, !available, null, -1);
+                } catch (java.io.IOException error) {
+                    return new Inspection(false, false, null, -1);
                 }
             }
-        } catch (SecurityException ignored) {
-            // The provider may have revoked its grant. It is not safe to claim
-            // the file is gone, so keep it as an unavailable record.
-        } catch (RuntimeException ignored) {
-            try (var descriptor = resolver.openAssetFileDescriptor(entry.destination, "r")) {
-                available = descriptor != null;
-                missing = !available;
-            } catch (FileNotFoundException error) {
-                missing = true;
-            } catch (SecurityException error) {
-                // Keep the record and let the reader remove it explicitly.
-            } catch (Exception ignoredRead) {
-                // A provider that cannot describe or open the document is
-                // unavailable to this page, but the record remains manageable.
+            if (!cursor.moveToFirst()) return new Inspection(false, true, null, -1);
+            int nameColumn = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME);
+            int sizeColumn = cursor.getColumnIndex(OpenableColumns.SIZE);
+            if (nameColumn >= 0 && !cursor.isNull(nameColumn)) name = cursor.getString(nameColumn);
+            if (sizeColumn >= 0 && !cursor.isNull(sizeColumn)) size = cursor.getLong(sizeColumn);
+            return new Inspection(true, false, name, size);
+        } catch (SecurityException error) {
+            return new Inspection(false, false, name, size);
+        } catch (RuntimeException error) {
+            try (var descriptor = resolver.openAssetFileDescriptor(uri, "r")) {
+                boolean available = descriptor != null;
+                return new Inspection(available, !available, name, size);
+            } catch (FileNotFoundException missing) {
+                return new Inspection(false, true, name, size);
+            } catch (SecurityException denied) {
+                return new Inspection(false, false, name, size);
+            } catch (Exception ignored) {
+                return new Inspection(false, false, name, size);
             }
         } finally {
             if (cursor != null) cursor.close();
         }
-        if (name.trim().isEmpty()) name = "download";
-        return new DownloadedArtifact(entry, name, size, available, missing);
     }
 
     private static boolean deleteDocument(Context context, ContentResolver resolver, Uri uri) {

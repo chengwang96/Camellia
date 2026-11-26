@@ -33,6 +33,16 @@ final class MobilePreferences {
         return "";
     }
 
+    /** New nodes follow the phone name; an upgraded node keeps its existing Tailscale name. */
+    static boolean followDeviceName(Context context) {
+        return context != null && !"existing".equals(get(context, "deviceNameFollow"));
+    }
+
+    static boolean hostnameInitialized(Context context) {
+        return context != null && context.getSharedPreferences("mobile-preferences", Context.MODE_PRIVATE)
+            .getString("deviceNameHostnameInitialized", "").equals("1");
+    }
+
     static float chatTextSize(Context context, float base) {
         String size = get(context, "chatFontSize");
         return base * (size.equals("small") ? .9f : size.equals("large") ? 1.15f : size.equals("largest") ? 1.3f : 1f);

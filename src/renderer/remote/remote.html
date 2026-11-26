@@ -27,6 +27,15 @@
         <button id="logout" hidden data-copy="logout">退出 Tailscale 登录</button>
       </details>
     </section>
+    <section id="tailnetTrust" class="device-section device-card tailnet-trust" aria-labelledby="tailnetTrustTitle">
+      <div class="heading device-heading"><h2 id="tailnetTrustTitle" data-copy="tailnetTrustTitle">Tailnet 信任</h2><span id="tailnetTrustStatus" class="status device-status" role="status"></span></div>
+      <div class="relay-setting"><span id="tailnetTrustToggleLabel" data-copy="tailnetTrustToggle">信任我的 Tailnet 设备</span><input id="tailnetTrustToggle" type="checkbox" role="switch" aria-labelledby="tailnetTrustToggleLabel" aria-describedby="tailnetTrustHint"></div>
+      <p id="tailnetTrustHint" class="hint" data-copy="tailnetTrustHint"></p>
+      <div id="tailnetTrustScope" class="tailnet-scope"></div>
+      <div class="relay-setting"><span id="tailnetAutoApproveLabel" data-copy="tailnetAutoApprove">自动批准我的设备</span><input id="tailnetAutoApprove" type="checkbox" role="switch" aria-labelledby="tailnetAutoApproveLabel" aria-describedby="tailnetAutoApproveHint"></div>
+      <p id="tailnetAutoApproveHint" class="hint" data-copy="tailnetAutoApproveHint"></p>
+      <p id="tailnetDiscovery" class="hint" role="status"></p>
+    </section>
     <section class="device-section device-card device-lan" aria-labelledby="lanTitle">
       <div class="heading device-heading"><h2 id="lanTitle" data-copy="lanTitle">局域网访问</h2><span id="lanStatus" class="status device-status" role="status"></span></div>
       <div class="relay-setting"><span id="lanToggleLabel" data-copy="lanToggleLabel">允许同一 Wi-Fi 的手机直连</span><input id="lanToggle" type="checkbox" role="switch" aria-labelledby="lanToggleLabel" aria-describedby="lanHint"></div>
@@ -53,6 +62,8 @@
     <section class="device-section device-card device-pair" aria-labelledby="pairTitle">
       <div class="heading device-heading"><h2 id="pairTitle" data-copy="pair">配对设备</h2><span id="pairSummary" class="status device-status"></span></div>
       <div class="device-name-row"><label for="deviceName" data-copy="deviceName">本机名称</label><input id="deviceName" maxlength="80" autocomplete="off"><button id="saveDeviceName" data-copy="deviceNameSave">保存名称</button><button id="invite" disabled data-copy="generate" class="primary">生成配对码</button></div>
+      <div class="relay-setting"><span id="tailscaleFollowLabel" data-copy="tailscaleFollow">跟随本机名称</span><input id="tailscaleFollow" type="checkbox" role="switch" aria-labelledby="tailscaleFollowLabel" aria-describedby="tailscaleFollowHint"></div>
+      <p id="tailscaleFollowHint" class="hint" data-copy="tailscaleFollowHint"></p>
       <p id="deviceNameStatus" class="hint" role="status"></p>
       <div id="invitation" hidden><div class="pair-layout"><div id="qr" class="qr"></div><div class="pair-details"><code id="code"></code><p id="expires" class="hint"></p><p class="hint" data-copy="scanHint">用手机扫码填入地址和配对码，也可手动输入。</p><div class="pair-code-actions"><button id="refreshInvite" hidden data-copy="refreshCode">刷新二维码</button></div></div></div></div>
       <div id="pairPending" class="pair-success" role="status" hidden><span class="success-mark" aria-hidden="true">…</span><div><strong id="pairPendingLabel" data-copy="pairWaiting">等待电脑授权</strong><span id="pendingName"></span></div></div>

@@ -32,4 +32,14 @@ public class ArtifactReferencesTest {
             assertEquals(name, "package", ArtifactReferences.kind(name));
         }
     }
+    @Test public void mergesDifferentSpellingsOfTheSameLocalDeliverable() {
+        String text = "[report.pdf](file:///C:/Users/Me/Out/My%20Report.pdf)\n"
+            + "`C:\\Users\\Me\\Out\\My Report.pdf`\n"
+            + "[slides.pptx](file:///C:/Users/Me/Out/Slides.pptx)\n"
+            + "`c:\\users\\me\\out\\slides.pptx`\n"
+            + "[kept.pdf](https://example.com/kept.pdf) `D:\\Other\\kept.pdf`";
+        assertEquals(java.util.List.of("file:///C:/Users/Me/Out/My%20Report.pdf",
+            "file:///C:/Users/Me/Out/Slides.pptx", "D:\\Other\\kept.pdf"), ArtifactReferences.paths(text));
+        assertEquals(java.util.List.of("My Report.pdf", "Slides.pptx", "kept.pdf"), ArtifactReferences.names(text));
+    }
 }

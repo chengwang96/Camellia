@@ -186,6 +186,7 @@ for path in [
     "/v1/status",
     "/v1/desktop/restart",
     "/v1/commands",
+    "/v1/device/name",
     "/v1/pair/request",
     "/v1/pair/claim",
     "/v1/api-keys",
@@ -215,6 +216,8 @@ for path in [
     "/v1/desktop/restart/",
     "/v1/status/",                           // no trailing slash
     "/v1/STATUS",                            // case matters
+    "/v1/device/name?x=1",
+    "/v1/device/name/",
     "/v1/api-import",                        // desktop-only control endpoints
     "/v1/native-settings/read",
     "/v1/server-management",
@@ -1636,10 +1639,20 @@ do {
     checkEqual(try store.all().count, 2, "both computers are remembered")
     checkEqual(try store.current().address, "http://100.64.0.2:43127", "the newest pairing becomes the current one")
     try store.rename(address: "http://100.64.0.1:43127", name: "Desk")
-    checkEqual(try store.all().first?.computerName ?? "", "Desk", "a rename survives in the list")
-    checkEqual(try store.current().computerName, "Laptop", "and does not leak into the other computer")
+    func studioEntry() throws -> PairedComputer? {
+        try store.all().first { $0.address == "http://100.64.0.1:43127" }
+    }
+    checkEqual(try studioEntry()?.remark ?? "", "Desk", "a remark survives in the list")
+    checkEqual(try studioEntry()?.computerName ?? "", "Studio", "and does not overwrite the computer's own name")
+    checkEqual(try studioEntry()?.displayName ?? "", "Desk", "the remark is the visible label")
+    checkEqual(try store.current().remark, "", "and does not leak into the other computer")
+    try store.updateComputerName(address: "http://100.64.0.1:43127", name: "Study")
+    checkEqual(try studioEntry()?.computerName ?? "", "Study", "the computer's new name is stored")
+    checkEqual(try studioEntry()?.displayName ?? "", "Desk", "while the local remark keeps winning")
+    try store.clearRemark(address: "http://100.64.0.1:43127")
+    checkEqual(try studioEntry()?.displayName ?? "", "Study", "clearing the remark reveals the computer's own name")
     let switched = try store.select("http://100.64.0.1:43127")
-    checkEqual(switched.computerName, "Desk", "switching keeps the stored label")
+    checkEqual(switched.computerName, "Study", "switching keeps the computer's own name")
     checkEqual(try store.current().address, "http://100.64.0.1:43127", "switching changes the current computer")
     try store.remove("http://100.64.0.1:43127")
     checkEqual(try store.all().count, 1, "removing drops it from the list")

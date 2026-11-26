@@ -24,7 +24,7 @@ function startWindowsWorker(spec, fd, spawnProcess) {
     stdio: ['ignore', fd, fd, 'ipc'],
   });
   return new Promise((resolve, reject) => {
-    let settled = false;
+    let settled = false, started;
     const timer = setTimeout(() => fail(new Error('Hidden background worker did not report startup')), 15000);
     const fail = error => {
       if (settled) return;
@@ -39,11 +39,24 @@ function startWindowsWorker(spec, fd, spawnProcess) {
       try { worker.send(spec, error => { if (error) fail(error); }); }
       catch (error) { fail(error); }
     });
-    worker.once('message', message => {
+    worker.on('message', message => {
       if (settled) return;
       if (message?.error) return fail(Object.assign(new Error(message.error.message), { code: message.error.code }));
+      if (started) {
+        if (message?.pid !== started.pid || !Object.hasOwn(message, 'exitCode'))
+          return fail(new Error('Invalid background process exit receipt'));
+        settled = true;
+        worker.disconnect(); worker.unref();
+        resolve({ ...started, exitCode: message.exitCode, signal: message.signal });
+        return;
+      }
       if (!Number.isSafeInteger(message?.pid) || message.pid <= 0 || message.pid === worker.pid)
         return fail(new Error('Invalid background process PID from hidden worker'));
+      if (spec.waitForExit) {
+        clearTimeout(timer);
+        started = { pid: message.pid, logFile: spec.logFile };
+        return;
+      }
       settled = true; clearTimeout(timer);
       worker.disconnect(); worker.unref();
       resolve({ pid: message.pid, logFile: spec.logFile });
@@ -51,7 +64,7 @@ function startWindowsWorker(spec, fd, spawnProcess) {
   });
 }
 
-async function startBackgroundProcess(spec, { spawnProcess = spawn, platform = process.platform, windowsWorker = false } = {}) {
+async function startBackgroundProcess(spec, { spawnProcess = spawn, platform = process.platform, windowsWorker = false, onSpawn } = {}) {
   if (!spec || typeof spec !== 'object' || Array.isArray(spec)) throw new Error('Expected a process specification');
   const file = absolutePath(spec.file, 'file');
   const cwd = absolutePath(spec.cwd, 'cwd');
@@ -62,6 +75,8 @@ async function startBackgroundProcess(spec, { spawnProcess = spawn, platform = p
   if (!fs.statSync(cwd).isDirectory()) throw new Error('cwd is not a directory');
   if (!Array.isArray(spec.args) || spec.args.some(value => typeof value !== 'string' || value.includes('\0')))
     throw new Error('args must be an array of strings without NUL characters');
+  if (spec.waitForExit !== undefined && typeof spec.waitForExit !== 'boolean')
+    throw new Error('waitForExit must be a boolean');
   if (spec.env !== undefined && (!spec.env || typeof spec.env !== 'object' || Array.isArray(spec.env)
       || Object.entries(spec.env).some(([key, value]) => !key || /[=\0]/u.test(key) || typeof value !== 'string' || value.includes('\0'))))
     throw new Error('env must contain string environment variables');
@@ -79,6 +94,11 @@ async function startBackgroundProcess(spec, { spawnProcess = spawn, platform = p
       child.once('error', reject);
       child.once('spawn', resolve);
     });
+    if (spec.waitForExit) {
+      onSpawn?.({ pid: child.pid, logFile });
+      return await new Promise(resolve => child.once('close', (exitCode, signal) =>
+        resolve({ pid: child.pid, logFile, exitCode, signal })));
+    }
     if (!windowsWorker) child.unref();
     return { pid: child.pid, logFile };
   } finally { fs.closeSync(fd); }
@@ -87,7 +107,8 @@ async function startBackgroundProcess(spec, { spawnProcess = spawn, platform = p
 if (require.main === module) {
   if (process.argv[2] === '--windows-worker' && process.platform === 'win32' && process.send) {
     process.once('message', async spec => {
-      try { process.send(await startBackgroundProcess(spec, { windowsWorker: true })); }
+      try { process.send(await startBackgroundProcess(spec, { windowsWorker: true,
+        onSpawn: receipt => process.send(receipt) })); }
       catch (error) {
         process.exitCode = 1;
         process.send({ error: { message: error.message, code: error.code } }, () => { if (process.connected) process.disconnect(); });
@@ -98,6 +119,7 @@ if (require.main === module) {
     const specFile = absolutePath(process.argv[2], 'spec');
     const result = await startBackgroundProcess(JSON.parse(fs.readFileSync(specFile, 'utf8')));
     console.log(JSON.stringify(result));
+    if (Object.hasOwn(result, 'exitCode')) process.exitCode = result.exitCode === 0 ? 0 : 1;
   })().catch(error => { console.error('Background process failed: ' + error.message); process.exitCode = 1; });
 }
 

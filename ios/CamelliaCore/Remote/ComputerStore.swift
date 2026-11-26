@@ -65,6 +65,19 @@ public struct PairedComputer: Equatable, Sendable {
     /// Android edits its raw JSONObject in place, so dropping these on iOS
     /// would make an ordinary draft save a destructive schema migration.
     fileprivate var extraFields = JSONObject()
+    /// A label that exists only on this phone. It never becomes the name the
+    /// computer reports for itself and is dropped when its owner clears it.
+    public var remark: String {
+        get { extraFields.text("remark") }
+        set {
+            if newValue.isEmpty { extraFields = JSONObject(dictionary: extraFields.raw.filter { $0.key != "remark" }) }
+            else {
+                var raw = extraFields.raw
+                raw["remark"] = newValue
+                extraFields = JSONObject(dictionary: raw)
+            }
+        }
+    }
     public var accountUsage: JSONObject? {
         guard let token, extraFields.text("accountUsageIdentity") == token.sha256 else { return nil }
         return extraFields.object("accountUsage")
@@ -163,9 +176,13 @@ public struct PairedComputer: Equatable, Sendable {
 
     public var endpoint: Endpoint? { try? Endpoint(address) }
 
-    /// The label the UI shows: the desktop's name once there is one, and the
-    /// address before that, since an address is at least recognisable.
-    public var displayName: String { computerName.isEmpty ? address : computerName }
+    /// The label the UI shows: this phone's remark first, then the desktop's
+    /// own name, then the address before either exists.
+    public var displayName: String {
+        let local = remark.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !local.isEmpty { return local }
+        return computerName.isEmpty ? address : computerName
+    }
 
     /// An approved pairing whose token does not have the gateway's shape.
     ///
@@ -293,20 +310,59 @@ public final class ComputerStore {
         try commit(saved)
     }
 
-    /// Renames a computer's label without touching its credentials.
+    /// Sets a local remark without changing what the computer calls itself.
     ///
     /// Applied to the list entry and, if it is the current computer, to the
-    /// top-level object too — otherwise the phone would show one name in the
-    /// picker and another everywhere else.
+    /// top-level object too, so the picker and every other screen agree.
     public func rename(address: String, name: String) throws {
         lock.lock()
         defer { lock.unlock() }
-        var saved = (try vault.load()).raw
-        var known = try profiles(JSONObject(dictionary: saved))
+        let loaded = try vault.load()
+        var saved = loaded.raw
+        var known = try profiles(loaded)
         guard var entry = known[address] else { throw CredentialStoreError.unknownComputer }
+        entry["remark"] = name
+        known[address] = entry
+        if (saved["address"] as? String) == address { saved["remark"] = name }
+        saved["computers"] = known
+        try commit(saved)
+    }
+
+    /// The name the computer reports for itself. Never touches a local remark.
+    public func updateComputerName(address: String, name: String) throws {
+        _ = updateComputerNameIfChanged(address: address, name: name)
+    }
+
+    /// Returns false when the report was already current, so a status poll does
+    /// not rewrite the sealed credential file on every connection.
+    @discardableResult
+    public func updateComputerNameIfChanged(address: String, name: String) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let loaded = try? vault.load(),
+              var known = try? profiles(loaded),
+              var entry = known[address],
+              entry["computerName"] as? String != name else { return false }
+        var saved = loaded.raw
         entry["computerName"] = name
         known[address] = entry
         if (saved["address"] as? String) == address { saved["computerName"] = name }
+        saved["computers"] = known
+        try? commit(saved)
+        return true
+    }
+
+    /// Restores the computer's own reported name when a local remark is removed.
+    public func clearRemark(address: String) throws {
+        lock.lock()
+        defer { lock.unlock() }
+        let loaded = try vault.load()
+        var saved = loaded.raw
+        var known = try profiles(loaded)
+        guard var entry = known[address] else { throw CredentialStoreError.unknownComputer }
+        entry.removeValue(forKey: "remark")
+        known[address] = entry
+        if (saved["address"] as? String) == address { saved.removeValue(forKey: "remark") }
         saved["computers"] = known
         try commit(saved)
     }

@@ -7,14 +7,15 @@ const os = require('node:os');
 const fs = require('node:fs');
 const path = require('node:path');
 const { AcpSession } = require('../src/engines/acp-session');
+const { AntigravityNativeAcp } = require('../src/engines/antigravity');
 
-function fixture(t) {
+function fixture(t, Session = AcpSession) {
   const proc = Object.assign(new EventEmitter(), {
     stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(), kill() {},
   });
   const history = { root: fs.mkdtempSync(path.join(os.tmpdir(), 'acp-history-')) };
   t.after(() => fs.rmSync(history.root, { recursive: true, force: true }));
-  const session = new AcpSession({ gen: 1, settings: { cwd: os.tmpdir() }, opts: {}, exe: 'fake',
+  const session = new Session({ gen: 1, settings: { cwd: os.tmpdir() }, opts: {}, exe: 'fake',
     spec: { args: [], env: {} }, spawn: () => proc, log() {}, history });
   session.start();
   t.after(() => {
@@ -23,6 +24,35 @@ function fixture(t) {
   });
   return { proc, session };
 }
+
+test('Antigravity native ACP mounts MCP on new and resumed conversations by durable cascade ID', async t => {
+  const { proc, session } = fixture(t, AntigravityNativeAcp);
+  const nativeId = 'c147f9cc-fd5b-468c-a091-f3b53b3a5e52';
+  const requests = [];
+  session.spec.home = session.history.root;
+  session.opts.goalBridge = { config: { command: 'node', args: ['bridge.js'], env: { FIXTURE: 'only-this-session' } } };
+  session.onEvent = () => {};
+  session.onSessionId = () => {};
+  proc.stdin.on('data', chunk => {
+    const request = JSON.parse(String(chunk));
+    requests.push(request);
+    const result = request.method === 'initialize' ? { agentCapabilities: {} }
+      : /^session\/(new|resume)$/.test(request.method) ? { sessionId: nativeId } : {};
+    proc.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: request.id, result }) + '\n');
+  });
+  await session.open();
+  assert.equal(session.sessionId, 'agy-' + nativeId);
+  assert.deepEqual(requests[1].params.mcpServers, [{ name: 'camellia_goals', command: 'node', args: ['bridge.js'],
+    env: [{ name: 'FIXTURE', value: 'only-this-session' }] }]);
+  const saved = JSON.parse(fs.readFileSync(path.join(session.spec.home, 'cli-sessions', session.sessionId + '.json'), 'utf8'));
+  assert.equal(saved.conversationId, nativeId);
+  session.opts.sessionId = session.sessionId;
+  session.nativeId = null;
+  await session.open();
+  const resume = requests.find(request => request.method === 'session/resume');
+  assert.equal(resume.params.sessionId, nativeId);
+  assert.deepEqual(resume.params.mcpServers, requests[1].params.mcpServers);
+});
 
 test('Kimi idle task follow-up streams and saves a result without a new user message', async t => {
   const { session } = fixture(t), events = [];

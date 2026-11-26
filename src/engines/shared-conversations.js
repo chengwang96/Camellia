@@ -687,7 +687,7 @@ class SharedConversations {
   }
 
   assertTaskEngine(engine, id) {
-    if (!this.createGoalBridge || engine === 'antigravity' && this.settings(engine, id).connection === 'subscription')
+    if (!this.createGoalBridge || subscriptionByteLimited(engine, this.settings(engine, id)) && !this.drivers[engine].subscriptionSessionTools?.())
       throw new Error('Scheduled tasks require an engine with Camellia tool support');
   }
 
@@ -2103,16 +2103,20 @@ class SharedConversations {
     const memoryDirectory = !internal && this.loadConfig().memoryDirectory;
     const memoryView = continuation?.memoryView ?? (internal ? null : this.contextMemoryView(c));
     const memorySnapshot = continuation?.memorySnapshot ?? (internal ? '' : memoryView?.snapshot || '');
-    const memory = internal ? '' : memoryInstructions(memoryDirectory, c.hasGlobalMemory === true) + memorySnapshot;
+    const byteLimited = subscriptionByteLimited(engine, settings);
+    const mountTools = !internal && !goalToolsDisabled && !continuation?.goalToolsDisabled && this.createGoalBridge
+      && (!byteLimited || this.drivers[engine].subscriptionSessionTools?.());
+    const memory = internal ? '' : (!mountTools && byteLimited ? windowsExecutionInstructions() : '')
+      + memoryInstructions(memoryDirectory, c.hasGlobalMemory === true) + memorySnapshot;
     if (!internal && (memoryDirectory || memorySnapshot)) {
       this.recordContextEvent(c, { kind: 'inject', engine,
         sources: [memoryDirectory ? 'global-memory' : null, memorySnapshot ? 'working-memory' : null].filter(Boolean),
         chars: memory.length, source: memorySnapshot ? 'working-memory' : 'global-memory',
         deltaTokens: Math.round(contextTokens(memory)), deltaSource: 'estimated' });
     }
-    const byteLimited = subscriptionByteLimited(engine, settings);
+    const goalPrefix = mountTools ? this.toolInstructions(c) + '\nCamellia goal run token for this turn: ' + '0'.repeat(36) + '\n\n' : '';
     const newText = String(promptSuffix ?? payload.prompt ?? '');
-    const newBytes = byteLimited && inputBytes(memory + newText);
+    const newBytes = byteLimited && inputBytes(goalPrefix + memory + newText);
     if (!internal && !continuation && !promptOverride && byteLimited && this.saveOverflowText
         && (newBytes > SUBSCRIPTION_PROMPT_BYTES || String(payload.prompt || '').length > 200000
           || (c.seq && newBytes > SUBSCRIPTION_PROMPT_BYTES - 2048))) {
@@ -2127,8 +2131,6 @@ class SharedConversations {
         attachments: existing ? payload.attachments : [...(payload.attachments || []), attachment] };
       promptSuffix = text;
     }
-    const goalPrefix = !internal && !goalToolsDisabled && this.createGoalBridge && !byteLimited
-      ? this.toolInstructions(c) + '\nCamellia goal run token for this turn: ' + '0'.repeat(36) + '\n\n' : '';
     const attachmentTokens = imageInputTokens(payload.attachments);
     const pendingInput = memory + String(promptSuffix ?? payload.prompt ?? '');
     const pendingTokens = contextTokens(pendingInput) + attachmentTokens;
@@ -2136,7 +2138,7 @@ class SharedConversations {
       && !overInputLimit(engine, goalPrefix + value, settings);
     if (!internal && !continuation) {
       if (String(payload.prompt || '').length > 200000) throw new Error('The message is too large to send. Split it up or attach it as a file instead. Nothing was sent.');
-      if (byteLimited) assertSubscriptionPromptFits(pendingInput);
+      if (byteLimited) assertSubscriptionPromptFits(goalPrefix + pendingInput);
       if (!promptFits(pendingInput, this.contextPressure(c, engine, settings).cap))
         throw new Error('The new message and attachments exceed the selected model\'s input budget. Split the message or attachments, or select a larger-context model. Nothing was sent.');
       if (!edit && c.currentEngine !== engine && preferences(this.loadConfig()).mode === 'markdown')
@@ -2171,7 +2173,7 @@ class SharedConversations {
     const nativeFork = !internal && !continuation && !edit && c.nativeFork?.engine === engine && c.nativeFork.cursor === c.seq
       && c.nativeFork.bindingKey === this.bindingKey(engine, settings) && fs.existsSync(this.forkSnapshotFile(c)) ? c.nativeFork : null;
     const destination = { engine, settings, pendingTokens, subscriptionSelection, subscriptionAttempts,
-      ...(byteLimited ? { pendingBytes: inputBytes(pendingInput) } : {}) };
+      ...(byteLimited ? { pendingBytes: inputBytes(goalPrefix + pendingInput), pendingTokens: pendingTokens + contextTokens(goalPrefix) } : {}) };
     const compactBeforeSend = async trigger => {
       if (facade) facade.running = true;
       try { await this.compact(c.id, { automatic: true, allowGoal: Boolean(facade), controlStart, scheduledTaskId,
@@ -2357,7 +2359,7 @@ class SharedConversations {
       const compactedEdit = edit
         ? await this.compact(c.id, { automatic: true, controlStart, history: nativeEdit ? editReplay : edit.prior, trigger,
            destination: byteLimited ? { ...destination, pendingBytes: destination.pendingBytes + inputBytes(revisionContext),
-             pendingTokens: pendingTokens + contextTokens(revisionContext) } : destination })
+             pendingTokens: destination.pendingTokens + contextTokens(revisionContext) } : destination })
         : null;
       if (!edit) await compactBeforeSend(trigger);
       assertAvailable();
@@ -2375,7 +2377,7 @@ class SharedConversations {
     // prompt, and the transport cap still applies. Fail explicitly if a caller
     // could not compact it, rather than letting Antigravity silently keep only
     // the head of the replay.
-    if (!internal && continuation && overInputLimit(engine, prompt, settings))
+    if (!internal && continuation && overInputLimit(engine, goalPrefix + prompt, settings))
       throw new Error('The recovered conversation is still too large to send. ' + recoveryAdvice);
     if (internal && byteLimited) assertSubscriptionPromptFits(prompt);
     assertAvailable();
@@ -2451,7 +2453,7 @@ class SharedConversations {
       }
       if (controlStart?.cancelled || controlStart && this.goalToolsClosed) a.cancelled = true;
       if (a.scheduledTaskId && this.tasks.get(a.scheduledTaskId, c.id).status !== 'running') a.cancelled = true;
-      a.goalToolsDisabled = internal || goalToolsDisabled || a.goalToolsDisabled || engine === 'antigravity' && settings.connection === 'subscription';
+      a.goalToolsDisabled = !mountTools;
       let goalBridge = a.goalToolsDisabled ? undefined : this.goalBridges.get(c.id);
       if (!a.goalToolsDisabled && this.createGoalBridge) {
         goalBridge = await this.ensureGoalBridge(c);
@@ -3011,7 +3013,10 @@ class SharedConversations {
       const settings = a.settings || this.settings(engine, c.id);
       const imageTokens = imageInputTokens(a.attachments);
       const memory = memoryInstructions(this.loadConfig().memoryDirectory, c.hasGlobalMemory === true) + (a.memorySnapshot || '');
-      const pending = memory + instruction;
+      const goalPrefix = !a.goalToolsDisabled && this.createGoalBridge
+        ? this.toolInstructions(c) + '\nCamellia goal run token for this turn: ' + '0'.repeat(36) + '\n\n' : '';
+      const prefix = goalPrefix + (a.goalToolsDisabled && subscriptionByteLimited(engine, settings) ? windowsExecutionInstructions() : '') + memory;
+      const pending = prefix + instruction;
       const destination = subscriptionByteLimited(engine, settings)
         ? { engine, settings, pendingTokens: contextTokens(pending) + imageTokens, pendingBytes: inputBytes(pending) }
         : undefined;
@@ -3025,9 +3030,7 @@ class SharedConversations {
       a.events.push(event); this.onEvent(event);
       const prompt = this.context(c, engine) + instruction;
       const pressure = this.contextPressure(c, engine, settings);
-      const goalPrefix = !a.goalToolsDisabled && this.createGoalBridge
-        ? this.toolInstructions(c) + '\nCamellia goal run token for this turn: ' + '0'.repeat(36) + '\n\n' : '';
-      const actualInput = goalPrefix + memory + prompt;
+      const actualInput = prefix + prompt;
       if (contextTokens(actualInput) + imageTokens > pressure.cap * 0.85 || overInputLimit(engine, actualInput, settings))
         throw new Error('The continuation is still too large after compaction. ' + recoveryAdvice);
       await this.send(engine, { sessionId: c.id, prompt: a.prompt, attachments: a.attachments },
@@ -3058,7 +3061,10 @@ class SharedConversations {
       let prompt = typeof a.nativeFallbackPrompt === 'function' ? a.nativeFallbackPrompt()
         : this.context(c, engine) + String(a.promptSuffix ?? a.prompt ?? '');
       if (subscriptionByteLimited(engine, a.settings)) {
-        const memory = memoryInstructions(this.loadConfig().memoryDirectory, c.hasGlobalMemory === true) + (a.memorySnapshot || '');
+        const goalPrefix = !a.goalToolsDisabled && this.createGoalBridge
+          ? this.toolInstructions(c) + '\nCamellia goal run token for this turn: ' + '0'.repeat(36) + '\n\n' : '';
+        const memory = goalPrefix + (a.goalToolsDisabled ? windowsExecutionInstructions() : '')
+          + memoryInstructions(this.loadConfig().memoryDirectory, c.hasGlobalMemory === true) + (a.memorySnapshot || '');
         const cap = this.contextPressure(c, engine, a.settings).cap;
         const images = imageInputTokens(a.attachments);
         if (contextTokens(memory + prompt) + images > cap * 0.85
@@ -3885,7 +3891,7 @@ class SharedConversations {
         ? contextTokens(recovery.promptSuffix || recovery.prompt) + contextTokens(memoryInstructions(this.loadConfig().memoryDirectory, c.hasGlobalMemory === true))
           + imageInputTokens(recovery.attachments) + 256
         : 0);
-      const goalTokens = this.createGoalBridge ? contextTokens(this.toolInstructions(c)) + 64 : 0;
+      const goalTokens = this.createGoalBridge && !byteLimitedTarget ? contextTokens(this.toolInstructions(c)) + 64 : 0;
       const available = destination || recovery
         ? Math.floor(targetCap * 0.65) - pendingTokens - goalTokens - 512 : Infinity;
       const fallback = this.manualFallbackContext(c, targetEngine, sourceRows, targetSettings, available, pinnedFirstUser);

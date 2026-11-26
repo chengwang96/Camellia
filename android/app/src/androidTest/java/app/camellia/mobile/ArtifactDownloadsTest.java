@@ -84,7 +84,13 @@ public class ArtifactDownloadsTest extends InstrumentationTestCase {
         String conversation = "12345678-1234-1234-1234-123456789abc";
         String address = "http://100.64.0.1:43127";
         String artifact = "c".repeat(64);
-        Uri destination = Uri.parse("content://app.camellia.mobile.test.document/phone-203");
+        android.content.Context context = getInstrumentation().getTargetContext();
+        DownloadDirectoryFixture.grant(getInstrumentation());
+        Uri destination = DownloadDirectory.createFile(context, DownloadDirectoryFixture.TREE,
+            "Camellia-Android-1.1.2.apk");
+        try (var output = context.getContentResolver().openOutputStream(destination, "wt")) {
+            output.write("apk".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        }
         var downloadState = ArtifactDownloadService.class.getDeclaredField("state"); downloadState.setAccessible(true);
         Object previousState = downloadState.get(null);
         ArtifactDownloadHistory.clear(activity);
@@ -110,7 +116,60 @@ public class ArtifactDownloadsTest extends InstrumentationTestCase {
             ArtifactDownloadHistory.clear(activity);
             downloadState.set(null, previousState);
             ArtifactDownloads active = reopened == null ? downloads : reopened;
-            getInstrumentation().runOnMainSync(() -> { active.close(); activity.finish(); });
+            getInstrumentation().runOnMainSync(() -> {
+                active.close(); activity.finish();
+                try {
+                    android.provider.DocumentsContract.deleteDocument(context.getContentResolver(), destination);
+                } catch (Exception ignored) { }
+            });
+        }
+    }
+
+    public void testExternallyDeletedDownloadFallsBackToSaveAgain() throws Exception {
+        Activity activity = getInstrumentation().startActivitySync(new Intent(getInstrumentation().getTargetContext(), PopupTestActivity.class)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+        String conversation = "12345678-1234-1234-1234-123456789abc";
+        String address = "http://100.64.0.1:43127";
+        String artifact = "f".repeat(64);
+        android.content.Context context = getInstrumentation().getTargetContext();
+        DownloadDirectoryFixture.grant(getInstrumentation());
+        Uri destination = DownloadDirectory.createFile(context, DownloadDirectoryFixture.TREE, "removed-later.pdf");
+        try {
+            ArtifactDownloadHistory.complete(context, address, conversation, false, artifact,
+                "removed-later.pdf", destination, 6);
+            assertTrue(android.provider.DocumentsContract.deleteDocument(context.getContentResolver(), destination));
+            ArtifactDownloads downloads = completedFileDownloads(activity, artifact);
+            try {
+                getInstrumentation().runOnMainSync(() -> downloads.showFile(address, "t".repeat(43), conversation,
+                    17, "removed-later.pdf"));
+                awaitFile(downloads, artifact);
+                getInstrumentation().runOnMainSync(() -> {
+                    try {
+                        View root = artifactSheet(downloads).getWindow().getDecorView();
+                        assertNull("A deleted file must not keep an Open action",
+                            root.findViewWithTag("artifactOpen:" + artifact));
+                        View saveAgain = root.findViewWithTag("artifactDownload:" + artifact);
+                        assertNotNull("A deleted file must be downloadable again", saveAgain);
+                        assertFalse("The stale history must not mark the file as saved",
+                            exactTextCount(root, "已下载") + exactTextCount(root, "Saved") > 0);
+                    } catch (Exception error) {
+                        throw new AssertionError(error);
+                    }
+                });
+            } finally {
+                getInstrumentation().runOnMainSync(() -> {
+                    downloads.close();
+                    ArtifactDownloadHistory.clear(context);
+                    try {
+                        android.provider.DocumentsContract.deleteDocument(context.getContentResolver(), destination);
+                    } catch (Exception ignored) { }
+                    activity.finish();
+                });
+            }
+        } finally {
+            try {
+                android.provider.DocumentsContract.deleteDocument(context.getContentResolver(), destination);
+            } catch (Exception ignored) { }
         }
     }
 
@@ -244,19 +303,28 @@ public class ArtifactDownloadsTest extends InstrumentationTestCase {
 
     public void testStreamingRejectsTruncationOverflowAndCancellation() throws Exception {
         RemoteApi client = new RemoteApi("http://100.64.0.1:43127");
-        var copy = RemoteApi.class.getDeclaredMethod("copyDownload", java.io.InputStream.class, java.io.OutputStream.class, long.class, RemoteApi.DownloadProgress.class);
+        var copy = RemoteApi.class.getDeclaredMethod("copyDownload", java.io.InputStream.class,
+            java.io.OutputStream.class, long.class, long.class, RemoteApi.DownloadProgress.class);
         copy.setAccessible(true);
         byte[] bytes = new byte[130000]; for (int index = 0; index < bytes.length; index++) bytes[index] = (byte) (index % 251);
         var output = new java.io.ByteArrayOutputStream();
         RemoteApi.DownloadProgress progress = (received, total) -> {};
-        copy.invoke(client, new java.io.ByteArrayInputStream(bytes), output, (long) bytes.length, progress);
+        copy.invoke(client, new java.io.ByteArrayInputStream(bytes), output, (long) bytes.length, 0L, progress);
         assertTrue(java.util.Arrays.equals(bytes, output.toByteArray()));
         for (long expected : new long[]{bytes.length - 1, bytes.length + 1}) {
-            try { copy.invoke(client, new java.io.ByteArrayInputStream(bytes), new java.io.ByteArrayOutputStream(), expected, progress); fail("Invalid length accepted"); }
+            try {
+                copy.invoke(client, new java.io.ByteArrayInputStream(bytes),
+                    new java.io.ByteArrayOutputStream(), expected, 0L, progress);
+                fail("Invalid length accepted");
+            }
             catch (java.lang.reflect.InvocationTargetException error) { assertTrue(error.getCause() instanceof java.io.IOException); }
         }
         client.cancel();
-        try { copy.invoke(client, new java.io.ByteArrayInputStream(bytes), new java.io.ByteArrayOutputStream(), (long) bytes.length, progress); fail("Cancelled transfer accepted"); }
+        try {
+            copy.invoke(client, new java.io.ByteArrayInputStream(bytes),
+                new java.io.ByteArrayOutputStream(), (long) bytes.length, 0L, progress);
+            fail("Cancelled transfer accepted");
+        }
         catch (java.lang.reflect.InvocationTargetException error) { assertTrue(error.getCause() instanceof java.io.IOException); }
     }
 }

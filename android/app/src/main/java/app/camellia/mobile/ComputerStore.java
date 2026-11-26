@@ -20,13 +20,13 @@ final class ComputerStore {
         return profiles;
     }
 
-    JSONObject load() throws Exception {
+    synchronized JSONObject load() throws Exception {
         JSONObject saved = store.load();
         saved.remove("computers");
         return saved;
     }
 
-    List<JSONObject> all() throws Exception {
+    synchronized List<JSONObject> all() throws Exception {
         JSONObject profiles = profiles(store.load());
         List<JSONObject> result = new ArrayList<>();
         var addresses = profiles.keys();
@@ -34,7 +34,7 @@ final class ComputerStore {
         return result;
     }
 
-    JSONObject findByComputerId(String computerId) throws Exception {
+    synchronized JSONObject findByComputerId(String computerId) throws Exception {
         if (computerId == null || computerId.isEmpty()) return null;
         for (JSONObject computer : all()) {
             if (computerId.equals(computer.optString("computerId"))) return computer;
@@ -42,7 +42,7 @@ final class ComputerStore {
         return null;
     }
 
-    void save(JSONObject value) throws Exception {
+    synchronized void save(JSONObject value) throws Exception {
         JSONObject profiles = profiles(store.load());
         JSONObject current = new JSONObject(value.toString());
         current.remove("computers");
@@ -53,10 +53,32 @@ final class ComputerStore {
         store.save(current);
     }
 
-    void rename(String address, String name) throws Exception {
+    synchronized void rename(String address, String name) throws Exception {
         JSONObject saved = store.load();
         JSONObject profiles = profiles(saved);
-        profiles.getJSONObject(address).put("computerName", name);
+        profiles.getJSONObject(address).put("remark", name);
+        if (address.equals(saved.optString("address"))) saved.put("remark", name);
+        saved.put("computers", profiles);
+        store.save(saved);
+    }
+
+    synchronized void clearRemark(String address) throws Exception {
+        JSONObject saved = store.load();
+        JSONObject profiles = profiles(saved);
+        JSONObject profile = profiles.getJSONObject(address);
+        profile.remove("remark");
+        if (address.equals(saved.optString("address"))) saved.remove("remark");
+        saved.put("computers", profiles);
+        store.save(saved);
+    }
+
+    /** Update the name the computer reports for itself, without touching a local remark. */
+    synchronized void updateComputerName(String address, String name) throws Exception {
+        JSONObject saved = store.load();
+        JSONObject profiles = profiles(saved);
+        JSONObject profile = profiles.getJSONObject(address);
+        if (name.equals(profile.optString("computerName"))) return;
+        profile.put("computerName", name);
         if (address.equals(saved.optString("address"))) saved.put("computerName", name);
         saved.put("computers", profiles);
         store.save(saved);
@@ -64,7 +86,7 @@ final class ComputerStore {
 
     // A late receipt may belong to an inactive computer. Update its profile
     // without selecting it or reviving credentials that the user removed.
-    boolean saveProfile(JSONObject value) throws Exception {
+    synchronized boolean saveProfile(JSONObject value) throws Exception {
         JSONObject saved = store.load(), profiles = profiles(saved);
         String address = value.optString("address");
         JSONObject previous = profiles.optJSONObject(address);
@@ -75,7 +97,7 @@ final class ComputerStore {
         saved.put("computers", profiles); store.save(saved); return true;
     }
 
-    boolean saveProfileByAddress(JSONObject value) throws Exception {
+    synchronized boolean saveProfileByAddress(JSONObject value) throws Exception {
         JSONObject saved = store.load(), profiles = profiles(saved);
         String address = value.optString("address");
         if (address.isEmpty() || !profiles.has(address)) return false;
@@ -85,7 +107,7 @@ final class ComputerStore {
         saved.put("computers", profiles); store.save(saved); return true;
     }
 
-    void remove(String address) throws Exception {
+    synchronized void remove(String address) throws Exception {
         JSONObject saved = store.load();
         JSONObject profiles = profiles(saved);
         CredentialStore discussions = new CredentialStore(store.context, "remote-discussions-private");

@@ -52,15 +52,31 @@ final class ArtifactReferences {
 
     static List<String> paths(String text) {
         LinkedHashSet<String> paths = new LinkedHashSet<>();
+        LinkedHashSet<String> identities = new LinkedHashSet<>();
         var matcher = REFERENCES.matcher(text.replaceAll("(?s)```.*?(?:```|$)", ""));
         while (matcher.find() && paths.size() < 100) {
             String path = (matcher.group(1) == null ? matcher.group(2) : matcher.group(1)).replaceAll("\\s+\"[^\"]*\"$", "").trim();
             if (path.matches("(?i)^(https?|data|javascript|mailto):.*")) continue;
             if (!EXTENSION.matcher(path).matches()) continue;
             String name = name(path);
-            if (!name.isEmpty() && name.length() <= 200) paths.add(path);
+            if (!name.isEmpty() && name.length() <= 200 && identities.add(identity(path))) paths.add(path);
         }
         return new ArrayList<>(paths);
+    }
+
+    private static String identity(String reference) {
+        String value = reference.trim();
+        if (value.regionMatches(true, 0, "file:", 0, 5)) {
+            value = value.substring(5);
+            while (value.startsWith("//")) value = value.substring(1);
+            try {
+                value = java.net.URLDecoder.decode(value.replace("+", "%2B"), "UTF-8");
+            } catch (java.io.UnsupportedEncodingException | IllegalArgumentException ignored) { }
+        }
+        value = value.replace('\\', '/');
+        if (value.matches("^/[A-Za-z]:/.*")) value = value.substring(1);
+        if (value.matches("^[A-Za-z]:/.*")) return value.toLowerCase(Locale.ROOT);
+        return value;
     }
     private ArtifactReferences() {}
 }

@@ -13,6 +13,7 @@ import (
 	"net/http/httptrace"
 	"net/netip"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -216,22 +217,141 @@ func statusPayload(status *ipnstate.Status) (string, error) {
 		addresses = append(addresses, address.String())
 	}
 	hostname, tailnet, online := "", "", false
+	selfUserID, selfLogin, selfDisplay := "", "", ""
 	if status.Self != nil {
 		hostname = status.Self.HostName
 		online = status.Self.Online
+		selfUserID = strconv.FormatUint(uint64(status.Self.UserID), 10)
+		if profile, ok := status.User[status.Self.UserID]; ok {
+			selfLogin, selfDisplay = profile.LoginName, profile.DisplayName
+		}
 	}
 	if status.CurrentTailnet != nil {
 		tailnet = status.CurrentTailnet.Name
 	}
 	result, err := json.Marshal(map[string]any{
-		"state":      status.BackendState,
-		"loginUrl":   status.AuthURL,
-		"tailnetIPs": addresses,
-		"hostName":   hostname,
-		"tailnet":    tailnet,
-		"online":     online,
+		"state":           status.BackendState,
+		"loginUrl":        status.AuthURL,
+		"tailnetIPs":      addresses,
+		"hostName":        hostname,
+		"tailnet":         tailnet,
+		"online":          online,
+		"selfUserId":      selfUserID,
+		"selfLoginName":   selfLogin,
+		"selfDisplayName": selfDisplay,
 	})
 	return string(result), err
+}
+
+type peerInfo struct {
+	ID          string   `json:"id"`
+	NodeID      string   `json:"nodeId"`
+	HostName    string   `json:"hostName"`
+	DNSName     string   `json:"dnsName,omitempty"`
+	OS          string   `json:"os,omitempty"`
+	UserID      string   `json:"userId"`
+	LoginName   string   `json:"loginName,omitempty"`
+	DisplayName string   `json:"displayName,omitempty"`
+	Addresses   []string `json:"addresses"`
+	Tags        []string `json:"tags"`
+	Online      bool     `json:"online"`
+}
+
+var tailnetIPv4 = netip.MustParsePrefix("100.64.0.0/10")
+
+func peerList(status *ipnstate.Status) []peerInfo {
+	if status == nil {
+		return []peerInfo{}
+	}
+	self := ""
+	if status.Self != nil {
+		self = string(status.Self.ID)
+	}
+	result := make([]peerInfo, 0, len(status.Peer))
+	for _, peer := range status.Peer {
+		if peer == nil || string(peer.ID) == self {
+			continue
+		}
+		addresses := make([]string, 0, len(peer.TailscaleIPs))
+		for _, address := range peer.TailscaleIPs {
+			if address.Is4() && tailnetIPv4.Contains(address) {
+				addresses = append(addresses, address.String())
+			}
+		}
+		if len(addresses) == 0 {
+			continue
+		}
+		profile := status.User[peer.UserID]
+		tags := []string{}
+		if peer.Tags != nil {
+			tags = append(tags, peer.Tags.AsSlice()...)
+		}
+		result = append(result, peerInfo{
+			ID: string(peer.ID), NodeID: strconv.FormatUint(uint64(peer.NodeID), 10),
+			HostName: peer.HostName, DNSName: peer.DNSName, OS: peer.OS,
+			UserID:    strconv.FormatUint(uint64(peer.UserID), 10),
+			LoginName: profile.LoginName, DisplayName: profile.DisplayName,
+			Addresses: addresses, Tags: tags, Online: peer.Online,
+		})
+	}
+	sort.Slice(result, func(i, j int) bool {
+		left, right := strings.ToLower(result[i].HostName), strings.ToLower(result[j].HostName)
+		if left == right {
+			return result[i].ID < result[j].ID
+		}
+		return left < right
+	})
+	return result
+}
+
+// Peers returns the current tailnet peers visible to this embedded node. The
+// phone uses this only for explicit discovery, so the heavier Status call is
+// not part of the periodic status contract.
+func (node *Node) Peers() (string, error) {
+	client, err := node.server.LocalClient()
+	if err != nil {
+		return "", errors.New("embedded network unavailable")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	status, err := client.Status(ctx)
+	if err != nil {
+		return "", errors.New("cannot read embedded network peers")
+	}
+	result, err := json.Marshal(peerList(status))
+	return string(result), err
+}
+
+// Hello probes one Camellia host over the embedded tailnet. It deliberately
+// uses a short, proxy-free client: discovery must fail fast for unrelated
+// tailnet nodes and must not inherit the model proxy's network policy.
+func (node *Node) Hello(target string) (string, error) {
+	address, err := netip.ParseAddr(target)
+	if err != nil || !tailnetIPv4.Contains(address) {
+		return "", errors.New("target is not a tailnet IPv4 address")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+	defer cancel()
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+address.String()+":43127/v1/hello", nil)
+	if err != nil {
+		return "", err
+	}
+	request.Header.Set("Accept", "application/json")
+	client := &http.Client{Transport: node.transport, Timeout: 4 * time.Second,
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	response, err := client.Do(request)
+	if err != nil {
+		return "", err
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("hello returned %d", response.StatusCode)
+	}
+	body, err := io.ReadAll(io.LimitReader(response.Body, 16*1024))
+	if err != nil {
+		return "", err
+	}
+	return string(body), nil
 }
 
 func (node *Node) Login() error {

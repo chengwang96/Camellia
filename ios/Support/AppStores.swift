@@ -147,6 +147,17 @@ enum AppStores {
             : FileNodeStateStore(directory: fallbackDirectory)
     }
 
+    /// Whether this installation already has a registered embedded node.
+    ///
+    /// Used once, to preserve an existing node's Tailscale name across the
+    /// upgrade that introduced name following. Reading the state does not
+    /// create it, so a fresh install still follows the phone name.
+    static func hasExistingNodeIdentity() -> Bool {
+        var failure: NSError?
+        let state = nodeStore().read("_machinekey", error: &failure)
+        return failure == nil && !state.isEmpty
+    }
+
     /// Where the local-chat state lives, beside the credentials.
     private static var localChatDirectory: URL {
         let manager = FileManager.default

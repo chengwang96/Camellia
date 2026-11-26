@@ -2058,7 +2058,7 @@ test('explicit dynamic scope persists, includes new workspaces and independent c
   assert.equal(access.pending.get(forged.id).includeUnassigned, false);
 });
 
-test('the desktop name travels with the invitation and authorized devices can be renamed', async context => {
+test('the desktop name travels with the invitation and a device can update only its own name', async context => {
   const { access } = fixture(context);
   const invitation = access.invite(['allowed'], { computerName: '  Work PC  ' });
   assert.equal(invitation.computerName, 'Work PC');
@@ -2068,12 +2068,18 @@ test('the desktop name travels with the invitation and authorized devices can be
   access.approve(request.id);
   const claimed = access.claim(request.id, request.claim);
   assert.equal(claimed.state, 'approved');
-  access.rename(claimed.deviceId, '  Living room PC  ');
-  assert.equal(access.view().devices[0].name, 'Living room PC');
+  access.renameSelf(claimed.deviceId, '  Living room phone  ');
+  assert.equal(access.view().devices[0].name, 'Living room phone');
+  access.remark(claimed.deviceId, '  Kitchen  ');
+  assert.equal(access.view().devices[0].name, 'Living room phone');
+  assert.equal(access.view().devices[0].remark, 'Kitchen');
+  access.remark(claimed.deviceId, '');
+  assert.equal(access.view().devices[0].remark, undefined);
+  assert.equal('remark' in access.devices.find(device => device.id === claimed.deviceId), false);
   // The one-time code stays bound to the request; renaming must not touch it.
-  assert.throws(() => access.rename('00000000-0000-0000-0000-000000000000', 'Other'), /Invalid device/);
-  assert.throws(() => access.rename(claimed.deviceId, '   '), /1–80 characters/);
-  assert.throws(() => access.rename(claimed.deviceId, 'x'.repeat(81)), /1–80 printable characters/);
+  assert.throws(() => access.renameSelf('00000000-0000-0000-0000-000000000000', 'Other'), /Invalid device/);
+  assert.throws(() => access.renameSelf(claimed.deviceId, '   '), /1–80 characters/);
+  assert.throws(() => access.renameSelf(claimed.deviceId, 'x'.repeat(81)), /1–80 printable characters/);
   // An absent name is allowed and simply omits the field instead of failing.
   const unnamed = access.invite(['allowed']);
   assert.equal(unnamed.computerName, null);
@@ -2101,6 +2107,9 @@ test('HTTP pairing, authentication, endpoint allowlist and browser-origin reject
   assert.equal((await request(gateway, `/v1/conversations/${hidden.id}`, { token })).status, 404);
   assert.equal((await request(gateway, '/v1/conversations?offset=-1', { token })).status, 400);
   assert.equal((await request(gateway, '/v1/status?token=secret', { token })).status, 400);
+  assert.equal((await request(gateway, '/v1/device/name')).status, 401);
+  assert.equal((await request(gateway, '/v1/device/name', { token, method: 'POST', payload: { name: 'New phone name' } })).body.name, 'New phone name');
+  assert.equal(access.view().devices.find(device => device.id === credential.deviceId).name, 'New phone name');
   assert.equal((await request(gateway, '/v1/command', { token, method: 'POST', payload: { action: 'send' } })).status, 405);
   assert.equal((await request(gateway, '/v1/files', { token })).status, 404);
   const badHost = await new Promise((resolve, reject) => {

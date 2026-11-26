@@ -58,6 +58,7 @@ public final class MainActivity extends Activity {
     private ExecutorService eventWorker = Executors.newSingleThreadExecutor();
     private final ExecutorService commandWorker = Executors.newFixedThreadPool(2);
     private final ExecutorService urgentWorker = Executors.newSingleThreadExecutor();
+    private final java.util.Set<RemoteApi> deviceNamePushes = java.util.concurrent.ConcurrentHashMap.newKeySet();
     private final java.util.Set<String> commandRequests = new java.util.HashSet<>();
     private final java.util.Set<String> scheduledCommandChecks = new java.util.HashSet<>();
     private final java.util.Map<String, RemoteApi> commandClients = new java.util.HashMap<>();
@@ -170,6 +171,13 @@ public final class MainActivity extends Activity {
     private LinearLayout lanPairList;
     private final ArrayList<LanDiscovery.Service> lanServices = new ArrayList<>();
     private LanDiscovery lanDiscovery;
+    private TailnetDiscovery tailnetDiscovery;
+    private final ArrayList<TailnetDiscovery.Candidate> tailnetCandidates = new ArrayList<>();
+    private LinearLayout tailnetPairList;
+    private TextView tailnetScanStatus;
+    private boolean tailnetScanning, tailnetBusy;
+    private String tailnetScanError = "", tailnetStatusMessage = "";
+    private JSONObject tailnetPairing;
     private android.net.ConnectivityManager.NetworkCallback lanNetworkCallback;
     private String activeRouteSignature = "";
     private String conversationId;
@@ -227,6 +235,7 @@ public final class MainActivity extends Activity {
     private String queueSignature = "";
     private String queueSteeringGoalId = "";
     private final RemoteGoalVisibility goalVisibility = new RemoteGoalVisibility();
+    private final RemoteHostReachability hostReachability = new RemoteHostReachability();
     private boolean controlAllowed, connected, commandBusy;
     private long conversationSeq;
     private String approvalSignature = "";
@@ -407,6 +416,7 @@ public final class MainActivity extends Activity {
                 MainActivity.this.onLanDiscoveryFailed(errorCode);
             }
         });
+        tailnetDiscovery = new TailnetDiscovery();
         listCache = RemoteListCache.get(this);
         homeCache = RemoteListCache.workbench(this);
         conversationCache = RemoteConversationCache.get(this);
@@ -460,6 +470,9 @@ public final class MainActivity extends Activity {
         EmbeddedNetwork.setNetworkListener(this::networkRouteChanged);
         EmbeddedNetwork.foreground();
         syncLanDiscoveryForScreen();
+        pushDeviceName(MobilePreferences.deviceName(this));
+        if (screen.equals("pair") && !tailnetScanning && tailnetCandidates.isEmpty())
+            startTailnetDiscovery();
         if (lanNetworkCallback == null) {
             lanNetworkCallback = new android.net.ConnectivityManager.NetworkCallback() {
                 @Override public void onAvailable(android.net.Network network) { restartLanDiscovery(); }
@@ -506,7 +519,11 @@ public final class MainActivity extends Activity {
         // These two report the network state on a row, and a route change flips
         // it without rebuilding the page.
         if (screen.equals("settings")) { refreshMobileAccessRow(); return; }
-        if (screen.equals("pair")) { refreshPairNetworkRow(); return; }
+        if (screen.equals("pair")) {
+            refreshPairNetworkRow();
+            if (EmbeddedNetwork.online() && !tailnetScanning) startTailnetDiscovery();
+            return;
+        }
         if (!screen.equals("computers") && !screen.equals("list") && !screen.equals("detail")) return;
         artifactDownloads.stop();
         if (!EmbeddedNetwork.online()) {
@@ -890,6 +907,7 @@ public final class MainActivity extends Activity {
         backgroundConnection = false;
         if (!foreground) {
             stopNetwork();
+            forgetHostConnection();
             EmbeddedNetwork.setNetworkListener(null);
             EmbeddedNetwork.endBackground();
         }
@@ -907,6 +925,10 @@ public final class MainActivity extends Activity {
         lanDiscoveryError = Integer.MIN_VALUE;
         handler.removeCallbacks(lanScanRefresh);
         if (lanDiscovery != null) lanDiscovery.stop();
+        tailnetScanning = false;
+        tailnetBusy = false;
+        tailnetPairing = null;
+        if (tailnetDiscovery != null) tailnetDiscovery.cancel();
         if (lanNetworkCallback != null) {
             try {
                 ((android.net.ConnectivityManager) getSystemService(android.content.Context.CONNECTIVITY_SERVICE))
@@ -927,6 +949,7 @@ public final class MainActivity extends Activity {
             RemoteKeepAliveService.finish(this, false);
             backgroundConnection = false;
             stopNetwork();
+            forgetHostConnection();
             EmbeddedNetwork.setNetworkListener(null);
         }
         EmbeddedNetwork.background();
@@ -949,10 +972,13 @@ public final class MainActivity extends Activity {
         if (composerAttachments != null) composerAttachments.close();
         RemoteKeepAliveService.finish(this, false);
         artifactDownloads.close();
+        if (tailnetDiscovery != null) tailnetDiscovery.close();
         InlineImageGallery.close(this);
         if (listCache != null) listCache.flush();
         if (conversationCache != null) conversationCache.flush();
         prefetch.close();
+        for (RemoteApi client : deviceNamePushes) client.cancel();
+        deviceNamePushes.clear();
         worker.shutdownNow(); eventWorker.shutdownNow(); commandWorker.shutdownNow(); urgentWorker.shutdownNow(); statusWorker.shutdownNow(); networkWorker.shutdownNow(); super.onDestroy();
     }
 
@@ -1374,7 +1400,43 @@ public final class MainActivity extends Activity {
     }
 
     private String computerName(JSONObject computer) {
+        String remark = computer.optString("remark", "").trim();
+        if (!remark.isEmpty()) return remark;
         return computer.optString("computerName", tr("我的电脑", "My computer"));
+    }
+
+    /**
+     * Sends this phone's new name to every paired computer.
+     *
+     * The desktop authenticates each request with that computer's own token and
+     * updates only the matching device record, so naming never becomes a way to
+     * rename another phone. Failures are intentionally quiet: the local name is
+     * authoritative, and the next connection will retry through the normal
+     * status refresh.
+     */
+    private void pushDeviceName(String name) {
+        if (!foreground || name == null || name.trim().isEmpty()) return;
+        if (!EmbeddedNetwork.online()) return;
+        java.util.List<JSONObject> computers;
+        try { computers = store.all(); } catch (Exception error) { return; }
+        for (JSONObject computer : computers) {
+            String address = computer.optString("address"), token = computer.optString("token");
+            if (address.isEmpty() || !token.matches("[A-Za-z0-9_-]{43}")) continue;
+            RemoteApi client = new RemoteApi(this, address);
+            deviceNamePushes.add(client);
+            worker.submit(() -> {
+                try {
+                    String current = MobilePreferences.deviceName(this);
+                    client.json("/v1/device/name", token,
+                        new JSONObject().put("name", current));
+                } catch (Exception ignored) {
+                    // Offline or an older desktop: keep the local name and retry on
+                    // the next successful status connection.
+                } finally {
+                    deviceNamePushes.remove(client);
+                }
+            });
+        }
     }
 
     private void navigateHome() {
@@ -2031,7 +2093,17 @@ public final class MainActivity extends Activity {
     private void editDeviceName() {
         SettingsStyle style = new SettingsStyle(this);
         LinearLayout panel = computerDialogPanel(tr("本机名称", "This phone name"),
-            tr("配对时默认提交这个名称，电脑端可以在授权时确认。最多 80 个字符。", "This name is submitted by default when pairing; the computer confirms it when authorizing. Up to 80 characters."), "phone");
+            tr("其他已配对电脑会自动更新这个名称；电脑端不会修改它。最多 80 个字符。", "Paired computers update this name automatically and cannot change it. Up to 80 characters."), "phone");
+        LinearLayout follow = new LinearLayout(this);
+        style.toggle(follow, tr("跟随本机名称", "Follow this phone name"),
+            tr("关闭后保留内置 Tailscale 当前网络名；Camellia 名称仍会更新。", "Turn off to keep the embedded Tailscale network name; the Camellia name still updates."),
+            "deviceNameFollow", MobilePreferences.followDeviceName(this), (button, checked) -> {
+                MobilePreferences.set(this, "deviceNameFollow", checked ? "follow" : "existing");
+                if (checked) {
+                    EmbeddedNetwork.setNodeHostname(MobilePreferences.deviceName(this));
+                }
+            });
+        panel.addView(follow);
         TextView label = text(tr("设备名称", "Device name"), Palette.TEXT_SMALL, muted); panel.addView(label);
         EditText name = new EditorInput(this); name.setId(View.generateViewId()); label.setLabelFor(name.getId());
         name.setSingleLine(true); name.setTextSize(Palette.TEXT_ROW); name.setTextColor(ink); name.setHintTextColor(muted);
@@ -2049,6 +2121,7 @@ public final class MainActivity extends Activity {
             MobilePreferences.set(this, "deviceName", value);
             EmbeddedNetwork.setNodeHostname(value);
             dialog.dismiss(); settingsScreen();
+            pushDeviceName(value);
         });
         name.setImeOptions(android.view.inputmethod.EditorInfo.IME_ACTION_DONE);
         name.setOnEditorActionListener((view, action, event) -> {
@@ -2098,7 +2171,8 @@ public final class MainActivity extends Activity {
                 // Keep the empty state outside the card so it does not read
                 // as another action beside "Add computer".
                 style.emptyState(content, tr("连接你的第一台电脑", "Connect your first computer"),
-                    tr("扫描电脑上的配对二维码，即可在手机继续工作。", "Scan the pairing QR code on your computer to continue working here."),
+                    tr("点击添加电脑，可发现同一 Tailnet 或 Wi-Fi 的电脑，也可扫码或输入配对码。",
+                        "Choose Add computer to find computers on your Tailnet or Wi-Fi, or scan a QR code or use a pairing code."),
                     "", null);
             }
             for (JSONObject computer : computers) {
@@ -2115,6 +2189,8 @@ public final class MainActivity extends Activity {
         TextView addLabel = text(tr("添加电脑", "Add computer"), Palette.TEXT_ROW_STRONG, style.ink); addLabel.setPadding(dp(12), 0, 0, 0);
         addLabel.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO); add.addView(addLabel, new LinearLayout.LayoutParams(0, -2, 1));
         group.addView(add, new LinearLayout.LayoutParams(-1, -2));
+        tailnetPairList = null;
+        tailnetScanStatus = null;
         if (credentials.has("claim")) content.addView(button(tr("继续配对", "Resume pairing"), () -> { pairScreen(); waitForApproval(); }, false));
         ((RefreshScrollView) scroll).setRefreshAction(this::refreshComputers,
             ready -> setStatusNotice(ready ? tr("松开检查状态", "Release to check status") : tr("下拉检查电脑状态", "Pull to check computers")));
@@ -2185,7 +2261,7 @@ public final class MainActivity extends Activity {
         if (computer.has("token")) style.action(group, tr("重启桌面端 Camellia", "Restart desktop Camellia"),
             tr("保存设置并重新启动电脑上的 Camellia", "Save settings and relaunch Camellia on this computer"),
             "manageRestart", false, () -> { dialog.dismiss(); restartComputer(computer); });
-        style.action(group, tr("重命名", "Rename"), tr("更改这台电脑在本机显示的名称", "Change the name shown on this phone"),
+        style.action(group, tr("编辑备注", "Edit remark"), tr("只改这台手机上的显示备注", "Change only the label shown on this phone"),
             "manageRename", false, () -> { dialog.dismiss(); renameComputer(computer); });
         style.action(group, tr("移除电脑", "Forget computer"), tr("删除手机上的凭据，电脑上的会话不受影响", "Deletes the credentials on this phone; chats stay on the computer"),
             "manageForget", true, () -> { dialog.dismiss(); forget(computer); });
@@ -2476,9 +2552,15 @@ public final class MainActivity extends Activity {
     }
 
     private void renameComputer(JSONObject computer) {
-        LinearLayout panel = computerDialogPanel(tr("重命名电脑", "Rename computer"),
-            tr("取一个容易辨认的名字，仅在这台手机上显示。", "Choose a familiar name. It only changes on this phone."));
-        TextView label = text(tr("电脑名称", "Computer name"), Palette.TEXT_SMALL, muted); panel.addView(label);
+        LinearLayout panel = computerDialogPanel(tr("电脑备注", "Computer remark"),
+            tr("取一个容易辨认的备注，仅在这台手机上显示，不会改变电脑自己的名称。", "Choose a familiar remark. It only changes on this phone and never changes the computer's own name."));
+        LinearLayout nameGroup = new LinearLayout(this);
+        nameGroup.setTag("computerOwnName");
+        SettingsStyle style = new SettingsStyle(this);
+        style.info(nameGroup, tr("电脑名称", "Computer name"),
+            computer.optString("computerName", tr("未知", "Unknown")) + tr("（由电脑自己设置）", " (set on the computer)"));
+        panel.addView(nameGroup);
+        TextView label = text(tr("本机备注", "Device remark"), Palette.TEXT_SMALL, muted); panel.addView(label);
         EditText name = new EditorInput(this); name.setTag("computerNameInput"); name.setId(View.generateViewId()); label.setLabelFor(name.getId());
         name.setSingleLine(true); name.setTextSize(Palette.TEXT_ROW); name.setTextColor(ink); name.setHintTextColor(muted);
         name.setHint(tr("例如：工作电脑", "e.g. Work laptop")); name.setContentDescription(tr("电脑名称", "Computer name"));
@@ -2486,8 +2568,8 @@ public final class MainActivity extends Activity {
         name.setImportantForAutofill(View.IMPORTANT_FOR_AUTOFILL_NO);
         name.setFilters(new android.text.InputFilter[]{new android.text.InputFilter.LengthFilter(80)});
         name.setPadding(dp(16), dp(14), dp(16), dp(14)); name.setMinHeight(dp(54));
-        name.setText(computerName(computer)); panel.addView(new SettingsField(name), new LinearLayout.LayoutParams(-1, -2));
-        TextView feedback = text(tr("最多 80 个字符", "Up to 80 characters"), Palette.TEXT_SMALL, muted);
+        name.setText(computer.optString("remark", "")); panel.addView(new SettingsField(name), new LinearLayout.LayoutParams(-1, -2));
+        TextView feedback = text(tr("最多 80 个字符；留空恢复电脑名称。", "Up to 80 characters; leave empty to show the computer's own name."), Palette.TEXT_SMALL, muted);
         feedback.setTag("renameFeedback"); feedback.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE); panel.addView(feedback);
         android.app.Dialog dialog = createComputerDialog(panel, tr("保存", "Save"), tr("取消", "Cancel"));
         showComputerDialog(dialog);
@@ -2496,9 +2578,10 @@ public final class MainActivity extends Activity {
         alert.getButton(android.app.AlertDialog.BUTTON_NEGATIVE).setTag("renameCancel");
         save.setOnClickListener(view -> {
             String value = name.getText().toString().trim();
-            if (value.isEmpty()) { feedback.setText(tr("请输入电脑名称", "Enter a computer name")); name.requestFocus(); return; }
             try {
-                store.rename(computer.getString("address"), value); credentials = store.load();
+                if (value.isEmpty()) store.clearRemark(computer.getString("address"));
+                else store.rename(computer.getString("address"), value);
+                credentials = store.load();
                 dialog.dismiss(); computersScreen(); refreshComputers();
             } catch (Exception error) { feedback.setText(ErrorDetails.withSummary(tr("保存失败，请重试", "Could not save. Try again"), error)); }
         });
@@ -2512,6 +2595,7 @@ public final class MainActivity extends Activity {
 
     private void refreshComputers() {
         if (!foreground || !screen.equals("computers")) return;
+        pushDeviceName(MobilePreferences.deviceName(this));
         stopNetwork(); int ticket = generation;
         clearComputerRoutes();
         try {
@@ -2539,6 +2623,8 @@ public final class MainActivity extends Activity {
                         String token = computer.getString("token");
                         info = client.json("/v1/status", token, null);
                         if (info.optInt("protocol") != 1) throw new IOException("Unsupported protocol");
+                        String reported = info.optString("computerName", "").trim();
+                        if (!reported.isEmpty()) store.updateComputerName(address, reported);
                         result = tr("已连接", "Connected");
                         if (ComputerRoutes.LAN.equals(ComputerRoutes.activeTransport(address))) {
                             // No Tailscale path diagnostic is meaningful for a LAN route.
@@ -2661,15 +2747,16 @@ public final class MainActivity extends Activity {
         shell(tr("配对电脑", "Pair computer"), "");
         root.setFocusableInTouchMode(true); root.requestFocus();
         SettingsStyle style = new SettingsStyle(this);
-        TextView intro = text(tr("选择一种方式连接电脑。同一 Wi-Fi 更快，外出时使用 Tailscale。",
-            "Choose how to connect. Same Wi-Fi is faster; use Tailscale when you are away."),
+        TextView intro = text(tr("选择发现的电脑，或扫描二维码、填写配对码。",
+            "Choose a discovered computer, scan its QR code, or use a pairing code."),
             Palette.TEXT_BODY, style.secondary);
         intro.setPadding(dp(4), 0, dp(4), dp(12));
         content.addView(intro);
 
         LinearLayout tailscale = pairingCardBody(style, content, "shield",
-            tr("Tailscale 网络", "Tailscale network"),
-            tr("跨网络连接，适合离开家后使用", "Works across networks when you are away"));
+            tr("Tailnet 自动发现", "Tailnet discovery"),
+            tr("同网络电脑；首次连接由电脑确认",
+                "Computers on your tailnet; the first connection is approved on the computer"));
         LinearLayout networkRow = new LinearLayout(this);
         networkRow.setGravity(Gravity.CENTER_VERTICAL);
         networkRow.setMinimumHeight(dp(48));
@@ -2695,6 +2782,15 @@ public final class MainActivity extends Activity {
             "Sign into the same Tailscale network on both devices."), Palette.TEXT_SMALL, style.secondary);
         networkNote.setPadding(0, dp(8), 0, 0);
         tailscale.addView(networkNote);
+        tailnetScanStatus = text(tr("正在发现 Tailnet 电脑…", "Discovering Tailnet computers…"),
+            Palette.TEXT_SMALL, style.secondary);
+        tailnetScanStatus.setPadding(0, dp(10), 0, 0);
+        tailnetScanStatus.setTag("pairTailnetStatus");
+        tailscale.addView(tailnetScanStatus);
+        tailnetPairList = column();
+        tailnetPairList.setPadding(0, dp(4), 0, 0);
+        tailnetPairList.setTag("pairTailnetList");
+        tailscale.addView(tailnetPairList);
 
         LinearLayout lan = pairingCardBody(style, content, "wifi",
             tr("同一 Wi-Fi 直连", "Same Wi-Fi direct"),
@@ -2772,6 +2868,7 @@ public final class MainActivity extends Activity {
             @Override public void afterTextChanged(android.text.Editable value) {}
         });
         setPairingBusy(false);
+        startTailnetDiscovery();
     }
 
     private void addComputer() {
@@ -2805,6 +2902,8 @@ public final class MainActivity extends Activity {
                     if (ticket != generation || !picker.isShowing()) return;
                     JSONObject info = client.json("/v1/status", computer.optString("token"), null);
                     if (info.optInt("protocol") != 1) throw new IOException("Unsupported protocol");
+                    String reported = info.optString("computerName", "").trim();
+                    if (!reported.isEmpty()) store.updateComputerName(address, reported);
                     state = tr("已连接", "Connected"); online = true;
                 } catch (Exception error) { state = RemoteApi.failureMessage(error, chinese); }
                 finally { if (client != null) { statusClients.remove(client); client.cancel(); } }
@@ -2865,6 +2964,286 @@ public final class MainActivity extends Activity {
 
     private void refreshLanScanStatus() {
         if (lanPairScanning && "pair".equals(screen)) renderLanPairList();
+    }
+
+    private void startTailnetDiscovery() {
+        if (tailnetDiscovery == null || tailnetScanning) return;
+        if (!EmbeddedNetwork.enabled()) {
+            tailnetScanning = false;
+            tailnetScanError = "";
+            tailnetStatusMessage = tr("内置网络未开启。请先在设置中登录 Tailscale。",
+                "Embedded networking is off. Sign in to Tailscale in Settings.");
+            renderTailnetCandidates();
+            return;
+        }
+        tailnetScanning = true;
+        tailnetScanError = "";
+        tailnetStatusMessage = "";
+        renderTailnetCandidates();
+        tailnetDiscovery.scan(this::onTailnetCandidates);
+    }
+
+    private void onTailnetCandidates(java.util.List<TailnetDiscovery.Candidate> candidates, String error) {
+        tailnetScanning = false;
+        tailnetScanError = error == null ? "" : error;
+        tailnetCandidates.clear();
+        if (candidates != null) tailnetCandidates.addAll(candidates);
+        if (screen.equals("pair")) renderTailnetCandidates();
+    }
+
+    private void renderTailnetCandidates() {
+        String status;
+        if (tailnetScanning) {
+            status = tr("正在发现 Tailnet 电脑…", "Discovering Tailnet computers…");
+        } else if (!tailnetStatusMessage.isEmpty()) {
+            status = tailnetStatusMessage;
+        } else if (!tailnetScanError.isEmpty()) {
+            status = tr("未能发现：", "Discovery failed: ") + tailnetScanError;
+        } else {
+            int found = 0;
+            try {
+                for (TailnetDiscovery.Candidate candidate : tailnetCandidates) {
+                    if (store.findByComputerId(candidate.computerId) == null) found++;
+                }
+            } catch (Exception ignored) { }
+            status = found == 0
+                ? tr("未发现新的 Tailnet 电脑。", "No new Tailnet computers found.")
+                : tr("已发现 " + found + " 台电脑", "Found " + found + " computers");
+        }
+        if (tailnetScanStatus != null) tailnetScanStatus.setText(status);
+        renderTailnetList(tailnetPairList);
+    }
+
+    private void renderTailnetList(LinearLayout list) {
+        if (list == null) return;
+        list.removeAllViews();
+        try {
+            for (TailnetDiscovery.Candidate candidate : tailnetCandidates) {
+                if (store.findByComputerId(candidate.computerId) != null) continue;
+                list.addView(tailnetCandidateRow(candidate));
+            }
+        } catch (Exception error) {
+            list.addView(text(ErrorDetails.withSummary(tr("无法读取电脑列表。", "Could not read computers."), error),
+                Palette.TEXT_SMALL, muted));
+        }
+    }
+
+    private LinearLayout tailnetCandidateRow(TailnetDiscovery.Candidate candidate) {
+        LinearLayout row = new LinearLayout(this);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(0, dp(9), 0, dp(9));
+        LinearLayout copy = column();
+        TextView title = text(candidate.name, Palette.TEXT_ROW_STRONG, ink);
+        title.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        title.setMaxLines(1);
+        title.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        copy.addView(title);
+        StringBuilder meta = new StringBuilder(candidate.os == null || candidate.os.isEmpty() ? "Camellia" : candidate.os);
+        meta.append(tr(" · 在线", " · Online"));
+        if (!candidate.loginName.isEmpty()) meta.append(" · ").append(candidate.loginName);
+        if (candidate.hasLan()) meta.append(tr(" · 局域网可用", " · LAN available"));
+        TextView detail = text(meta.toString(), Palette.TEXT_SMALL, muted);
+        detail.setMaxLines(2);
+        copy.addView(detail);
+        row.addView(copy, new LinearLayout.LayoutParams(0, -2, 1));
+        Button connect = compactButton(tr("连接", "Connect"), false);
+        connect.setTag("tailnetConnect:" + candidate.computerId);
+        connect.setEnabled(!pairingBusy && !tailnetBusy);
+        connect.setOnClickListener(view -> requestTailnetCandidate(candidate));
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-2, -2);
+        params.setMarginStart(dp(10));
+        row.addView(connect, params);
+        return row;
+    }
+
+    private void requestTailnetCandidate(TailnetDiscovery.Candidate candidate) {
+        if (!foreground || pairingBusy || tailnetBusy || candidate == null) return;
+        tailnetBusy = true;
+        setPairingBusy(true);
+        tailnetStatusMessage = tr("正在请求 " + candidate.name + " 授权…",
+            "Requesting access from " + candidate.name + "…");
+        setStatusNotice(tailnetStatusMessage);
+        renderTailnetCandidates();
+        final String deviceName = nameInput == null || nameInput.getText().toString().trim().isEmpty()
+            ? MobilePreferences.deviceName(this) : nameInput.getText().toString().trim();
+        MobilePreferences.set(this, "deviceName", deviceName);
+        EmbeddedNetwork.setNodeHostname(deviceName);
+        final int ticket = generation;
+        final RemoteApi client;
+        try {
+            client = RemoteApi.explicit(this, candidate.url);
+        } catch (Exception error) {
+            failTailnet(error);
+            return;
+        }
+        job = worker.submit(() -> {
+            try {
+                JSONObject result = client.json("/v1/tailnet/request", null, new JSONObject().put("name", deviceName));
+                deliver(ticket, () -> {
+                    try {
+                        if (!candidate.computerId.equals(result.optString("computerId"))) {
+                            throw new IOException(tr("返回的电脑身份与发现结果不一致。",
+                                "The computer identity differs from the discovery result."));
+                        }
+                        tailnetPairing = new JSONObject().put("url", candidate.url)
+                            .put("candidate", candidate.toJson()).put("name", deviceName)
+                            .put("id", result.getString("id")).put("claim", result.getString("claim"))
+                            .put("expiresAt", result.getLong("expiresAt"));
+                        if ("approved".equals(result.optString("state"))) {
+                            tailnetStatusMessage = tr("电脑已批准，正在保存连接…", "Approved. Saving the connection…");
+                            renderTailnetCandidates();
+                            pollTailnet(candidate, ticket);
+                        } else {
+                            tailnetStatusMessage = tr("请求已发送，请在电脑端确认授权。",
+                                "Request sent. Approve it on your computer.");
+                            setStatusNotice(tailnetStatusMessage);
+                            renderTailnetCandidates();
+                            handler.postDelayed(() -> pollTailnet(candidate, ticket), 1500);
+                        }
+                    } catch (Exception error) {
+                        failTailnet(error);
+                    }
+                });
+            } catch (Exception error) {
+                deliver(ticket, () -> failTailnet(error));
+            }
+        });
+    }
+
+    private void pollTailnet(TailnetDiscovery.Candidate candidate, int ticket) {
+        if (!foreground || ticket != generation || tailnetPairing == null) return;
+        long expiresAt = tailnetPairing.optLong("expiresAt");
+        if (expiresAt > 0 && expiresAt <= System.currentTimeMillis()) {
+            failTailnet(new IOException(tr("请求已过期，请在电脑上重新打开手机访问后重试。",
+                "The request expired. Re-enable mobile access on the computer and retry.")));
+            return;
+        }
+        final JSONObject payload = new JSONObject();
+        try {
+            payload.put("id", tailnetPairing.getString("id")).put("claim", tailnetPairing.getString("claim"));
+        } catch (Exception error) {
+            failTailnet(error);
+            return;
+        }
+        final RemoteApi client;
+        try {
+            client = RemoteApi.explicit(this, candidate.url);
+        } catch (Exception error) {
+            failTailnet(error);
+            return;
+        }
+        tailnetBusy = true;
+        setPairingBusy(true);
+        tailnetStatusMessage = tr("等待电脑确认…", "Waiting for approval…");
+        renderTailnetCandidates();
+        job = worker.submit(() -> {
+            try {
+                JSONObject result = client.json("/v1/tailnet/claim", null, payload);
+                deliver(ticket, () -> {
+                    try {
+                        if (tailnetPairing == null) return;
+                        if ("pending".equals(result.optString("state"))) {
+                            tailnetStatusMessage = tr("等待电脑确认…", "Waiting for approval…");
+                            renderTailnetCandidates();
+                            handler.postDelayed(() -> pollTailnet(candidate, ticket), 3000);
+                        } else if ("approved".equals(result.optString("state"))) {
+                            saveTailnetPairing(candidate, result);
+                        } else {
+                            throw new IOException("Unexpected pairing state");
+                        }
+                    } catch (Exception error) {
+                        failTailnet(error);
+                    }
+                });
+            } catch (Exception error) {
+                deliver(ticket, () -> failTailnet(error));
+            }
+        });
+    }
+
+    private void saveTailnetPairing(TailnetDiscovery.Candidate candidate, JSONObject claimed) {
+        if (tailnetPairing == null) return;
+        try {
+            String token = claimed.getString("token");
+            if (!token.matches("[A-Za-z0-9_-]{43}")) throw new IOException("Invalid device credential");
+            String deviceName = tailnetPairing == null ? MobilePreferences.deviceName(this)
+                : tailnetPairing.optString("name", MobilePreferences.deviceName(this));
+            JSONObject transports = claimed.optJSONObject("transports");
+            JSONObject tailscale = transports == null ? null : transports.optJSONObject("tailscale");
+            String tailscaleUrl = tailscale == null ? "" : ComputerRoutes.tailscaleOrigin(tailscale.optString("url"));
+            if (tailscaleUrl.isEmpty()) tailscaleUrl = candidate.url;
+            JSONObject existing = store.findByComputerId(candidate.computerId);
+            if (existing != null && !existing.optString("tailnetNodeId").isEmpty()
+                && !existing.optString("tailnetNodeId").equals(candidate.nodeId)) {
+                throw new IOException(tr("Tailnet 节点身份已变化；请先移除旧电脑再重新配对。",
+                    "The Tailnet node changed. Remove the old computer and pair it again."));
+            }
+            JSONObject next = existing == null ? new JSONObject() : new JSONObject(existing.toString());
+            String address = existing != null && !existing.optString("address").isEmpty()
+                ? existing.optString("address") : tailscaleUrl;
+            next.put("address", address).put("name", deviceName).put("token", token)
+                .put("deviceId", claimed.getString("deviceId"))
+                .put("permission", claimed.optString("permission", "control"))
+                .put("computerId", candidate.computerId).put("computerName", candidate.name)
+                .put("tailscaleAddress", tailscaleUrl).put("tailnetNodeId", candidate.nodeId)
+                .put("tailnetUserId", candidate.userId).put("tailnetLogin", candidate.loginName)
+                .put("auth", "tailnet");
+            JSONObject lan = transports == null ? null : transports.optJSONObject("lan");
+            boolean lanValid = lan != null && LanTls.validFingerprint(lan.optString("fingerprint"));
+            if (lanValid) {
+                String fingerprint = LanTls.normalize(lan.optString("fingerprint"));
+                String savedFingerprint = next.optString("lanFingerprint");
+                if (savedFingerprint.isEmpty() || savedFingerprint.equalsIgnoreCase(fingerprint)) {
+                    next.put("lanAddress", lan.optString("url")).put("lanFingerprint", fingerprint);
+                } else {
+                    lanValid = false;
+                }
+            }
+            boolean preferLan = existing != null && ComputerRoutes.prefersLan(existing) && lanValid;
+            next.put("activeTransport", preferLan ? ComputerRoutes.LAN : ComputerRoutes.TAILSCALE);
+            store.save(next);
+            credentials = store.load();
+            ComputerRoutes.configure(store.all());
+            tailnetPairing = null; tailnetBusy = false; tailnetStatusMessage = "";
+            setPairingBusy(false);
+            tailnetCandidates.clear();
+            renderTailnetCandidates();
+            listScreen(); loadList(false);
+        } catch (Exception error) {
+            failTailnet(error);
+        }
+    }
+
+    private void failTailnet(Exception error) {
+        tailnetPairing = null;
+        tailnetBusy = false;
+        setPairingBusy(false);
+        String message = tailnetFailureMessage(error);
+        tailnetStatusMessage = message;
+        setStatusNotice(message);
+        renderTailnetCandidates();
+    }
+
+    private String tailnetFailureMessage(Exception error) {
+        if (error instanceof RemoteApi.Failure failure && failure.detail != null) {
+            if (failure.detail.contains("Tailnet trust is disabled")) {
+                return tr("这台电脑未开启 Tailnet 信任，请改用配对码。",
+                    "Tailnet trust is off on this computer. Use a pairing code instead.");
+            }
+            if (failure.detail.contains("already authorized")) {
+                return tr("这台电脑已经授权过此手机；请在电脑端撤销旧授权后重试。",
+                    "This phone is already authorized. Revoke the old device on the computer and retry.");
+            }
+            if (failure.detail.contains("not allowed")) {
+                return tr("这台电脑的 Tailnet 信任范围不包含此手机。",
+                    "This phone is outside this computer's Tailnet trust scope.");
+            }
+            if (failure.detail.contains("identity is unavailable")) {
+                return tr("电脑端还没有取得 Tailnet 身份，请更新并重启电脑端。",
+                    "The computer has no Tailnet identity yet. Update and restart the desktop.");
+            }
+        }
+        return RemoteApi.failureMessage(error, chinese);
     }
 
     private void renderLanPairList() {
@@ -3316,6 +3695,7 @@ public final class MainActivity extends Activity {
         networkScreen = false;
         boolean reuse = MobileLayout.useTabletRail(getResources().getConfiguration()) && tabletConversationList != null
             && tabletConversationList.scope.equals(conversationListScope());
+        carryConnectedHost();
         stopNetwork(); conversationId = null; clearHistory();
         if (reuse) { shell("", ""); return; }
         if (!MobileLayout.useTabletRail(getResources().getConfiguration())) discardTabletConversationList();
@@ -4143,6 +4523,7 @@ public final class MainActivity extends Activity {
                     cacheConversations();
                     ((RefreshScrollView) scroll).setRefreshing(false);
                     computerStates.put(credentials.optString("address"), tr("已连接", "Connected"));
+                    markHostConnected();
                     watchList(client, ticket);
                 });
             } catch (Exception error) { deliver(ticket, () -> {
@@ -5049,6 +5430,7 @@ public final class MainActivity extends Activity {
         renderedMessages.clear();
         processState.clear();
         screen = "detail"; networkScreen = false;
+        carryConnectedHost();
         stopNetwork(); clearHistory(); instance = ""; cursor = -1; nextBefore = null; lastLive = null; olderLoading = false; editingSeq = -1;
         remoteSettings = null;
         remotePreparation = null;
@@ -5285,6 +5667,7 @@ public final class MainActivity extends Activity {
 
     private void connectEvents(boolean foregroundRecovery) {
         if (!networkActive()) return;
+        carryConnectedHost();
         RemoteApi client = begin(); int ticket = generation;
         long initialTimeout = foregroundRecovery ? RemoteStreamHealth.RECOVERY_INITIAL_TIMEOUT_MS : RemoteStreamHealth.INITIAL_TIMEOUT_MS;
         boolean incremental = canIncremental || !historyVersion.isEmpty();
@@ -5305,7 +5688,13 @@ public final class MainActivity extends Activity {
             if (ticket != generation) return;
             try {
                 JSONObject info = client.json("/v1/status", token, null);
-                deliver(ticket, () -> { updateCapabilities(info); client.incremental(canIncremental || !historyVersion.isEmpty()); client.liveDelta(canLiveDelta); updateControls(); });
+                deliver(ticket, () -> {
+                    updateCapabilities(info);
+                    client.incremental(canIncremental || !historyVersion.isEmpty());
+                    client.liveDelta(canLiveDelta);
+                    markHostConnected();
+                    updateControls();
+                });
             } catch (Exception ignored) { /* The stream reports connection and authorization failures. */ }
         });
         client.incremental(incremental); client.liveDelta(canLiveDelta);
@@ -5324,6 +5713,7 @@ public final class MainActivity extends Activity {
             JSONArray rows = page.optJSONArray("conversations");
             if (rows == null) return;
             if (page.optInt("protocol") == 1) updateCapabilities(page);
+            markHostConnected();
             notifyConversationPage(page);
             conversationListRevision++;
             JSONObject cached = listCache.get(target);
@@ -5468,6 +5858,7 @@ public final class MainActivity extends Activity {
         String server = snapshot.optString("instanceId"); long nextCursor = snapshot.optLong("cursor", -1);
         if (server.equals(instance) && nextCursor < cursor) return;
         streamRetryPending = false;
+        markHostConnected();
         connected = true; controlAllowed = snapshot.optString("permission").equals("control"); conversationSeq = conversation.optLong("seq");
         archivedConversation = snapshot.optJSONObject("archived");
         archivedRestorable = snapshot.optBoolean("canRestore");
@@ -6306,6 +6697,7 @@ public final class MainActivity extends Activity {
             if (code == 401) {
                 if (authenticated) {
                     stopNetwork();
+                    forgetHostConnection();
                     listCache.remove(credentials);
                     prefetch.remove(credentials, null);
                     conversationCache.remove(credentials, null);
@@ -6370,6 +6762,7 @@ public final class MainActivity extends Activity {
     }
 
     private void connectionFailure(String value) {
+        forgetHostConnection();
         connected = false; reconnecting = true; connectionBlocked = false;
         updateControls();
         if (workStatus != null) workStatus.error(value, true);
@@ -6378,7 +6771,7 @@ public final class MainActivity extends Activity {
 
     private void updateConnectionHeader() {
         if (headerConnection == null) return;
-        headerConnection.setText(connected ? tr("已连接", "Connected") : connectionBlocked || !EmbeddedNetwork.online() ? tr("离线", "Offline")
+        headerConnection.setText(connected || hostReachable() ? tr("已连接", "Connected") : connectionBlocked || !EmbeddedNetwork.online() ? tr("离线", "Offline")
             : reconnecting ? tr("正在重连", "Reconnecting") : tr("正在连接", "Connecting"));
         headerConnection.setVisibility(View.VISIBLE);
         if (tabletConversationList != null && tabletConversationList.connection != null && tabletConversationList.connection != headerConnection) {
@@ -6387,7 +6780,30 @@ public final class MainActivity extends Activity {
     }
 
     private void listConnected() {
+        markHostConnected();
         connected = true; reconnecting = false; listRetryPending = false; updateConnectionHeader(); setStatusNotice("");
+    }
+
+    private void carryConnectedHost() {
+        if (!connected) return;
+        hostReachability.seen(credentials.optString("address"), credentials.optString("token"),
+            android.os.SystemClock.elapsedRealtime());
+    }
+
+    private void markHostConnected() {
+        hostReachability.seen(credentials.optString("address"), credentials.optString("token"),
+            android.os.SystemClock.elapsedRealtime());
+        updateConnectionHeader();
+    }
+
+    private void forgetHostConnection() {
+        hostReachability.clear();
+    }
+
+    private boolean hostReachable() {
+        return !connectionBlocked && EmbeddedNetwork.online()
+            && hostReachability.fresh(credentials.optString("address"), credentials.optString("token"),
+                android.os.SystemClock.elapsedRealtime());
     }
 
     private void updateWorkStatus() {

@@ -146,13 +146,16 @@ public class NavigationTest extends InstrumentationTestCase {
                     View root = dialog.getWindow().getDecorView();
                     android.widget.EditText input = root.findViewWithTag("computerNameInput");
                     assertTrue(input.getBackground() instanceof android.graphics.drawable.StateListDrawable);
-                    input.setText("   "); root.findViewWithTag("renameSave").performClick(); assertTrue(dialog.isShowing());
-                    assertNotNull(findText(root, "Enter a computer name", "请输入电脑名称"));
                     input.setText("Discarded name"); root.findViewWithTag("renameCancel").performClick();
-                    assertFalse(computers.load().has("computerName"));
+                    assertFalse(computers.load().has("remark"));
                     rename.invoke(activity, profile); root = currentDialog(activity).getWindow().getDecorView();
-                    input = root.findViewWithTag("computerNameInput"); input.setText("  Work laptop  "); root.findViewWithTag("renameSave").performClick();
-                    assertEquals("Work laptop", computers.load().getString("computerName"));
+                    input = root.findViewWithTag("computerNameInput"); input.setText("   ");
+                    root.findViewWithTag("renameSave").performClick(); assertFalse(dialog.isShowing());
+                    assertFalse(computers.load().has("remark"));
+                    rename.invoke(activity, profile); root = currentDialog(activity).getWindow().getDecorView();
+                    input = root.findViewWithTag("computerNameInput"); input.setText("  Work laptop  ");
+                    root.findViewWithTag("renameSave").performClick();
+                    assertEquals("Work laptop", computers.load().getString("remark"));
                     assertEquals("a".repeat(43), computers.load().getString("token"));
                     invoke(activity, "stopNetwork"); rename.invoke(activity, computers.load());
                 } catch (Exception error) { throw new AssertionError(error); }
@@ -217,7 +220,7 @@ public class NavigationTest extends InstrumentationTestCase {
         JSONObject first = computer("http://100.80.1.2:43127", "a"); encrypted.save(first);
         ComputerStore computers = new ComputerStore(encrypted); assertEquals(1, computers.all().size());
         computers.rename(first.getString("address"), "Research laptop");
-        assertEquals("Research laptop", computers.load().getString("computerName"));
+        assertEquals("Research laptop", computers.load().getString("remark"));
         JSONObject second = computer("http://100.80.1.3:43127", "b");
         second.put("pendingCommand", new JSONObject().put("id", "retry-second")); computers.save(second);
         assertEquals(2, computers.all().size());
@@ -225,7 +228,7 @@ public class NavigationTest extends InstrumentationTestCase {
         assertEquals(2, computers.all().size()); assertEquals("pairing-secret", computers.load().getString("claim"));
         for (JSONObject profile : computers.all()) {
             if (profile.getString("address").equals(first.getString("address"))) {
-                assertFalse(profile.has("pendingCommand")); assertEquals("Research laptop", profile.getString("computerName"));
+                assertFalse(profile.has("pendingCommand")); assertEquals("Research laptop", profile.getString("remark"));
             } else assertEquals("retry-second", profile.getJSONObject("pendingCommand").getString("id"));
         }
         computers.remove(first.getString("address"));

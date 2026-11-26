@@ -87,7 +87,8 @@ class EmbeddedNetwork {
     // Callers pass a DNS label, not the display name. An unusable value is
     // omitted so the helper keeps its own platform fallback.
     const savedHostname = typeof this.hostname === 'function' ? this.hostname() : this.hostname;
-    const requestedHostname = savedHostname && /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(savedHostname) ? savedHostname : '';
+    const requestedHostname = typeof savedHostname === 'string'
+      && /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(savedHostname) ? savedHostname : '';
     const child = this.spawnProcess(executable, [], { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'], env: embeddedNetworkEnvironment() });
     this.child = child;
     this.snapshot = { state: 'Starting', loginUrl: null, address: null };
@@ -135,7 +136,11 @@ class EmbeddedNetwork {
       const result = await this.request('status');
       this.snapshot = { state: String(result.state), loginUrl: loginURL(result.loginUrl), address: isTailscaleIPv4(result.address) ? result.address : null,
         deviceId: typeof result.deviceId === 'string' ? result.deviceId : '', hostName: typeof result.hostName === 'string' ? result.hostName : '',
-        online: result.online === true, health: Array.isArray(result.health) ? result.health.filter(value => typeof value === 'string') : [] };
+        online: result.online === true, health: Array.isArray(result.health) ? result.health.filter(value => typeof value === 'string') : [],
+        selfUserId: typeof result.selfUserId === 'string' ? result.selfUserId : '',
+        selfLoginName: typeof result.selfLoginName === 'string' ? result.selfLoginName : '',
+        selfDisplayName: typeof result.selfDisplayName === 'string' ? result.selfDisplayName : '',
+        tailnet: typeof result.tailnet === 'string' ? result.tailnet : '' };
     }
     return { ...this.snapshot };
   }
@@ -153,6 +158,9 @@ class EmbeddedNetwork {
   async listen(target, token) { return this.request('listen', { target, token }); }
   async setHostname(hostname) {
     if (!this.child) return { hostName: '' };
+    // Null keeps the node's registered name: there is nothing to send and an
+    // empty string would tell the helper to restore its platform fallback.
+    if (hostname === null) return { hostName: '' };
     hostname = tailscaleHostname(hostname);
     if (!hostname) return { hostName: '' };
     const result = await this.request('set-hostname', { hostname });
@@ -161,7 +169,9 @@ class EmbeddedNetwork {
     return { hostName };
   }
   identity() {
-    return { deviceId: this.snapshot.deviceId || '', hostName: this.snapshot.hostName || '', address: this.snapshot.address || null };
+    return { deviceId: this.snapshot.deviceId || '', hostName: this.snapshot.hostName || '', address: this.snapshot.address || null,
+      userId: this.snapshot.selfUserId || '', login: this.snapshot.selfLoginName || '',
+      displayName: this.snapshot.selfDisplayName || '', tailnet: this.snapshot.tailnet || '' };
   }
   async diagnosePeer(address) {
     if (!isTailscaleIPv4(address)) throw new Error('Invalid diagnostic peer address');

@@ -68,6 +68,12 @@ public final class EmbeddedNetwork {
     /// is already in effect on the next connection. The lock makes a save from
     /// the settings screen safe while a background route rebuild reads it.
     private var configuredHostname = ""
+    /// When false the node keeps the name it already registered.
+    ///
+    /// The default is true, which is what a fresh install wants. The app sets
+    /// this from its upgrade check before the first start; an existing node
+    /// then stays on its current Tailscale name until the user opts in.
+    public var followsConfiguredHostname = true
     public var hostname: String {
         get {
             lock.lock()
@@ -258,7 +264,8 @@ public final class EmbeddedNetwork {
             let directory = try stateDirectory()
             let store = makeStore()
             var failure: NSError?
-            guard let created = TailnetNewNode(directory.path, nodeHostname(configuredHostname), store, &failure) else {
+            let requested = followsConfiguredHostname ? nodeHostname(configuredHostname) : ""
+            guard let created = TailnetNewNode(directory.path, requested, store, &failure) else {
                 throw failure ?? Failure(code: .networkStartFailed, detail: nil)
             }
             node = created
@@ -293,6 +300,7 @@ public final class EmbeddedNetwork {
     /// The saved label is used again on every later start, so a rename that
     /// happens while the node is down is applied when it comes back.
     public func setHostname(_ value: String) throws {
+        guard followsConfiguredHostname else { return }
         let converted = Self.nodeHostname(value)
         let label = converted.isEmpty ? "camellia-ios" : converted
         // Keep the choice for the next node even when the current one is down.

@@ -8,17 +8,19 @@ const { RemoteGateway } = require('./gateway');
 const { RemoteCommands } = require('./commands');
 const { RemoteMessageQueue } = require('./message-queue');
 const { TailscaleAPI } = require('./tailscale-api');
+const { TailnetTrust } = require('./tailnet-trust');
 const { tailscaleHostname } = require('./embedded-network');
 const { LanAccess, LanDiscovery, LanIdentity, addressSignature, chooseLanAddress } = require('./lan');
 
 function createRemoteService({ dataDir, manager, networkFactory, apiRoutes = null, desktopRestart = null, getDiscussions = null, accountUsage = null,
-  guard = null, lanFirewall = null, macLanPermissions = null, preferences = () => ({}), setComputerName = () => '', safeStorage = null, openExternal = null, log = () => {} }) {
+  guard = null, lanFirewall = null, macLanPermissions = null, preferences = () => ({}), setComputerName = () => '', saveTailscaleFollow = () => {}, safeStorage = null, openExternal = null, log = () => {} }) {
   let gateway = null, lanGateway = null, access = null, network = null, busy = false, enabled = false, closed = false;
   let lanAccess = null, lanIdentity = null, lanDiscovery = null, lanRuntime = null, lanMonitor = null, lanSignature = '';
   let lanFirewallStatus = '';
   let startupChecked = false, monitor = null, attachmentMaintenance = null, retryDelay = 1000, retryAt = 0;
   let recovering = null, diagnosing = false, sourceDeviceId = '', sourceAddress = '';
   const tailscale = new TailscaleAPI({ file: path.join(dataDir, 'remote', 'tailscale-oauth.json'), safeStorage, openExternal });
+  const tailnetTrust = new TailnetTrust({ file: path.join(dataDir, 'remote', 'tailnet-trust.json') });
   const messageQueue = new RemoteMessageQueue({
     file: path.join(dataDir, 'remote', 'message-queue.json'),
     manager,
@@ -80,6 +82,7 @@ function createRemoteService({ dataDir, manager, networkFactory, apiRoutes = nul
       protocol: 1,
       url: lanGateway.url,
       fingerprint: lanIdentity?.peek().fingerprint || '',
+      allowJoin: lanAccess?.view().allowJoin !== false,
     };
     if (network?.snapshot?.state === 'Running' && sourceAddress) transports.tailscale = {
       protocol: 1,
@@ -197,7 +200,7 @@ function createRemoteService({ dataDir, manager, networkFactory, apiRoutes = nul
   function initialize() {
     if (gateway) return;
     access = new RemoteAccess({ file: path.join(dataDir, 'remote', 'devices.json'),
-      onRevoke: id => { gateway?.revoke(id); lanGateway?.revoke(id); } });
+      onRevoke: id => { gateway?.revoke(id); lanGateway?.revoke(id); }, tailnetTrust });
     lanAccess = new LanAccess({ file: path.join(dataDir, 'remote', 'lan-access.json'), access, safeStorage, log });
     lanIdentity = new LanIdentity({ file: path.join(dataDir, 'remote', 'lan-identity.json'), log, computerId: lanAccess.computerId() });
     lanDiscovery = new LanDiscovery({ log });
@@ -208,15 +211,17 @@ function createRemoteService({ dataDir, manager, networkFactory, apiRoutes = nul
       file: path.join(dataDir, 'remote', 'discussion-commands.json'), getService: getDiscussions, access,
       publish: () => { publishAll(); attachmentMaintenance?.markDirty(); } }) : null;
     gateway = new RemoteGateway({ access, reader, commands, apiRoutes, desktopRestart, discussions, accountUsage,
-      computerId: lanIdentity.peek().computerId, transportInfo });
+      computerId: lanIdentity.peek().computerId, computerName: () => preferences().computerName || 'Camellia desktop',
+      tailnetTrust, transportInfo });
     lanGateway = new RemoteGateway({ access, reader, commands, apiRoutes, desktopRestart, discussions, accountUsage,
-      computerId: lanIdentity.peek().computerId, transportInfo, lanAccess });
+      computerId: lanIdentity.peek().computerId, computerName: () => preferences().computerName || 'Camellia desktop',
+      tailnetTrust, transportInfo, lanAccess });
     try { network = networkFactory({ onFailure: () => {
       if (closed || !enabled) return;
       recovering = stopTailscaleGateway();
       retryAt = Date.now() + retryDelay;
       scheduleMonitor();
-    }, hostname: () => tailscaleHostname(preferences().computerName) }); }
+    }, hostname: () => preferences().tailscaleFollow === false ? null : tailscaleHostname(preferences().computerName) }); }
     catch (error) { gateway = null; access = null; throw error; }
   }
   function state() {
@@ -224,6 +229,7 @@ function createRemoteService({ dataDir, manager, networkFactory, apiRoutes = nul
     return { ...preferences(), running: Boolean(gateway?.server), enabled, network: { ...network.snapshot },
       address: gateway?.url || null, ...view, workspaces: reader.workspaces(),
       lan: lanView(),
+      tailnetTrust: tailnetTrust.view(),
       diagnosticsAvailable: typeof network.diagnosePeer === 'function',
       ...(guard ? { guard: guard.view() } : {}),
       ...(tailscaleView ? { tailscale: tailscaleView } : {}),
@@ -246,6 +252,8 @@ function createRemoteService({ dataDir, manager, networkFactory, apiRoutes = nul
     // The helper's stable node ID can differ from the management API ID.
     // Publish its address in the same update so status can resolve that node.
     setSourceDeviceId(status.deviceId, status.address);
+    tailnetTrust.setIdentity({ userId: status.selfUserId, login: status.selfLoginName,
+      displayName: status.selfDisplayName, tailnet: status.tailnet });
     if (!enabled || closed) return;
     if (status.state !== 'Running' || !status.address) {
       if (gateway.server) await stopTailscaleGateway();
@@ -468,10 +476,20 @@ function createRemoteService({ dataDir, manager, networkFactory, apiRoutes = nul
           const options = { allWorkspaces: true, includeUnassigned: true };
           if (action === 'scope') { access.setScope(payload?.id, [], options); result = state(); }
           else result = { ...access.invite([], { ...options, computerName: preferences().computerName }), address: gateway.url };
+        } else if (action === 'tailnet-trust') {
+          tailnetTrust.update(payload || {});
+          result = state();
         } else if (action === 'set-name') {
           const requested = typeof payload?.name === 'string' ? payload.name.trim() : '';
           if (!requested || requested.length > 80) throw new Error('Enter a name of 1–80 characters');
           const savedName = setComputerName(requested);
+          if (typeof payload?.tailscaleFollow === 'boolean') {
+            saveTailscaleFollow(payload.tailscaleFollow);
+          }
+          // Re-read after the preference write so the new choice applies to
+          // this rename rather than only to the next startup.
+          const follow = typeof payload?.tailscaleFollow === 'boolean' ? payload.tailscaleFollow
+            : preferences().tailscaleFollow !== false;
           if (lanGateway?.server && lanRuntime) {
             lanDiscovery.update({
               ...lanRuntime,
@@ -485,21 +503,23 @@ function createRemoteService({ dataDir, manager, networkFactory, apiRoutes = nul
           // the management API accepts the display name when it is already a
           // valid DNS label and otherwise reports that control-plane sync was
           // skipped. The local name is never rolled back after a sync failure.
-          const hostname = tailscaleHostname(requested);
+          const hostname = follow ? tailscaleHostname(requested) : null;
           let networkSync = { synced: false, reason: 'not-running' };
           if (hostname && network?.child) {
             try { networkSync = { synced: true, ...(await network.setHostname(hostname)) }; }
             catch (error) { networkSync = { synced: false, reason: 'error', error: error.message }; }
           }
-          let tailscaleSync = { synced: false, reason: 'invalid-name' };
-          if (/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$/.test(savedName)) {
+          let tailscaleSync = follow ? { synced: false, reason: 'invalid-name' } : { synced: false, reason: 'not-following' };
+          if (follow && /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$/.test(savedName)) {
             try { tailscaleSync = await tailscale.renameCurrentDevice({ name: savedName, sourceDeviceId, sourceAddress }); }
             catch (error) { tailscaleSync = { synced: false, reason: 'error', error: error.message }; }
             if (tailscaleSync.synced) tailscale.statusCache = null;
           }
           result = { ...state(), computerName: savedName, tailscaleSync, embeddedNetworkSync: networkSync };
         } else if (action === 'rename') {
-          access.rename(payload?.id, payload?.name); result = state();
+          access.remark(payload?.id, payload?.name); result = state();
+        } else if (action === 'clear-remark') {
+          access.remark(payload?.id, ''); result = state();
         } else if (action === 'approve') {
           const request = access.pending.get(payload?.id);
           if (!request || (!request.allWorkspaces && request.workspaceIds.some(id => !reader.workspaces().some(workspace => workspace.id === id)))) throw new Error('The workspace selection is no longer available');

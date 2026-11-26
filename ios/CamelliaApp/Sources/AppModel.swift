@@ -439,15 +439,49 @@ final class AppModel: ObservableObject {
         guard !trimmed.isEmpty, ComposerText.utf16Length(trimmed) <= 80 else { return }
         guard preferences.savedDeviceName != trimmed else { return }
         preferences.deviceName = trimmed
-        EmbeddedNetwork.shared.hostname = trimmed
+        preferences.deviceNameSyncPending = true
+        if preferences.deviceNameFollow { EmbeddedNetwork.shared.hostname = trimmed }
         // A rename is a preference change, not a new identity: apply it to the
         // running node on a worker so a slow control-plane call never holds the
         // settings screen.
-        DispatchQueue.global(qos: .utility).async {
-            do { try EmbeddedNetwork.shared.setHostname(trimmed) }
-            catch { /* The saved name is used by the next node start. */ }
+        if preferences.deviceNameFollow {
+            DispatchQueue.global(qos: .utility).async {
+                do { try EmbeddedNetwork.shared.setHostname(trimmed) }
+                catch { /* The saved name is used by the next node start. */ }
+            }
         }
+        publishDeviceName(trimmed)
         objectWillChange.send()
+    }
+
+    /// Sends this phone's new name to each paired computer.
+    ///
+    /// The token identifies the device record, so no computer can change a
+    /// different phone's name through this path. An older desktop answers 404;
+    /// the local preference stays authoritative and the next foreground pass
+    /// tries again.
+    private func publishDeviceName(_ name: String) {
+        let targets = computers.filter { $0.isPaired && $0.token != nil && $0.endpoint != nil }
+        guard !targets.isEmpty else { return }
+        let group = DispatchGroup()
+        let lock = NSLock()
+        var failed = false
+        for computer in targets {
+            guard let token = computer.token, let endpoint = computer.endpoint else { continue }
+            group.enter()
+            DispatchQueue.global(qos: .utility).async {
+                defer { group.leave() }
+                do {
+                    let api = try RemoteApi(endpoint: endpoint, token: token)
+                    try api.updateDeviceName(name)
+                } catch {
+                    lock.lock(); failed = true; lock.unlock()
+                }
+            }
+        }
+        group.notify(queue: .main) {
+            if !failed, self.preferences.savedDeviceName == name { self.preferences.deviceNameSyncPending = false }
+        }
     }
 
     // MARK: - Boot
@@ -455,7 +489,14 @@ final class AppModel: ObservableObject {
     func boot() {
         restartRemoteEntry()
         EmbeddedNetwork.shared.makeStore = { AppStores.nodeStore() }
-        EmbeddedNetwork.shared.hostname = preferences.savedDeviceName
+        // An existing node keeps the Tailscale name it registered before the
+        // follow option existed. New installs follow the phone from day one.
+        if !UserDefaults.standard.bool(forKey: "deviceNameFollowInitialized") {
+            preferences.deviceNameFollow = !AppStores.hasExistingNodeIdentity()
+            UserDefaults.standard.set(true, forKey: "deviceNameFollowInitialized")
+        }
+        EmbeddedNetwork.shared.followsConfiguredHostname = preferences.deviceNameFollow
+        if preferences.deviceNameFollow { EmbeddedNetwork.shared.hostname = preferences.savedDeviceName }
         EmbeddedNetwork.shared.start()
         watchNetwork()
         reload()
@@ -500,6 +541,7 @@ final class AppModel: ObservableObject {
         // behind it is holding a socket that is gone. Android reloads the
         // current screen here for the same reason.
         resumeTick += 1
+        if preferences.deviceNameSyncPending { publishDeviceName(preferences.deviceName) }
         resume()
         startConversationSync()
     }
@@ -795,6 +837,7 @@ final class AppModel: ObservableObject {
         let targets = computers.filter { $0.isPaired && $0.token != nil }
         guard !targets.isEmpty else { return }
         let chinese = usesChinese
+        let deviceName = preferences.savedDeviceName
         computerGeneration += 1
         let ticket = computerGeneration
         computerPreloadQueue.cancelAllOperations()
@@ -809,7 +852,7 @@ final class AppModel: ObservableObject {
                 // `remaining`, leaving the continuation — and the pull-to-refresh
                 // spinner waiting on it — stuck forever.
                 computerQueue.addOperation { [self] in
-                    let result = Self.check(computer, chinese: chinese)
+                    let result = Self.check(computer, chinese: chinese, deviceName: deviceName)
                     DispatchQueue.main.async {
                         // Skipping the write is not enough on its own: the
                         // continuation has to run regardless, or a round that
@@ -818,6 +861,13 @@ final class AppModel: ObservableObject {
                         if ticket == self.computerGeneration {
                             if let token = result.revoked {
                                 self.revokeComputer(address: result.address, token: token, announce: false)
+                            }
+                            if let reported = result.status?.computerName, !reported.isEmpty,
+                               let index = self.computers.firstIndex(where: { $0.address == result.address }),
+                               self.computers[index].computerName != reported {
+                                try? self.store.updateComputerName(address: result.address, name: reported)
+                                self.reload()
+                                self.objectWillChange.send()
                             }
                             self.computerStates[result.address] = result.state
                             if let status = result.status {
@@ -887,7 +937,7 @@ final class AppModel: ObservableObject {
     /// `nonisolated` because it blocks: `RemoteApi.status()` waits on a tunnel
     /// round trip, and four of those on the main actor would freeze the list
     /// they are trying to fill in.
-    nonisolated private static func check(_ computer: PairedComputer, chinese: Bool) -> ComputerCheck {
+    nonisolated private static func check(_ computer: PairedComputer, chinese: Bool, deviceName: String) -> ComputerCheck {
         // A row that cannot even be addressed is not "awaiting a check" — it is
         // a failure, and saying so is more honest than leaving it grey forever.
         // The caller only offers paired computers, so this is a corrupt store
@@ -900,6 +950,11 @@ final class AppModel: ObservableObject {
         do {
             let api = try RemoteApi(endpoint: endpoint, token: token)
             let status = try api.status()
+            if !deviceName.isEmpty {
+                // A rename made while this computer was offline reaches it on
+                // the first successful check, under this phone's own token.
+                try? api.updateDeviceName(deviceName)
+            }
             return ComputerCheck(address: computer.address, state: ComputerStatus.connected,
                                  revoked: nil, status: status)
         } catch {
@@ -1145,12 +1200,13 @@ final class AppModel: ObservableObject {
 
     func rename(_ address: String, to name: String) -> Bool {
         let trimmed = ComposerText.androidTrim(name)
-        guard !trimmed.isEmpty, ComposerText.utf16Length(trimmed) <= 80 else {
-            notice = Notice(text: "请输入 1–80 个字符的名称。", serious: false)
+        guard ComposerText.utf16Length(trimmed) <= 80 else {
+            notice = Notice(text: "备注最多 80 个字符。", serious: false)
             return false
         }
         do {
-            try store.rename(address: address, name: trimmed)
+            if trimmed.isEmpty { try store.clearRemark(address: address) }
+            else { try store.rename(address: address, name: trimmed) }
             reload()
             return true
         } catch {

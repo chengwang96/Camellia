@@ -101,14 +101,24 @@ final class ArtifactDownloads {
             try {
                 JSONObject result = request.json(route, token, null);
                 JSONArray files = result.getJSONArray("artifacts");
+                java.util.Map<String, ArtifactDownloadHistory.Entry> savedById = new java.util.HashMap<>();
+                for (int index = 0; index < files.length(); index++) {
+                    JSONObject file = files.optJSONObject(index);
+                    if (file == null) continue;
+                    String id = file.optString("id");
+                    ArtifactDownloadHistory.Entry candidate = ArtifactDownloadHistory.find(activity, address, conversation,
+                        discussion, id);
+                    if (candidate != null && DownloadedArtifact.inspectDestination(activity, candidate.destination).available) {
+                        savedById.put(id, candidate);
+                    }
+                }
                 handler.post(() -> {
                     if (ticket != generation || activity.isDestroyed()) return;
                     for (int index = 0; index < files.length(); index++) {
                         JSONObject file = files.optJSONObject(index);
                         if (file == null) continue;
                         ArtifactSheet sheet = dialog;
-                        ArtifactDownloadHistory.Entry saved = ArtifactDownloadHistory.find(activity, address, conversation,
-                            discussion, file.optString("id"));
+                        ArtifactDownloadHistory.Entry saved = savedById.get(file.optString("id"));
                         LinearLayout row = sheet.style.group(rows, ""); row.setTag("artifactFile:" + file.optString("id")); row.setPadding(style.dp(16), style.dp(16), style.dp(16), style.dp(14));
                         TextView type = sheet.text(file.optString("extension") + "  ·  " + android.text.format.Formatter.formatFileSize(activity, file.optLong("size"))
                             + (saved == null ? "" : "  ·  " + tr("已下载", "Saved")), Palette.TEXT_SMALL, sheet.style.secondary);

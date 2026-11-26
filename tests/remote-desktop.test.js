@@ -359,7 +359,8 @@ test('saving the computer name also renames the embedded node', async context =>
     ipcMain: { handle: (channel, callback) => handlers.set(channel, callback) },
     manager: { workspaces: { sessionMeta: () => ({ workspaces: [] }) } }, loadConfig: () => ({}),
     getSettingsWindow: () => settings, networkFactory: () => network,
-    computerName: () => savedName || 'old-name', saveComputerName: name => { savedName = name; return name; } });
+    computerName: () => savedName || 'old-name', saveComputerName: name => { savedName = name; return name; },
+    tailscaleFollow: () => true });
   context.after(() => controller.close());
   const command = handlers.get('dsh:remote-control');
   const event = { sender: settings.webContents, senderFrame: settings.webContents.mainFrame };
@@ -387,7 +388,7 @@ test('the embedded node starts with the saved computer name, or the helper fallb
       ipcMain: { handle: (channel, callback) => handlers.set(channel, callback) },
       manager: { workspaces: { sessionMeta: () => ({ workspaces: [] }) } }, loadConfig: () => ({}),
       getSettingsWindow: () => settings, networkFactory: value => { options = value; return network; },
-      computerName: () => saved, saveComputerName: name => name });
+      computerName: () => saved, saveComputerName: name => name, tailscaleFollow: () => true });
     context.after(() => controller.close());
     await handlers.get('dsh:remote-control')({ sender: settings.webContents, senderFrame: settings.webContents.mainFrame }, { action: 'state' });
     assert.equal(options.hostname(), expected);

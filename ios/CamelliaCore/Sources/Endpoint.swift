@@ -136,7 +136,7 @@ public struct Endpoint: Equatable, Hashable, Sendable {
             + "|conversations/[a-f0-9-]{36}/artifacts\\?offset=[0-9]{1,12}&seq=[1-9][0-9]{0,11}&reference=(?:[A-Za-z0-9._*+-]|%[a-fA-F0-9]{2})+"
             + "|conversations/[a-f0-9-]{36}/attachments/[1-9][0-9]{0,11}/(?:[0-9]|1[0-9])"
             + "|conversations\\?offset=[0-9]{1,12}&limit=(?:[1-9][0-9]{0,2}|1000)&query=(?:[A-Za-z0-9._*+-]|%[a-fA-F0-9]{2})*"
-            + "|(?:(?:status|commands|pair/(?:request|claim)"
+            + "|(?:(?:status|commands|device/name|pair/(?:request|claim)"
             + "|conversations(?:/events|/[a-f0-9-]{36}(?:/(?:events|commands|read|artifacts(?:/[a-f0-9]{64})?))?)?)"
             + "(?:\\?(?:offset|before)=[0-9]{1,12})?|api-keys))$"
         guard let expression = try? NSRegularExpression(pattern: pattern) else {

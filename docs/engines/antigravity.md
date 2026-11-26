@@ -34,6 +34,11 @@ after login to fetch account models. CLI credentials are never exposed to other
 harnesses or converted to API keys. See the [CLI repository](https://github.com/google-antigravity/antigravity-cli)
 and [headless interface](https://antigravity.google/docs/cli/headless/).
 
+With CLI 1.5.17 or newer, Camellia mounts its tools on the native ACP chat
+session at creation and resume. Each session receives its own MCP registration.
+The CLI keeps its Google authentication, and the tool configuration is passed
+over ACP without editing the user's MCP configuration files.
+
 The subscription cascade is a durable server-side conversation, so Camellia
 resumes it after idle engine cleanup and does not apply the parked-session TTL
 used for prompt caches. Re-sending an unchanged message continues that cascade

@@ -8,7 +8,7 @@ const { createMacLanPermissions } = require('./mac-lan-permissions');
 const { createTailnetUpdates } = require('./tailnet-updates');
 
 function createRemoteDesktop({ app, BrowserWindow, ipcMain, nativeTheme, windowChrome, manager, rendererRoot, loadConfig, getSettingsWindow = () => null, getMainWindow = () => null, networkFactory, apiRoutes = null, getDiscussions = null,
-  computerName = () => '', saveComputerName = () => {}, networkHostname, downloadConnection, createUpdates = createTailnetUpdates, assertTailnetUpdateAllowed = () => {},
+  computerName = () => '', saveComputerName = () => {}, networkHostname, tailscaleFollow = () => true, saveTailscaleFollow = () => {}, downloadConnection, createUpdates = createTailnetUpdates, assertTailnetUpdateAllowed = () => {},
   prepareRestart = async () => {}, accountUsage = null, guard = null, log = () => {} }) {
   let window = null, tailnetOperation = false;
   const updates = createUpdates({ bundle: bundleDirectory(app), dataDir: app.getPath('userData'), connection: downloadConnection });
@@ -26,7 +26,8 @@ function createRemoteDesktop({ app, BrowserWindow, ipcMain, nativeTheme, windowC
     macLanPermissions: createMacLanPermissions({ openExternal: url => require('electron').shell.openExternal(url) }),
     safeStorage: require('electron').safeStorage, openExternal: url => require('electron').shell.openExternal(url),
     preferences: () => ({ closeToTray: loadConfig().closeToTray === true, theme: loadConfig().theme || 'system', language: loadConfig().language || 'zh-CN',
-      computerName: computerName() }),
+      computerName: computerName(), tailscaleFollow: tailscaleFollow() }),
+    saveTailscaleFollow,
     networkFactory: ({ onFailure, ...rest }) => {
       // The service supplies the saved hostname; keep it for the default
       // EmbeddedNetwork constructor instead of dropping it with extra options.

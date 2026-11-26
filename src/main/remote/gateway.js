@@ -34,9 +34,9 @@ async function body(request, limit = 4096) {
 
 class RemoteGateway {
   constructor({ access, reader, commands, apiRoutes = null, desktopRestart = null, discussions = null, accountUsage = null,
-    validateHost = isTailscaleIPv4, lanAccess = null, computerId = '', transportInfo = null }) {
+    validateHost = isTailscaleIPv4, lanAccess = null, computerId = '', computerName = '', tailnetTrust = null, transportInfo = null }) {
     Object.assign(this, { access, reader, commands, apiRoutes, desktopRestart, discussions, accountUsage, validateHost,
-      lanAccess, computerId, transportInfo });
+      lanAccess, computerId, computerName: typeof computerName === 'function' ? computerName : () => computerName, tailnetTrust, transportInfo });
     this.streams = new Set();
     this.downloads = new Set();
     this.sequence = 0;
@@ -96,6 +96,34 @@ class RemoteGateway {
     response.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' });
     response.end(JSON.stringify(payload));
   }
+  helloPayload() {
+    const transports = this.transportInfo?.() || null;
+    const lanAvailable = Boolean(transports?.lan) || Boolean(this.lanAccess);
+    const tailnetEnabled = this.tailnetTrust?.view?.().enabled === true;
+    const lanJoin = this.lanAccess?.view?.().allowJoin !== false && transports?.lan?.allowJoin !== false;
+    return { protocol: 1, app: 'camellia',
+      ...(this.computerId ? { computerId: this.computerId } : {}),
+      ...(this.computerName() ? { computerName: this.computerName() } : {}),
+      auth: { tailnet: tailnetEnabled, lan: lanAvailable, pairing: true },
+      join: { tailnet: tailnetEnabled, lan: lanAvailable && lanJoin, pairing: true },
+      ...(transports ? { transports } : {}) };
+  }
+  tailnetIdentity(request) {
+    if (!this.transport || this.transport.mode === 'lan') return null;
+    const header = name => {
+      const value = request.headers[name];
+      if (typeof value !== 'string') return '';
+      const trimmed = value.trim();
+      return trimmed && trimmed.length <= 512 && !/[\x00-\x1f\x7f-\x9f]/.test(trimmed) ? trimmed : '';
+    };
+    const nodeId = header('x-camellia-tailnet-node');
+    const userId = header('x-camellia-tailnet-user');
+    if (!nodeId || !userId) return null;
+    const tags = header('x-camellia-tailnet-tags').split(',')
+      .map(value => value.trim()).filter(value => /^tag:[a-z0-9][a-z0-9-]{0,63}$/.test(value));
+    return { nodeId, userId, login: header('x-camellia-tailnet-login'),
+      name: header('x-camellia-tailnet-name'), tags };
+  }
   stamp() { return { instanceId: this.instanceId, cursor: this.sequence }; }
   commandReply(device, id, result) {
     let current;
@@ -125,7 +153,31 @@ class RemoteGateway {
     const url = new URL(request.url, this.url);
     if (url.origin !== this.url) fail(400, 'Invalid request target');
     const pairing = url.pathname === '/v1/pair/request' || url.pathname === '/v1/pair/claim' || url.pathname === '/v1/lan/join';
-    this.throttle(request, pairing, !pairing && (request.method === 'POST' || /^\/v1\/(?:discussions\/)?commands\//.test(url.pathname)));
+    const hello = url.pathname === '/v1/hello';
+    const tailnetPairing = url.pathname === '/v1/tailnet/request' || url.pathname === '/v1/tailnet/claim';
+    this.throttle(request, pairing || hello || tailnetPairing, !pairing && !hello && !tailnetPairing
+      && (request.method === 'POST' || /^\/v1\/(?:discussions\/)?commands\//.test(url.pathname)));
+    if (hello) {
+      if (request.method !== 'GET' || url.search) fail(405, 'GET required');
+      this.json(response, 200, this.helloPayload());
+      return;
+    }
+    if (tailnetPairing) {
+      if (request.method !== 'POST' || url.search) fail(405, 'POST required');
+      if (!this.tailnetTrust) fail(404, 'Tailnet pairing is unavailable');
+      const identity = this.tailnetIdentity(request);
+      if (!identity) fail(403, 'Tailnet identity is unavailable; update and restart the desktop');
+      const payload = await body(request);
+      if (!payload || typeof payload !== 'object' || Array.isArray(payload)) fail(400, 'JSON object required');
+      const result = url.pathname.endsWith('/request')
+        ? this.access.requestTailnet(payload, identity)
+        : this.access.claim(payload.id, payload.claim, identity);
+      this.json(response, 200, { ...result, protocol: 1,
+        ...(this.computerId ? { computerId: this.computerId } : {}),
+        ...(this.computerName() ? { computerName: this.computerName() } : {}),
+        ...(this.transportInfo?.() || {}) });
+      return;
+    }
     if (pairing) {
       if (request.method !== 'POST' || url.search) fail(405, 'POST required');
       const payload = await body(request);
@@ -135,10 +187,12 @@ class RemoteGateway {
         if (!this.lanAccess) fail(404, 'LAN access is unavailable');
         result = this.lanAccess.join({ ...payload, remoteAddress: request.socket.remoteAddress });
         result = { ...result, protocol: 1, ...(this.computerId ? { computerId: this.computerId } : {}),
+          ...(this.computerName() ? { computerName: this.computerName() } : {}),
           ...(this.transportInfo?.() || {}) };
       } else {
         result = url.pathname.endsWith('/request') ? this.access.request(payload) : this.access.claim(payload.id, payload.claim);
         result = { ...result, protocol: 1, ...(this.computerId ? { computerId: this.computerId } : {}),
+          ...(this.computerName() ? { computerName: this.computerName() } : {}),
           ...(this.transportInfo?.() || {}) };
       }
       this.json(response, 200, result);
@@ -147,6 +201,15 @@ class RemoteGateway {
     const authorization = request.headers.authorization || '';
     if (!/^Bearer [A-Za-z0-9_-]{43}$/.test(authorization)) fail(401, 'Device authentication required');
     const device = this.access.authenticate(authorization.slice(7));
+    if (url.pathname === '/v1/device/name') {
+      if (request.method !== 'POST' || url.search) fail(405, 'POST without a query required');
+      const payload = await body(request);
+      if (!payload || typeof payload !== 'object' || Array.isArray(payload)) fail(400, 'JSON object required');
+      this.access.renameSelf(device.id, payload.name);
+      const current = this.access.authenticate(authorization.slice(7));
+      this.json(response, 200, { ok: true, deviceId: device.id, name: current.name, ...this.stamp() });
+      return;
+    }
     if (this.accountUsage && ['/v1/account-usage', '/v1/account-usage/refresh'].includes(url.pathname)) {
       if (device.permission !== 'control' || device.allWorkspaces !== true) fail(403, 'Full-device control permission required');
       if (url.search) fail(400, 'Unsupported usage query');
@@ -353,6 +416,7 @@ class RemoteGateway {
     const transports = this.transportInfo?.() || null;
     return { protocol: 1, permission: device.permission, capabilities,
       ...(this.computerId ? { computerId: this.computerId } : {}),
+      ...(this.computerName() ? { computerName: this.computerName() } : {}),
       ...(transports ? { transports } : {}),
       engines: (this.reader.manager.remoteEngines || ['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'grok']).filter(engine => ['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'grok'].includes(engine)),
       workspaces: this.reader.workspaces().filter(item => device.allWorkspaces || device.workspaceIds.includes(item.id)),

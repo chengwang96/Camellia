@@ -7,6 +7,8 @@ screenshots = repo / 'dist/ui-preview'
 screenshots.mkdir(parents=True, exist_ok=True)
 bridge = """(() => {
   const state = { running: false, enabled: false, address: null, devices: [], pending: [],
+    tailnetTrust: { enabled: false, autoApprove: false, ready: true, ownerLogin: 'me@example.com',
+      ownerDisplayName: 'Me', tailnetName: 'example.ts.net', allowedTags: [] },
     guard: { supported: true, available: true, enabled: false, running: false, retrying: false },
     workspaces: [{ id: 'project', name: 'Research workspace' }, { id: 'second', name: 'Second workspace' }], closeToTray: false, language: 'zh-CN', theme: 'system' };
   window.remoteTest = state;
@@ -16,6 +18,7 @@ bridge = """(() => {
     if (action === 'stop') { state.enabled = false; state.running = false; state.address = null; state.guard.running = false; }
     if (action === 'guard-enable') { state.guard.enabled = true; state.guard.running = true; }
     if (action === 'guard-disable') { state.guard.enabled = false; state.guard.running = false; }
+    if (action === 'tailnet-trust') Object.assign(state.tailnetTrust, payload);
     if (action === 'set-name') {
       state.computerName = payload.name;
       return { ok: true, result: { ...structuredClone(state),
@@ -62,6 +65,12 @@ with sync_playwright() as playwright:
             expect(page.locator('#invite')).to_be_disabled()
             page.get_by_role('button', name='开启手机访问', exact=True).click()
             expect(page.locator('#address')).to_have_text('http://100.80.1.2:43127')
+            expect(page.locator('#tailnetTrust')).to_be_visible()
+            expect(page.locator('#tailnetTrustStatus')).to_have_text('已关闭')
+            page.locator('#tailnetTrustToggle').check()
+            expect(page.locator('#tailnetTrustStatus')).to_have_text('已启用')
+            page.locator('#tailnetAutoApprove').check()
+            assert page.evaluate('window.remoteTest.tailnetTrust.autoApprove') is True
             page.locator('#deviceName').fill('Work PC')
             page.get_by_role('button', name='保存名称', exact=True).click()
             expect(page.locator('#deviceNameStatus')).to_contain_text('已同步到 Tailscale')
@@ -107,7 +116,7 @@ with sync_playwright() as playwright:
             assert page.evaluate('remoteTest.devices[0].allWorkspaces') is True
             assert page.evaluate('remoteTest.devices[0].includeUnassigned') is True
             expect(page.locator('#devices .device-actions button:visible')).to_have_count(2)
-            expect(page.locator('#devices .device-actions button:visible').first).to_have_text('重命名')
+            expect(page.locator('#devices .device-actions button:visible').first).to_have_text('添加备注')
             expect(page.locator('#devices .device-actions button:visible').last).to_have_text('撤销')
             expect(page.get_by_text('仅查看', exact=True)).to_have_count(0)
             page.screenshot(path=str(screenshots / f'remote-{scheme}.png'), full_page=True)

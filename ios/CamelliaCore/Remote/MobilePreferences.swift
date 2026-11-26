@@ -177,6 +177,20 @@ public final class MobilePreferences {
         store.string("deviceName").map(ComposerText.androidTrim) ?? ""
     }
 
+    /// True when a local rename has not yet reached every paired computer.
+    public var deviceNameSyncPending: Bool {
+        get { store.string("deviceNameSyncPending") == "1" }
+        set { store.set(newValue ? "1" : "", for: "deviceNameSyncPending") }
+    }
+
+    /// Whether the embedded node follows the phone name. Existing nodes keep
+    /// their Tailscale name until the user opts in, so MagicDNS bookmarks and
+    /// SSH configs survive an upgrade.
+    public var deviceNameFollow: Bool {
+        get { store.string("deviceNameFollow") != "existing" }
+        set { store.set(newValue ? "follow" : "existing", for: "deviceNameFollow") }
+    }
+
     /// Whether a conversation-list workspace group is folded away.
     ///
     /// Keyed by computer address *and* workspace id, which is exactly how

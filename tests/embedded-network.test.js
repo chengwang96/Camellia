@@ -142,10 +142,12 @@ test('embedded status preserves control-plane health diagnostics', async () => {
   network.request = async action => {
     assert.equal(action, 'status');
     return { state: 'Running', address: '100.80.1.2', deviceId: 'node', hostName: 'work-pc',
-      online: true, health: ['Control plane is reconnecting'] };
+      online: true, health: ['Control plane is reconnecting'], selfUserId: '42',
+      selfLoginName: 'me@example.com', selfDisplayName: 'Me', tailnet: 'example.ts.net' };
   };
   assert.deepEqual(await network.status(), { state: 'Running', loginUrl: null, address: '100.80.1.2',
-    deviceId: 'node', hostName: 'work-pc', online: true, health: ['Control plane is reconnecting'] });
+    deviceId: 'node', hostName: 'work-pc', online: true, health: ['Control plane is reconnecting'],
+    selfUserId: '42', selfLoginName: 'me@example.com', selfDisplayName: 'Me', tailnet: 'example.ts.net' });
 });
 
 test('embedded hostname changes use the helper and refresh the cached identity', async () => {

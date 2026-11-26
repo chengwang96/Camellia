@@ -28,6 +28,12 @@ for (const file of ['settings/api-settings.html', 'remote/remote.html']) {
     assert.match(primary, /id="(?:mobile-)?lanToggle"[^>]*role="switch"/);
     assert.match(primary, /id="(?:mobile-)?lanPin"[^>]*maxlength="6"/);
     assert.match(primary, /id="(?:mobile-)?lanAllowJoin"[^>]*role="switch"/);
+    assert.match(primary, /id="(?:mobile-)?tailnetTrust"[^>]*class="[^"]*tailnet-trust/);
+    assert.match(primary, /id="(?:mobile-)?tailnetTrustToggle"[^>]*role="switch"/);
+    assert.match(primary, /id="(?:mobile-)?tailnetAutoApprove"[^>]*role="switch"/);
+    assert.match(primary, /id="(?:mobile-)?tailnetDiscovery"[^>]*role="status"/);
+  assert.match(primary, /id="(?:mobile-)?tailscaleFollow"[^>]*role="switch"/);
+  assert.match(primary, /data-copy="tailscaleFollowHint"/);
   });
 }
 
@@ -57,11 +63,13 @@ test('hidden accessible text stays inside the settings page', () => {
   assert.match(remote, /main\.mobile-access \{ position: relative; max-width: 900px; \}/);
 });
 
-test('authorized devices rename in place instead of opening a dialog', () => {
+test('authorized devices take a local remark in place instead of opening a dialog', () => {
   const remote = fs.readFileSync(path.join(__dirname, '../src/renderer/remote/remote.js'), 'utf8');
   assert.doesNotMatch(remote, /dialog\.device-rename/);
   assert.match(remote, /function renameDevice\(entry, row, title, name\)/);
   assert.match(remote, /title\.replaceWith\(field\)/);
+  assert.match(remote, /call\(value \? 'rename' : 'clear-remark'/);
+  assert.match(remote, /translate\(entry\.remark \? 'editRemark' : 'remark'\)/);
   const styles = fs.readFileSync(path.join(__dirname, '../src/renderer/settings/device-settings.css'), 'utf8');
   assert.match(styles, /\.device-settings \.device-rename-field \{/);
   assert.doesNotMatch(styles, /dialog\.device-rename/);
